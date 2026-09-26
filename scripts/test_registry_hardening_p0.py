@@ -48,6 +48,7 @@ def _write_exploration_clear_additive(
     *,
     action_id: str = "SKEP-8",
     include_bound_finding: bool = False,
+    duplicate_obligation: bool = False,
 ) -> Path:
     import exploration_clear_lifecycle as E
 
@@ -60,6 +61,12 @@ def _write_exploration_clear_additive(
         f"| BASE-1 | Direction | inverse transition | GAP-FILLED | {action_id} |\n"
         "\n## Notes\n\nTyped lifecycle source.\n"
     )
+    if duplicate_obligation:
+        text = text.replace(
+            "\n## Notes",
+            f"| BASE-1 | Neighbour | sibling transition | GAP-FILLED | {action_id} |\n"
+            "\n## Notes",
+        )
     if include_bound_finding:
         text += (
             f"\n### Finding [{action_id}]: Bound additive candidate\n"
@@ -136,6 +143,20 @@ def test_exploration_clear_additive_has_exact_typed_identity_and_lineage(tmp_pat
     assert not (tmp_path / "exploration_clear_additive_findings.md").exists()
 
 
+def test_repair_generated_ecra_action_is_in_registered_producer_namespace(
+    tmp_path: Path,
+) -> None:
+    """Run57: lifecycle repair IDs and the registry share one grammar."""
+
+    action_id = "ECRA-1CDC7E1C49D6AD92D0BCED9F"
+    receipt_path = _write_exploration_clear_additive(
+        tmp_path, action_id=action_id
+    )
+    rows = R.read_registered_typed_actions(receipt_path)
+    assert [row.action_id for row in rows] == [action_id]
+    assert rows[0].producer_key == "exploration_clear_additive"
+
+
 def test_exploration_clear_additive_cannot_self_certify(tmp_path: Path):
     import exploration_clear_lifecycle as E
 
@@ -174,6 +195,33 @@ def test_exploration_clear_typed_action_enters_exact_delivery_once(tmp_path: Pat
     assert row["disposition"] == "PROMOTED_FINDING"
     assert payload["source_action_count"] == 1
     assert payload["accounted_action_count"] == 1
+    assert V._validate_registered_finding_delivery_receipt(tmp_path) == []
+
+
+def test_exploration_clear_multi_obligation_action_promotes_one_candidate(
+    tmp_path: Path,
+):
+    """One source finding can close several exact exploration obligations."""
+
+    import plamen_validators as V
+
+    _write(tmp_path / "findings_inventory.md", _seed_inventory())
+    _write_exploration_clear_additive(
+        tmp_path,
+        include_bound_finding=True,
+        duplicate_obligation=True,
+    )
+
+    assert V._promote_depth_findings_to_inventory(tmp_path) == ["SKEP-8"]
+    inventory = (tmp_path / "findings_inventory.md").read_text(encoding="utf-8")
+    assert inventory.count("**Source IDs**: [SKEP-8]") == 1
+    payload = json.loads(
+        (tmp_path / "finding_delivery_receipt.json").read_text(encoding="utf-8")
+    )
+    rows = [row for row in payload["actions"] if row["action_id"] == "SKEP-8"]
+    assert len(rows) == 2
+    assert {row["disposition"] for row in rows} == {"PROMOTED_FINDING"}
+    assert payload["accounted_action_count"] == payload["source_action_count"]
     assert V._validate_registered_finding_delivery_receipt(tmp_path) == []
 
 
@@ -621,6 +669,7 @@ def test_typed_queue_migrates_v2_scope_less_records_to_closed_defaults():
         "effective_evidence_scope",
         "effective_proof_scope",
         "effective_harm_scope",
+        "required_disposition",
     ):
         legacy.pop(field)
     rows = [legacy]
@@ -643,6 +692,34 @@ def test_typed_queue_migrates_v2_scope_less_records_to_closed_defaults():
     assert migrated.effective_evidence_scope == "UNSPECIFIED"
     assert migrated.effective_proof_scope == "ANALYTICAL"
     assert migrated.effective_harm_scope == "UNPROVEN"
+    assert migrated.required_disposition == "STANDARD"
     assert json.loads(Q.queue_records_to_json([migrated]))["schema_version"] == (
-        "plamen.queue_work_items.v3"
+        Q.QUEUE_RECORD_SET_SCHEMA_VERSION
     )
+
+
+def test_typed_queue_v2_rejects_current_only_required_disposition_field():
+    """A legacy schema label cannot smuggle later authority fields."""
+
+    import queue_work_items as Q
+
+    current = Q.QueueWorkItem.from_legacy_row(
+        {
+            "finding id": "INV-9",
+            "severity": "Medium",
+            "title": "legacy typed row",
+            "bug class": "generic",
+            "preferred tag": "CODE-TRACE",
+            "poc class": "structural",
+        }
+    ).to_dict()
+    current["schema_version"] = "plamen.queue_work_item.v2"
+    for field in (
+        "effective_evidence_scope",
+        "effective_proof_scope",
+        "effective_harm_scope",
+    ):
+        current.pop(field)
+
+    with pytest.raises(ValueError, match="unexpected fields: required_disposition"):
+        Q.QueueWorkItem.from_dict(current)

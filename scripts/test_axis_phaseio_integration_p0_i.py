@@ -77,14 +77,11 @@ PROMOTION_PLAN_INPUTS = (
     "axis_coverage_repair_findings.md",
     "axis_coverage_repair_dispositions.json",
     "findings_inventory.md",
+    "finding_records.json",
+    "_id_ledger.json",
 )
 PROMOTION_INPUTS = (
     "axis_coverage_promotion_plan.json",
-    "axis_disposition_receipt.json",
-    "axis_coverage_findings.md",
-    "axis_coverage_dispositions.json",
-    "axis_coverage_repair_findings.md",
-    "axis_coverage_repair_dispositions.json",
 )
 
 
@@ -392,8 +389,19 @@ def test_axis_resolver_shapes_have_exclusive_writer_authority() -> None:
     promotion = by_unit[("axis_disposition", "promotion")]
     assert promotion.model_invoked is False
     outputs = {item.path: item for item in promotion.outputs}
-    assert outputs["findings_inventory.md"].writer == "DRIVER"
-    assert outputs["findings_inventory.md"].write_mode == "MERGE"
+    assert set(outputs) == {
+        "findings_inventory.md",
+        "finding_records.json",
+        "_id_ledger.json",
+        "axis_coverage_promotion_receipt.json",
+    }
+    for canonical in (
+        "findings_inventory.md",
+        "finding_records.json",
+        "_id_ledger.json",
+    ):
+        assert outputs[canonical].writer == "DRIVER"
+        assert outputs[canonical].write_mode == "MERGE"
     assert (
         outputs["findings_inventory.md"].external_preimage_validator
         == "plamen.axis_inventory_prestate.v1"
@@ -456,9 +464,11 @@ def test_axis_dynamic_contracts_require_exact_denominators() -> None:
 
 def test_axis_inventory_projection_handoffs_are_explicit() -> None:
     dimensions = ("sc", "thorough", "evm", "claude")
-    inventory = "scratchpad:findings_inventory.md"
     canonical = canonical_work_unit_key(
         *dimensions, "inventory", "canonical_aggregate"
+    )
+    id_ledger_merge = canonical_work_unit_key(
+        *dimensions, "inventory", "id_ledger_merge"
     )
     enumgap = canonical_work_unit_key(
         *dimensions, "enumgap_delivery", "inventory_append"
@@ -469,10 +479,32 @@ def test_axis_inventory_projection_handoffs_are_explicit() -> None:
     prequeue = canonical_work_unit_key(
         *dimensions, "semantic_dedup", "prequeue_apply"
     )
-    assert registered_projection_handoff(canonical, axis, inventory)
-    assert registered_projection_handoff(enumgap, axis, inventory)
-    assert registered_projection_handoff(axis, axis, inventory)
-    assert registered_projection_handoff(axis, prequeue, inventory)
+    for identity in (
+        "scratchpad:findings_inventory.md",
+        "scratchpad:finding_records.json",
+    ):
+        assert registered_projection_handoff(canonical, axis, identity)
+        assert registered_projection_handoff(axis, axis, identity)
+    assert registered_projection_handoff(
+        id_ledger_merge, axis, "scratchpad:_id_ledger.json"
+    )
+    assert registered_projection_handoff(
+        axis, axis, "scratchpad:_id_ledger.json"
+    )
+    assert registered_projection_handoff(
+        enumgap, axis, "scratchpad:findings_inventory.md"
+    )
+    assert registered_projection_handoff(
+        enumgap, axis, "scratchpad:finding_records.json"
+    )
+    assert registered_projection_handoff(
+        enumgap, axis, "scratchpad:_id_ledger.json"
+    )
+    for identity in (
+        "scratchpad:findings_inventory.md",
+        "scratchpad:finding_records.json",
+    ):
+        assert registered_projection_handoff(axis, prequeue, identity)
 
 
 def test_axis_prompt_uses_axw_json_authority_not_markdown_denominator() -> None:

@@ -799,7 +799,7 @@ def test_routing_authority_is_validated_before_queue_phase_commit(
 
     result = D._commit_verification_transaction(
         phase,
-        object(),
+        SimpleNamespace(run_id=f"fixture-{pipeline}"),
         scratchpad,
         {
             "pipeline": pipeline,

@@ -27,7 +27,7 @@ import importlib
 import inspect
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import queue
 import re
 import shutil
@@ -54,6 +54,8 @@ import uuid
 
 from owned_process_scope import (
     OwnedProcessScope as _SharedOwnedProcessScope,
+    PROCESS_CREATED_BUT_NOT_RETURNED_CONTAINED,
+    PROCESS_CREATED_BUT_NOT_RETURNED_TERMINATED,
     process_tree_termination_capability as _shared_process_tree_capability,
     windows_job_only_process_tree_capability as _windows_job_only_capability,
 )
@@ -62,6 +64,18 @@ from windows_private_execution_root import (
     create_windows_private_execution_root,
 )
 import claude_phase_tool_policy as _claude_phase_tool_policy
+
+if os.name != "nt":
+    from posix_backend_execution import (
+        PosixBackendExecution,
+        PosixBackendExecutionError,
+        require_native_posix_backend_execution,
+    )
+else:  # The POSIX policy imports fcntl and must not enter Windows startup.
+    PosixBackendExecution = Any  # type: ignore[misc,assignment]
+    PosixBackendExecutionError = RuntimeError  # type: ignore[assignment]
+    require_native_posix_backend_execution = None  # type: ignore[assignment]
+
 from auxiliary_writable_root_lease import (
     AuxiliaryWritableRootLease,
     LEASE_SCHEMA as AUXILIARY_LEASE_SCHEMA,
@@ -87,7 +101,10 @@ from pty_transport_bridge import (
     load_bridge_manifest as _load_pty_bridge_manifest,
 )
 from pty_worker_host import load_host_manifest as _load_pty_host_manifest
-from pty_exec import encode_claude_project_dir as _encode_claude_project_dir
+from pty_exec import (
+    encode_claude_project_dir as _encode_claude_project_dir,
+    settings_enabled_plugins_grant_nothing as _settings_enabled_plugins_grant_nothing,
+)
 from claude_stream_json_evidence import (
     DEFAULT_MAX_LINE_BYTES as _CLAUDE_STREAM_DEFAULT_MAX_LINE_BYTES,
     ClaudeStreamJsonEvidenceError as _ClaudeStreamJsonEvidenceError,
@@ -95,6 +112,8 @@ from claude_stream_json_evidence import (
     normalize_expected_init_contract as _normalize_claude_expected_init,
     replay_claude_stream_json as _replay_claude_stream_json,
     validate_claude_stream_json as _validate_claude_stream_json,
+    _validate_claude_stream_json_from_authenticated_native_binding as _validate_claude_stream_json_from_native_binding,
+    _normalize_expected_init_from_authenticated_native_binding as _normalize_claude_expected_init_from_native_binding,
 )
 from claude_launch_security import (
     ClaudeLaunchSecurityError as _ClaudeLaunchSecurityError,
@@ -138,7 +157,61 @@ DEFAULT_STAGED_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
 MAX_STREAM_LIMIT_BYTES = 64 * 1024 * 1024
 DEFAULT_COMPLETION_EVIDENCE_LIMIT_BYTES = 64 * 1024 * 1024
 DEFAULT_OBSERVER_CALLBACK_TIMEOUT_SECONDS = 1.0
+_CLAUDE_POSIX_CREDENTIAL_DELIVERY = (
+    "SUPERVISOR_MATERIALIZE_EXACT_PRIVATE_CLAUDE_STORED_SUBSCRIPTION_"
+    "THEN_CLOSE"
+)
 _ALLOWED_PROVISIONAL_COMPLETION_SIGNALS = {"TURN_END", "OUTPUT_READY"}
+_UNRETURNED_TERMINAL_CLEANUP = "UNRETURNED_TERMINAL_CLEANUP"
+_UNRETURNED_EMERGENCY_CLEANUP = "UNRETURNED_EMERGENCY_CLEANUP"
+LEGACY_CLAUDE_RELEASE_VERSION = "2.1.252"
+
+
+def _unreturned_process_failure_cleanup_mode(state: object) -> str:
+    """Classify only exact pre-attach launch states; reject every unknown."""
+
+    if state in {
+        "NOT_ATTEMPTED",
+        "CREATION_FAILED_WITHOUT_PROCESS_OBJECT",
+        PROCESS_CREATED_BUT_NOT_RETURNED_TERMINATED,
+    }:
+        return _UNRETURNED_TERMINAL_CLEANUP
+    if state == PROCESS_CREATED_BUT_NOT_RETURNED_CONTAINED:
+        return _UNRETURNED_EMERGENCY_CLEANUP
+    raise WorkerExecutionError(
+        "process creation failed in an unrecognized exact state: "
+        f"{state!r}"
+    )
+
+
+def _cleanup_unreturned_process_failure_scope(
+    process_tree: object,
+    claude_runtime: object | None,
+    reason_code: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Close one exact unreturned launch state without semantic fallback."""
+
+    cleanup_mode = _unreturned_process_failure_cleanup_mode(
+        getattr(process_tree, "process_creation_state", None)
+    )
+    if cleanup_mode == _UNRETURNED_EMERGENCY_CLEANUP:
+        if claude_runtime is None:
+            process_tree.emergency_close()  # type: ignore[attr-defined]
+            return None, None
+        lifecycle = claude_runtime.emergency_close_to_quarantine_debt(  # type: ignore[attr-defined]
+            process_tree
+        )
+        return lifecycle, claude_runtime.postprocess_receipt  # type: ignore[attr-defined]
+    process_tree.close()  # type: ignore[attr-defined]
+    if claude_runtime is None:
+        return None, None
+    lifecycle = claude_runtime.abort_bound_scope_before_process_attach(  # type: ignore[attr-defined]
+        process_tree,
+        reason_code,
+    )
+    return lifecycle, None
+
+
 CLAUDE_STREAM_STDOUT_CONFIGURATION_SCHEMA = (
     "plamen.claude_stream_stdout_configuration.v1"
 )
@@ -241,9 +314,9 @@ def _transaction_write_authority(
         or lease.get("namespace_limitation")
         != "SAME_USER_MEDIUM_INTEGRITY_MUTATION_OUT_OF_SCOPE"
         or not isinstance(lease.get("lock_path"), str)
-        or not Path(str(lease["lock_path"])).is_absolute()
+        or not PureWindowsPath(str(lease["lock_path"])).is_absolute()
         or not isinstance(lease.get("state_path"), str)
-        or not Path(str(lease["state_path"])).is_absolute()
+        or not PureWindowsPath(str(lease["state_path"])).is_absolute()
         or not isinstance(lease.get("identity_sha256"), str)
         or not _HEX_RE.fullmatch(str(lease["identity_sha256"]))
     ):
@@ -406,6 +479,36 @@ def _restricted_claude_stage_binding(
             permission_value = flags[permission_index + 1]
     if not isinstance(expected, Mapping):
         return None
+    profile_version = profile.get("claude_code_version")
+    legacy_release = profile_version == LEGACY_CLAUDE_RELEASE_VERSION
+    generation_fields = {
+        key: profile.get(key)
+        for key in (
+            "install_generation_sha256",
+            "cli_behavior_contract_sha256",
+            "cli_conformance_sha256",
+        )
+    }
+    if not legacy_release:
+        try:
+            import posix_backend_launch_policy as launch_policy
+
+            expected_behavior = (
+                launch_policy.backend_cli_behavior_contract_sha256("claude")
+            )
+        except Exception:
+            return None
+        if (
+            expected.get("claude_code_version") != profile_version
+            or any(
+                not isinstance(value, str)
+                or _HEX_RE.fullmatch(value) is None
+                for value in generation_fields.values()
+            )
+            or generation_fields["cli_behavior_contract_sha256"]
+            != expected_behavior
+        ):
+            return None
     restricted_lane = _restricted_claude_capability_lane(expected)
     if restricted_lane is None:
         return None
@@ -418,8 +521,8 @@ def _restricted_claude_stage_binding(
     )
     if (
         not isinstance(flags, list)
-        or profile.get("claude_code_version") != "2.1.252"
-        or expected.get("claude_code_version") != "2.1.252"
+        or not isinstance(profile_version, str)
+        or expected.get("claude_code_version") != profile_version
         or expected.get("permission_mode") != expected_permission_mode
         or not expected_forbidden_tools.issubset(
             set(expected.get("forbidden_tools") or ())
@@ -499,7 +602,7 @@ def _restricted_claude_stage_binding(
         or not isinstance(settings.get("hooks"), dict)
         or not settings["hooks"].get("PreToolUse")
         or settings.get("mcpServers") != {}
-        or settings.get("enabledPlugins") != {}
+        or not _settings_enabled_plugins_grant_nothing(settings.get("enabledPlugins"))
     ):
         return None
     try:
@@ -520,7 +623,7 @@ def _restricted_claude_stage_binding(
         return None
     core = {
         "protocol": "CLAUDE_CODE_RESTRICTED_ANALYSIS_STAGE_V1",
-        "claude_code_version": "2.1.252",
+        "claude_code_version": profile_version,
         "settings_sha256": hashlib.sha256(raw).hexdigest(),
         "permission_rules": exact_rules,
         "output_scope": str(output_scope),
@@ -531,6 +634,8 @@ def _restricted_claude_stage_binding(
             else {}
         ),
     }
+    if not legacy_release:
+        core.update(generation_fields)
     return {**core, "binding_sha256": _digest_json(core)}
 
 
@@ -569,13 +674,55 @@ def _active_write_confinement_binding(
             required.add("output_source_mode")
         if binding.get("process_tree") == "LINUX_CGROUP_V2_SUBTREE":
             required.add("native_capability_sha256")
+        dynamic_generation = (
+            binding.get("claude_code_version")
+            != LEGACY_CLAUDE_RELEASE_VERSION
+        )
+        expected_behavior_sha256: str | None = None
+        if dynamic_generation:
+            required.update(
+                {
+                    "install_generation_sha256",
+                    "cli_behavior_contract_sha256",
+                    "cli_conformance_sha256",
+                }
+            )
+            try:
+                import posix_backend_launch_policy as launch_policy
+
+                expected_behavior_sha256 = (
+                    launch_policy.backend_cli_behavior_contract_sha256(
+                        "claude"
+                    )
+                )
+            except Exception as exc:
+                raise WorkerExecutionError(
+                    "Claude CLI behavior contract is unavailable"
+                ) from exc
         core = {key: binding.get(key) for key in required - {"binding_sha256"}}
         platform_fields = _restricted_claude_platform_fields(capability)
         if (
             set(binding) != required
             or binding.get("protocol")
             != "CLAUDE_CODE_RESTRICTED_ANALYSIS_STAGE_V1"
-            or binding.get("claude_code_version") != "2.1.252"
+            or not isinstance(binding.get("claude_code_version"), str)
+            or (
+                dynamic_generation
+                and any(
+                    not isinstance(binding.get(field), str)
+                    or _HEX_RE.fullmatch(str(binding[field])) is None
+                    for field in (
+                        "install_generation_sha256",
+                        "cli_behavior_contract_sha256",
+                        "cli_conformance_sha256",
+                    )
+                )
+            )
+            or (
+                dynamic_generation
+                and binding.get("cli_behavior_contract_sha256")
+                != expected_behavior_sha256
+            )
             or not isinstance(binding.get("settings_sha256"), str)
             or not _HEX_RE.fullmatch(str(binding["settings_sha256"]))
             or not isinstance(binding.get("permission_rules"), list)
@@ -682,6 +829,22 @@ def _active_write_confinement_binding(
 
 class WorkerExecutionError(RuntimeError):
     """The execution contract or its persisted evidence is invalid."""
+
+
+class NativePosixProcessAuthorityUnavailable(WorkerExecutionError):
+    """Production POSIX model launch lacks a non-Python native authority."""
+
+    reason_code = "NATIVE_POSIX_PROCESS_AUTHORITY_UNAVAILABLE"
+
+
+_NATIVE_POSIX_PROCESS_CAPABILITY = {
+    "platform": "POSIX_NATIVE_BROKER_V2",
+    "custody": "SERVICE_OWNED_PROCESS_GROUP",
+    "exhaustive_descendant_termination_authority": True,
+    "population_zero_before_exit_ack": True,
+    "python_process_handles_exposed": False,
+}
+_NATIVE_POSIX_STAGE_AUTHORITY = "NATIVE_BROKER_V2_GUEST_STAGE"
 
 
 class SemanticRuntimeDependencyUnsupported(WorkerExecutionError):
@@ -1213,6 +1376,74 @@ def _claude_bound_settings_binding(
     binding["hook_script"] = hook_script
     binding["hook_policy"] = hook_policy
     return binding
+
+
+def _claude_posix_policy_file_binding(
+    value: str | os.PathLike[str],
+    *,
+    label: str,
+    posix_backend_arm_authority: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Bind one native-sandbox policy file through the authenticated plan."""
+
+    if not isinstance(value, (str, os.PathLike)):
+        raise WorkerExecutionError(
+            f"POSIX Claude {label} path is malformed"
+        )
+    raw_path = os.fspath(value)
+    match = re.fullmatch(r"/proc/self/fd/([0-9]+)", raw_path)
+    if match is None:
+        raise WorkerExecutionError(
+            f"POSIX Claude {label} is not retained-descriptor pinned"
+        )
+    if not isinstance(posix_backend_arm_authority, Mapping):
+        raise WorkerExecutionError(
+            f"POSIX Claude {label} lacks launch-policy authority"
+        )
+    sealed = posix_backend_arm_authority.get(
+        "policy_sealed_content_sha256"
+    )
+    sealed_policy = posix_backend_arm_authority.get("policy_sealed_policy")
+    content_digest = sealed.get(label) if isinstance(sealed, Mapping) else None
+    policy_digest_field = (
+        "claude_settings_sha256"
+        if label == "Claude settings"
+        else "claude_mcp_sha256"
+    )
+    digest = (
+        sealed_policy.get(policy_digest_field)
+        if isinstance(sealed_policy, Mapping)
+        else None
+    )
+    plan_receipt_sha256 = posix_backend_arm_authority.get(
+        "plan_receipt_sha256"
+    )
+    if (
+        not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        or content_digest != digest
+        or sealed_policy.get("claude_settings_contract")
+        != "POSIX_NATIVE_SANDBOX_DONTASK_V1"
+        or not isinstance(plan_receipt_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", plan_receipt_sha256) is None
+    ):
+        raise WorkerExecutionError(
+            f"POSIX Claude {label} content authority is malformed"
+        )
+    return {
+        "path": raw_path,
+        "descriptor": int(match.group(1)),
+        "sha256": digest,
+        "plan_receipt_sha256": plan_receipt_sha256,
+        "authority": "AUTHENTICATED_POSIX_NATIVE_SANDBOX_POLICY",
+        "ambient_configuration_loaded": False,
+        "credential_isolation_mode": sealed_policy[
+            "credential_isolation_mode"
+        ],
+        "credential_isolation_sha256": sealed_policy[
+            "credential_isolation_sha256"
+        ],
+    }
 
 
 def _bounded_web_receipt_lifecycle_from_launch_request(
@@ -1863,6 +2094,8 @@ def _claude_stream_stdout_binding(
     cwd: Path,
     effective_model: str,
     bound_headless_profile_authority: Mapping[str, Any] | None = None,
+    posix_backend_profile: bool = False,
+    posix_backend_arm_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Bind the exact non-partial Claude print-mode stdout protocol."""
 
@@ -1907,9 +2140,33 @@ def _claude_stream_stdout_binding(
         raise WorkerExecutionError(
             "Claude stream parser ceilings conflict with the armed stdout limit"
         )
+    native_generation_binding = None
+    if (
+        isinstance(posix_backend_arm_authority, Mapping)
+        and posix_backend_arm_authority.get("schema")
+        == "plamen.posix_backend_execution_wer_binding.v2"
+    ):
+        native_generation_binding = {
+            key: posix_backend_arm_authority.get(key)
+            for key in (
+                "backend_resolved_version",
+                "install_generation_sha256",
+                "cli_behavior_contract_sha256",
+                "cli_conformance_sha256",
+            )
+        }
     try:
-        expected_init_contract = _normalize_claude_expected_init(
-            configuration.get("expected_init_contract")
+        expected_init_contract = (
+            _normalize_claude_expected_init(
+                configuration.get("expected_init_contract")
+            )
+            if native_generation_binding is None
+            else _normalize_claude_expected_init_from_native_binding(
+                configuration.get("expected_init_contract"),
+                native_install_generation_binding=(
+                    native_generation_binding
+                ),
+            )
         )
     except _ClaudeStreamJsonEvidenceError as exc:
         raise WorkerExecutionError(
@@ -2033,6 +2290,7 @@ def _claude_stream_stdout_binding(
         "--restricted",
         "--dangerously-skip-permissions",
         "--permission-mode",
+        "--permission-prompts",
         "--settings",
         "--strict-mcp-config",
         "--mcp-config",
@@ -2110,6 +2368,17 @@ def _claude_stream_stdout_binding(
             )
             restricted_expected = restricted_lane is not None
             restricted_web_expected = restricted_lane == "BOUNDED_WEB"
+            permission_prompts_count = argv.count("--permission-prompts")
+            if posix_backend_profile:
+                if (
+                    not restricted_expected
+                    or permission_mode != "dontAsk"
+                    or permission_prompts_count != 0
+                ):
+                    raise WorkerExecutionError(
+                        "POSIX Claude command permission-prompts authority "
+                        "is not exact"
+                    )
             allowed_tools_count = argv.count("--allowedTools")
             if restricted_web_expected:
                 allowed_tools_value = _single_cli_option_value(
@@ -2215,7 +2484,15 @@ def _claude_stream_stdout_binding(
                     "--settings",
                 )
                 settings_binding = (
-                    _claude_bound_settings_binding(
+                    _claude_posix_policy_file_binding(
+                        settings_path,
+                        label="Claude settings",
+                        posix_backend_arm_authority=(
+                            posix_backend_arm_authority
+                        ),
+                    )
+                    if posix_backend_profile
+                    else _claude_bound_settings_binding(
                         settings_path,
                         restricted_analysis=restricted_expected,
                         bounded_web=restricted_web_expected,
@@ -2239,7 +2516,15 @@ def _claude_stream_stdout_binding(
                     "--mcp-config",
                 )
                 mcp_config_binding = (
-                    _claude_mcp_config_binding(
+                    _claude_posix_policy_file_binding(
+                        mcp_config_path,
+                        label="Claude MCP config",
+                        posix_backend_arm_authority=(
+                            posix_backend_arm_authority
+                        ),
+                    )
+                    if posix_backend_profile
+                    else _claude_mcp_config_binding(
                         mcp_config_path,
                         allowed_servers=allowed_mcp_servers,
                     )
@@ -4240,6 +4525,7 @@ def _persist_hashed_json(directory: Path, prefix: str, payload: Mapping[str, Any
         "debt": "debt_sha256",
         "publish_arm": "publish_arm_sha256",
         "publish": "publish_sha256",
+        "posix_materialization": "posix_materialization_sha256",
     }[prefix]
     if digest_field in unsigned:
         raise WorkerExecutionError("hashed payload already contains its digest field")
@@ -4287,79 +4573,392 @@ def _callable_binding(
     }
 
 
-def _trusted_code_constant_binding(value: Any, *, label: str) -> Any:
-    if value is None or isinstance(value, (bool, int)):
+_TRUSTED_CODE_CONSTANT_MAX_DEPTH = 64
+_TRUSTED_CODE_CONSTANT_MAX_NODES = 65_536
+_TRUSTED_CODE_CONSTANT_MAX_BYTES = 8 * 1024 * 1024
+_TRUSTED_CODE_SLICE_TYPE = type(slice(None))
+
+
+class _TrustedCodeConstantBindingState:
+    """Per-binding limits and recursion state for immutable Python code."""
+
+    __slots__ = ("active", "bytes_seen", "nodes_seen")
+
+    def __init__(self) -> None:
+        self.active: set[int] = set()
+        self.bytes_seen = 0
+        self.nodes_seen = 0
+
+    def consume_node(self, *, label: str) -> None:
+        self.nodes_seen += 1
+        if self.nodes_seen > _TRUSTED_CODE_CONSTANT_MAX_NODES:
+            raise WorkerExecutionError(
+                f"{label} trusted code exceeds maximum nodes"
+            )
+
+    def consume_bytes(self, count: int, *, label: str) -> None:
+        if count > _TRUSTED_CODE_CONSTANT_MAX_BYTES - self.bytes_seen:
+            raise WorkerExecutionError(
+                f"{label} trusted code exceeds maximum bytes"
+            )
+        self.bytes_seen += count
+
+
+def _trusted_code_metadata_text(
+    value: Any,
+    *,
+    field: str,
+    label: str,
+    state: _TrustedCodeConstantBindingState,
+) -> str:
+    """Return one exact string after charging its canonical UTF-8 bytes."""
+
+    state.consume_node(label=label)
+    if type(value) is not str:
+        raise WorkerExecutionError(
+            f"{label} code object {field} is not an exact string"
+        )
+    if len(value) > _TRUSTED_CODE_CONSTANT_MAX_BYTES:
+        raise WorkerExecutionError(
+            f"{label} trusted code exceeds maximum bytes"
+        )
+    raw = value.encode("utf-8")
+    state.consume_bytes(len(raw), label=label)
+    return value
+
+
+def _trusted_code_metadata_bytes(
+    value: Any,
+    *,
+    field: str,
+    label: str,
+    state: _TrustedCodeConstantBindingState,
+) -> bytes:
+    """Return one exact byte string after charging its complete contents."""
+
+    state.consume_node(label=label)
+    if type(value) is not bytes:
+        raise WorkerExecutionError(
+            f"{label} code object {field} is not exact bytes"
+        )
+    state.consume_bytes(len(value), label=label)
+    return value
+
+
+def _trusted_code_metadata_int(
+    value: Any,
+    *,
+    field: str,
+    label: str,
+    state: _TrustedCodeConstantBindingState,
+) -> int:
+    """Return one exact integer after charging its signed representation."""
+
+    state.consume_node(label=label)
+    if type(value) is not int:
+        raise WorkerExecutionError(
+            f"{label} code object {field} is not an exact integer"
+        )
+    state.consume_bytes(
+        max(1, (value.bit_length() + 8) // 8), label=label
+    )
+    return value
+
+
+def _trusted_code_metadata_text_roster(
+    value: Any,
+    *,
+    field: str,
+    label: str,
+    state: _TrustedCodeConstantBindingState,
+) -> list[str]:
+    """Bind one exact tuple of exact strings without invoking user methods."""
+
+    state.consume_node(label=label)
+    if type(value) is not tuple:
+        raise WorkerExecutionError(
+            f"{label} code object {field} is not an exact tuple"
+        )
+    if len(value) > _TRUSTED_CODE_CONSTANT_MAX_NODES - state.nodes_seen:
+        raise WorkerExecutionError(
+            f"{label} trusted code exceeds maximum nodes"
+        )
+    return [
+        _trusted_code_metadata_text(
+            item,
+            field=f"{field}[{index}]",
+            label=label,
+            state=state,
+        )
+        for index, item in enumerate(value)
+    ]
+
+
+def _trusted_code_constant_binding(
+    value: Any,
+    *,
+    label: str,
+    _state: _TrustedCodeConstantBindingState | None = None,
+    _depth: int = 0,
+) -> Any:
+    """Canonicalize one exact immutable code constant without coercion.
+
+    Python 3.14 may place exact built-in ``slice`` objects in ``co_consts``.
+    Slice members are arbitrary Python objects, so they must traverse the same
+    exact-type literal binder as every other constant.  The shared state makes
+    nested slices and containers bounded and rejects any recursive object graph
+    before a callback-bearing value can be coerced, iterated, or represented.
+    """
+
+    state = (
+        _TrustedCodeConstantBindingState() if _state is None else _state
+    )
+    if _depth > _TRUSTED_CODE_CONSTANT_MAX_DEPTH:
+        raise WorkerExecutionError(f"{label} code constants exceed maximum depth")
+    state.consume_node(label=label)
+
+    value_type = type(value)
+    if value is None:
+        return None
+    if value_type is bool:
         return value
-    if isinstance(value, str):
-        return {"type": "str", "utf8_hex": value.encode("utf-8").hex()}
-    if isinstance(value, float):
-        return {"type": "float", "hex": value.hex()}
-    if isinstance(value, complex):
-        return {
+    if value_type is int:
+        state.consume_bytes(
+            max(1, (value.bit_length() + 8) // 8), label=label
+        )
+        result: Any = value
+    elif value_type is str:
+        if len(value) > _TRUSTED_CODE_CONSTANT_MAX_BYTES:
+            raise WorkerExecutionError(
+                f"{label} trusted code exceeds maximum bytes"
+            )
+        raw = value.encode("utf-8")
+        state.consume_bytes(len(raw), label=label)
+        result = {"type": "str", "utf8_hex": raw.hex()}
+    elif value_type is float:
+        state.consume_bytes(8, label=label)
+        result = {"type": "float", "hex": value.hex()}
+    elif value_type is complex:
+        state.consume_bytes(16, label=label)
+        result = {
             "type": "complex",
             "real": value.real.hex(),
             "imag": value.imag.hex(),
         }
-    if isinstance(value, bytes):
-        return {"type": "bytes", "hex": value.hex()}
-    if isinstance(value, tuple):
-        return {
-            "type": "tuple",
-            "items": [
-                _trusted_code_constant_binding(item, label=label)
-                for item in value
-            ],
-        }
-    if isinstance(value, frozenset):
-        items = [
-            _trusted_code_constant_binding(item, label=label)
-            for item in value
-        ]
-        items.sort(key=_canonical_json)
-        return {"type": "frozenset", "items": items}
-    if isinstance(value, types.CodeType):
-        return {
-            "type": "code",
-            "value": _trusted_code_object_binding(value, label=label),
-        }
-    if value is Ellipsis:
+    elif value_type is bytes:
+        state.consume_bytes(len(value), label=label)
+        result = {"type": "bytes", "hex": value.hex()}
+    elif (
+        value_type is tuple
+        or value_type is frozenset
+        or value_type is _TRUSTED_CODE_SLICE_TYPE
+        or value_type is types.CodeType
+    ):
+        identity = id(value)
+        if identity in state.active:
+            raise WorkerExecutionError(f"{label} code constants contain a cycle")
+        state.active.add(identity)
+        try:
+            if value_type is tuple:
+                if len(value) > _TRUSTED_CODE_CONSTANT_MAX_NODES - state.nodes_seen:
+                    raise WorkerExecutionError(
+                        f"{label} trusted code exceeds maximum nodes"
+                    )
+                result = {
+                    "type": "tuple",
+                    "items": [
+                        _trusted_code_constant_binding(
+                            item,
+                            label=label,
+                            _state=state,
+                            _depth=_depth + 1,
+                        )
+                        for item in value
+                    ],
+                }
+            elif value_type is frozenset:
+                if len(value) > _TRUSTED_CODE_CONSTANT_MAX_NODES - state.nodes_seen:
+                    raise WorkerExecutionError(
+                        f"{label} trusted code exceeds maximum nodes"
+                    )
+                items = [
+                    _trusted_code_constant_binding(
+                        item,
+                        label=label,
+                        _state=state,
+                        _depth=_depth + 1,
+                    )
+                    for item in value
+                ]
+                items.sort(key=_canonical_json)
+                result = {"type": "frozenset", "items": items}
+            elif value_type is _TRUSTED_CODE_SLICE_TYPE:
+                result = {
+                    "type": "slice",
+                    "start": _trusted_code_constant_binding(
+                        value.start,
+                        label=label,
+                        _state=state,
+                        _depth=_depth + 1,
+                    ),
+                    "stop": _trusted_code_constant_binding(
+                        value.stop,
+                        label=label,
+                        _state=state,
+                        _depth=_depth + 1,
+                    ),
+                    "step": _trusted_code_constant_binding(
+                        value.step,
+                        label=label,
+                        _state=state,
+                        _depth=_depth + 1,
+                    ),
+                }
+            else:
+                result = {
+                    "type": "code",
+                    "value": _trusted_code_object_binding(
+                        value,
+                        label=label,
+                        _state=state,
+                        _depth=_depth + 1,
+                    ),
+                }
+        finally:
+            state.active.remove(identity)
+    elif value is Ellipsis:
         return {"type": "ellipsis"}
-    if value is NotImplemented:
+    elif value is NotImplemented:
         return {"type": "not_implemented"}
-    raise WorkerExecutionError(
-        f"{label} has an unsupported code constant of type "
-        f"{type(value).__name__}"
-    )
+    else:
+        value_type_name = type.__getattribute__(value_type, "__name__")
+        raise WorkerExecutionError(
+            f"{label} has an unsupported code constant of type "
+            f"{value_type_name}"
+        )
+
+    return result
 
 
 def _trusted_code_object_binding(
     code: types.CodeType,
     *,
     label: str,
+    _state: _TrustedCodeConstantBindingState | None = None,
+    _depth: int = 0,
 ) -> dict[str, Any]:
     """Canonicalize public, de-optimized code fields for a trusted callback."""
 
+    state = (
+        _TrustedCodeConstantBindingState() if _state is None else _state
+    )
+
+    if type(code) is not types.CodeType:
+        raise WorkerExecutionError(f"{label} is not an exact Python code object")
+    if _depth > _TRUSTED_CODE_CONSTANT_MAX_DEPTH:
+        raise WorkerExecutionError(f"{label} code constants exceed maximum depth")
+
+    name = _trusted_code_metadata_text(
+        code.co_name, field="co_name", label=label, state=state
+    )
+    qualname = _trusted_code_metadata_text(
+        code.co_qualname, field="co_qualname", label=label, state=state
+    )
+    filename = _trusted_code_metadata_text(
+        code.co_filename, field="co_filename", label=label, state=state
+    )
+    firstlineno = _trusted_code_metadata_int(
+        code.co_firstlineno,
+        field="co_firstlineno",
+        label=label,
+        state=state,
+    )
+    argcount = _trusted_code_metadata_int(
+        code.co_argcount, field="co_argcount", label=label, state=state
+    )
+    posonlyargcount = _trusted_code_metadata_int(
+        code.co_posonlyargcount,
+        field="co_posonlyargcount",
+        label=label,
+        state=state,
+    )
+    kwonlyargcount = _trusted_code_metadata_int(
+        code.co_kwonlyargcount,
+        field="co_kwonlyargcount",
+        label=label,
+        state=state,
+    )
+    nlocals = _trusted_code_metadata_int(
+        code.co_nlocals, field="co_nlocals", label=label, state=state
+    )
+    stacksize = _trusted_code_metadata_int(
+        code.co_stacksize, field="co_stacksize", label=label, state=state
+    )
+    flags = _trusted_code_metadata_int(
+        code.co_flags, field="co_flags", label=label, state=state
+    )
+    bytecode = _trusted_code_metadata_bytes(
+        code.co_code, field="co_code", label=label, state=state
+    )
+    linetable = _trusted_code_metadata_bytes(
+        code.co_linetable, field="co_linetable", label=label, state=state
+    )
+    exceptiontable = _trusted_code_metadata_bytes(
+        code.co_exceptiontable,
+        field="co_exceptiontable",
+        label=label,
+        state=state,
+    )
+    state.consume_node(label=label)
+    if type(code.co_consts) is not tuple:
+        raise WorkerExecutionError(
+            f"{label} code object co_consts is not an exact tuple"
+        )
+    if len(code.co_consts) > _TRUSTED_CODE_CONSTANT_MAX_NODES - state.nodes_seen:
+        raise WorkerExecutionError(
+            f"{label} trusted code exceeds maximum nodes"
+        )
+    constants = [
+        _trusted_code_constant_binding(
+            item,
+            label=label,
+            _state=state,
+            _depth=_depth + 1,
+        )
+        for item in code.co_consts
+    ]
+    names = _trusted_code_metadata_text_roster(
+        code.co_names, field="co_names", label=label, state=state
+    )
+    varnames = _trusted_code_metadata_text_roster(
+        code.co_varnames, field="co_varnames", label=label, state=state
+    )
+    freevars = _trusted_code_metadata_text_roster(
+        code.co_freevars, field="co_freevars", label=label, state=state
+    )
+    cellvars = _trusted_code_metadata_text_roster(
+        code.co_cellvars, field="co_cellvars", label=label, state=state
+    )
+
     return {
-        "name": code.co_name,
-        "qualname": code.co_qualname,
-        "firstlineno": int(code.co_firstlineno),
-        "argcount": int(code.co_argcount),
-        "posonlyargcount": int(code.co_posonlyargcount),
-        "kwonlyargcount": int(code.co_kwonlyargcount),
-        "nlocals": int(code.co_nlocals),
-        "stacksize": int(code.co_stacksize),
-        "flags": int(code.co_flags),
-        "bytecode_sha256": _digest_bytes(code.co_code),
-        "linetable_sha256": _digest_bytes(code.co_linetable),
-        "exceptiontable_sha256": _digest_bytes(code.co_exceptiontable),
-        "constants": [
-            _trusted_code_constant_binding(item, label=label)
-            for item in code.co_consts
-        ],
-        "names": list(code.co_names),
-        "varnames": list(code.co_varnames),
-        "freevars": list(code.co_freevars),
-        "cellvars": list(code.co_cellvars),
+        "name": name,
+        "qualname": qualname,
+        "filename": filename,
+        "firstlineno": firstlineno,
+        "argcount": argcount,
+        "posonlyargcount": posonlyargcount,
+        "kwonlyargcount": kwonlyargcount,
+        "nlocals": nlocals,
+        "stacksize": stacksize,
+        "flags": flags,
+        "bytecode_sha256": _digest_bytes(bytecode),
+        "linetable_sha256": _digest_bytes(linetable),
+        "exceptiontable_sha256": _digest_bytes(exceptiontable),
+        "constants": constants,
+        "names": names,
+        "varnames": varnames,
+        "freevars": freevars,
+        "cellvars": cellvars,
     }
 
 
@@ -5077,6 +5676,770 @@ def _invoke_bounded_callback(
     return value
 
 
+def _validate_posix_backend_argv(argv: Sequence[str]) -> None:
+    """Last local guard before a policy-rendered POSIX argv can be armed."""
+
+    forbidden = {
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-skip-permissions",
+        "--sandbox",
+        "--yolo",
+        "--full-auto",
+    }
+    if not argv or any(
+        not isinstance(item, str) or not item or "\x00" in item
+        for item in argv
+    ):
+        raise WorkerExecutionError("POSIX backend argv is malformed")
+    for item in argv:
+        if item in forbidden or item.startswith("--sandbox="):
+            raise WorkerExecutionError(
+                f"forbidden flag reached POSIX process boundary: {item}"
+            )
+    if not argv[0].startswith("/proc/self/fd/"):
+        raise WorkerExecutionError(
+            "POSIX backend executable is not retained-descriptor pinned"
+        )
+
+
+def _posix_backend_argv_sha256(argv: Sequence[str]) -> str:
+    """Match the bridge's newline-free ASCII canonical argv binding."""
+
+    try:
+        raw = json.dumps(
+            {"argv": list(argv)},
+            ensure_ascii=True,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise WorkerExecutionError(
+            "POSIX backend argv binding is not canonical JSON"
+        ) from exc
+    return _digest_bytes(raw)
+
+
+def _posix_backend_mapping_sha256(value: Mapping[str, Any]) -> str:
+    """Match the bridge's newline-free ASCII canonical mapping binding."""
+
+    try:
+        raw = json.dumps(
+            dict(value),
+            ensure_ascii=True,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise WorkerExecutionError(
+            "POSIX backend mapping binding is not canonical JSON"
+        ) from exc
+    return _digest_bytes(raw)
+
+
+def _posix_backend_fd_binding(fd: Any, label: str) -> dict[str, Any]:
+    """Independently describe one retained descriptor at the WER boundary."""
+
+    if isinstance(fd, bool) or not isinstance(fd, int) or fd < 0:
+        raise WorkerExecutionError(
+            f"POSIX backend {label} descriptor is malformed"
+        )
+    try:
+        item = os.fstat(fd)
+    except OSError as exc:
+        raise WorkerExecutionError(
+            f"POSIX backend {label} descriptor is unavailable"
+        ) from exc
+    return {
+        "label": label,
+        "device": int(item.st_dev),
+        "inode": int(item.st_ino),
+        "mode": int(item.st_mode),
+        "links": int(item.st_nlink),
+        "owner": int(item.st_uid),
+        "group": int(item.st_gid),
+        "size": int(item.st_size),
+        "mtime_ns": int(item.st_mtime_ns),
+        "ctime_ns": int(item.st_ctime_ns),
+    }
+
+
+def _posix_backend_live_physical_binding(
+    *,
+    environment: Any,
+    cwd_fd: Any,
+    stdin_fd: Any,
+    pass_fds: Any,
+) -> dict[str, Any]:
+    """Hash every physical value the bridge must retain through execve."""
+
+    if not isinstance(environment, Mapping) or any(
+        type(key) is not str
+        or not key
+        or "\x00" in key
+        or type(item) is not str
+        or "\x00" in item
+        for key, item in environment.items()
+    ):
+        raise WorkerExecutionError(
+            "POSIX backend physical environment is malformed"
+        )
+    if isinstance(pass_fds, (str, bytes)):
+        raise WorkerExecutionError(
+            "POSIX backend pass-FD roster is malformed"
+        )
+    try:
+        retained = tuple(pass_fds)
+    except TypeError as exc:
+        raise WorkerExecutionError(
+            "POSIX backend pass-FD roster is malformed"
+        ) from exc
+    if (
+        any(
+            isinstance(fd, bool) or not isinstance(fd, int) or fd < 0
+            for fd in retained
+        )
+        or retained != tuple(sorted(set(retained)))
+        or cwd_fd not in retained
+        or stdin_fd not in retained
+    ):
+        raise WorkerExecutionError(
+            "POSIX backend pass-FD roster is incomplete or noncanonical"
+        )
+    fd_rows = [
+        _posix_backend_fd_binding(fd, f"retained-{index:03d}")
+        for index, fd in enumerate(retained)
+    ]
+    return {
+        "final_environment_sha256": _posix_backend_mapping_sha256(
+            dict(environment)
+        ),
+        "cwd_fd_identity_sha256": _posix_backend_mapping_sha256(
+            _posix_backend_fd_binding(cwd_fd, "cwd")
+        ),
+        "stdin_fd_identity_sha256": _posix_backend_mapping_sha256(
+            _posix_backend_fd_binding(stdin_fd, "stdin")
+        ),
+        "pass_fds_identity_sha256": _posix_backend_mapping_sha256(
+            {"fds": fd_rows}
+        ),
+        "retained_fd_count": len(retained),
+    }
+
+
+def _normalize_posix_backend_arm_binding(
+    value: Any,
+    *,
+    argv: Any,
+    backend: Any,
+    model: Any,
+    process_scope_identity: Any,
+) -> dict[str, Any] | None:
+    """Validate the durable bridge schema without claiming live-FD replay."""
+
+    if value is None:
+        return None
+    if (
+        isinstance(value, Mapping)
+        and value.get("schema")
+        == "plamen.posix_backend_execution_wer_binding.v2"
+    ):
+        fields = {
+            "schema", "attempt_id", "backend", "model",
+            "outer_attempt_arm_sha256", "work_plan_sha256",
+            "process_scope_identity", "backend_resolved_version",
+            "install_generation_sha256", "cli_behavior_contract_sha256",
+            "cli_conformance_sha256", "operation_key_sha256",
+            "execution_envelope_sha256", "prepare_request_sha256",
+            "prepared_receipt_sha256", "retained_fd_roster_sha256",
+            "preparation_generation_sha256", "provider_stdout_contract",
+            "provider_stdout_contract_sha256", "timeout_seconds",
+            "stdout_requested_limit_bytes", "stderr_requested_limit_bytes",
+            "stdout_effective_limit_bytes", "stderr_effective_limit_bytes",
+            "authority_class",
+        }
+        result = dict(value)
+        if (
+            set(result) != fields
+            or result.get("backend") != backend
+            or result.get("model") != model
+            or result.get("process_scope_identity")
+            != process_scope_identity
+            or result.get("authority_class")
+            != "NATIVE_STATIC_ROLE2_OPERATION_RECEIPT_ONLY"
+            or type(result.get("attempt_id")) is not str
+            or not result["attempt_id"]
+            or type(result.get("timeout_seconds")) is not int
+            or result["timeout_seconds"] <= 0
+        ):
+            raise WorkerExecutionError(
+                "native POSIX backend WER binding is malformed"
+            )
+        for field in (
+            "outer_attempt_arm_sha256", "work_plan_sha256",
+            "install_generation_sha256", "cli_behavior_contract_sha256",
+            "cli_conformance_sha256",
+            "operation_key_sha256", "execution_envelope_sha256",
+            "prepare_request_sha256", "prepared_receipt_sha256",
+            "retained_fd_roster_sha256", "preparation_generation_sha256",
+            "provider_stdout_contract_sha256",
+        ):
+            _require_sha(result.get(field), f"native POSIX {field}")
+        resolved_version = result.get("backend_resolved_version")
+        if (
+            type(resolved_version) is not str
+            or re.fullmatch(
+                r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+                resolved_version,
+            )
+            is None
+        ):
+            raise WorkerExecutionError(
+                "native POSIX backend resolved version is malformed"
+            )
+        try:
+            import posix_backend_launch_policy as launch_policy
+
+            expected_behavior = (
+                launch_policy.backend_cli_behavior_contract_sha256(backend)
+            )
+        except Exception as exc:
+            raise WorkerExecutionError(
+                "native POSIX CLI behavior contract is unavailable"
+            ) from exc
+        if result["cli_behavior_contract_sha256"] != expected_behavior:
+            raise WorkerExecutionError(
+                "native POSIX CLI behavior contract differs from runtime"
+            )
+        for field in (
+            "stdout_requested_limit_bytes", "stderr_requested_limit_bytes",
+            "stdout_effective_limit_bytes", "stderr_effective_limit_bytes",
+        ):
+            if type(result.get(field)) is not int or result[field] <= 0:
+                raise WorkerExecutionError(
+                    "native POSIX stream limit binding is malformed"
+                )
+        provider_contract = result.get("provider_stdout_contract")
+        if (
+            not isinstance(provider_contract, Mapping)
+            or _posix_backend_mapping_sha256(dict(provider_contract))
+            != result["provider_stdout_contract_sha256"]
+            or (
+                backend == "claude"
+                and provider_contract.get("claude_code_version")
+                != resolved_version
+            )
+        ):
+            raise WorkerExecutionError(
+                "native POSIX provider stdout binding is malformed"
+            )
+        # argv is deliberately semantic arm evidence only in v2.  Native code
+        # retains and authenticates the executable/argv/FD roster; no physical
+        # descriptor or raw credential is projected back into Python.
+        if not isinstance(argv, list) or any(type(item) is not str for item in argv):
+            raise WorkerExecutionError("native POSIX semantic argv is malformed")
+        return result
+    fields = {
+        "schema", "attempt_id", "backend", "model",
+        "outer_attempt_arm_sha256", "work_plan_sha256",
+        "process_scope_identity", "plan_receipt_sha256",
+        "outer_authority_receipt_sha256", "provider_context_sha256",
+        "descendant_credential_denial_sha256",
+        "final_argv_sha256", "final_environment_sha256",
+        "cwd_fd_identity_sha256", "stdin_fd_identity_sha256",
+        "pass_fds_identity_sha256", "retained_fd_count",
+        "policy_sealed_content_sha256",
+        "policy_sealed_policy",
+        "codex_config_census_contract_sha256",
+        "credential_delivery", "profile_delivery", "status",
+    }
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise WorkerExecutionError(
+            "POSIX backend execution arm binding is malformed"
+        )
+    result = dict(value)
+    if (
+        result.get("schema")
+        != "plamen.posix_backend_execution_arm_binding.v1"
+        or result.get("backend") != backend
+        or result.get("model") != model
+        or result.get("process_scope_identity") != process_scope_identity
+        or result.get("status") != "PREPARED_AFTER_OUTER_ARM"
+        or not isinstance(result.get("attempt_id"), str)
+        or not result["attempt_id"]
+        or isinstance(result.get("retained_fd_count"), bool)
+        or not isinstance(result.get("retained_fd_count"), int)
+        or result["retained_fd_count"] <= 0
+        or not isinstance(
+            result.get("policy_sealed_content_sha256"), Mapping
+        )
+        or not result["policy_sealed_content_sha256"]
+        or any(
+            not isinstance(label, str)
+            or not label
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            for label, digest in result[
+                "policy_sealed_content_sha256"
+            ].items()
+        )
+        or not isinstance(result.get("policy_sealed_policy"), Mapping)
+        or set(result["policy_sealed_policy"])
+        != {
+            "codex_profile_sha256", "claude_settings_contract",
+            "claude_settings_sha256", "claude_mcp_sha256",
+            "codex_permission_profile_status",
+            "credential_isolation_mode", "credential_isolation_sha256",
+            "codex_config_census_contract",
+            "codex_config_census_contract_sha256",
+            "codex_config_census_evidence_sha256",
+        }
+        or result["policy_sealed_policy"].get(
+            "credential_isolation_mode"
+        )
+        not in {
+            "NATIVE_PROCESS_DOMAIN_SPLIT_NO_DESCENDANT_READ_V1",
+            "OUT_OF_PROCESS_CREDENTIAL_BROKER_NO_DESCENDANT_READ_V1",
+        }
+        or not isinstance(
+            result["policy_sealed_policy"].get(
+                "credential_isolation_sha256"
+            ),
+            str,
+        )
+        or re.fullmatch(
+            r"[0-9a-f]{64}",
+            result["policy_sealed_policy"]["credential_isolation_sha256"],
+        )
+        is None
+        or result["policy_sealed_policy"]["credential_isolation_sha256"]
+        != result.get("descendant_credential_denial_sha256")
+        or not isinstance(result.get("credential_delivery"), str)
+        or not result["credential_delivery"]
+        or not isinstance(result.get("profile_delivery"), str)
+        or not result["profile_delivery"]
+    ):
+        raise WorkerExecutionError(
+            "POSIX backend execution arm identity is malformed"
+        )
+    sealed_policy = result["policy_sealed_policy"]
+    if result["backend"] == "codex":
+        codex_census_sha256 = sealed_policy.get(
+            "codex_config_census_contract_sha256"
+        )
+        if (
+            sealed_policy.get("codex_config_census_contract")
+            != "PRIVATE_HOME_BASE_ABSENT_CONTROL_ANCESTORS_PROJECT_CONFIG_ABSENT_V1"
+            or not isinstance(codex_census_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", codex_census_sha256) is None
+            or result.get("codex_config_census_contract_sha256")
+            != codex_census_sha256
+            or not isinstance(
+                sealed_policy.get("codex_config_census_evidence_sha256"),
+                str,
+            )
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                sealed_policy["codex_config_census_evidence_sha256"],
+            )
+            is None
+            or result.get("credential_delivery")
+            != "SUPERVISOR_MATERIALIZE_EXACT_PRIVATE_CODEX_HOME_CENSUS_THEN_CLOSE"
+            or result.get("profile_delivery")
+            != "SUPERVISOR_MATERIALIZE_EXACT_PROFILE_IN_PRIVATE_CODEX_HOME_THEN_CENSUS"
+        ):
+            raise WorkerExecutionError(
+                "POSIX Codex config census authority is malformed"
+            )
+    elif (
+        result.get("codex_config_census_contract_sha256") is not None
+        or sealed_policy.get("codex_config_census_contract") is not None
+        or sealed_policy.get("codex_config_census_contract_sha256") is not None
+        or sealed_policy.get("codex_config_census_evidence_sha256") is not None
+        or result.get("credential_delivery")
+        != _CLAUDE_POSIX_CREDENTIAL_DELIVERY
+        or result.get("profile_delivery") != "NONE"
+    ):
+        raise WorkerExecutionError(
+            "POSIX Claude launch carries Codex config census authority"
+        )
+    for field in (
+        "outer_attempt_arm_sha256", "work_plan_sha256",
+        "plan_receipt_sha256", "outer_authority_receipt_sha256",
+        "provider_context_sha256", "descendant_credential_denial_sha256",
+        "final_environment_sha256",
+        "cwd_fd_identity_sha256", "stdin_fd_identity_sha256",
+        "pass_fds_identity_sha256",
+    ):
+        _require_sha(result.get(field), f"POSIX backend {field}")
+    if not isinstance(argv, list):
+        raise WorkerExecutionError("POSIX backend armed argv is malformed")
+    _validate_posix_backend_argv(argv)
+    if result.get("final_argv_sha256") != _posix_backend_argv_sha256(argv):
+        raise WorkerExecutionError(
+            "POSIX backend final argv differs from its outer authority"
+        )
+    return result
+
+
+def _replay_posix_backend_arm_binding(
+    value: Any,
+    *,
+    argv: Any,
+    environment: Any,
+    cwd_fd: Any,
+    stdin_fd: Any,
+    pass_fds: Any,
+    backend: Any,
+    model: Any,
+    process_scope_identity: Any,
+    materialized_pass_fds: Any | None = None,
+) -> dict[str, Any] | None:
+    """Recompute every live argv/env/cwd/stdin/pass-FD arm commitment."""
+
+    result = _normalize_posix_backend_arm_binding(
+        value,
+        argv=argv,
+        backend=backend,
+        model=model,
+        process_scope_identity=process_scope_identity,
+    )
+    if result is None:
+        return None
+    live = _posix_backend_live_physical_binding(
+        environment=environment,
+        cwd_fd=cwd_fd,
+        stdin_fd=stdin_fd,
+        pass_fds=pass_fds,
+    )
+    executable_fd_text = str(argv[0]).removeprefix("/proc/self/fd/")
+    retained = tuple(pass_fds)
+    if (
+        not executable_fd_text.isdecimal()
+        or int(executable_fd_text) not in retained
+    ):
+        raise WorkerExecutionError(
+            "POSIX backend executable descriptor is absent from pass-FD roster"
+        )
+    if any(result.get(key) != item for key, item in live.items()):
+        raise WorkerExecutionError(
+            "POSIX backend environment or descriptor authority differs "
+            "from its outer arm"
+        )
+    if materialized_pass_fds is not None:
+        materialized = _posix_backend_live_physical_binding(
+            environment=environment,
+            cwd_fd=cwd_fd,
+            stdin_fd=stdin_fd,
+            pass_fds=materialized_pass_fds,
+        )
+        for field in (
+            "cwd_fd_identity_sha256",
+            "stdin_fd_identity_sha256",
+            "pass_fds_identity_sha256",
+            "retained_fd_count",
+        ):
+            if materialized[field] != live[field]:
+                raise WorkerExecutionError(
+                    "POSIX backend materialized pass-FD roster differs "
+                    "from its preview"
+                )
+    return result
+
+
+def _replay_posix_backend_completion_lifecycle(
+    *,
+    shard_dir: Path,
+    arm_sha256: str,
+    arm_binding: Mapping[str, Any] | None,
+    process_observation: Mapping[str, Any],
+    environment_names: Sequence[str],
+) -> None:
+    """Cross-link one materialize/create/scope-close lifecycle to its arm."""
+
+    materialization_record = process_observation.get(
+        "posix_backend_materialization"
+    )
+    revocation = process_observation.get("posix_backend_revocation")
+    if arm_binding is None:
+        if materialization_record is not None or revocation is not None:
+            raise WorkerExecutionError(
+                "completion contains unarmed POSIX backend authority"
+            )
+        return
+    if (
+        arm_binding.get("schema")
+        == "plamen.posix_backend_execution_wer_binding.v2"
+    ):
+        if materialization_record is not None or revocation is not None:
+            raise WorkerExecutionError(
+                "native POSIX completion contains legacy physical authority"
+            )
+        prepared = process_observation.get("native_prepared_receipt")
+        started = process_observation.get("native_started_receipt")
+        exited = process_observation.get("native_exited_receipt")
+        finished = process_observation.get("native_finished_receipt")
+        if not all(
+            isinstance(value, Mapping)
+            for value in (prepared, started, exited, finished)
+        ):
+            raise WorkerExecutionError(
+                "native POSIX lifecycle receipt roster is incomplete"
+            )
+        operation_key = arm_binding.get("operation_key_sha256")
+        prepared_sha = _posix_backend_mapping_sha256(dict(prepared))
+        started_sha = _posix_backend_mapping_sha256(dict(started))
+        exited_sha = _posix_backend_mapping_sha256(dict(exited))
+        if (
+            prepared.get("schema")
+            != "plamen.posix_backend_execution.prepared_receipt.v2"
+            or prepared.get("status") != "PREPARED"
+            or prepared.get("operation_key_sha256") != operation_key
+            or prepared_sha != arm_binding.get("prepared_receipt_sha256")
+            or prepared.get("prepare_request_sha256")
+            != arm_binding.get("prepare_request_sha256")
+            or prepared.get("execution_envelope_sha256")
+            != arm_binding.get("execution_envelope_sha256")
+            or prepared.get("retained_fd_roster_sha256")
+            != arm_binding.get("retained_fd_roster_sha256")
+            or prepared.get("preparation_generation_sha256")
+            != arm_binding.get("preparation_generation_sha256")
+        ):
+            raise WorkerExecutionError(
+                "native POSIX PREPARED receipt does not replay"
+            )
+        process_identity = started.get("process_identity")
+        if (
+            started.get("schema")
+            != "plamen.posix_backend_execution.started_receipt.v2"
+            or started.get("status") != "STARTED"
+            or started.get("operation_key_sha256") != operation_key
+            or started.get("prepared_receipt_sha256") != prepared_sha
+            or not isinstance(process_identity, Mapping)
+            or started.get("process_identity_sha256")
+            != _posix_backend_mapping_sha256(dict(process_identity))
+        ):
+            raise WorkerExecutionError(
+                "native POSIX STARTED receipt does not replay"
+            )
+        if (
+            exited.get("schema")
+            != "plamen.posix_backend_execution.exited_receipt.v2"
+            or exited.get("status") != "EXITED"
+            or exited.get("operation_key_sha256") != operation_key
+            or exited.get("started_receipt_sha256") != started_sha
+            or exited.get("process_identity_sha256")
+            != started.get("process_identity_sha256")
+            or exited.get("process_population_zero_proven") is not True
+            or exited.get("credentials_revoked") is not True
+            or exited.get("egress_revoked") is not True
+            or exited.get("timed_out") is not False
+            or exited.get("returncode") != 0
+        ):
+            raise WorkerExecutionError(
+                "native POSIX EXITED receipt cannot authorize completion"
+            )
+        if (
+            finished.get("schema")
+            != "plamen.posix_backend_execution.finished_receipt.v2"
+            or finished.get("status") != "FINISHED"
+            or finished.get("operation_key_sha256") != operation_key
+            or finished.get("terminal_receipt_sha256") != exited_sha
+            or finished.get("retained_descriptors_closed") is not True
+            or finished.get("retained_output_closed") is not True
+        ):
+            raise WorkerExecutionError(
+                "native POSIX FINISHED receipt does not replay"
+            )
+        return
+    if (
+        not isinstance(materialization_record, Mapping)
+        or set(materialization_record) != {"relative_path", "sha256", "binding"}
+    ):
+        raise WorkerExecutionError(
+            "POSIX backend materialization observation is malformed"
+        )
+    relative = _require_relative_path(
+        materialization_record.get("relative_path"),
+        "POSIX backend materialization artifact",
+    )
+    if "/" in relative:
+        raise WorkerExecutionError(
+            "POSIX backend materialization must be a direct shard artifact"
+        )
+    claimed = _require_sha(
+        materialization_record.get("sha256"),
+        "POSIX backend materialization digest",
+    )
+    path = _safe_descendant(shard_dir, relative, allow_missing=False)
+    persisted = _strict_json(
+        _read_rooted_bytes(path),
+        label="POSIX backend materialization artifact",
+    )
+    if persisted.get("posix_materialization_sha256") != claimed:
+        raise WorkerExecutionError(
+            "POSIX backend materialization artifact digest changed"
+        )
+    unsigned = {
+        key: value
+        for key, value in persisted.items()
+        if key != "posix_materialization_sha256"
+    }
+    if (
+        _digest_json(unsigned) != claimed
+        or path.name != f"posix_materialization_{claimed}.json"
+        or materialization_record.get("binding") != unsigned
+    ):
+        raise WorkerExecutionError(
+            "POSIX backend materialization artifact does not replay"
+        )
+    materialization_fields = {
+        "schema", "attempt_id", "backend", "inner_arm_sha256",
+        "process_scope_identity", "plan_receipt_sha256",
+        "outer_authority_receipt_sha256", "environment_names",
+        "final_environment_sha256", "cwd_fd_identity_sha256",
+        "stdin_fd_identity_sha256", "pass_fds_identity_sha256",
+        "retained_fd_count", "materialized_private_state_sha256", "status",
+        "receipt_sha256",
+    }
+    if set(unsigned) != materialization_fields:
+        raise WorkerExecutionError(
+            "POSIX backend materialization binding is malformed"
+        )
+    expected_environment_names = set(environment_names)
+    if arm_binding.get("backend") == "claude":
+        expected_environment_names.add("ANTHROPIC_API_KEY")
+    if (
+        unsigned.get("schema") != "plamen.posix_backend_materialization.v1"
+        or unsigned.get("attempt_id") != arm_binding.get("attempt_id")
+        or unsigned.get("backend") != arm_binding.get("backend")
+        or unsigned.get("inner_arm_sha256") != arm_sha256
+        or unsigned.get("process_scope_identity")
+        != arm_binding.get("process_scope_identity")
+        or unsigned.get("plan_receipt_sha256")
+        != arm_binding.get("plan_receipt_sha256")
+        or unsigned.get("outer_authority_receipt_sha256")
+        != arm_binding.get("outer_authority_receipt_sha256")
+        or unsigned.get("environment_names")
+        != sorted(expected_environment_names)
+        or unsigned.get("status") != "MATERIALIZED_AFTER_INNER_ARM"
+    ):
+        raise WorkerExecutionError(
+            "POSIX backend materialization differs from its inner arm"
+        )
+    _require_sha(
+        unsigned.get("materialized_private_state_sha256"),
+        "POSIX backend private-state digest",
+    )
+    physical_fields = {
+        "final_environment_sha256",
+        "cwd_fd_identity_sha256",
+        "stdin_fd_identity_sha256",
+        "pass_fds_identity_sha256",
+        "retained_fd_count",
+    }
+    physical_binding = process_observation.get(
+        "posix_backend_physical_binding"
+    )
+    if (
+        not isinstance(physical_binding, Mapping)
+        or set(physical_binding) != physical_fields
+    ):
+        raise WorkerExecutionError(
+            "POSIX backend physical value binding is malformed"
+        )
+    for field in physical_fields - {"retained_fd_count"}:
+        _require_sha(
+            physical_binding.get(field),
+            f"POSIX backend physical {field}",
+        )
+    _exact_positive_int(
+        physical_binding.get("retained_fd_count"),
+        "POSIX backend physical retained FD count",
+    )
+    if any(
+        physical_binding.get(field) != unsigned.get(field)
+        for field in physical_fields
+    ):
+        raise WorkerExecutionError(
+            "POSIX backend materialized physical values differ from completion"
+        )
+    for field in (
+        "cwd_fd_identity_sha256",
+        "stdin_fd_identity_sha256",
+        "pass_fds_identity_sha256",
+        "retained_fd_count",
+    ):
+        if physical_binding.get(field) != arm_binding.get(field):
+            raise WorkerExecutionError(
+                "POSIX backend physical descriptor values differ from arm"
+            )
+    materialization_receipt_sha256 = _require_sha(
+        unsigned.get("receipt_sha256"),
+        "POSIX backend materialization receipt",
+    )
+    revocation_fields = {
+        "schema", "attempt_id", "backend", "inner_arm_sha256",
+        "process_scope_identity", "plan_receipt_sha256",
+        "materialization_receipt_sha256", "process_creation_state",
+        "process_population_zero_proven", "returncode", "reason_code",
+        "status", "receipt_sha256", "policy_completion_receipt_sha256",
+        "policy_completion_status", "policy_completion_evidence_sha256",
+    }
+    if not isinstance(revocation, Mapping) or set(revocation) != revocation_fields:
+        raise WorkerExecutionError(
+            "POSIX backend revocation binding is malformed"
+        )
+    process_creation = process_observation.get("process_creation")
+    creation_state = (
+        process_creation.get("state")
+        if isinstance(process_creation, Mapping)
+        else None
+    )
+    if (
+        revocation.get("schema") != "plamen.posix_backend_revocation.v1"
+        or revocation.get("attempt_id") != arm_binding.get("attempt_id")
+        or revocation.get("backend") != arm_binding.get("backend")
+        or revocation.get("inner_arm_sha256") != arm_sha256
+        or revocation.get("process_scope_identity")
+        != arm_binding.get("process_scope_identity")
+        or revocation.get("plan_receipt_sha256")
+        != arm_binding.get("plan_receipt_sha256")
+        or revocation.get("materialization_receipt_sha256")
+        != materialization_receipt_sha256
+        or revocation.get("process_creation_state") != creation_state
+        or revocation.get("process_population_zero_proven") is not True
+        or revocation.get("returncode") != process_observation.get("returncode")
+        or revocation.get("reason_code") != "PROCESS_SCOPE_CLOSED"
+        or revocation.get("status") != "PRIVATE_STATE_REVOKED"
+        or revocation.get("policy_completion_status")
+        not in {"EXECUTED_AND_REVOKED", "FAILED_AND_REVOKED"}
+        or revocation.get("policy_completion_evidence_sha256")
+        != revocation.get("receipt_sha256")
+    ):
+        raise WorkerExecutionError(
+            "POSIX backend revocation differs from the completed process scope"
+        )
+    _require_sha(
+        revocation.get("receipt_sha256"),
+        "POSIX backend revocation receipt",
+    )
+    _require_sha(
+        revocation.get("policy_completion_receipt_sha256"),
+        "POSIX backend policy completion receipt",
+    )
+    expected_policy_status = (
+        "EXECUTED_AND_REVOKED"
+        if process_observation.get("returncode") == 0
+        else "FAILED_AND_REVOKED"
+    )
+    if revocation.get("policy_completion_status") != expected_policy_status:
+        raise WorkerExecutionError(
+            "POSIX backend policy completion status differs from process exit"
+        )
+
+
 def _resolve_executable(argv: Sequence[str], environment: Mapping[str, str]) -> tuple[list[str], Path]:
     if isinstance(argv, (str, bytes)) or not argv:
         raise WorkerExecutionError("argv must be a non-empty sequence")
@@ -5783,6 +7146,396 @@ def _publish_completed_outputs(
         raise
 
 
+def _read_native_backend_stream(
+    execution: PosixBackendExecution,
+    *,
+    stream: str,
+    expected_size: int,
+    expected_sha256: str,
+) -> bytes:
+    """Read one post-EXITED native spool through replayable bounded chunks."""
+
+    chunks: list[bytes] = []
+    offset = 0
+    while True:
+        receipt = execution.read_output_or_recover(
+            stream=stream, offset=offset, max_bytes=256 * 1024,
+        )
+        if receipt.offset != offset:
+            raise WorkerExecutionError(
+                f"native {stream} output offset changed during replay"
+            )
+        chunks.append(receipt.chunk)
+        offset += receipt.length
+        if receipt.eof:
+            break
+        if receipt.length == 0:
+            raise WorkerExecutionError(
+                f"native {stream} output made no forward progress"
+            )
+    raw = b"".join(chunks)
+    if len(raw) != expected_size or _digest_bytes(raw) != expected_sha256:
+        raise WorkerExecutionError(
+            f"native {stream} spool differs from its EXITED receipt"
+        )
+    return raw
+
+
+def _native_posix_completion(
+    *,
+    root: Path,
+    shard_dir: Path,
+    blob_dir: Path,
+    arm_path: Path,
+    arm_sha256: str,
+    launcher_invocation_id: str,
+    execution: PosixBackendExecution,
+    output_scope: Path,
+    output_scope_relative: str,
+    output_contract: list[dict[str, Any]],
+    output_source_mode: str,
+    staged_output_limit_bytes: int,
+    parser_digest: ParserDigest,
+    parser_binding: Mapping[str, Any],
+    semantic_bindings: Mapping[str, Any],
+    stream_limits: Mapping[str, int],
+    provider_stdout_binding: Mapping[str, Any] | None,
+    publish_canonical: bool,
+    cancel_token: Any,
+    auxiliary_leases: Sequence[AuxiliaryWritableRootLease],
+    observer_configured: bool,
+) -> CompletedExecution:
+    """Project a service-owned backend operation into the durable WER format."""
+
+    if auxiliary_leases:
+        raise WorkerExecutionError(
+            "native POSIX model execution rejects Python root leases"
+        )
+    if observer_configured:
+        raise WorkerExecutionError(
+            "native POSIX model execution requires terminal EXITED evidence"
+        )
+
+    def cancellation_requested() -> bool:
+        if cancel_token is None:
+            return False
+        if callable(cancel_token):
+            return bool(cancel_token())
+        is_set = getattr(cancel_token, "is_set", None)
+        if callable(is_set):
+            return bool(is_set())
+        raise WorkerExecutionError("cancel_token must be callable or Event-like")
+
+    observation: dict[str, Any] = {
+        "process_tree_strategy": dict(_NATIVE_POSIX_PROCESS_CAPABILITY),
+        "transaction_write_authority": _NATIVE_POSIX_STAGE_AUTHORITY,
+        "write_confinement_proven": True,
+        "transaction_stage_boundary_proven": True,
+        "write_confinement_binding": {
+            "schema": "plamen.native_broker_v2_guest_stage_binding.v1",
+            "operation_key_sha256": execution.operation_key_sha256,
+            "prepared_receipt_sha256": execution.prepared_receipt.sha256,
+        },
+    }
+    stdout = b""
+    stderr = b""
+    stdout_blob: dict[str, Any] | None = None
+    stderr_blob: dict[str, Any] | None = None
+    try:
+        if cancellation_requested():
+            revoked = execution.extinguish_or_recover(
+                reason_code="CANCELLED_BEFORE_NATIVE_START",
+            )
+            observation["native_revoked_receipt"] = json.loads(revoked.raw)
+            execution.close_operation()
+            debt = _record_debt(
+                shard_dir, arm_path=arm_path, arm_sha256=arm_sha256,
+                reason_code="CANCELLED_BEFORE_LAUNCH",
+                detail="worker was cancelled before native START",
+                process_observation=observation,
+            )
+            raise WorkerExecutionIncomplete(
+                "worker launch cancelled before native START",
+                arm_path=arm_path, debt_path=debt,
+            )
+
+        launch_ns = time.time_ns()
+        started = execution.start_or_recover()
+        observation.update({
+            "native_prepared_receipt": json.loads(
+                execution.prepared_receipt.raw
+            ),
+            "native_started_receipt": json.loads(started.raw),
+            "pid": started.process_identity.pid,
+            "creation_identity": {
+                "kind": f"NATIVE_BIRTH_{started.process_identity.birth_kind}",
+                "value": _digest_json({
+                    "primary": started.process_identity.birth_primary,
+                    "secondary": started.process_identity.birth_secondary,
+                    "boot_id_sha256": started.process_identity.boot_id_sha256,
+                }),
+            },
+            "launch_requested_unix_ns": launch_ns,
+            "observed_start_unix_ns": max(launch_ns, time.time_ns()),
+        })
+        exited = execution.wait_or_recover()
+        observation["native_exited_receipt"] = json.loads(exited.raw)
+        if exited.status != "OUTPUT_OVERFLOW_REVOKED":
+            stdout = _read_native_backend_stream(
+                execution, stream="stdout",
+                expected_size=exited.stdout_size_bytes,
+                expected_sha256=exited.stdout_sha256,
+            )
+            stderr = _read_native_backend_stream(
+                execution, stream="stderr",
+                expected_size=exited.stderr_size_bytes,
+                expected_sha256=exited.stderr_sha256,
+            )
+        finished = execution.close_operation()
+        observation["native_finished_receipt"] = json.loads(finished.raw)
+        stream_observation = {
+            "stdout_captured_size": len(stdout),
+            "stderr_captured_size": len(stderr),
+            "stdout_overflow": exited.overflowed_stream == "stdout",
+            "stderr_overflow": exited.overflowed_stream == "stderr",
+        }
+        observation.update({
+            "observed_exit_unix_ns": max(
+                observation["observed_start_unix_ns"], time.time_ns()
+            ),
+            "returncode": exited.returncode,
+            "timed_out": exited.timed_out,
+            "cancelled": False,
+            "stream_limits": dict(stream_limits),
+            "stream_observation": stream_observation,
+            "completion_observer_mode": "PROCESS_EXIT_ZERO",
+            "root_exit_origin": "NATURAL",
+            "process_tree_terminated": True,
+            "process_population_zero_proven": (
+                exited.process_population_zero_proven
+            ),
+            "process_scope_cleanup_succeeded": True,
+            "credentials_revoked": exited.credentials_revoked,
+            "egress_revoked": exited.egress_revoked,
+        })
+        stdout_blob = _persist_blob(blob_dir, "stdout", stdout)
+        stderr_blob = _persist_blob(blob_dir, "stderr", stderr)
+
+        failure: tuple[str, str] | None = None
+        if exited.status == "OUTPUT_OVERFLOW_REVOKED":
+            failure = (
+                "STREAM_LIMIT_EXCEEDED",
+                "native backend output exceeded its authenticated bound",
+            )
+        elif exited.status == "TIMED_OUT_REVOKED":
+            failure = (
+                "TIMEOUT", "native backend reached its monotonic deadline",
+            )
+        elif exited.returncode != 0:
+            failure = (
+                "NONZERO_EXIT",
+                f"native backend exited with return code {exited.returncode}",
+            )
+        if failure is not None:
+            reason, detail = failure
+            debt = _record_debt(
+                shard_dir, arm_path=arm_path, arm_sha256=arm_sha256,
+                reason_code=reason, detail=detail,
+                process_observation=observation,
+                stdout_blob=stdout_blob, stderr_blob=stderr_blob,
+            )
+            raise WorkerExecutionIncomplete(
+                detail, arm_path=arm_path, debt_path=debt,
+            )
+
+        provider_evidence = None
+        if provider_stdout_binding is not None:
+            try:
+                native_wer_binding = execution.wer_arm_binding
+                native_generation_binding = {
+                    key: native_wer_binding.get(key)
+                    for key in (
+                        "backend_resolved_version",
+                        "install_generation_sha256",
+                        "cli_behavior_contract_sha256",
+                        "cli_conformance_sha256",
+                    )
+                }
+                provider_evidence = _validate_claude_stream_json_from_native_binding(
+                    stdout,
+                    native_install_generation_binding=(
+                        native_generation_binding
+                    ),
+                    expected_session_id=provider_stdout_binding[
+                        "expected_session_id"
+                    ],
+                    expected_init_contract=provider_stdout_binding[
+                        "expected_init_contract"
+                    ],
+                    allow_capability_bound_text_null_stop_terminal=True,
+                    max_line_bytes=provider_stdout_binding["max_line_bytes"],
+                    max_stream_bytes=provider_stdout_binding["max_stream_bytes"],
+                )
+            except _ClaudeStreamJsonEvidenceError as exc:
+                debt = _record_debt(
+                    shard_dir, arm_path=arm_path, arm_sha256=arm_sha256,
+                    reason_code="PROVIDER_STREAM_EVIDENCE_REJECTED",
+                    detail=f"{exc.code}: {exc}",
+                    process_observation=observation,
+                    stdout_blob=stdout_blob, stderr_blob=stderr_blob,
+                )
+                raise WorkerExecutionIncomplete(
+                    "Claude provider stdout evidence was rejected",
+                    arm_path=arm_path, debt_path=debt,
+                ) from exc
+            observation["provider_stdout_evidence"] = provider_evidence
+
+        if output_source_mode == STDOUT_ASSIGNED_OUTPUT:
+            if _scope_file_names(output_scope):
+                raise WorkerExecutionError(
+                    "native stdout-assigned output scope was contaminated"
+                )
+            row = output_contract[0]
+            relative = f"{output_scope_relative}/{row['relative_path']}"
+            parent = Path(relative).parent.as_posix()
+            if parent != ".":
+                _make_safe_directory(root, parent)
+            _publish_absent_bytes(
+                _safe_descendant(root, relative, allow_missing=True), stdout,
+            )
+
+        expected_names = [row["relative_path"] for row in output_contract]
+        if _scope_file_names(output_scope) != expected_names:
+            raise WorkerExecutionError(
+                "native assigned output denominator mismatch"
+            )
+        observed_outputs: list[dict[str, Any]] = []
+        for expected in output_contract:
+            path = _safe_descendant(
+                root,
+                f"{output_scope_relative}/{expected['relative_path']}",
+                allow_missing=False,
+            )
+            raw = _read_staged_regular_file(
+                path, limit_bytes=staged_output_limit_bytes,
+            )
+            parsed_sha = _invoke_parser_with_registered_guard(
+                parser_digest, (path, raw), label="strict parser construction",
+            )
+            _require_sha(parsed_sha, "parser digest")
+            observed_outputs.append({
+                "assignment_id": expected["assignment_id"],
+                "relative_path": expected["relative_path"],
+                "publish_relative_path": expected["publish_relative_path"],
+                "is_transcript": expected["is_transcript"],
+                "source_mode": output_source_mode,
+                "raw_sha256": _digest_bytes(raw),
+                "raw_size": len(raw),
+                "parsed_sha256": parsed_sha,
+                "cas_blob": _persist_blob(blob_dir, "output", raw),
+            })
+        _replay_bound_input_records(root, semantic_bindings["inputs"])
+        if _callable_binding(parser_digest) != parser_binding:
+            raise WorkerExecutionError(
+                "strict parser implementation changed during native execution"
+            )
+        observation["completion_signal"] = "PROCESS_EXIT_ZERO"
+        completion = {
+            "schema_version": COMPLETION_SCHEMA,
+            "arm_relative_path": arm_path.relative_to(shard_dir).as_posix(),
+            "arm_sha256": arm_sha256,
+            "launcher_identity": LAUNCHER_IDENTITY,
+            "launcher_invocation_id": launcher_invocation_id,
+            "process_observation": observation,
+            "stdout_blob": stdout_blob,
+            "stderr_blob": stderr_blob,
+            "provider_stdout_evidence": provider_evidence,
+            "completion_evidence": [],
+            "auxiliary_root_revocations": [],
+            "stream_mode": "SEPARATE_STDOUT_STDERR",
+            "output_source_mode": output_source_mode,
+            "stream_limits": dict(stream_limits),
+            "stream_observation": stream_observation,
+            "transcript": {
+                "state": (
+                    "PRESENT"
+                    if any(row["is_transcript"] for row in observed_outputs)
+                    else "NOT_APPLICABLE"
+                ),
+                "assignment_ids": [
+                    row["assignment_id"] for row in observed_outputs
+                    if row["is_transcript"]
+                ],
+            },
+            "outputs": observed_outputs,
+            "completed_at_unix_ns": time.time_ns(),
+        }
+        receipt_path, completion_sha = _persist_hashed_json(
+            shard_dir, "completion", completion,
+        )
+        if not publish_canonical:
+            return CompletedExecution(
+                receipt_path=receipt_path,
+                completion_sha256=completion_sha,
+                arm_path=arm_path,
+                arm_sha256=arm_sha256,
+                publish_receipt_path=None,
+                publish_sha256=None,
+                published_paths=(),
+            )
+        publish_path, publish_sha, published = _publish_completed_outputs(
+            root=root, shard_dir=shard_dir,
+            completion_path=receipt_path,
+            completion_sha256=completion_sha,
+            output_rows=observed_outputs,
+        )
+        return CompletedExecution(
+            receipt_path=receipt_path,
+            completion_sha256=completion_sha,
+            arm_path=arm_path,
+            arm_sha256=arm_sha256,
+            publish_receipt_path=publish_path,
+            publish_sha256=publish_sha,
+            published_paths=published,
+        )
+    except WorkerExecutionIncomplete:
+        raise
+    except BaseException as exc:
+        if execution.state not in {
+            "REVOKED", "FINISHED", "EXITED", "TIMED_OUT_REVOKED",
+            "OUTPUT_OVERFLOW_REVOKED",
+        }:
+            try:
+                revoked = execution.extinguish_or_recover(
+                    reason_code="WORKER_OBSERVATION_FAILED",
+                )
+                observation["native_revoked_receipt"] = json.loads(revoked.raw)
+            except BaseException as revoke_exc:
+                observation["native_revocation_failed"] = type(
+                    revoke_exc
+                ).__name__
+        if execution.state in {"REVOKED", "EXITED", "TIMED_OUT_REVOKED"}:
+            with contextlib.suppress(BaseException):
+                execution.close_operation()
+        if stdout_blob is None:
+            with contextlib.suppress(BaseException):
+                stdout_blob = _persist_blob(blob_dir, "stdout", stdout)
+        if stderr_blob is None:
+            with contextlib.suppress(BaseException):
+                stderr_blob = _persist_blob(blob_dir, "stderr", stderr)
+        debt = _record_debt(
+            shard_dir, arm_path=arm_path, arm_sha256=arm_sha256,
+            reason_code="NATIVE_BACKEND_OBSERVATION_FAILED",
+            detail=f"{type(exc).__name__}: {exc}",
+            process_observation=observation,
+            stdout_blob=stdout_blob, stderr_blob=stderr_blob,
+        )
+        raise WorkerExecutionIncomplete(
+            f"native backend observation failed: {exc}",
+            arm_path=arm_path, debt_path=debt,
+        ) from exc
+
+
 def _run_observed_worker_direct(
     *,
     scratchpad: str | Path,
@@ -5821,6 +7574,7 @@ def _run_observed_worker_direct(
     claude_runtime_materialization_request: (
         ClaudeRuntimeMaterializationRequest | None
     ) = None,
+    posix_backend_execution: PosixBackendExecution | None = None,
     observer_callback_timeout_seconds: float = (
         DEFAULT_OBSERVER_CALLBACK_TIMEOUT_SECONDS
     ),
@@ -5840,9 +7594,36 @@ def _run_observed_worker_direct(
     durable debt.  Any post-arm problem raises :class:`WorkerExecutionIncomplete`.
     """
 
+    if os.name != "nt":
+        # First effect: native module/type/hidden-authority admission occurs
+        # before any caller-controlled binding, collection, callback or path is
+        # inspected.  In particular, do not use getattr/hasattr/callability on
+        # the supplied object at this boundary.
+        try:
+            posix_backend_execution = require_native_posix_backend_execution(
+                posix_backend_execution
+            )
+        except PosixBackendExecutionError as exc:
+            raise NativePosixProcessAuthorityUnavailable(
+                "NATIVE_POSIX_PROCESS_AUTHORITY_UNAVAILABLE: authenticated "
+                "native backend-execution authority is unavailable"
+            ) from exc
     if not isinstance(bindings, ExecutionBindings):
         raise WorkerExecutionError("bindings must be an ExecutionBindings instance")
-    if bindings.effective_backend == "claude":
+    posix_model_launch = (
+        os.name != "nt"
+        and bindings.effective_backend in {"codex", "claude"}
+    )
+    if posix_model_launch and type(posix_backend_execution) is not PosixBackendExecution:
+        raise NativePosixProcessAuthorityUnavailable(
+            "NATIVE_POSIX_PROCESS_AUTHORITY_UNAVAILABLE: native POSIX "
+            "model execution requires the exact operation wrapper"
+        )
+    if not posix_model_launch and posix_backend_execution is not None:
+        raise WorkerExecutionError(
+            "POSIX backend authority cannot authorize this platform/backend"
+        )
+    if bindings.effective_backend == "claude" and not posix_model_launch:
         if (
             type(claude_runtime_materialization_request)
             is not ClaudeRuntimeMaterializationRequest
@@ -6133,7 +7914,7 @@ def _run_observed_worker_direct(
         )
         else None
     )
-    if bindings.effective_backend == "claude":
+    if bindings.effective_backend == "claude" and not posix_model_launch:
         if (
             normalized_claude_security_request is None
             or not provider_stdout_configured
@@ -6307,10 +8088,11 @@ def _run_observed_worker_direct(
                 raw_plan,
                 provider_stdout_binding,
             )
-        _reconcile_work_plan_claude_security_policy(
-            raw_plan,
-            normalized_claude_security_request,
-        )
+        if not posix_model_launch:
+            _reconcile_work_plan_claude_security_policy(
+                raw_plan,
+                normalized_claude_security_request,
+            )
         startup_plan_recognized = _reconcile_work_plan_startup_policy(
             raw_plan,
             normalized_startup_binding,
@@ -6327,7 +8109,7 @@ def _run_observed_worker_direct(
                 raise WorkerExecutionError(
                     "launch intent startup permit differs from the arm"
                 )
-        if bindings.effective_backend == "claude":
+        if bindings.effective_backend == "claude" and not posix_model_launch:
             assert (
                 type(claude_runtime_materialization_request)
                 is ClaudeRuntimeMaterializationRequest
@@ -6473,6 +8255,59 @@ def _run_observed_worker_direct(
                     )
                 )
                 raise
+        posix_backend_arm_binding: dict[str, Any] | None = None
+        if posix_model_launch:
+            assert type(posix_backend_execution) is PosixBackendExecution
+            try:
+                posix_backend_arm_binding = (
+                    _normalize_posix_backend_arm_binding(
+                        posix_backend_execution.wer_arm_binding,
+                        argv=actual_argv,
+                        backend=bindings.effective_backend,
+                        model=bindings.effective_model,
+                        process_scope_identity=process_scope_identity,
+                    )
+                )
+                assert posix_backend_arm_binding is not None
+                if (
+                    posix_backend_arm_binding["timeout_seconds"]
+                    != int(bound_timeout_seconds)
+                    or posix_backend_arm_binding[
+                        "stdout_requested_limit_bytes"
+                    ] != bound_stdout_limit
+                    or posix_backend_arm_binding[
+                        "stderr_requested_limit_bytes"
+                    ] != bound_stderr_limit
+                ):
+                    raise WorkerExecutionError(
+                        "native POSIX backend limits differ from the inner arm"
+                    )
+                if (
+                    posix_backend_arm_binding["work_plan_sha256"]
+                    != _digest_bytes(raw_plan)
+                ):
+                    raise WorkerExecutionError(
+                        "native POSIX backend WorkPlan differs from WER"
+                    )
+                if bindings.effective_backend == "claude":
+                    provider_stdout_binding = _claude_stream_stdout_binding(
+                        normalized_provider_stdout_configuration,
+                        argv=actual_argv,
+                        stdout_limit_bytes=bound_stdout_limit,
+                        cwd=cwd_path,
+                        effective_model=bindings.effective_model,
+                        posix_backend_profile=True,
+                        posix_backend_arm_authority=(
+                            posix_backend_arm_binding
+                        ),
+                    )
+                    _reconcile_work_plan_provider_stdout_policy(
+                        raw_plan, provider_stdout_binding,
+                    )
+            except (PosixBackendExecutionError, KeyError, OSError) as exc:
+                raise WorkerExecutionError(
+                    f"POSIX backend launch plan did not replay: {exc}"
+                ) from exc
         if observer_configured:
             prompt_row = semantic_bindings["inputs"]["prompt"]
             prompt_path = _safe_descendant(
@@ -6498,6 +8333,8 @@ def _run_observed_worker_direct(
             root, semantic_bindings, stdin_input
         )
         if (
+            not posix_model_launch
+            and
             semantic_bindings["expected_environment_allowlist_sha256"]
             != environment_binding["allowlist_sha256"]
         ):
@@ -6544,7 +8381,10 @@ def _run_observed_worker_direct(
                 raise WorkerExecutionError(
                     "restricted Claude stage authority does not authenticate"
                 )
-        if restricted_stage_binding is not None:
+        if posix_model_launch:
+            termination_capability = dict(_NATIVE_POSIX_PROCESS_CAPABILITY)
+            transaction_write_authority = _NATIVE_POSIX_STAGE_AUTHORITY
+        elif restricted_stage_binding is not None:
             termination_capability = _restricted_claude_process_capability(
                 restricted_stage_binding
             )
@@ -6630,6 +8470,7 @@ def _run_observed_worker_direct(
                 startup_authority_evidence
             ),
             "implementation_files": implementation_binding,
+            "posix_backend_execution": posix_backend_arm_binding,
         }
         if _nested_executor_authority is not None:
             process_intent["disposable_executor_parent"] = (
@@ -6707,8 +8548,36 @@ def _run_observed_worker_direct(
                 "inner provider arm changed before process creation"
             )
 
+        if posix_model_launch:
+            assert type(posix_backend_execution) is PosixBackendExecution
+            return _native_posix_completion(
+                root=root,
+                shard_dir=shard_dir,
+                blob_dir=blob_dir,
+                arm_path=arm_path,
+                arm_sha256=arm_sha,
+                launcher_invocation_id=launcher_invocation_id,
+                execution=posix_backend_execution,
+                output_scope=output_scope,
+                output_scope_relative=output_scope_rel,
+                output_contract=output_contract,
+                output_source_mode=bound_output_source,
+                staged_output_limit_bytes=bound_staged_output_limit,
+                parser_digest=parser_digest,
+                parser_binding=parser_binding,
+                semantic_bindings=semantic_bindings,
+                stream_limits=stream_limits,
+                provider_stdout_binding=provider_stdout_binding,
+                publish_canonical=publish_canonical,
+                cancel_token=cancel_token,
+                auxiliary_leases=auxiliary_leases,
+                observer_configured=observer_configured,
+            )
+
         process: subprocess.Popen[bytes] | None = None
         process_tree: _OwnedProcessTree | None = None
+        posix_physical_launch: Any | None = None
+        posix_backend_revocation: dict[str, Any] | None = None
         process_tree_close_attempted = False
         streams: _BoundedProcessStreams | None = None
         stdin_handle: Any | None = None
@@ -6901,22 +8770,21 @@ def _run_observed_worker_direct(
                 claude_runtime_lifecycle_receipt = (
                     claude_runtime.abort_before_process_scope(reason_code)
                 )
-            elif process_tree.process_creation_state in {
-                "NOT_ATTEMPTED",
-                "CREATION_FAILED_WITHOUT_PROCESS_OBJECT",
-            }:
-                claude_runtime_lifecycle_receipt = (
-                    claude_runtime.abort_bound_scope_before_process_attach(
-                        process_tree,
-                        reason_code,
-                    )
-                )
             elif process_tree.process_creation_state == "PROCESS_CREATED":
                 claude_runtime_lifecycle_receipt = (
                     claude_runtime.close_after_process_attach_failure(
                         process_tree,
                         reason_code,
                     )
+                )
+            elif not process_tree.attached:
+                (
+                    claude_runtime_lifecycle_receipt,
+                    claude_runtime_postprocess_receipt,
+                ) = _cleanup_unreturned_process_failure_scope(
+                    process_tree,
+                    claude_runtime,
+                    reason_code,
                 )
             elif (
                 process_tree.attached
@@ -6988,6 +8856,45 @@ def _run_observed_worker_direct(
             process_observation["auxiliary_root_revocations"] = (
                 auxiliary_revocation_receipts
             )
+
+        def revoke_posix_backend_private_state(reason_code: str) -> None:
+            """Revoke the materialized POSIX profile only at a proven boundary."""
+
+            nonlocal posix_backend_revocation
+            if (
+                not posix_model_launch
+                or posix_backend_revocation is not None
+            ):
+                return
+            assert type(posix_backend_execution) is PosixBackendExecution
+            if posix_physical_launch is None or process is None:
+                receipt = posix_backend_execution.abort_before_process_creation(
+                    reason_code=reason_code,
+                )
+            else:
+                if (
+                    process_tree is None
+                    or getattr(process_tree, "closed", False) is not True
+                    or getattr(
+                        process_tree, "population_zero_proven", False
+                    ) is not True
+                ):
+                    raise WorkerExecutionError(
+                        "POSIX backend private state cannot be revoked before "
+                        "process-scope population zero"
+                    )
+                receipt = posix_backend_execution.revoke_after_scope_close(
+                    process_creation_state=str(
+                        process_tree.process_creation_state
+                    ),
+                    process_population_zero_proven=True,
+                    returncode=process.returncode,
+                    reason_code=reason_code,
+                )
+            posix_backend_revocation = dict(receipt)
+            process_observation["posix_backend_revocation"] = (
+                posix_backend_revocation
+            )
         try:
             def cancellation_requested() -> bool:
                 if cancel_token is None:
@@ -7008,6 +8915,9 @@ def _run_observed_worker_direct(
                     "cancelled": True,
                 }
                 abort_auxiliary_roots_before_scope(
+                    "CANCELLED_BEFORE_LAUNCH"
+                )
+                revoke_posix_backend_private_state(
                     "CANCELLED_BEFORE_LAUNCH"
                 )
                 debt = _record_debt(
@@ -7035,6 +8945,9 @@ def _run_observed_worker_direct(
                     "launch_blocked_before_process_creation": True,
                 }
                 abort_auxiliary_roots_before_scope(
+                    "PROCESS_AUTHORITY_UNSUPPORTED"
+                )
+                revoke_posix_backend_private_state(
                     "PROCESS_AUTHORITY_UNSUPPORTED"
                 )
                 debt = _record_debt(
@@ -7193,14 +9106,110 @@ def _run_observed_worker_direct(
                     raise WorkerExecutionError(
                         "worker was cancelled during observer preparation"
                     )
+            if posix_model_launch:
+                assert type(posix_backend_execution) is PosixBackendExecution
+                try:
+                    posix_physical_launch = (
+                        posix_backend_execution.materialize_after_inner_arm(
+                            inner_arm_sha256=arm_sha,
+                        )
+                    )
+                    if (
+                        tuple(actual_argv) != posix_physical_launch.argv
+                        or posix_physical_cwd != posix_physical_launch.cwd
+                        or posix_backend_preview is None
+                        or posix_physical_launch.stdin_fd
+                        != posix_backend_preview["stdin_fd"]
+                        or tuple(posix_physical_launch.pass_fds)
+                        != tuple(posix_backend_preview["pass_fds"])
+                    ):
+                        raise WorkerExecutionError(
+                            "POSIX physical launch differs from its inner arm"
+                        )
+                    preview_cwd_fd = int(
+                        str(posix_backend_preview["cwd"]).removeprefix(
+                            "/proc/self/fd/"
+                        )
+                    )
+                    _replay_posix_backend_arm_binding(
+                        posix_backend_arm_binding,
+                        argv=actual_argv,
+                        environment=dict(
+                            posix_backend_preview["environment"]
+                        ),
+                        cwd_fd=preview_cwd_fd,
+                        stdin_fd=posix_backend_preview["stdin_fd"],
+                        pass_fds=posix_backend_preview["pass_fds"],
+                        materialized_pass_fds=(
+                            posix_physical_launch.pass_fds
+                        ),
+                        backend=bindings.effective_backend,
+                        model=bindings.effective_model,
+                        process_scope_identity=process_scope_identity,
+                    )
+                    materialized_environment = dict(
+                        posix_physical_launch.environment
+                    )
+                    expected_names = set(env)
+                    if bindings.effective_backend == "claude":
+                        expected_names.add("ANTHROPIC_API_KEY")
+                    if set(materialized_environment) != expected_names:
+                        raise WorkerExecutionError(
+                            "POSIX materialized environment denominator drifted"
+                        )
+                    env = materialized_environment
+                    materialization_payload = dict(
+                        posix_physical_launch.materialization_binding
+                    )
+                    physical_binding = _posix_backend_live_physical_binding(
+                        environment=env,
+                        cwd_fd=preview_cwd_fd,
+                        stdin_fd=posix_physical_launch.stdin_fd,
+                        pass_fds=posix_physical_launch.pass_fds,
+                    )
+                    if any(
+                        materialization_payload.get(key) != value
+                        for key, value in physical_binding.items()
+                    ):
+                        raise WorkerExecutionError(
+                            "POSIX materialized environment or descriptor "
+                            "authority drifted"
+                        )
+                    process_observation[
+                        "posix_backend_physical_binding"
+                    ] = physical_binding
+                    materialization_path, materialization_sha = (
+                        _persist_hashed_json(
+                            shard_dir,
+                            "posix_materialization",
+                            materialization_payload,
+                        )
+                    )
+                    process_observation["posix_backend_materialization"] = {
+                        "relative_path": materialization_path.relative_to(
+                            shard_dir
+                        ).as_posix(),
+                        "sha256": materialization_sha,
+                        "binding": materialization_payload,
+                    }
+                except (PosixBackendExecutionError, OSError) as exc:
+                    raise WorkerExecutionError(
+                        f"POSIX backend materialization failed: {exc}"
+                    ) from exc
+
             process_stdin: Any = subprocess.DEVNULL
             if stdin_path is not None:
                 # Open and re-measure the exact handle passed to Popen.  This closes
                 # the check/open gap: the process consumes these measured bytes,
                 # while the post-exit replay below detects path mutation.
-                stdin_descriptor = os.open(
-                    _native_rooted_path(stdin_path),
-                    os.O_RDONLY | int(getattr(os, "O_BINARY", 0) or 0),
+                stdin_descriptor = (
+                    os.dup(posix_physical_launch.stdin_fd)
+                    if posix_physical_launch is not None
+                    else os.open(
+                        _native_rooted_path(stdin_path),
+                        os.O_RDONLY
+                        | int(getattr(os, "O_BINARY", 0) or 0),
+                    )
                 )
                 stdin_handle = os.fdopen(
                     stdin_descriptor,
@@ -7247,13 +9256,20 @@ def _run_observed_worker_direct(
                     stdout_limit_bytes=bound_stdout_limit,
                     cwd=cwd_path,
                     effective_model=bindings.effective_model,
+                    posix_backend_profile=posix_model_launch,
+                    posix_backend_arm_authority=(
+                        posix_backend_arm_binding
+                    ),
                 )
                 if launch_provider_binding != provider_stdout_binding:
                     raise WorkerExecutionError(
                         "provider stdout evidence binding changed before "
                         "process creation"
                     )
-            if normalized_claude_security_request is not None:
+            if (
+                normalized_claude_security_request is not None
+                and not posix_model_launch
+            ):
                 try:
                     _recheck_claude_executable_before_launch(
                         normalized_claude_security_request[
@@ -7266,44 +9282,93 @@ def _run_observed_worker_direct(
                         "Claude executable authority changed before process "
                         f"creation: {exc}"
                     ) from exc
+            if posix_model_launch:
+                assert type(posix_backend_execution) is PosixBackendExecution
+                try:
+                    posix_backend_execution.revalidate_immediately_before_process_creation()
+                except PosixBackendExecutionError as exc:
+                    raise WorkerExecutionError(
+                        f"POSIX backend authority became stale before Popen: {exc}"
+                    ) from exc
             physical_argv = process_tree.wrap_argv(tuple(actual_argv))
             try:
+                scope_popen_kwargs = process_tree.popen_kwargs()
+                if posix_physical_launch is not None:
+                    scope_popen_kwargs["pass_fds"] = tuple(sorted({
+                        *scope_popen_kwargs.get("pass_fds", ()),
+                        *posix_physical_launch.pass_fds,
+                    }))
                 process = process_tree.create_process(
                     physical_argv,
-                    cwd=str(cwd_path),
+                    cwd=(
+                        posix_physical_cwd
+                        if posix_physical_cwd is not None
+                        else str(cwd_path)
+                    ),
                     env=env,
                     stdin=process_stdin,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     shell=False,
-                    **process_tree.popen_kwargs(),
+                    **scope_popen_kwargs,
                 )
+                if posix_model_launch:
+                    assert type(posix_backend_execution) is PosixBackendExecution
+                    posix_backend_execution.mark_process_created()
             except BaseException as exc:
                 process_observation["process_creation"] = (
                     process_tree.process_creation_evidence
                 )
                 process_tree_close_attempted = True
                 close_error: BaseException | None = None
+                creation_state = process_tree.process_creation_state
                 try:
-                    process_tree.close()
-                except BaseException as close_exc:
-                    close_error = close_exc
+                    cleanup_mode = (
+                        _unreturned_process_failure_cleanup_mode(
+                            creation_state
+                        )
+                    )
+                    try:
+                        (
+                            claude_runtime_lifecycle_receipt,
+                            claude_runtime_postprocess_receipt,
+                        ) = _cleanup_unreturned_process_failure_scope(
+                            process_tree,
+                            claude_runtime,
+                            "CLAUDE_RUNTIME_PROCESS_CREATION_FAILED",
+                        )
+                    except BaseException as close_exc:
+                        close_error = close_exc
+                except WorkerExecutionError as state_exc:
+                    cleanup_mode = None
+                    try:
+                        process_tree.emergency_close()
+                    except BaseException:
+                        pass
+                    close_error = state_exc
                 if (
                     claude_runtime is not None
                     and close_error is None
+                    and cleanup_mode == _UNRETURNED_TERMINAL_CLEANUP
+                ):
+                    if claude_runtime_lifecycle_receipt is None:
+                        close_error = WorkerExecutionError(
+                            "terminal unreturned process cleanup lacks its "
+                            "runtime lifecycle receipt"
+                        )
+                if (
+                    close_error is None
+                    and process_tree.population_zero_proven
                 ):
                     try:
-                        claude_runtime_lifecycle_receipt = (
-                            claude_runtime.abort_bound_scope_before_process_attach(
-                                process_tree,
-                                "CLAUDE_RUNTIME_PROCESS_CREATION_FAILED",
-                            )
-                        )
-                    except ClaudeRuntimeMaterializationError as runtime_exc:
-                        close_error = runtime_exc
+                        revoke_auxiliary_roots_after_scope_close()
+                    except BaseException as revocation_exc:
+                        close_error = revocation_exc
                 if close_error is None:
                     try:
-                        revoke_auxiliary_roots_after_scope_close()
+                        revoke_posix_backend_private_state(
+                            "PROCESS_CREATION_FAILED"
+                        )
                     except BaseException as revocation_exc:
                         close_error = revocation_exc
                 record_claude_runtime_observation()
@@ -7312,7 +9377,9 @@ def _run_observed_worker_direct(
                     arm_path=arm_path,
                     arm_sha256=arm_sha,
                     reason_code=(
-                        "CLAUDE_RUNTIME_PROCESS_CREATION_FAILED"
+                        "POSIX_BACKEND_PROCESS_CREATION_FAILED"
+                        if posix_model_launch
+                        else "CLAUDE_RUNTIME_PROCESS_CREATION_FAILED"
                     ),
                     detail=(
                         f"{type(exc).__name__}: {exc}"
@@ -7329,7 +9396,11 @@ def _run_observed_worker_direct(
                     process_observation=process_observation,
                 )
                 raise WorkerExecutionIncomplete(
-                    "Claude runtime process creation failed",
+                    (
+                        "POSIX backend process creation failed"
+                        if posix_model_launch
+                        else "Claude runtime process creation failed"
+                    ),
                     arm_path=arm_path,
                     debt_path=debt,
                 ) from exc
@@ -7417,6 +9488,10 @@ def _run_observed_worker_direct(
                 ):
                     try:
                         revoke_auxiliary_roots_after_scope_close()
+                        if posix_model_launch:
+                            revoke_posix_backend_private_state(
+                                "PROCESS_SCOPE_EMERGENCY_CLOSED"
+                            )
                     except BaseException as revocation_exc:
                         cleanup_error = revocation_exc
                 record_claude_runtime_observation()
@@ -7806,6 +9881,10 @@ def _run_observed_worker_direct(
             process_observation["process_population_zero_proven"] = (
                 process_tree.population_zero_proven
             )
+            if posix_model_launch:
+                revoke_posix_backend_private_state(
+                    "PROCESS_SCOPE_CLOSED"
+                )
             natural_nonzero_result = (
                 process.returncode != 0
                 and process_observation["root_exit_origin"]
@@ -7884,7 +9963,10 @@ def _run_observed_worker_direct(
                     raise WorkerExecutionError(
                         "startup authority changed before completion"
                     )
-            if normalized_claude_security_request is not None:
+            if (
+                normalized_claude_security_request is not None
+                and not posix_model_launch
+            ):
                 try:
                     _recheck_claude_executable_before_launch(
                         normalized_claude_security_request[
@@ -8407,13 +10489,20 @@ def _run_observed_worker_direct(
                             {},
                         ).get("headless_profile")
                     ),
+                    posix_backend_profile=posix_model_launch,
+                    posix_backend_arm_authority=(
+                        posix_backend_arm_binding
+                    ),
                 )
                 if completed_provider_binding != provider_stdout_binding:
                     raise WorkerExecutionError(
                         "provider stdout evidence binding changed during "
                         "execution"
                     )
-            if normalized_claude_security_request is not None:
+            if (
+                normalized_claude_security_request is not None
+                and not posix_model_launch
+            ):
                 try:
                     _recheck_claude_executable_before_launch(
                         normalized_claude_security_request[
@@ -8750,6 +10839,21 @@ def _run_observed_worker_direct(
                     ] = auxiliary_revocation_receipts
                 except BaseException as revocation_exc:
                     failure_reason = "AUXILIARY_ROOT_REVOCATION_FAILED"
+                    failure_detail = (
+                        f"{type(revocation_exc).__name__}: "
+                        f"{revocation_exc}; preceding_error="
+                        f"{type(exc).__name__}: {exc}"
+                    )
+            if (
+                posix_model_launch
+                and posix_backend_revocation is None
+            ):
+                try:
+                    revoke_posix_backend_private_state(
+                        "WORKER_OBSERVATION_FAILED"
+                    )
+                except BaseException as revocation_exc:
+                    failure_reason = "POSIX_BACKEND_REVOCATION_FAILED"
                     failure_detail = (
                         f"{type(revocation_exc).__name__}: "
                         f"{revocation_exc}; preceding_error="
@@ -9986,6 +12090,7 @@ def _run_observed_worker_semantic_isolated(
     claude_runtime_materialization_request: (
         ClaudeRuntimeMaterializationRequest | None
     ) = None,
+    posix_backend_execution: PosixBackendExecution | None = None,
     observer_callback_timeout_seconds: float = (
         DEFAULT_OBSERVER_CALLBACK_TIMEOUT_SECONDS
     ),
@@ -10055,6 +12160,7 @@ def _run_observed_worker_semantic_isolated(
             startup_authority_binding,
             claude_launch_security_request,
             claude_runtime_materialization_request,
+            posix_backend_execution,
             completion_evidence_files,
         )
     ) or any(
@@ -10565,6 +12671,7 @@ def run_observed_worker(
     claude_runtime_materialization_request: (
         ClaudeRuntimeMaterializationRequest | None
     ) = None,
+    posix_backend_execution: PosixBackendExecution | None = None,
     observer_callback_timeout_seconds: float = (
         DEFAULT_OBSERVER_CALLBACK_TIMEOUT_SECONDS
     ),
@@ -10576,6 +12683,20 @@ def run_observed_worker(
     semantic_prompt_authority: Any = None,
 ) -> CompletedExecution:
     """Dispatch typed semantic_v1 only; preserve the legacy direct contract."""
+
+    if os.name != "nt":
+        # Match the direct entry's pre-inspection native boundary.  The direct
+        # function intentionally repeats this gate so it is safe when called
+        # independently by internal/test callers.
+        try:
+            posix_backend_execution = require_native_posix_backend_execution(
+                posix_backend_execution
+            )
+        except PosixBackendExecutionError as exc:
+            raise NativePosixProcessAuthorityUnavailable(
+                "NATIVE_POSIX_PROCESS_AUTHORITY_UNAVAILABLE: authenticated "
+                "native backend-execution authority is unavailable"
+            ) from exc
 
     paired = (
         semantic_attempt_authority is not None,
@@ -10635,6 +12756,7 @@ def run_observed_worker(
         "claude_runtime_materialization_request": (
             claude_runtime_materialization_request
         ),
+        "posix_backend_execution": posix_backend_execution,
         "observer_callback_timeout_seconds": (
             observer_callback_timeout_seconds
         ),
@@ -11015,6 +13137,33 @@ def validate_completed_execution(
     process_intent = arm.get("process_intent")
     if not isinstance(process_intent, dict):
         raise WorkerExecutionError("process intent is malformed")
+    posix_backend_arm_binding = _normalize_posix_backend_arm_binding(
+        process_intent.get("posix_backend_execution"),
+        argv=process_intent.get("argv"),
+        backend=bindings.get("effective_backend"),
+        model=bindings.get("effective_model"),
+        process_scope_identity=process_intent.get("process_scope_identity"),
+    )
+    posix_model_completion = posix_backend_arm_binding is not None
+    native_posix_v2_completion = (
+        posix_model_completion
+        and posix_backend_arm_binding.get("schema")
+        == "plamen.posix_backend_execution_wer_binding.v2"
+    )
+    if posix_model_completion and bindings.get("effective_backend") not in {
+        "codex", "claude"
+    }:
+        raise WorkerExecutionError(
+            "POSIX backend authority is attached to a non-model execution"
+        )
+    if (
+        posix_model_completion
+        and posix_backend_arm_binding.get("work_plan_sha256")
+        != _digest_bytes(replayed_inputs["plan"])
+    ):
+        raise WorkerExecutionError(
+            "POSIX backend authority differs from the bound WorkPlan"
+        )
     nested_executor_parent = process_intent.get(
         "disposable_executor_parent"
     )
@@ -11054,17 +13203,19 @@ def validate_completed_execution(
     provider_stdout_evidence_binding = process_intent.get(
         "provider_stdout_evidence"
     )
-    _reconcile_work_plan_provider_stdout_policy(
-        replayed_inputs["plan"],
-        provider_stdout_evidence_binding,
-    )
+    if not posix_model_completion:
+        _reconcile_work_plan_provider_stdout_policy(
+            replayed_inputs["plan"],
+            provider_stdout_evidence_binding,
+        )
     claude_security_request = process_intent.get(
         "claude_launch_security_request"
     )
-    _reconcile_work_plan_claude_security_policy(
-        replayed_inputs["plan"],
-        claude_security_request,
-    )
+    if not posix_model_completion:
+        _reconcile_work_plan_claude_security_policy(
+            replayed_inputs["plan"],
+            claude_security_request,
+        )
     startup_authority_evidence = process_intent.get(
         "startup_authority_evidence"
     )
@@ -11133,12 +13284,16 @@ def validate_completed_execution(
                     {},
                 ).get("headless_profile")
             ),
+            posix_backend_profile=(
+                posix_model_completion and not native_posix_v2_completion
+            ),
+            posix_backend_arm_authority=posix_backend_arm_binding,
         )
         if dict(provider_stdout_evidence_binding) != replayed_provider_binding:
             raise WorkerExecutionError(
                 "provider stdout evidence binding changed"
             )
-    if claude_security_request is not None:
+    if claude_security_request is not None and not posix_model_completion:
         try:
             replayed_claude_security = (
                 _replay_claude_launch_security_request(
@@ -11174,7 +13329,14 @@ def validate_completed_execution(
     persisted_restricted_boundary = process_intent.get(
         "restricted_stage_boundary"
     )
-    if persisted_transaction_authority == _RESTRICTED_CLAUDE_STAGE_AUTHORITY:
+    if native_posix_v2_completion:
+        if persisted_restricted_boundary is not None:
+            raise WorkerExecutionError(
+                "native POSIX intent carries legacy restricted-stage authority"
+            )
+        current_process_capability = dict(_NATIVE_POSIX_PROCESS_CAPABILITY)
+        transaction_write_authority = _NATIVE_POSIX_STAGE_AUTHORITY
+    elif persisted_transaction_authority == _RESTRICTED_CLAUDE_STAGE_AUTHORITY:
         if not isinstance(persisted_restricted_boundary, Mapping):
             raise WorkerExecutionError(
                 "restricted Claude process intent lacks its stage boundary"
@@ -11436,7 +13598,28 @@ def validate_completed_execution(
         )
     if process_observation.get("process_scope_cleanup_succeeded") is not True:
         raise WorkerExecutionError("completion lacks successful process-scope cleanup")
-    if transaction_write_authority == _RESTRICTED_CLAUDE_STAGE_AUTHORITY:
+    if native_posix_v2_completion:
+        expected_native_write_binding = {
+            "schema": "plamen.native_broker_v2_guest_stage_binding.v1",
+            "operation_key_sha256": posix_backend_arm_binding[
+                "operation_key_sha256"
+            ],
+            "prepared_receipt_sha256": posix_backend_arm_binding[
+                "prepared_receipt_sha256"
+            ],
+        }
+        if (
+            process_observation.get("write_confinement_proven") is not True
+            or process_observation.get("transaction_stage_boundary_proven")
+            is not True
+            or process_observation.get("write_confinement_binding")
+            != expected_native_write_binding
+        ):
+            raise WorkerExecutionError(
+                "native POSIX completion stage binding is malformed"
+            )
+        persisted_write_binding = expected_native_write_binding
+    elif transaction_write_authority == _RESTRICTED_CLAUDE_STAGE_AUTHORITY:
         restricted_os_write = (
             isinstance(persisted_restricted_boundary, Mapping)
             and persisted_restricted_boundary.get("os_write_confinement")
@@ -11466,13 +13649,14 @@ def validate_completed_execution(
         raise WorkerExecutionError(
             "completion write-confinement authority mismatch"
         )
-    persisted_write_binding = _active_write_confinement_binding(
-        transaction_write_authority,
-        process_observation.get("write_confinement_binding"),
-        capability=current_process_capability,
-        process_scope_identity=scope_identity,
-        require_current_process=False,
-    )
+    if not native_posix_v2_completion:
+        persisted_write_binding = _active_write_confinement_binding(
+            transaction_write_authority,
+            process_observation.get("write_confinement_binding"),
+            capability=current_process_capability,
+            process_scope_identity=scope_identity,
+            require_current_process=False,
+        )
     if (
         process_observation.get("write_confinement_binding")
         != persisted_write_binding
@@ -11588,8 +13772,11 @@ def validate_completed_execution(
         "allowlist_sha256"
     ) != environment_allowlist_sha256(allowlist_names):
         raise WorkerExecutionError("environment allowlist digest mismatch")
-    if environment.get("allowlist_sha256") != bindings.get(
-        "expected_environment_allowlist_sha256"
+    if (
+        not posix_model_completion
+        and environment.get("allowlist_sha256") != bindings.get(
+            "expected_environment_allowlist_sha256"
+        )
     ):
         raise WorkerExecutionError("environment allowlist does not match launch intent")
     if environment.get("values_persisted") is not False:
@@ -11638,6 +13825,13 @@ def validate_completed_execution(
         raise WorkerExecutionError(
             "environment effective-name denominator is malformed"
         )
+    _replay_posix_backend_completion_lifecycle(
+        shard_dir=shard_dir,
+        arm_sha256=arm_sha,
+        arm_binding=posix_backend_arm_binding,
+        process_observation=process_observation,
+        environment_names=effective_environment_names,
+    )
 
     runtime_redacted_receipts = process_intent.get(
         "claude_runtime_redacted_receipts"
@@ -11645,7 +13839,22 @@ def validate_completed_execution(
     runtime_base_argv = process_intent.get(
         "claude_runtime_base_argv"
     )
-    if bindings.get("effective_backend") == "claude":
+    if posix_model_completion and (
+        runtime_materialization is not None
+        or runtime_redacted_receipts is not None
+        or runtime_base_argv is not None
+        or "claude_runtime_materialization" in process_observation
+        or "claude_runtime_redacted_receipts" in process_observation
+        or "claude_runtime_postprocess" in process_observation
+        or "claude_runtime_lifecycle" in process_observation
+    ):
+        raise WorkerExecutionError(
+            "POSIX execution contains legacy Claude runtime authority"
+        )
+    if (
+        bindings.get("effective_backend") == "claude"
+        and not posix_model_completion
+    ):
         if (
             not isinstance(runtime_materialization, Mapping)
             or not isinstance(runtime_redacted_receipts, Mapping)
@@ -11789,7 +13998,7 @@ def validate_completed_execution(
             raise WorkerExecutionError(
                 "Claude runtime process-creation evidence is malformed"
             )
-    elif (
+    elif not posix_model_completion and (
         runtime_materialization is not None
         or runtime_redacted_receipts is not None
         or runtime_base_argv is not None
@@ -11886,7 +14095,8 @@ def validate_completed_execution(
             or (not stdout_restricted and not expected)
             or boundary.get("settings_sha256")
             != settings_authority.get("settings_sha256")
-            or init_contract.get("claude_code_version") != "2.1.252"
+            or init_contract.get("claude_code_version")
+            != boundary.get("claude_code_version")
             or restricted_lane is None
             or init_contract.get("permission_mode") != expected_permission_mode
             or init_contract.get("allowed_tools") != expected_tools
@@ -12555,6 +14765,7 @@ __all__ = [
     "PrincipalInvocation",
     "ParserDigest",
     "PtyLifecycleAdapter",
+    "NativePosixProcessAuthorityUnavailable",
     "SemanticRuntimeDependencyUnsupported",
     "WorkerExecutionError",
     "WorkerExecutionIncomplete",

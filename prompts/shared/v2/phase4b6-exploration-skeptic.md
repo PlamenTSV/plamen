@@ -3,6 +3,9 @@
 > **Mode gate**: Thorough mode ONLY.
 > **Purpose**: Independent exploration-completeness audit of prior analysis — verify whether each finding was investigated to completion, then fill any gaps.
 > **Output artifact**: `exploration_skeptic_findings.md`
+
+Every emitted finding heading MUST use `## Finding [SKEP-N]: Title` (or H3),
+where `N` starts at 1. Do not use `SKEPTIC-N` or another local-ID prefix.
 > **Finding format**: follow `~/.claude/rules/finding-output-format.md`
 
 ---
@@ -259,7 +262,9 @@ Write everything to `exploration_skeptic_findings.md`.
    |---------|------|----------|-------------|----------|
    ```
 
-   - **Finding**: the input finding ID this instance derives from.
+   - **Finding**: copy the PRIOR input finding ID this instance derives from.
+     Never put the newly emitted `SKEP-N` ID in this column, even when the row
+     records a gap filled by that finding.
    - **Axis**: `Direction`, `Similar-Mechanism`, or `Neighbour`.
    - **Instance**: the NAMED concrete instance (e.g. the specific direction,
      the specific sibling path, the specific other occurrence). Never blank,
@@ -276,6 +281,10 @@ Write everything to `exploration_skeptic_findings.md`.
    - **Evidence**: for `NO-GAP` and `ASSESSED`, the concrete file:line (or
      function) where the instance was verified safe, OR the prior finding ID
      that captures it. For `GAP-FILLED`/`RE-OPENED`, the emitted finding ID. A
+     `GAP-FILLED`/`RE-OPENED` Evidence cell contains the exact `SKEP-N` ID and
+     no source locus or range; source evidence belongs in the emitted finding.
+     This prevents a source range such as `L329-L337` from being confused with
+     an action identity. A
      `NO-GAP` row whose Evidence cell is blank, or contains only "explored" /
      "covered" / "touched"-style wording without a named locus, is a contract
      violation and will be re-surfaced downstream as an unexplored instance.

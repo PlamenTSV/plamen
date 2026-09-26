@@ -1387,7 +1387,15 @@ def _backend_argv_prefix_from_selection(
             "Claude backend runtime selection does not replay"
         ) from exc
     backend = selected["backend_launches"]["claude"]
-    if backend["execution_kind"] != "native" or backend["version"] != "2.1.252":
+    version = backend.get("version")
+    if (
+        backend["execution_kind"] != "native"
+        or not isinstance(version, str)
+        or re.fullmatch(
+            r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+            version,
+        ) is None
+    ):
         raise ClaudeProviderPreparationError(
             "Claude backend generation is unsupported"
         )

@@ -506,5 +506,5 @@ def test_rebound_authority_rejects_container_duplicate_inventory_identity(
     ).hexdigest()
     commit_path.write_text(json.dumps(commit), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="identity mismatch"):
+    with pytest.raises(ValueError, match="binding mismatch|identity mismatch"):
         EG.validated_enumgap_promotion_deliveries(tmp_path)

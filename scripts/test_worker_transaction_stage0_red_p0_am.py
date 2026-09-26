@@ -27,6 +27,33 @@ import pytest
 import worker_execution_receipts as W
 
 
+def _admitted_linux_process_authority_available() -> bool:
+    """True only for the reviewed Linux cgroup-v2 plus Landlock boundary."""
+
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        capability = W.process_tree_termination_capability()
+    except Exception:
+        return False
+    return (
+        capability.get("platform") == "LINUX"
+        and capability.get("exhaustive_descendant_termination_authority")
+        is True
+        and W._transaction_write_authority(capability) == "EXHAUSTIVE"
+    )
+
+
+_SUPPORTED_PHYSICAL_PROCESS_ONLY = pytest.mark.skipif(
+    os.name != "nt" and not _admitted_linux_process_authority_available(),
+    reason=(
+        "positive physical-process lifecycle coverage requires Windows "
+        "Job/MIC authority or admitted Linux cgroup-v2 plus Landlock; the "
+        "unsupported POSIX hard stop has its own typed-debt regression"
+    ),
+)
+
+
 _RUNTIME_LAUNCH_FILES = (
     "scripts/plamen_driver.py",
     "scripts/pty_exec.py",
@@ -310,6 +337,7 @@ def _debt(exc: W.WorkerExecutionIncomplete) -> Mapping[str, Any]:
     return json.loads(exc.debt_path.read_text(encoding="utf-8"))
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_execution_completion_is_persisted_only_after_scope_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -339,6 +367,7 @@ def test_execution_completion_is_persisted_only_after_scope_cleanup(
     assert events.index("scope-cleaned") < events.index("completion-persisted")
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_cleanup_failure_emits_debt_and_never_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -363,6 +392,7 @@ def test_cleanup_failure_emits_debt_and_never_completion(
     assert not (tmp_path / "canonical" / "cleanup-debt.json").exists()
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_running_worker_cancellation_closes_tree_and_emits_debt(
     tmp_path: Path,
 ) -> None:
@@ -433,15 +463,18 @@ def test_non_exhaustive_posix_capability_is_debt_before_launch(
         + _write_result_script("unsupported-posix")
     )
 
-    with pytest.raises(W.WorkerExecutionIncomplete) as captured:
+    with pytest.raises(
+        W.NativePosixProcessAuthorityUnavailable,
+        match="NATIVE_POSIX_PROCESS_AUTHORITY_UNAVAILABLE",
+    ):
         _run_fixture(tmp_path, shard="unsupported-posix", script=script)
 
-    assert _debt(captured.value)["reason_code"] == "PROCESS_AUTHORITY_UNSUPPORTED"
     assert not marker.exists()
-    assert not list(captured.value.arm_path.parent.glob("completion_*.json"))
+    assert not (tmp_path / ".worker_execution_receipts").exists()
 
 
 @pytest.mark.parametrize("alias_kind", ("symlink", "hardlink", "reparse"))
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_staged_aliases_are_rejected_as_typed_debt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -520,6 +553,7 @@ def test_staged_reader_rejects_aliases_created_outside_the_worker(
         W._read_staged_regular_file(alias, limit_bytes=4096)
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_staged_member_read_obeys_an_explicit_byte_ceiling(
     tmp_path: Path,
 ) -> None:
@@ -569,6 +603,7 @@ def _canonical_object(value: Mapping[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_armed_attempt_bundle_is_recovered_to_persistent_debt(
     tmp_path: Path,
 ) -> None:
@@ -646,6 +681,7 @@ def test_phase_roster_denominator_is_backend_neutral() -> None:
         assert roster["optional_work_unit_ids"] == ["niche-1"]
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_staged_execution_waits_for_phaseio_canonical_projection(
     tmp_path: Path,
 ) -> None:

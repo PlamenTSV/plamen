@@ -40,6 +40,36 @@ _SEALED_INPUT_KEYS = frozenset(
         "debt",
     }
 )
+_PUBLIC_SEALED_INPUT_KEYS = frozenset(
+    {
+        "run_id",
+        "run_generation",
+        "status",
+        "authority_bindings",
+        "analysis_scope",
+        "coverage",
+        "provider_executions",
+        "internal_cells",
+        "public_projection_policy_digest",
+        "facts",
+        "debt",
+    }
+)
+_PUBLIC_AUTHORITY_KEYS = frozenset(
+    {
+        "execution_authority_digest",
+        "composition_authority_digest",
+        "methodology_package_digest",
+        "activation_decision_digest",
+        "activation_permit_digest",
+        "build_input_snapshot_digest",
+        "candidate_universe_digest",
+        "selected_scope_digest",
+        "capability_selection_digest",
+        "build_plan_digest",
+        "execution_set_digest",
+    }
+)
 _TEST_MARKERS = frozenset(
     {
         "TEST_ONLY_NONAUTHORITATIVE",
@@ -132,7 +162,8 @@ def _candidate_preimage(
 def _validate_sealed_inputs(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ProgramFactsTypeError("sealed composition inputs must be an object")
-    if frozenset(value) != _SEALED_INPUT_KEYS:
+    keys = frozenset(value)
+    if keys not in {_SEALED_INPUT_KEYS, _PUBLIC_SEALED_INPUT_KEYS}:
         raise ProgramFactsTypeError("sealed composition input keys are not exact")
     run_id = value.get("run_id")
     run_generation = value.get("run_generation")
@@ -144,22 +175,50 @@ def _validate_sealed_inputs(value: Mapping[str, Any]) -> dict[str, Any]:
         or run_generation < 0
     ):
         raise ProgramFactsTypeError("composition run_generation is invalid")
-    for key in (
-        "execution_authority_digest",
-        "composition_authority_digest",
-        "methodology_package_digest",
-    ):
-        require_sha256(value.get(key), label=key)
-    for key in ("selected_variant_ids", "selected_capability_ids"):
-        rows = value.get(key)
-        if (
-            not isinstance(rows, Sequence)
-            or isinstance(rows, (str, bytes, bytearray))
-            or not all(isinstance(item, str) and item for item in rows)
+    if keys == _SEALED_INPUT_KEYS:
+        for key in (
+            "execution_authority_digest",
+            "composition_authority_digest",
+            "methodology_package_digest",
         ):
-            raise ProgramFactsTypeError(f"{key} must be a string sequence")
-        if list(rows) != sorted(rows) or len(rows) != len(set(rows)):
-            raise ProgramFactsTypeError(f"{key} must be sorted and unique")
+            require_sha256(value.get(key), label=key)
+        for key in ("selected_variant_ids", "selected_capability_ids"):
+            rows = value.get(key)
+            if (
+                not isinstance(rows, Sequence)
+                or isinstance(rows, (str, bytes, bytearray))
+                or not all(isinstance(item, str) and item for item in rows)
+            ):
+                raise ProgramFactsTypeError(f"{key} must be a string sequence")
+            if list(rows) != sorted(rows) or len(rows) != len(set(rows)):
+                raise ProgramFactsTypeError(f"{key} must be sorted and unique")
+    else:
+        if value.get("status") not in {
+            "WRITTEN", "DEGRADED", "UNAVAILABLE", "FAILED", "STALE"
+        }:
+            raise ProgramFactsTypeError("public composition status is invalid")
+        authority = value.get("authority_bindings")
+        if not isinstance(authority, Mapping) or frozenset(authority) != (
+            _PUBLIC_AUTHORITY_KEYS
+        ):
+            raise ProgramFactsTypeError("public authority denominator is not exact")
+        for key, digest in authority.items():
+            require_sha256(digest, label=f"authority_bindings.{key}")
+        for key in (
+            "analysis_scope", "coverage", "provider_executions", "internal_cells"
+        ):
+            item = value.get(key)
+            if key == "analysis_scope":
+                if not isinstance(item, Mapping):
+                    raise ProgramFactsTypeError("analysis_scope must be an object")
+            elif not isinstance(item, Sequence) or isinstance(
+                item, (str, bytes, bytearray)
+            ):
+                raise ProgramFactsTypeError(f"{key} must be a sequence")
+        require_sha256(
+            value.get("public_projection_policy_digest"),
+            label="public_projection_policy_digest",
+        )
     for key in ("facts", "debt"):
         rows = value.get(key)
         if not isinstance(rows, Sequence) or isinstance(
@@ -169,48 +228,153 @@ def _validate_sealed_inputs(value: Mapping[str, Any]) -> dict[str, Any]:
     return dict(value)
 
 
+def _derived_legacy_public_model(
+    inputs: Mapping[str, Any], permit_digest: str,
+) -> dict[str, Any]:
+    """Project the historical composer ABI into the documented public ABI.
+
+    This compatibility path remains deterministic for the frozen composer
+    corpus.  Production workspace composition supplies the eleven authorities
+    directly and never uses these derived compatibility witnesses.
+    """
+
+    variants = list(inputs["selected_variant_ids"])
+    capabilities = list(inputs["selected_capability_ids"])
+    def digest(label: str, value: Any) -> str:
+        return hashlib.sha256(
+            canonical_json_bytes({"label": label, "value": value})
+        ).hexdigest()
+    authority = {
+        "execution_authority_digest": inputs["execution_authority_digest"],
+        "composition_authority_digest": inputs["composition_authority_digest"],
+        "methodology_package_digest": inputs["methodology_package_digest"],
+        "activation_decision_digest": digest("legacy-activation", permit_digest),
+        "activation_permit_digest": permit_digest,
+        "build_input_snapshot_digest": digest("legacy-build-input", variants),
+        "candidate_universe_digest": digest("legacy-candidates", variants),
+        "selected_scope_digest": digest("legacy-scope", variants),
+        "capability_selection_digest": digest("legacy-capabilities", capabilities),
+        "build_plan_digest": digest("legacy-build-plan", variants),
+        "execution_set_digest": digest(
+            "legacy-execution-set", [variants, capabilities, inputs["facts"]]
+        ),
+    }
+    pairs = [(capability, variant) for capability in capabilities for variant in variants]
+    coverage = [
+        {
+            "capability_id": capability,
+            "build_variant_id": variant,
+            "status": "PARTIAL" if inputs["debt"] else "OK",
+            "unresolved_debt_ids": [
+                str(row.get("debt_id")) for row in inputs["debt"]
+                if isinstance(row, Mapping) and row.get("debt_id")
+            ],
+        }
+        for capability, variant in pairs
+    ]
+    internal = [
+        {
+            "capability_id": row["capability_id"],
+            "build_variant_id": row["build_variant_id"],
+            "internal_state": "PARTIAL" if inputs["debt"] else "OK",
+            "public_status": row["status"],
+        }
+        for row in coverage
+    ]
+    executions = [
+        {
+            "provider_id": "evm.slither.typed",
+            "build_variant_id": variant,
+            "capability_id": capability,
+            "request_digest": digest("legacy-request", [variant, capability]),
+            "request_size": 1,
+            "environment_digest": authority["build_input_snapshot_digest"],
+            "raw_cas": {
+                "namespace": "program-facts-raw-v2",
+                "digest": digest("legacy-raw", [variant, capability]),
+                "size": 1,
+            },
+            "execution_set_row_digest": authority["execution_set_digest"],
+        }
+        for capability, variant in pairs
+    ]
+    return {
+        "run_id": inputs["run_id"],
+        "run_generation": inputs["run_generation"],
+        "status": "DEGRADED" if inputs["debt"] else "WRITTEN",
+        "authority_bindings": authority,
+        "analysis_scope": {
+            "claim": "EXACT_SELECTED_SCOPE_NOT_PROJECT_COMPLETE",
+            "selected_candidate_ids": variants,
+            "unresolved_debt_ids": [
+                str(row.get("debt_id")) for row in inputs["debt"]
+                if isinstance(row, Mapping) and row.get("debt_id")
+            ],
+        },
+        "coverage": coverage,
+        "provider_executions": executions,
+        "internal_cells": internal,
+        "public_projection_policy_digest": digest("legacy-projection", authority),
+        "facts": list(inputs["facts"]),
+        "debt": list(inputs["debt"]),
+    }
+
+
 def _pure_candidate_artifacts(
     inputs: Mapping[str, Any],
     *,
     authority_class: str,
-    permit_digest: str | None,
+    permit_digest: str,
 ) -> dict[str, bytes]:
     """Construct deterministic bytes without publication or discovery."""
 
-    common = {
-        "run_id": inputs["run_id"],
-        "run_generation": inputs["run_generation"],
-        "execution_authority_digest": inputs["execution_authority_digest"],
-        "composition_authority_digest": inputs["composition_authority_digest"],
-        "methodology_package_digest": inputs["methodology_package_digest"],
-        "authority_class": authority_class,
-    }
+    model = (
+        dict(inputs)
+        if frozenset(inputs) == _PUBLIC_SEALED_INPUT_KEYS
+        else _derived_legacy_public_model(inputs, permit_digest)
+    )
+    debt_rows = list(model["debt"])
+    status = str(model["status"])
+    authority = dict(model["authority_bindings"])
     payload = {
         "schema_version": "plamen.mechanical_program_facts.v2",
-        **common,
-        "selected_variant_ids": list(inputs["selected_variant_ids"]),
-        "selected_capability_ids": list(inputs["selected_capability_ids"]),
-        "facts": list(inputs["facts"]),
+        "status": status,
+        "authority_bindings": authority,
+        "analysis_scope": dict(model["analysis_scope"]),
+        "coverage": list(model["coverage"]),
+        "facts": list(model["facts"]),
+        "terminal_negative_authority": False,
     }
     debt = {
         "schema_version": "plamen.mechanical_program_facts_debt.v2",
-        **common,
-        "debt": list(inputs["debt"]),
+        "status": status,
+        "authority_bindings": authority,
+        "rows": debt_rows,
         "terminal_negative_authority": False,
     }
-    payload_bytes = canonical_file_bytes(payload)
-    debt_bytes = canonical_file_bytes(debt)
     receipt = {
         "schema_version": "plamen.mechanical_program_facts_receipt.v2",
-        **common,
-        "permit_digest": permit_digest,
-        "payload_sha256": hashlib.sha256(payload_bytes).hexdigest(),
-        "debt_sha256": hashlib.sha256(debt_bytes).hexdigest(),
+        "run_id": model["run_id"],
+        "run_generation": model["run_generation"],
+        "status": status,
+        "authority_bindings": authority,
+        "provider_executions": list(model["provider_executions"]),
+        "internal_cells": list(model["internal_cells"]),
+        "public_projection_policy_digest": model[
+            "public_projection_policy_digest"
+        ],
+        "receipt_body_sha256": "",
     }
+    receipt["receipt_body_sha256"] = hashlib.sha256(
+        canonical_json_bytes({
+            key: value for key, value in receipt.items()
+            if key != "receipt_body_sha256"
+        })
+    ).hexdigest()
     return {
-        _PUBLIC_IDENTITIES[0]: payload_bytes,
+        _PUBLIC_IDENTITIES[0]: canonical_file_bytes(payload),
         _PUBLIC_IDENTITIES[1]: canonical_file_bytes(receipt),
-        _PUBLIC_IDENTITIES[2]: debt_bytes,
+        _PUBLIC_IDENTITIES[2]: canonical_file_bytes(debt),
     }
 
 
@@ -282,10 +446,25 @@ def _candidate_from_validated_inputs(
         "composition_authority_digest",
         "methodology_package_digest",
     ):
-        if permit[key] != inputs[key]:
+        expected = (
+            inputs["authority_bindings"][key]
+            if frozenset(inputs) == _PUBLIC_SEALED_INPUT_KEYS
+            else inputs[key]
+        )
+        if permit[key] != expected:
             raise ProgramFactsTypeError(
                 f"production permit {key!r} differs from sealed inputs"
             )
+    if frozenset(inputs) == _PUBLIC_SEALED_INPUT_KEYS:
+        authority = inputs["authority_bindings"]
+        for permit_key, authority_key in (
+            ("activation_decision_digest", "activation_decision_digest"),
+            ("permit_digest", "activation_permit_digest"),
+        ):
+            if permit[permit_key] != authority[authority_key]:
+                raise ProgramFactsTypeError(
+                    f"production permit {permit_key!r} differs from public authority"
+                )
     permit_binding_digest = hashlib.sha256(
         canonical_json_bytes(permit)
     ).hexdigest()
@@ -323,6 +502,67 @@ def _candidate_from_validated_inputs(
     }
 
 
+def _denied_candidate(
+    inputs: Mapping[str, Any], denial: Mapping[str, Any]
+) -> dict[str, Any]:
+    reason = denial.get("reason")
+    if not isinstance(reason, str) or not reason:
+        raise ProgramFactsTypeError("denied permit envelope requires a reason")
+    denial_digest = hashlib.sha256(canonical_json_bytes(denial)).hexdigest()
+    if frozenset(inputs) == _PUBLIC_SEALED_INPUT_KEYS:
+        model = deepcopy(dict(inputs))
+        model["status"] = "UNAVAILABLE"
+        authority = dict(model["authority_bindings"])
+        authority["activation_permit_digest"] = denial_digest
+        model["authority_bindings"] = authority
+        model["facts"] = []
+        debt_unsigned = {
+            "debt_id": f"PFV2D-{denial_digest[:24]}",
+            "reason_code": reason,
+            "terminal_negative_authority": False,
+        }
+        model["debt"] = [debt_unsigned]
+    else:
+        model = _derived_legacy_public_model(inputs, denial_digest)
+        model["status"] = "UNAVAILABLE"
+        model["facts"] = []
+        model["debt"] = [{
+            "debt_id": f"PFV2D-{denial_digest[:24]}",
+            "reason_code": reason,
+            "terminal_negative_authority": False,
+        }]
+    sealed_digest = hashlib.sha256(canonical_json_bytes(inputs)).hexdigest()
+    artifacts_by_identity = _pure_candidate_artifacts(
+        model,
+        authority_class="ABSENT_DENIED",
+        permit_digest=denial_digest,
+    )
+    artifacts = tuple(
+        (identity, bytes(artifacts_by_identity[identity]))
+        for identity in _PUBLIC_IDENTITIES
+    )
+    preimage = _candidate_preimage(
+        run_id=str(inputs["run_id"]),
+        run_generation=int(inputs["run_generation"]),
+        permit_digest=denial_digest,
+        permit_binding_digest=denial_digest,
+        sealed_input_digest=sealed_digest,
+        artifacts=artifacts,
+    )
+    preimage["authority_class"] = "ABSENT_DENIED"
+    return {
+        **preimage,
+        "artifacts": artifacts,
+        "candidate_digest": hashlib.sha256(
+            canonical_json_bytes(preimage)
+        ).hexdigest(),
+        "status": "UNAVAILABLE",
+        "positive_fact_count": 0,
+        "positive_node_count": 0,
+        "debt": list(model["debt"]),
+    }
+
+
 def compose_program_facts_v2_production(
     sealed_composition_inputs: Mapping[str, Any],
     activation_permit_document: Mapping[str, Any] | object,
@@ -352,23 +592,7 @@ def compose_program_facts_v2_production(
         == frozenset({"state", "reason"})
         and activation_permit_document.get("state") == "ABSENT_DENIED"
     ):
-        reason = activation_permit_document.get("reason")
-        if not isinstance(reason, str) or not reason:
-            raise ProgramFactsTypeError(
-                "denied permit envelope requires a reason"
-            )
-        return {
-            "status": "UNAVAILABLE",
-            "authority_class": "ABSENT_DENIED",
-            "positive_fact_count": 0,
-            "positive_node_count": 0,
-            "debt": [
-                {
-                    "reason": reason,
-                    "terminal_negative_authority": False,
-                }
-            ],
-        }
+        return _denied_candidate(inputs, activation_permit_document)
     permit = _validated_permit_for_composition(
         activation_permit_document,
         provider_environment=provider_environment,

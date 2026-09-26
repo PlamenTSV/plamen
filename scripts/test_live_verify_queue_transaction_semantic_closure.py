@@ -414,6 +414,7 @@ def _chain_pair_projection(
         ),
         "receipt_path": receipt,
         "logical_to_physical": aliases,
+        "identity_universe_snapshot_path": None,
         "required_paths": sorted([*aliases.values(), receipt]),
         "debt": [],
         "proof_authority": "NONE",
@@ -810,6 +811,7 @@ def test_t6_is_sole_typed_merge_and_closes_every_source_obligation(
     }
     assert t6["identity_invariants"] == {
         "unique_work_item_ids": True,
+        "typed_one_to_one_identity_transitions": True,
         "additive_collision_becomes_visible_debt": True,
         "source_obligation_partition": [
             "ACTIVE",

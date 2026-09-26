@@ -29,6 +29,7 @@ import plamen_driver as D
 import plamen_mechanical as M
 import plamen_prompt as P
 import security_obligation_authority as A
+import security_obligation_phaseio_authority as C
 
 
 RUN_ID = "12345678-1234-4234-9234-123456789abc"
@@ -106,7 +107,10 @@ def _config(root: Path) -> dict[str, object]:
         "scratchpad": str(root),
         "project_root": str(root.parent),
         "_run_id": RUN_ID,
-        "_audit_snapshot": {"snapshot_digest": SNAPSHOT},
+        "_audit_snapshot": {
+            "snapshot_digest": SNAPSHOT,
+            "components": {"source_scope": {"digest": SOURCE_SCOPE}},
+        },
     }
 
 
@@ -367,14 +371,21 @@ def test_post_depth_crash_after_output_before_commit_reuses_armed_receipt(
     _checkpoint(scratchpad)
     _graph(scratchpad)
     config = _config(scratchpad)
+    context = C.build_run_context_from_config(config, run_id=RUN_ID)
     exact_inputs = A.security_obligation_input_artifacts(
-        scratchpad, stage="post_depth"
+        scratchpad,
+        stage="post_depth",
+        run_context_authority=context,
     )
     contract, launch = D._security_obligation_contract_and_launch(
         scratchpad,
         config,
         stage="post_depth",
         exact_inputs=exact_inputs,
+        run_context=context,
+    )
+    extension = C.build_phaseio_context_extension(
+        context, contract, launch, run_id=RUN_ID
     )
     record_work_unit_inputs(
         scratchpad,
@@ -382,6 +393,7 @@ def test_post_depth_crash_after_output_before_commit_reuses_armed_receipt(
         contract,
         launch,
         run_id=RUN_ID,
+        preexecution_authority=extension,
     )
     A.write_security_obligation_authority(
         scratchpad,
@@ -390,6 +402,7 @@ def test_post_depth_crash_after_output_before_commit_reuses_armed_receipt(
         run_id=RUN_ID,
         source_snapshot_digest=SNAPSHOT,
         stage="post_depth",
+        run_context_authority=context,
     )
 
     assert D._record_security_obligation_phase_io(

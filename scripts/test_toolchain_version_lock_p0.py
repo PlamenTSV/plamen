@@ -188,6 +188,24 @@ def test_governed_debt_and_external_managers_are_non_authoritative() -> None:
         "deterministic_provider_authority": True,
         "mismatch_effect": "REVOKE_ON_REVIEWED_CONTENT_MISMATCH",
     }
+    medusa = rows["medusa"]
+    assert medusa["update_policy"] == {
+        "state": "REVIEWED_NATIVE_SIGNED_CONTENT",
+        "acquisition_scope": "SETUP_ONLY",
+        "policy_path": "verification_policy/medusa_acquisition.v1.json",
+        "policy_sha256": (
+            "4112703567b4c398207eaf09c75503840704be44b663a43e82fae42aa32a0208"
+        ),
+        "signed_receipt_contract": "PLAMEN_NATIVE_IMAGE_MEMBER_RECEIPT_V2",
+        "next_required_authority": (
+            "PLAMEN_NATIVE_SOURCE_BOOTSTRAP_COORDINATOR_RECEIPT_V1"
+        ),
+    }
+    assert medusa["runtime_authority"] == {
+        "identity_status": "MATCH",
+        "deterministic_provider_authority": True,
+        "mismatch_effect": "REVOKE_ON_SIGNED_IMAGE_MEMBER_MISMATCH",
+    }
 
 
 def _command_identity(

@@ -45,10 +45,12 @@ def test_each_direct_component_replacement_is_not_canonical_authority(
     if helper_name == "_config_component":
         replacement = lambda _config: deepcopy(forged_component)
     elif helper_name == "_methodology_component":
-        replacement = lambda _root: deepcopy(forged_component)
+        replacement = lambda _root, _config=None: deepcopy(forged_component)
     else:
         replacement = (
-            lambda _root, *, project_root=None: deepcopy(forged_component)
+            lambda _root, *, project_root=None, config=None: deepcopy(
+                forged_component
+            )
         )
     monkeypatch.setattr(audit_snapshot, helper_name, replacement)
 

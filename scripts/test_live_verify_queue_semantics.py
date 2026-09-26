@@ -1,6 +1,7 @@
 """Focused production-semantic checks for the live T0--T8 executor."""
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import tempfile
@@ -16,6 +17,7 @@ from live_verify_queue_semantics import (
     build_live_verify_queue_semantic_executor,
     live_verify_queue_semantic_gap_map,
 )
+from queue_work_items import QueueWorkItem
 
 
 def _run(
@@ -192,4 +194,116 @@ def test_t8_rejects_self_consistent_source_obligation_row_forgery(
         build_live_verify_queue_semantic_executor(plan)(
             unit=t8,
             frozen_inputs=frozen,
+        )
+
+
+def _identity_transition_item(
+    work_item_id: str,
+    *,
+    previous_id: str | None = None,
+    queue_priority: int = 1,
+) -> QueueWorkItem:
+    row = {
+        "finding id": work_item_id,
+        "candidate identity": work_item_id,
+        "queue #": str(queue_priority),
+        "severity": "High",
+        "title": "Same substantive claim",
+        "bug class": "same-bug-class",
+        "preferred tag": "CODE-TRACE",
+        "location": "contracts/Target.sol:41",
+        "primary artifact": "RS-01",
+        "poc class": "unit",
+    }
+    if previous_id is not None:
+        row["expected output file"] = f"verify_{previous_id}.md"
+    return QueueWorkItem.from_legacy_row(row)
+
+
+def test_policy_identity_accounting_accepts_only_explicit_lossless_relabel() -> None:
+    source = _identity_transition_item("INV-003", queue_priority=3)
+    target = _identity_transition_item(
+        "H-03", previous_id="INV-003", queue_priority=1
+    )
+
+    accounting = semantics._build_policy_identity_accounting(
+        (source,), (target,), ()
+    )
+
+    assert accounting["exact_partition"] is True
+    assert accounting["visible_debt_ids"] == []
+    assert accounting["unauthorized_target_ids"] == []
+    assert accounting["identity_transitions"] == [
+        {
+            "source_work_item_id": "INV-003",
+            "target_work_item_id": "H-03",
+            "target_partition": "ACTIVE",
+            "transition_kind": "EXPLICIT_TYPED_RELABEL",
+            "source_work_item_digest": source.digest,
+            "target_work_item_digest": target.digest,
+            "semantic_payload_digest": semantics._digest(
+                semantics._identity_neutral_payload(source)
+            ),
+        }
+    ]
+    semantics._validate_policy_identity_accounting(
+        accounting, (target,), ()
+    )
+
+
+@pytest.mark.parametrize(
+    "targets",
+    (
+        pytest.param(
+            lambda target: (replace(target, title="Mutated claim"),),
+            id="semantic-mutation",
+        ),
+        pytest.param(
+            lambda target: (
+                target,
+                _identity_transition_item(
+                    "H-04", previous_id="INV-003", queue_priority=2
+                ),
+            ),
+            id="one-source-fanned-to-two-targets",
+        ),
+        pytest.param(
+            lambda _target: (
+                _identity_transition_item("H-99", queue_priority=1),
+            ),
+            id="invented-target-without-lineage",
+        ),
+    ),
+)
+def test_policy_identity_accounting_rejects_unsafe_identity_changes(
+    targets: Any,
+) -> None:
+    source = _identity_transition_item("INV-003", queue_priority=3)
+    target = _identity_transition_item(
+        "H-03", previous_id="INV-003", queue_priority=1
+    )
+
+    accounting = semantics._build_policy_identity_accounting(
+        (source,), targets(target), ()
+    )
+
+    assert accounting["exact_partition"] is False
+    assert accounting["visible_debt_ids"] == ["INV-003"]
+    assert accounting["unauthorized_target_ids"]
+
+
+def test_policy_identity_accounting_replay_rejects_transition_tampering() -> None:
+    source = _identity_transition_item("INV-003")
+    target = _identity_transition_item("H-03", previous_id="INV-003")
+    accounting = semantics._build_policy_identity_accounting(
+        (source,), (target,), ()
+    )
+    accounting["identity_transitions"][0]["target_work_item_digest"] = "0" * 64
+
+    with pytest.raises(
+        LiveVerifyQueueSemanticError,
+        match="digest- and lineage-bound",
+    ):
+        semantics._validate_policy_identity_accounting(
+            accounting, (target,), ()
         )

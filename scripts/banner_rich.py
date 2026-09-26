@@ -49,12 +49,12 @@ MODE_TABLE.add_column("Agents", width=14, style="color(75)")
 MODE_TABLE.add_column("Scope", width=18, style="#22C72E")
 MODE_TABLE.add_column("Needs", style="color(240)")
 
-MODE_TABLE.add_row("1", "Core Audit", "22–40 agents", "HIGH/CRIT only", "contract path or 0x address")
-MODE_TABLE.add_row("2", "Thorough Audit", "32–90 agents", "ALL severities", "contract + optional docs")
-MODE_TABLE.add_row("3", "Compare", "variable", "DELTA report", "contract + ground truth PDF/MD")
+MODE_TABLE.add_row("1", "Light Audit", "18–22 agents", "fast review", "contract path or 0x address")
+MODE_TABLE.add_row("2", "Core Audit", "30–50 agents", "deep review", "contract + optional docs")
+MODE_TABLE.add_row("3", "Thorough Audit", "40–100 agents", "ALL severities", "contract + optional docs")
 
 # ── Footer ───────────────────────────────────────────────────
-FOOTER = Text("  you'll provide →  target (path/address)  ·  scope.txt (optional)  ·  report (mode 3 only)")
+FOOTER = Text("  you'll provide →  target (path/address)  ·  scope.txt (optional)")
 FOOTER.stylize("color(245)")
 
 PROMPT_LINE = Text()

@@ -34,6 +34,9 @@ from typing import Any, Mapping, Sequence
 import claude_stored_subscription_source as _stored_subscription
 import claude_child_environment as _child_environment
 import owned_directory_guard as _owned_directory
+from owned_process_scope import (
+    PROCESS_CREATED_BUT_NOT_RETURNED_TERMINATED,
+)
 
 
 _validate_stored_subscription_file_shape = (
@@ -62,6 +65,13 @@ _POSTPROCESS_AUTHORITY_CAPABILITY = object()
 _NORMAL_FAILURE_TOKEN_CAPABILITY = object()
 _BOUND_PRELAUNCH_TOKEN_CAPABILITY = object()
 _ATTACH_FAILURE_TOKEN_CAPABILITY = object()
+_BOUND_PRELAUNCH_PROCESS_CREATION_STATES = frozenset(
+    {
+        "NOT_ATTEMPTED",
+        "CREATION_FAILED_WITHOUT_PROCESS_OBJECT",
+        PROCESS_CREATED_BUT_NOT_RETURNED_TERMINATED,
+    }
+)
 _PROFILE_GUARD_SUBJECT_SCHEMA = (
     "plamen.claude_attempt_profile.directory_guard_subject.v1"
 )
@@ -99,7 +109,7 @@ _CURRENT_ATTEMPT_COMPLETION_CREDENTIAL_STATUSES = {
     "ORIGINAL_PRIVATE_COPY_UNCHANGED",
     _PRIVATE_COPY_MUTATION_DISCARD_ONLY,
 }
-_CLAUDE_STATE_VERSION = "2.1.252"
+LEGACY_CLAUDE_STATE_VERSION = "2.1.252"
 _CLAUDE_STATE_MIGRATION_VERSION = 13
 _CLAUDE_STATE_INITIAL_STARTUPS = 1
 _MAX_STATE_BYTES = 4 * 1024 * 1024
@@ -1353,7 +1363,7 @@ def _validate_oauth_account_state(
     *,
     binding: Mapping[str, Any],
 ) -> None:
-    """Validate Claude 2.1.252's exact, ephemeral account-metadata shape."""
+    """Validate legacy Claude 2.1.252's account-metadata fixture shape."""
 
     if (
         binding.get("credential_mode") != "COPIED_STORED_SUBSCRIPTION"
@@ -1458,9 +1468,17 @@ def _validate_postprocess_state_projection(
     state: Mapping[str, Any],
     binding: Mapping[str, Any],
 ) -> None:
-    """Validate only Claude 2.1.252's bounded, non-authoritative deltas."""
+    """Validate bounded deltas against the generation bound at creation."""
 
-    if binding.get("state_provider_version") != _CLAUDE_STATE_VERSION:
+    provider_version = binding.get("state_provider_version")
+    if (
+        not isinstance(provider_version, str)
+        or re.fullmatch(
+            r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+            provider_version,
+        )
+        is None
+    ):
         raise ClaudeAttemptProfileError(
             "attempt state provider-version authority drifted"
         )
@@ -1475,8 +1493,8 @@ def _validate_postprocess_state_projection(
         "autoUpdates": False,
         "hasCompletedOnboarding": True,
         "migrationVersion": _CLAUDE_STATE_MIGRATION_VERSION,
-        "lastOnboardingVersion": _CLAUDE_STATE_VERSION,
-        "lastReleaseNotesSeen": _CLAUDE_STATE_VERSION,
+        "lastOnboardingVersion": provider_version,
+        "lastReleaseNotesSeen": provider_version,
     }
     for key, expected in exact_root.items():
         if state.get(key) != expected:
@@ -1561,7 +1579,7 @@ def _validate_postprocess_state_projection(
         )
     if (
         "firstStartVersion" in state
-        and state["firstStartVersion"] != _CLAUDE_STATE_VERSION
+        and state["firstStartVersion"] != provider_version
     ):
         raise ClaudeAttemptProfileError(
             "attempt state first-start version drifted"
@@ -3141,8 +3159,16 @@ class ClaudeAttemptProfile:
             ),
             "process_scope_identity": closure._scope_identity,
             "process_scope_created": True,
+            "process_created": (
+                closure._process_creation_state
+                == PROCESS_CREATED_BUT_NOT_RETURNED_TERMINATED
+            ),
             "process_attached": False,
             "process_creation_state": closure._process_creation_state,
+            "created_process_termination_proven": (
+                closure._process_creation_state
+                == PROCESS_CREATED_BUT_NOT_RETURNED_TERMINATED
+            ),
             "cleanup_mode": "BOUND_PRELAUNCH_ABORT",
             "completion_authority": False,
             "directory_guard_revocation_receipt_sha256": (
@@ -3648,6 +3674,42 @@ def _replay_claude_attempt_profile_binding(
     if digest != _binding_digest(core):
         raise ClaudeAttemptProfileError(
             "attempt profile binding digest is invalid"
+        )
+    generation_fields = (
+        candidate.get("install_generation_sha256"),
+        candidate.get("cli_behavior_contract_sha256"),
+        candidate.get("cli_conformance_sha256"),
+    )
+    if candidate.get("state_provider_version") == LEGACY_CLAUDE_STATE_VERSION:
+        generation_binding_valid = all(
+            value is None for value in generation_fields
+        ) or all(
+            isinstance(value, str) and _SHA256_RE.fullmatch(value) is not None
+            for value in generation_fields
+        )
+    else:
+        try:
+            import posix_backend_launch_policy as launch_policy
+
+            expected_behavior = (
+                launch_policy.backend_cli_behavior_contract_sha256("claude")
+            )
+        except Exception as exc:
+            raise ClaudeAttemptProfileError(
+                "Claude install-generation behavior contract is unavailable"
+            ) from exc
+        generation_binding_valid = (
+            all(
+                isinstance(value, str)
+                and _SHA256_RE.fullmatch(value) is not None
+                for value in generation_fields
+            )
+            and candidate.get("cli_behavior_contract_sha256")
+            == expected_behavior
+        )
+    if not generation_binding_valid:
+        raise ClaudeAttemptProfileError(
+            "attempt profile install-generation binding is invalid"
         )
     startup = _normalize_startup_permit_binding(
         candidate["startup_permit_binding"],
@@ -4229,10 +4291,15 @@ def replay_claude_attempt_profile_revocation(
             or candidate.get("process_scope_created") is not True
             or candidate.get("process_attached") is not False
             or candidate.get("process_creation_state")
-            not in {
-                "NOT_ATTEMPTED",
-                "CREATION_FAILED_WITHOUT_PROCESS_OBJECT",
-            }
+            not in _BOUND_PRELAUNCH_PROCESS_CREATION_STATES
+            or candidate.get("process_created") is not (
+                candidate.get("process_creation_state")
+                == PROCESS_CREATED_BUT_NOT_RETURNED_TERMINATED
+            )
+            or candidate.get("created_process_termination_proven") is not (
+                candidate.get("process_creation_state")
+                == PROCESS_CREATED_BUT_NOT_RETURNED_TERMINATED
+            )
             or "auxiliary_lease_revocation_sha256" in candidate
         ):
             raise ClaudeAttemptProfileError(
@@ -4586,13 +4653,14 @@ def prove_claude_bound_prelaunch_scope_closed(
         "process_creation_state",
         None,
     )
-    if process_creation_state not in {
-        "NOT_ATTEMPTED",
-        "CREATION_FAILED_WITHOUT_PROCESS_OBJECT",
-    }:
+    if process_creation_state not in _BOUND_PRELAUNCH_PROCESS_CREATION_STATES:
         raise ClaudeAttemptProfileError(
-            "bound-prelaunch cleanup requires a no-process creation state"
+            "bound-prelaunch cleanup requires a no-live-process creation state"
         )
+    process_existed_but_was_terminated = (
+        process_creation_state
+        == PROCESS_CREATED_BUT_NOT_RETURNED_TERMINATED
+    )
     process_creation_evidence = getattr(
         scope,
         "process_creation_evidence",
@@ -4601,12 +4669,13 @@ def prove_claude_bound_prelaunch_scope_closed(
     expected_creation_evidence = {
         "state": process_creation_state,
         "creation_attempted": (
-            process_creation_state
-            == "CREATION_FAILED_WITHOUT_PROCESS_OBJECT"
+            process_creation_state != "NOT_ATTEMPTED"
         ),
         "process_object_returned": False,
         "attached": False,
-        "created_process_termination_proven": False,
+        "created_process_termination_proven": (
+            process_existed_but_was_terminated
+        ),
     }
     if process_creation_evidence != expected_creation_evidence:
         raise ClaudeAttemptProfileError(
@@ -4647,9 +4716,13 @@ def prove_claude_bound_prelaunch_scope_closed(
         "process_scope_identity": scope_identity,
         "process_scope_bound": True,
         "process_attached": False,
+        "process_created": process_existed_but_was_terminated,
         "process_creation_state": process_creation_state,
         "process_creation_evidence": expected_creation_evidence,
-        "process_terminated": False,
+        "created_process_termination_proven": (
+            process_existed_but_was_terminated
+        ),
+        "process_terminated": process_existed_but_was_terminated,
         "pre_release_process_identity_absent": True,
         "closed": True,
         "population_zero_proven": True,
@@ -4816,8 +4889,27 @@ def materialize_claude_attempt_profile(
     home_variable_policy: str,
     permission_mode: str,
     windows_job_only_restricted: bool = False,
+    claude_code_version: str = LEGACY_CLAUDE_STATE_VERSION,
+    install_generation_authority: object | None = None,
 ) -> ClaudeAttemptProfile:
     """Materialize a private profile inside one already armed opaque lease."""
+
+    generation_projection = None
+    if install_generation_authority is not None:
+        try:
+            generation_projection = (
+                _child_environment._claude_install_generation_projection(
+                    install_generation_authority,
+                    claude_code_version=claude_code_version,
+                )
+            )
+        except _child_environment.ClaudeChildEnvironmentError as exc:
+            raise ClaudeAttemptProfileError(str(exc)) from exc
+    elif claude_code_version != LEGACY_CLAUDE_STATE_VERSION:
+        raise ClaudeAttemptProfileError(
+            "current Claude attempt state requires authenticated "
+            "install-generation semantic conformance"
+        )
 
     lease, lease_binding, runtime = _live_auxiliary_lease(
         leased_parent,
@@ -5229,8 +5321,8 @@ def materialize_claude_attempt_profile(
             "autoUpdates": False,
             "hasCompletedOnboarding": True,
             "migrationVersion": _CLAUDE_STATE_MIGRATION_VERSION,
-            "lastOnboardingVersion": _CLAUDE_STATE_VERSION,
-            "lastReleaseNotesSeen": _CLAUDE_STATE_VERSION,
+            "lastOnboardingVersion": claude_code_version,
+            "lastReleaseNotesSeen": claude_code_version,
             "bypassPermissionsModeAccepted": True,
             "projects": projects,
         }
@@ -5339,7 +5431,10 @@ def materialize_claude_attempt_profile(
             "credential_copy": credential_materialization,
             "settings_sha256": _sha(settings_raw),
             "state_sha256": _sha(state_raw),
-            "state_provider_version": _CLAUDE_STATE_VERSION,
+            "state_provider_version": claude_code_version,
+            **_child_environment._install_generation_receipt_fields(
+                generation_projection
+            ),
             "attempt_profile_created_at_utc": (
                 attempt_profile_created_at_utc
             ),

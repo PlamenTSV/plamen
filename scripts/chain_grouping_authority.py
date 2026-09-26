@@ -52,6 +52,11 @@ def _digest(value: Mapping[str, Any]) -> str:
 
 def _atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if not path.is_symlink() and path.is_file() and path.read_bytes() == data:
+            return
+    except OSError:
+        pass
     tmp = path.with_name(f".{path.name}.p0w.tmp")
     with open(tmp, "wb") as handle:
         handle.write(data)

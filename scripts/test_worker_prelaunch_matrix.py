@@ -152,11 +152,19 @@ def test_unchanged_retry_is_byte_stable_and_new_input_drift_is_fatal(
         "timeout_s": 120,
     }
 
-    # A sparse fixture deliberately exercises repair-then-degrade: missing
-    # semantic inputs are recorded as INPUT_DEBT but do not suppress recall.
-    assert D._prepare_typed_model_worker_launch(**kwargs) == []
+    # Sparse inputs remain durable INPUT_DEBT. Depth additionally requires an
+    # exact INPUTS_BOUND proof before launch; recording the debt cannot grant
+    # execution. Repeating either admission outcome must preserve its binding.
+    first_issues = D._prepare_typed_model_worker_launch(**kwargs)
+    if phase_name == "depth":
+        assert len(first_issues) == 1
+        assert "exact Depth work unit is not INPUTS_BOUND" in first_issues[0]
+        assert "semantic_status='INPUT_DEBT'" in first_issues[0]
+        assert "execution_state='INPUTS_BOUND_PREEXECUTION'" in first_issues[0]
+    else:
+        assert first_issues == []
     first = (tmp_path / "_artifact_state.json").read_bytes()
-    assert D._prepare_typed_model_worker_launch(**kwargs) == []
+    assert D._prepare_typed_model_worker_launch(**kwargs) == first_issues
     assert (tmp_path / "_artifact_state.json").read_bytes() == first
 
     contract, _launch = D._typed_model_worker_contract_and_launch(**kwargs)
@@ -726,32 +734,52 @@ def test_recon_pool_maps_outer_retry_to_fresh_worker_attempts(
     monkeypatch.setattr(D.display, "print_phase_heartbeat", lambda *_a, **_k: None)
     monkeypatch.setattr(D.display, "spin", lambda *_a, **_k: None)
 
-    rc = D._run_recon_worker_pool_pty(
-        scratchpad=tmp_path,
-        project_root=str(tmp_path),
-        config=config,
-        phase=phase,
-        base_cmd=[],
-        env={},
-        timeout=120,
-        quiescence_s=0.1,
-        attempt=2,
-    )
+    def _dispatch() -> int:
+        return D._run_recon_worker_pool_pty(
+            scratchpad=tmp_path,
+            project_root=str(tmp_path),
+            config=config,
+            phase=phase,
+            base_cmd=[],
+            env={},
+            timeout=120,
+            quiescence_s=0.1,
+            attempt=2,
+        )
 
-    assert rc == 0
-    assert bound_attempts == [3]
-    assert launched_attempts == [3]
+    def _band() -> int:
+        return D._transport_generations_for_attempt(
+            scratchpad=tmp_path, phase_name="recon", outer_attempt=2
+        )[-1]
+
+    assert _dispatch() == 0
+    # The leaf namespace follows the durable transport band reserved for THIS
+    # dispatch, never the semantic attempt.
+    first_band = _band()
+    first = D._recon_worker_attempt_ordinal(first_band, 1)
+    assert bound_attempts == [first]
+    assert launched_attempts == [first]
+
+    # Rate-limit recovery deliberately re-dispatches the SAME semantic attempt
+    # rather than spending the retry budget.  It must still get fresh leaf
+    # identities or the launcher refuses every worker (DODO run25).
+    complete.clear()
+    bound_attempts.clear()
+    launched_attempts.clear()
+    assert _dispatch() == 0
+    replay_band = _band()
+    assert replay_band > first_band
+    replay = D._recon_worker_attempt_ordinal(replay_band, 1)
+    assert bound_attempts == [replay]
+    assert launched_attempts == [replay]
+    assert replay != first
 
 
-@pytest.mark.parametrize(
-    ("outer_attempt", "expected"),
-    ((1, [1, 2]), (2, [3, 4])),
-)
-def test_recon_pool_executes_both_rounds_in_outer_attempt_namespace(
+@pytest.mark.parametrize("outer_attempt", (1, 2))
+def test_recon_pool_executes_both_rounds_in_reserved_transport_band(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     outer_attempt: int,
-    expected: list[int],
 ) -> None:
     phase = _phase("recon")
     config = _config(tmp_path, "claude")
@@ -800,8 +828,21 @@ def test_recon_pool_executes_both_rounds_in_outer_attempt_namespace(
         quiescence_s=0.1,
         attempt=outer_attempt,
     ) == -2
+    band = D._transport_generations_for_attempt(
+        scratchpad=tmp_path, phase_name="recon", outer_attempt=outer_attempt
+    )[-1]
+    expected = [
+        D._recon_worker_attempt_ordinal(band, worker_round)
+        for worker_round in range(
+            1, D._RECON_WORKER_ROUNDS_PER_PHASE_ATTEMPT + 1
+        )
+    ]
     assert bound == expected
     assert launched == expected
+    # The band is reserved per dispatch, so the semantic attempt must not leak
+    # into the leaf namespace at all: a first dispatch always opens band 1.
+    assert band == 1
+    assert expected == [1, 2]
 
 
 def test_recon_phase_log_excludes_stale_worker_rate_limit_output_when_no_leaf_launches(
@@ -858,7 +899,15 @@ def test_recon_phase_log_excludes_stale_worker_rate_limit_output_when_no_leaf_la
         started_at=time.time(),
     )
     assert rc == -2
-    assert bound_attempts == [3, 4]
+    band = D._transport_generations_for_attempt(
+        scratchpad=tmp_path, phase_name="recon", outer_attempt=2
+    )[-1]
+    assert bound_attempts == [
+        D._recon_worker_attempt_ordinal(band, worker_round)
+        for worker_round in range(
+            1, D._RECON_WORKER_ROUNDS_PER_PHASE_ATTEMPT + 1
+        )
+    ]
     for path in (attempt_log, canonical):
         text = path.read_text(encoding="utf-8")
         assert "429" not in text

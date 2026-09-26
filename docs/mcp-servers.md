@@ -23,9 +23,10 @@ subprocess.
 
 `plamen install` materializes MCP payloads with managed Node.js 24.20.0 and
 npm 11.19.0. It never uses ambient `node`, `npm`, `npx`, npm wrappers, or a
-global package directory. The install also materializes exact Claude Code
-2.1.252 and Codex 0.152.0 backends; backend stdio is never routed through the
-MCP sanitizer.
+global package directory. The install resolves each backend's authenticated
+upstream `latest` metadata once, materializes those exact Claude Code and Codex
+CLI bytes, and freezes them in signed generation receipts; backend stdio is
+never routed through the MCP sanitizer.
 
 The committed signed current selection binds the generation and its receipt,
 census, request, policy, executable resource closures, and exact server launch

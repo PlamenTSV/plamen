@@ -302,12 +302,12 @@ def test_independent_canonical_validation_requires_live_severity_projection(
     monkeypatch.setattr(
         runtime_validators,
         "_validate_report_index_status_authority",
-        lambda _root: [],
+        lambda _root, **_kwargs: [],
     )
     monkeypatch.setattr(
         runtime_validators,
         "_report_index_status_projection_debt",
-        lambda _root: [],
+        lambda _root, **_kwargs: [],
     )
     monkeypatch.setattr(
         runtime_validators,
@@ -317,7 +317,7 @@ def test_independent_canonical_validation_requires_live_severity_projection(
     monkeypatch.setattr(
         runtime_validators,
         "_report_index_dropped_ids",
-        lambda _root, run_id: [],
+        lambda _root, **_kwargs: [],
     )
 
     def forbid_stage_r10_replay(*_args, **_kwargs):

@@ -27,10 +27,17 @@ These tests pin:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 import plamen_driver as D
 import plamen_types as T
+import security_obligation_authority as A
+
+
+_RUN_ID = "12345678-1234-4123-8123-123456789abc"
 
 
 def _depth_phase() -> T.Phase:
@@ -58,8 +65,27 @@ def _base_config(scratchpad: Path, *, backend: str, mode: str,
         '{"schema":"fixture.security-feature-facts.v1","facts":[]}\n',
         encoding="utf-8",
     )
+    run_binding = {
+        "run_id": _RUN_ID,
+        "source_snapshot_digest": "a" * 64,
+        "source_scope_digest": "b" * 64,
+        "ecosystem": "evm",
+        "mode": mode,
+        "pipeline": pipeline,
+    }
+    run_binding["binding_digest"] = A._sha256_value(run_binding)
+    obligations: list[dict[str, object]] = []
+    authority: dict[str, object] = {
+        "schema_version": A.OBLIGATION_SCHEMA,
+        "stage": A.PRE_DEPTH_STAGE,
+        "run_binding": run_binding,
+        "authority_universe_digest": A._universe_digest(obligations),
+        "obligation_count": 0,
+        "obligations": obligations,
+    }
+    authority["authority_digest"] = A._payload_digest(authority)
     scratchpad.joinpath("security_obligation_authority.json").write_text(
-        '{"schema":"fixture.security-obligations.v1","obligations":[]}\n',
+        json.dumps(authority, sort_keys=True, separators=(",", ":")) + "\n",
         encoding="utf-8",
     )
     scratchpad.joinpath("security_obligations.md").write_text(
@@ -79,7 +105,7 @@ def _base_config(scratchpad: Path, *, backend: str, mode: str,
         "language": "evm",
         "scratchpad": str(scratchpad),
         "project_root": str(scratchpad),
-        "_run_id": "RUN-CODEX-FANOUT-TEST",
+        "_run_id": _RUN_ID,
         "_audit_snapshot": {"snapshot_digest": "a" * 64},
     }
 
@@ -198,13 +224,18 @@ def _install_fanout_fakes(monkeypatch, *, produced: list[str],
             return False
 
     monkeypatch.setattr(D, "_depth_worker_output_complete", _complete)
-    # This unit isolates fan-out/retry scheduling. PhaseIO input/output
+    # This unit isolates fan-out/retry scheduling. Exact prelaunch PhaseIO
     # authority is exercised by the dedicated adversarial prelaunch suite.
     monkeypatch.setattr(
-        D, "_bind_typed_model_worker_inputs", lambda **_kwargs: []
+        D, "_prepare_typed_model_worker_launch", lambda **_kwargs: []
     )
     monkeypatch.setattr(
         D, "_record_typed_model_worker_artifact", lambda **_kwargs: []
+    )
+    monkeypatch.setattr(
+        D,
+        "_compile_depth_worker_staged_gate_context",
+        lambda **_kwargs: ({}, ()),
     )
 
     def _synth(
@@ -357,9 +388,11 @@ def test_source_single_subprocess_codex_path_intact():
     # The single-subprocess codex path delegates to the factored helper.
     assert "def _run_one_codex_exec(" in src
     assert "label=phase.name," in src
-    # Both codex command builders remain in use (skip-model fallback intact).
+    # Every executable path carries an exact named model. The compatibility
+    # helper remains only as a hard-stop assertion surface.
     assert "_build_codex_cmd(" in src
-    assert "_build_codex_cmd_no_model(" in src
+    assert src.count("_build_codex_cmd_no_model(") == 1
+    assert 'config["_codex_skip_model"] = True' not in src
 
 
 def test_source_wiring_is_additive():
@@ -383,7 +416,9 @@ def test_codex_robustness_overrides_present():
     ov = D._codex_robustness_overrides()
     s = " ".join(ov)
     assert "model_auto_compact_token_limit=220000" in s
-    assert 'service_tier="flex"' in s
+    # service_tier must NEVER be sent: "flex" 400s on codex-cli 0.156.1
+    # (openai/codex #15099) and no advertised tier replaces it.
+    assert "service_tier" not in s
     # The #16068 trigger must NEVER be set (causes bogus context-exceeded).
     assert "model_context_window" not in s
 
@@ -392,26 +427,45 @@ def test_build_codex_cmd_includes_robustness_overrides():
     cmd = D._build_codex_cmd("gpt-5.4")
     j = " ".join(cmd)
     assert "model_auto_compact_token_limit=220000" in j
-    assert 'service_tier="flex"' in j
+    assert "service_tier" not in j
     assert "model_context_window" not in j
 
 
-def test_build_codex_cmd_no_model_includes_robustness_overrides():
-    cmd = D._build_codex_cmd_no_model()
-    j = " ".join(cmd)
-    assert "model_auto_compact_token_limit=220000" in j
-    assert 'service_tier="flex"' in j
+def test_build_codex_cmd_no_model_fails_closed():
+    with pytest.raises(ValueError, match="account-default Codex execution"):
+        D._build_codex_cmd_no_model()
+
+
+def test_codex_fallback_order_is_exactly_sol_terra_luna() -> None:
+    assert D._codex_next_fallback_model("gpt-5.6-sol") == "gpt-5.6-terra"
+    assert D._codex_next_fallback_model("gpt-5.6-terra") == "gpt-5.6-luna"
+    assert D._codex_next_fallback_model("gpt-5.6-luna") is None
+    assert D._codex_next_fallback_model("gpt-daybreak-blue-latest") is None
 
 
 def test_codex_config_generator_no_context_window_landmine():
     import inspect
     import codex_adapter
     src = inspect.getsource(codex_adapter.generate_config_toml)
-    # The #16068 landmine assignment is gone; replaced by auto-compact + flex tier.
+    # The #16068 landmine assignment is gone; replaced by auto-compact only.
     assert "model_context_window = 272000" not in src
     assert 'model = "gpt-5.3-codex"' not in src   # ChatGPT-auth-rejected default removed
     assert "model_auto_compact_token_limit" in src
-    assert 'service_tier = "flex"' in src
+
+    # Behavioural guard: the GENERATED config must not set a service_tier.
+    # Source-grepping is unreliable here because the template keeps the key
+    # as a commented-out line, so parse the real output instead (see #15099).
+    import pathlib
+    import tempfile
+    import tomllib
+    # generate_config_toml() reports its path relative to PLAMEN_HOME, so the
+    # out_dir must live under it -- a bare tempdir raises ValueError.
+    with tempfile.TemporaryDirectory(dir=codex_adapter.PLAMEN_HOME) as td:
+        codex_adapter.generate_config_toml(pathlib.Path(td))
+        cfg = pathlib.Path(td) / "config.toml"
+        assert cfg.exists(), "generator wrote no config.toml"
+        parsed = tomllib.loads(cfg.read_text(encoding="utf-8"))
+    assert "service_tier" not in parsed
     assert 'model = "gpt-5.6-terra"' in src
 
 

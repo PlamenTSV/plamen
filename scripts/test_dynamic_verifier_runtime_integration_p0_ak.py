@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -59,6 +60,93 @@ from verifier_work_roster import (  # noqa: E402
     build_verifier_launch_spec,
 )
 from verification_policy import Backend  # noqa: E402
+
+
+def _activate_genuine_dynamic_compat(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    project: Path,
+    scratchpad: Path,
+    run_id: str,
+    items,
+    fail_first: bool = False,
+) -> tuple[object, Path, Path]:
+    """Activate one real harmless Codex child for dynamic verifier fixtures."""
+
+    if os.name != "posix":
+        pytest.skip("real-child fixture requires the POSIX compatibility runtime")
+    import posix_v2_compat_runtime as compat
+
+    payloads = {
+        item.expected_output_file: _verify_bytes(item.work_item_id)
+        for item in items
+    }
+    payloads.update({
+        f"verify_{item.work_item_id}.severity_proposal.json": (
+            _proposal_bytes(item)
+        )
+        for item in items
+    })
+    encoded = {
+        name: __import__("base64").b64encode(raw).decode("ascii")
+        for name, raw in payloads.items()
+    }
+    binary = project / "fixture-codex-dynamic-verifier"
+    counter = project / "fixture-codex-count"
+    argv_log = project / "fixture-codex-argv.jsonl"
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        "import base64,json,re,sys\n"
+        "from pathlib import Path\n"
+        "if sys.argv[1:] == ['--version']:\n"
+        " print('codex-cli 0.test'); raise SystemExit(0)\n"
+        f"counter=Path({str(counter)!r})\n"
+        "count=int(counter.read_text()) if counter.exists() else 0\n"
+        "counter.write_text(str(count+1))\n"
+        f"with Path({str(argv_log)!r}).open('a') as h: h.write(json.dumps(sys.argv[1:])+'\\n')\n"
+        "prompt=sys.stdin.buffer.read().decode('utf-8')\n"
+        "sys.stderr.write('OpenAI Codex v0.test\\n--------\\nworkdir: /fixture\\nmodel: gpt-5.4\\nprovider: openai\\n--------\\nuser\\n')\n"
+        f"if {bool(fail_first)!r} and count == 0:\n"
+        " sys.stderr.write('ERROR: usage_limit_reached\\n'); raise SystemExit(1)\n"
+        "routes=json.loads(re.findall(r'```json\\n(.*?)\\n```',prompt,re.S)[-1])['output_routes']\n"
+        f"payloads={encoded!r}\n"
+        "for route in routes:\n"
+        " name=Path(route['canonical_path']).name\n"
+        " if name.endswith('.operator_application.json'):\n"
+        "  work_id=name[len('verify_'):-len('.operator_application.json')]\n"
+        "  matches=[]\n"
+        "  for dispatch_path in Path.cwd().glob('_verifier_runtime_units/*/method_dispatch.json'):\n"
+        "   dispatch=json.loads(dispatch_path.read_text())\n"
+        "   matches += [(dispatch,row) for row in dispatch['rows'] if row['work_item_id']==work_id]\n"
+        "  dispatch,row=matches[0]\n"
+        "  operators=[]\n"
+        "  for operator_id in row['operator_ids']:\n"
+        "   blocked=operator_id=='context-closure' and row['context_state']=='CONTEXT_UNRESOLVED'\n"
+        "   operators.append({'operator_id':operator_id,'status':'BLOCKED' if blocked else 'APPLIED','evidence':[] if blocked else [{'source':'src/generic.ext:1','detail':'Fixture exercised the dispatched verification operator.'}],'predicate':None,'debt_code':'CONTEXT_UNRESOLVED' if blocked else None,'blocker_evidence':['Fixture repository has no matching caller/state graph edge.'] if blocked else []})\n"
+        "  value={'schema_version':'plamen.verification_operator_application.v1','work_item_id':work_id,'method_dispatch_id':dispatch['dispatch_id'],'selected_module_hashes':row['module_hashes'],'context_packet_digest':row['context_packet_digest'],'context_status':row['context_state'],'context_expansion':[],'operators':operators,'new_observations':[]}\n"
+        "  raw=(json.dumps(value,indent=2,sort_keys=True)+'\\n').encode()\n"
+        " else: raw=base64.b64decode(payloads[name])\n"
+        " target=Path(route['path']); target.parent.mkdir(parents=True,exist_ok=True); target.write_bytes(raw)\n"
+        "Path(sys.argv[sys.argv.index('-o')+1]).write_text('complete\\n')\n"
+        "print(json.dumps({'type':'turn.completed'},sort_keys=True))\n",
+        encoding="utf-8",
+    )
+    binary.chmod(0o755)
+    session = compat.issue_posix_v2_compat_session_for_installed_front(
+        run_id=run_id, project_root=project, scratchpad=scratchpad
+    )
+    monkeypatch.setattr(
+        D, "_POSIX_COMPAT_V2_PROCESS_MARKER", D._POSIX_COMPAT_V2_MARKER_TOKEN
+    )
+    monkeypatch.setattr(D, "_POSIX_COMPAT_V2_SESSION_AUTHORITY", session)
+    monkeypatch.setattr(D, "CODEX_BIN", str(binary))
+    monkeypatch.setattr(compat.shutil, "which", lambda _name: str(binary))
+    monkeypatch.setattr(
+        compat,
+        "_load_ambient_codex_auth",
+        lambda: ("PRIVATE_AUTH_JSON_COPY", b'{"tokens":{}}\n', "c" * 64),
+    )
+    return session, counter, argv_log
 
 
 def _write_operator_application(
@@ -132,6 +220,7 @@ def _bind_sc_shared_context_producer(
     items,
     *,
     run_id: str,
+    backend: str = "claude",
 ) -> dict:
     """Model the queue-level producer used before dynamic SC children."""
 
@@ -148,12 +237,12 @@ def _bind_sc_shared_context_producer(
     # transaction's much larger output denominator.  It deliberately uses the
     # real queue-routing owner identity without going through the registered
     # resolver, whose mandatory successor inputs are tested separately.
-    owner_key = "sc/thorough/evm/claude/sc_verify_queue/routing"
+    owner_key = f"sc/thorough/evm/{backend}/sc_verify_queue/routing"
     producer_contract = PhaseIOContract(
         pipeline="sc",
         mode="thorough",
         ecosystem="evm",
-        backend="claude",
+        backend=backend,
         phase="sc_verify_queue",
         work_unit_id="routing",
         outputs=(
@@ -1149,6 +1238,7 @@ def test_runtime_debt_manifest_binding_tamper_cannot_become_report_evidence(
 def test_five_row_parent_runs_two_exact_children_and_resumes_without_relaunch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
 ) -> None:
     ids = tuple(f"H-{index:02d}" for index in range(1, 6))
     scratchpad, phase_name, items, plan = _setup_plan(
@@ -1156,9 +1246,9 @@ def test_five_row_parent_runs_two_exact_children_and_resumes_without_relaunch(
     )
     phase = next(item for item in D.SC_PHASES if item.name == phase_name)
     runtime_policy = build_verifier_runtime_policy(
-        backend="claude",
-        model="sonnet",
-        transport="headless",
+        backend="codex",
+        model="gpt-5.4",
+        transport="exec",
         timeout_seconds=60,
         source_root=str(tmp_path.resolve()),
     )
@@ -1172,60 +1262,33 @@ def test_five_row_parent_runs_two_exact_children_and_resumes_without_relaunch(
         context_packet_digest="2" * 64,
     )
     assert [len(unit.ordered_work_item_ids) for unit in roster.work_units] == [4, 1]
-    by_id = {item.work_item_id: item for item in items}
-    launched: list[str] = []
-    selected_front = str(
-        (tmp_path / "authenticated-claude-runtime-front").resolve()
-    )
-    selected_prefix = (
-        selected_front,
-        "backend-launch",
-        "--backend",
-        "claude",
-        "--generation",
-        "fixture-generation",
-        "--",
-    )
-
-    def fake_execute(spec, **_kwargs):
-        assert spec.transport == "headless"
-        assert spec.argv[: len(selected_prefix)] == selected_prefix
-        assert "--dangerously-skip-permissions" not in spec.argv
-        launched.append(spec.work_unit_id)
-        unit = roster.work_unit(spec.work_unit_id)
-        for work_id in unit.ordered_work_item_ids:
-            (scratchpad / f"verify_{work_id}.md").write_bytes(
-                _verify_bytes(work_id)
-            )
-            (scratchpad / f"verify_{work_id}.severity_proposal.json").write_bytes(
-                _proposal_bytes(by_id[work_id])
-            )
-            _write_operator_application(
-                scratchpad, spec.work_unit_id, work_id
-            )
-        return 0
-
-    monkeypatch.setattr(D, "_execute_dynamic_verifier_launch", fake_execute)
-    monkeypatch.setattr(
-        D,
-        "_selected_claude_backend_argv_prefix",
-        lambda: selected_prefix,
-    )
     _ignore_poc_gate(monkeypatch)
     config = {
         "pipeline": "sc",
         "mode": "thorough",
         "language": "evm",
-        "cli_backend": "claude",
-        "claude_exec_mode": "headless",
+        "cli_backend": "codex",
         "project_root": str(tmp_path.resolve()),
         "scratchpad": str(scratchpad),
         "_run_id": str(uuid.uuid4()),
+        "_audit_snapshot": {"snapshot_digest": "a" * 64},
     }
     context_identity = "scratchpad:verification_context_packets.json"
     producer_binding = _bind_sc_shared_context_producer(
-        scratchpad, tmp_path, items, run_id=config["_run_id"]
+        scratchpad,
+        tmp_path,
+        items,
+        run_id=config["_run_id"],
+        backend="codex",
     )
+    session, counter, argv_log = _activate_genuine_dynamic_compat(
+        monkeypatch,
+        project=tmp_path,
+        scratchpad=scratchpad,
+        run_id=config["_run_id"],
+        items=items,
+    )
+    request.addfinalizer(session.close)
     producer_contract_key = producer_binding["owner_key"]
     context_path = scratchpad / "verification_context_packets.json"
     context_bytes = context_path.read_bytes()
@@ -1258,19 +1321,31 @@ def test_five_row_parent_runs_two_exact_children_and_resumes_without_relaunch(
             == producer_contract_key
         )
         assert ledger["artifact_bindings"][context_identity] == producer_binding
-    assert launched == [unit.work_unit_id for unit in roster.work_units]
+    assert counter.read_text(encoding="ascii") == "2"
+    argv_rows = [
+        json.loads(line)
+        for line in argv_log.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(argv_rows) == 2
+    assert all(
+        row[row.index("--model") + 1] == "gpt-5.4"
+        and row[row.index("-C") + 1] == str(scratchpad.resolve())
+        and row[row.index("--sandbox") + 1] == "workspace-write"
+        and row[-1] == "-"
+        for row in argv_rows
+    )
     for unit in roster.work_units:
         assert D._run_dynamic_verifier_unit(
             phase, scratchpad, config, roster, unit
         ) == []
-    assert launched == [unit.work_unit_id for unit in roster.work_units]
+    assert counter.read_text(encoding="ascii") == "2"
     context_path.write_bytes(context_bytes + b"\n")
     tamper_issues = D._run_dynamic_verifier_unit(
         phase, scratchpad, config, roster, roster.work_units[0]
     )
     assert tamper_issues
     assert "verification_context_packets.json" in " ".join(tamper_issues)
-    assert launched == [unit.work_unit_id for unit in roster.work_units]
+    assert counter.read_text(encoding="ascii") == "2"
     context_path.write_bytes(context_bytes)
     assert D._run_dynamic_verifier_unit(
         phase, scratchpad, config, roster, roster.work_units[0]
@@ -1317,6 +1392,9 @@ def test_dynamic_child_refuses_unowned_shared_context(
         return 0
 
     monkeypatch.setattr(D, "_execute_dynamic_verifier_launch", forbidden_launch)
+    monkeypatch.setattr(
+        D, "_selected_claude_backend_argv_prefix", lambda: ("/sealed/claude",)
+    )
     config = {
         "pipeline": "sc",
         "mode": "thorough",
@@ -1401,6 +1479,7 @@ def test_claude_pty_leaf_is_rejected_before_spawn(
 def test_rate_limit_retains_exact_debt_then_retries_only_that_unit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
 ) -> None:
     scratchpad, phase_name, items, plan = _setup_plan(
         tmp_path, "sc", finding_ids=("H-01",)
@@ -1412,9 +1491,9 @@ def test_rate_limit_retains_exact_debt_then_retries_only_that_unit(
         ecosystem="evm",
         mode="thorough",
         runtime_policy=build_verifier_runtime_policy(
-            backend="claude",
-            model="sonnet",
-            transport="pty",
+            backend="codex",
+            model="gpt-5.4",
+            transport="exec",
             timeout_seconds=60,
             source_root=str(tmp_path.resolve()),
         ),
@@ -1422,40 +1501,33 @@ def test_rate_limit_retains_exact_debt_then_retries_only_that_unit(
         context_packet_digest="2" * 64,
     )
     unit = roster.work_units[0]
-    attempts = 0
-
-    def rate_then_complete(_spec, **_kwargs):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            return 1
-        item = items[0]
-        (scratchpad / item.expected_output_file).write_bytes(
-            _verify_bytes(item.work_item_id)
-        )
-        (scratchpad / f"verify_{item.work_item_id}.severity_proposal.json").write_bytes(
-            _proposal_bytes(item)
-        )
-        _write_operator_application(
-            scratchpad, unit.work_unit_id, item.work_item_id
-        )
-        return 0
-
-    monkeypatch.setattr(D, "_execute_dynamic_verifier_launch", rate_then_complete)
     _ignore_poc_gate(monkeypatch)
     config = {
         "pipeline": "sc",
         "mode": "thorough",
         "language": "evm",
-        "cli_backend": "claude",
-        "claude_exec_mode": "pty",
+        "cli_backend": "codex",
         "project_root": str(tmp_path.resolve()),
         "scratchpad": str(scratchpad),
         "_run_id": str(uuid.uuid4()),
+        "_audit_snapshot": {"snapshot_digest": "a" * 64},
     }
     _bind_sc_shared_context_producer(
-        scratchpad, tmp_path, items, run_id=config["_run_id"]
+        scratchpad,
+        tmp_path,
+        items,
+        run_id=config["_run_id"],
+        backend="codex",
     )
+    session, counter, argv_log = _activate_genuine_dynamic_compat(
+        monkeypatch,
+        project=tmp_path,
+        scratchpad=scratchpad,
+        run_id=config["_run_id"],
+        items=items,
+        fail_first=True,
+    )
+    request.addfinalizer(session.close)
     first = D._run_dynamic_verifier_unit(
         phase, scratchpad, config, roster, unit
     )
@@ -1469,7 +1541,17 @@ def test_rate_limit_retains_exact_debt_then_retries_only_that_unit(
     assert D._run_dynamic_verifier_unit(
         phase, scratchpad, config, roster, unit
     ) == []
-    assert attempts == 2
+    assert counter.read_text(encoding="ascii") == "2"
+    argv_rows = [
+        json.loads(line)
+        for line in argv_log.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(argv_rows) == 2
+    assert all(
+        row[row.index("--model") + 1] == "gpt-5.4"
+        and row[-1] == "-"
+        for row in argv_rows
+    )
     assert VerifierUnitReceipt.from_json(
         receipt_path.read_text(encoding="utf-8")
     ).status == "COMPLETED"
@@ -1511,6 +1593,7 @@ def test_nonpty_leaf_without_transaction_authority_fails_closed(
 def test_codex_dynamic_child_routes_through_bound_headless_transaction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
 ) -> None:
     scratchpad, phase_name, items, plan = _setup_plan(
         tmp_path, "sc", finding_ids=("H-01",)
@@ -1534,37 +1617,7 @@ def test_codex_dynamic_child_routes_through_bound_headless_transaction(
     unit = roster.work_units[0]
     run_id = str(uuid.uuid4())
     _bind_sc_shared_context_producer(
-        scratchpad, tmp_path, items, run_id=run_id
-    )
-    observed: dict[str, object] = {}
-
-    def fake_execute_headless_worker(**kwargs):
-        observed.update(kwargs)
-        output_directory = (
-            scratchpad / ".worker_transactions" / "fixture-output"
-        )
-        argv = tuple(kwargs["command_builder"](output_directory))
-        observed["argv"] = argv
-        assert argv[-3:] == (
-            "--add-dir",
-            output_directory.as_posix(),
-            "-",
-        )
-        item = items[0]
-        (scratchpad / item.expected_output_file).write_bytes(
-            _verify_bytes(item.work_item_id)
-        )
-        (
-            scratchpad
-            / f"verify_{item.work_item_id}.severity_proposal.json"
-        ).write_bytes(_proposal_bytes(item))
-        _write_operator_application(
-            scratchpad, unit.work_unit_id, item.work_item_id
-        )
-        return SimpleNamespace(stdout=b"codex-event\n", stderr=b"")
-
-    monkeypatch.setattr(
-        D, "execute_headless_worker", fake_execute_headless_worker
+        scratchpad, tmp_path, items, run_id=run_id, backend="codex"
     )
     _ignore_poc_gate(monkeypatch)
     config = {
@@ -1580,19 +1633,82 @@ def test_codex_dynamic_child_routes_through_bound_headless_transaction(
             durable_startup_permit(scratchpad, run_id=run_id)
         ),
     }
+    session, counter, argv_log = _activate_genuine_dynamic_compat(
+        monkeypatch,
+        project=tmp_path,
+        scratchpad=scratchpad,
+        run_id=run_id,
+        items=items,
+    )
+    request.addfinalizer(session.close)
     assert D._run_dynamic_verifier_unit(
         phase, scratchpad, config, roster, unit
     ) == []
-    model_contract = observed["phase_io_contract"]
-    model_launch = observed["phase_io_launch"]
-    assert model_contract.key.endswith(f"/method_model.{unit.work_unit_id}")
-    assert model_launch.work_unit_key == model_contract.key
-    assert model_launch.backend == "codex"
-    assert model_launch.exec_mode == "exec"
-    assert observed["source_snapshot_digest"] == "a" * 64
-    assert (
-        D._dynamic_verifier_unit_paths(
-            scratchpad, unit.work_unit_id
-        )["stdio"].read_bytes()
-        == b"codex-event\n"
+    assert counter.read_text(encoding="ascii") == "1"
+    argv = json.loads(argv_log.read_text(encoding="utf-8").strip())
+    assert argv[argv.index("--model") + 1] == "gpt-5.4"
+    assert argv[argv.index("-C") + 1] == str(scratchpad.resolve())
+    assert argv[argv.index("--sandbox") + 1] == "workspace-write"
+    assert "--add-dir" not in argv  # No root beyond the existing cwd is requested.
+    assert argv[-1] == "-"
+    ledger = read_artifact_ledger(scratchpad)
+    matching = [
+        row
+        for key, row in ledger["work_units"].items()
+        if key.endswith(f"/method_model.{unit.work_unit_id}")
+    ]
+    assert len(matching) == 1
+    model_unit = matching[0]
+    assert model_unit["contract_manifest"]["key"].endswith(
+        f"/method_model.{unit.work_unit_id}"
     )
+    assert model_unit["launch_manifest"]["backend"] == "codex"
+    assert model_unit["launch_manifest"]["exec_mode"] == "exec"
+    assert model_unit["execution_authority"]["schema"] == (
+        "plamen.worker_execution_authority.v1"
+    )
+    assert model_unit["commit_authority"]["schema"] == (
+        "plamen.artifact-output-commit.v1"
+    )
+    assert {
+        output["writer"] for output in model_unit["contract_manifest"]["outputs"]
+    } == {"MODEL"}
+    stdio = D._dynamic_verifier_unit_paths(
+        scratchpad, unit.work_unit_id
+    )["stdio"].read_bytes()
+    assert b'"type": "turn.completed"' in stdio
+    assert b"model: gpt-5.4" in stdio
+
+
+def test_codex_executable_resolution_never_requires_claude(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        D,
+        "_selected_claude_backend_argv_prefix",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("Codex verifier resolved forbidden Claude runtime")
+        ),
+    )
+    assert D._dynamic_verifier_executable("codex") == str(D.CODEX_BIN)
+
+
+def test_claude_executable_resolution_uses_selected_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        D,
+        "_selected_claude_backend_argv_prefix",
+        lambda: ("/sealed/claude", "--front"),
+    )
+    class _ForbiddenCodex:
+        def __str__(self) -> str:
+            raise AssertionError("Claude verifier resolved forbidden Codex runtime")
+
+    monkeypatch.setattr(D, "CODEX_BIN", _ForbiddenCodex())
+    assert D._dynamic_verifier_executable("claude") == "/sealed/claude"
+
+
+def test_dynamic_verifier_executable_rejects_unknown_backend() -> None:
+    with pytest.raises(ValueError, match="unsupported dynamic verifier backend"):
+        D._dynamic_verifier_executable("other")

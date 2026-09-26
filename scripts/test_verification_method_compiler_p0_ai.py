@@ -152,6 +152,7 @@ def test_compiler_generates_backend_neutral_complete_prompt(
     assert "Rules Applied:" in prompt
     assert "operator_application.json" in prompt
     assert "CONTEXT_UNRESOLVED" in prompt
+    assert "If ANY operator is BLOCKED" in prompt
     assert "one bounded expansion" in prompt.lower()
     assert prompt.index("Classify the claimed bug class") < prompt.index("REFUTED")
     assert "skeptic worker" not in prompt.lower()
@@ -210,6 +211,83 @@ def test_context_packet_uses_reference_graph_and_bounds_hubs(tmp_path: Path) -> 
     assert len(packet["expansion_candidates"]) <= 4
 
 
+def test_context_packet_exact_graph_denominator_ignores_late_foreign_graphs(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "repo"
+    scratch = project / ".scratchpad"
+    (project / "src").mkdir(parents=True)
+    scratch.mkdir()
+    (scratch / "depth_state_findings.md").write_text(
+        "bound candidate evidence\n", encoding="utf-8"
+    )
+    (project / "src" / "Vault.sol").write_text(
+        "\n" * 8 + "function settle() external {}\n", encoding="utf-8"
+    )
+    (scratch / "caller_map.md").write_text(
+        "# Callers\nsettle <- caller src/Router.sol\n", encoding="utf-8"
+    )
+
+    captured = V.verification_reference_graph_artifacts(scratch)
+    before = V.build_verification_context_packets(
+        rows=[_row()],
+        scratchpad=scratch,
+        project_root=project,
+        reference_graph_artifacts=captured,
+    )
+    (scratch / "function_list.md").write_text(
+        "# Functions\nsettle src/Late.sol\n", encoding="utf-8"
+    )
+    assert set(V.verification_reference_graph_artifacts(scratch)) == {
+        "caller_map.md",
+        "function_list.md",
+    }
+    replay = V.build_verification_context_packets(
+        rows=[_row()],
+        scratchpad=scratch,
+        project_root=project,
+        reference_graph_artifacts=captured,
+    )
+
+    assert replay == before
+    assert [
+        row["artifact"] for row in replay["graph_artifact_bindings"]
+    ] == ["caller_map.md"]
+
+
+def test_context_packet_exact_graph_denominator_detects_captured_graph_loss(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "repo"
+    scratch = project / ".scratchpad"
+    project.mkdir()
+    scratch.mkdir()
+    graph = scratch / "caller_map.md"
+    graph.write_text("# Callers\nsettle <- caller\n", encoding="utf-8")
+    captured = V.verification_reference_graph_artifacts(scratch)
+    before = V.build_verification_context_packets(
+        rows=[_row()],
+        scratchpad=scratch,
+        project_root=project,
+        reference_graph_artifacts=captured,
+    )
+    graph.unlink()
+    after = V.build_verification_context_packets(
+        rows=[_row()],
+        scratchpad=scratch,
+        project_root=project,
+        reference_graph_artifacts=captured,
+    )
+
+    assert after != before
+    assert after["graph_artifact_bindings"] == [{
+        "artifact": "caller_map.md",
+        "status": "READ_ERROR",
+        "sha256": None,
+        "size_bytes": None,
+    }]
+
+
 def test_missing_context_is_visible_and_cannot_become_safe(tmp_path: Path) -> None:
     project = tmp_path / "repo"
     scratch = project / ".scratchpad"
@@ -239,6 +317,32 @@ def test_missing_context_is_visible_and_cannot_become_safe(tmp_path: Path) -> No
         proposal, dispatch=dispatch, verdict="CONTESTED"
     )
     assert checked["has_blocked_operators"] is True
+
+
+def test_conservative_context_downgrade_preserves_resolved_packet_candidate() -> None:
+    dispatch = _dispatch(packet=_packet(state="RESOLVED"))
+    proposal = _valid_proposal(dispatch)
+    proposal["context_status"] = "CONTEXT_UNRESOLVED"
+    proposal["context_expansion"] = []
+    proposal["operators"][0] = {
+        "operator_id": proposal["operators"][0]["operator_id"],
+        "status": "BLOCKED",
+        "evidence": [],
+        "predicate": None,
+        "debt_code": "DEPENDENCY_UNRESOLVED",
+        "blocker_evidence": [
+            "An external gateway premise remains unproven; no local expansion closes it."
+        ],
+    }
+    checked = V.validate_operator_application_proposal(
+        proposal, dispatch=dispatch, verdict="CONTESTED"
+    )
+    assert checked["context_status"] == "CONTEXT_UNRESOLVED"
+    assert checked["has_blocked_operators"] is True
+    with pytest.raises(V.VerificationMethodError, match="terminal negative"):
+        V.validate_operator_application_proposal(
+            proposal, dispatch=dispatch, verdict="REFUTED"
+        )
 
 
 def test_context_expansion_must_come_from_bound_packet_candidates() -> None:

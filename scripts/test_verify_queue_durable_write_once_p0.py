@@ -6,6 +6,7 @@ import hashlib
 import inspect
 import os
 from pathlib import Path
+import stat
 import sys
 
 import pytest
@@ -80,6 +81,7 @@ def test_exact_durable_stage_survives_publish_fault_and_resumes(
     expected = b'{"queue":"complete-postimage"}\n'
     stage = RIO._write_once_stage_path(destination, expected)
     stage.write_bytes(expected)
+    stage.chmod(0o600)
     real_publish = RIO._publish_validated_write_once_stage
 
     def _fail_before_publish(
@@ -134,6 +136,7 @@ def test_exact_existing_postimage_is_idempotent_resume(tmp_path: Path) -> None:
     destination = tmp_path / "verification_queue.json"
     expected = b'{"queue":"already-published"}\n'
     destination.write_bytes(expected)
+    destination.chmod(0o600)
 
     RIO.durable_write_once_bytes(destination, expected)
 
@@ -149,6 +152,7 @@ def test_mismatched_deterministic_stage_is_explicit_debt(
     expected = b'{"queue":"expected"}\n'
     stage = RIO._write_once_stage_path(destination, expected)
     stage.write_bytes(expected)
+    stage.chmod(0o600)
     stage.write_bytes(b"partial-or-foreign")
 
     expected_sha = hashlib.sha256(expected).hexdigest()
@@ -208,6 +212,7 @@ def test_stage_name_swap_after_validation_cannot_publish_foreign_inode(
     displaced = tmp_path / ".displaced-validated-stage"
     stage = RIO._write_once_stage_path(destination, expected)
     stage.write_bytes(expected)
+    stage.chmod(0o600)
     fired = False
 
     def _swap(stage: Path, _destination: Path) -> None:
@@ -246,10 +251,14 @@ def test_no_replace_race_accepts_only_exact_concurrent_final(
 ) -> None:
     expected = b'{"queue":"concurrent-exact"}\n'
     destination = tmp_path / "verification_queue.json"
+    def _create_exact_winner(_stage: Path, target: Path) -> None:
+        target.write_bytes(expected)
+        target.chmod(0o600)
+
     monkeypatch.setattr(
         RIO,
         "_write_once_pre_publish_hook",
-        lambda _stage, target: target.write_bytes(expected),
+        _create_exact_winner,
     )
 
     RIO.durable_write_once_bytes(destination, expected)
@@ -290,6 +299,7 @@ def test_exact_final_resume_reestablishes_file_and_directory_durability(
     expected = b'{"queue":"already-published"}\n'
     destination = tmp_path / "verification_queue.json"
     destination.write_bytes(expected)
+    destination.chmod(0o600)
     fsynced: list[int] = []
     flushed: list[int] = []
     directories: list[Path] = []
@@ -317,7 +327,12 @@ def test_exact_final_resume_reestablishes_file_and_directory_durability(
     RIO.durable_write_once_bytes(destination, expected)
 
     assert flushed if os.name == "nt" else fsynced
-    assert tmp_path in directories
+    if sys.platform == "darwin":
+        # Darwin keeps and full-syncs the already-authenticated parent
+        # descriptor; reopening it by pathname would reintroduce a swap race.
+        assert fsynced
+    else:
+        assert tmp_path in directories
     assert destination.read_bytes() == expected
 
 
@@ -329,8 +344,10 @@ def test_exact_stage_resume_reestablishes_durability_before_publication(
     destination = tmp_path / "verification_queue.json"
     stage = RIO._write_once_stage_path(destination, expected)
     stage.write_bytes(expected)
+    stage.chmod(0o600)
     order: list[str] = []
     real_fsync = RIO.os.fsync
+    real_fsync_descriptor = RIO._fsync_file_descriptor
     real_directory = RIO._fsync_directory
     real_flush = getattr(RIO, "_FlushFileBuffers", None)
 
@@ -342,7 +359,29 @@ def test_exact_stage_resume_reestablishes_durability_before_publication(
         order.append("directory_fsync")
         real_directory(path)
 
-    monkeypatch.setattr(RIO.os, "fsync", _fsync)
+    def _descriptor(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            order.append("directory_fsync")
+        else:
+            order.append("file_fsync")
+        real_fsync_descriptor(descriptor)
+
+    if sys.platform == "darwin":
+        # Darwin preserves one authenticated parent dirfd throughout CAS.
+        # The crash-isolated native validate helper owns the ordered source
+        # fsync + directory durability barrier.  Observe that boundary instead
+        # of the removed duplicate Python pre-helper syncs.
+        real_helper = RIO._darwin_run_cas_helper
+
+        def _helper(mode: str, *args: object, **kwargs: object) -> None:
+            if mode == "validate":
+                order.append("native_validate")
+            real_helper(mode, *args, **kwargs)
+
+        monkeypatch.setattr(RIO, "_darwin_run_cas_helper", _helper)
+        monkeypatch.setattr(RIO, "_fsync_file_descriptor", _descriptor)
+    else:
+        monkeypatch.setattr(RIO.os, "fsync", _fsync)
     monkeypatch.setattr(RIO, "_fsync_directory", _directory)
     if os.name == "nt":
         def _flush(handle: int) -> int:
@@ -363,9 +402,12 @@ def test_exact_stage_resume_reestablishes_durability_before_publication(
     else:
         RIO.durable_write_once_bytes(destination, expected)
 
-    file_barrier = "file_flush" if os.name == "nt" else "file_fsync"
-    assert order.index(file_barrier) < order.index("directory_fsync")
-    assert order.index("directory_fsync") < order.index("publish")
+    if sys.platform == "darwin":
+        assert order.index("native_validate") < order.index("publish")
+    else:
+        file_barrier = "file_flush" if os.name == "nt" else "file_fsync"
+        assert order.index(file_barrier) < order.index("directory_fsync")
+        assert order.index("directory_fsync") < order.index("publish")
     assert destination.read_bytes() == expected
 
 
@@ -375,19 +417,30 @@ def test_write_once_publish_requests_parent_directory_durability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[Path] = []
+    observed_directory_descriptors: list[int] = []
     real_fsync_directory = RIO._fsync_directory
+    real_fsync_descriptor = RIO._fsync_file_descriptor
 
     def _observe(path: Path) -> None:
         observed.append(Path(path))
         real_fsync_directory(path)
 
+    def _observe_descriptor(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            observed_directory_descriptors.append(descriptor)
+        real_fsync_descriptor(descriptor)
+
     monkeypatch.setattr(RIO, "_fsync_directory", _observe)
+    monkeypatch.setattr(RIO, "_fsync_file_descriptor", _observe_descriptor)
     destination = tmp_path / "verification_queue.json"
 
     RIO.durable_write_once_bytes(destination, b"{}\n")
 
     assert destination.read_bytes() == b"{}\n"
-    assert tmp_path in observed
+    if sys.platform == "darwin":
+        assert observed_directory_descriptors
+    else:
+        assert tmp_path in observed
 
 
 def test_windows_publication_branch_requests_no_replace_without_emulation(
@@ -445,6 +498,8 @@ def test_legacy_exact_public_file_paths_remain_idempotent(tmp_path: Path) -> Non
     second = tmp_path / "verification_queue.md"
     first.write_bytes(b"exact-json\n")
     second.write_bytes(b"exact-markdown\n")
+    first.chmod(0o600)
+    second.chmod(0o600)
 
     VQT._atomic_write(first, b"exact-json\n")
     LIVE._cas_create_or_exact(second, b"exact-markdown\n")

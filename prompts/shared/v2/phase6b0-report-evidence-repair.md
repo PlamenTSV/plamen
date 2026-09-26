@@ -9,7 +9,9 @@ decision.
 
 For every request item:
 
-1. Preserve `report_id` and `record_digest` byte-for-byte.
+1. Return only the semantic `delta` for each request item, in exact request
+   order. The driver binds report IDs, record digests, schema version, and the
+   request digest outside the model artifact.
 2. Read only the exact evidence sources in the driver-bound immutable input
    manifest appended to this prompt. Do not browse other scratchpad or project
    files. If those inputs cannot ground the field, return an empty value so the
@@ -25,16 +27,12 @@ For every request item:
 6. Emit exactly one response item for every request item, in request order. No
    omissions, extras, prose outside JSON, or second attempt are allowed.
 
-Output this exact shape to the driver-assigned response file:
+Output this semantic-only shape to the driver-assigned response file:
 
 ```json
 {
-  "schema_version": "plamen.report_evidence_repair_response.v1",
-  "request_digest": "<copy from request>",
   "items": [
     {
-      "report_id": "H-01",
-      "record_digest": "<copy from request item>",
       "delta": {
         "<exact missing field>": "<grounded completion or empty string>"
       }

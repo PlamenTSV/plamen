@@ -26,6 +26,7 @@ Run: pytest scripts/test_r10_demotion_gate.py -v
 from __future__ import annotations
 
 import copy
+import base64
 import importlib
 import hashlib
 import json
@@ -2141,7 +2142,7 @@ def _bind_current_r10_queue_authority(
             phase_name="sc_verify_queue",
             run_id=config["_run_id"],
             chain_pair_projection=chain_pair_projection,
-        )
+    )
         assert D._finalize_preverify_inventory_successors(
             sp,
             cutover_config,
@@ -2260,7 +2261,7 @@ def _run_current_r10_verifier(
     *,
     verify_bytes: bytes,
 ) -> None:
-    """Complete the real dynamic verifier unit with deterministic model bytes."""
+    """Complete the verifier through a harmless real compat MODEL child."""
 
     items = {
         item.work_item_id: item
@@ -2274,39 +2275,95 @@ def _run_current_r10_verifier(
     assert outcome.debts == ()
     roster = outcome.roster
 
-    def deterministic_no_provider_execute(spec, **_kwargs):
-        unit = roster.work_unit(spec.work_unit_id)
-        for work_id in unit.ordered_work_item_ids:
-            (sp / f"verify_{work_id}.md").write_bytes(verify_bytes)
-            (sp / f"verify_{work_id}.severity_proposal.json").write_bytes(
-                _r10_low_external_severity_proposal(items[work_id])
-            )
-            _write_r10_operator_application(sp, spec.work_unit_id, work_id)
-        return 0
-
     units = [unit for unit in roster.work_units if unit.tier_pool == "critical_high"]
     assert len(units) == 1
+    unit = units[0]
+    assert config["cli_backend"] == "codex", (
+        "the genuine compatibility execution fixture is Codex headless-only"
+    )
+    binary = sp.parent / "fixture-codex-r10-verifier"
+    if os.name != "posix":
+        pytest.skip("real-child fixture requires the POSIX compatibility runtime")
+    import posix_v2_compat_runtime as compat
+
+    real_codex_execute = D._run_one_codex_exec
+
+    def execute_after_dispatch(*args, **kwargs):
+        effective_model = kwargs["effective_model"]
+        observed_banner = (
+            "OpenAI Codex v0.test\n--------\nworkdir: /fixture\n"
+            f"model: {effective_model}\nprovider: openai\n--------\nuser\n"
+        )
+        output_bytes: dict[str, bytes] = {}
+        for work_id in unit.ordered_work_item_ids:
+            output_bytes[f"verify_{work_id}.md"] = verify_bytes
+            output_bytes[f"verify_{work_id}.severity_proposal.json"] = (
+                _r10_low_external_severity_proposal(items[work_id])
+            )
+            _write_r10_operator_application(sp, unit.work_unit_id, work_id)
+            application = sp / f"verify_{work_id}.operator_application.json"
+            output_bytes[application.name] = application.read_bytes()
+            application.unlink()
+        encoded = {
+            name: base64.b64encode(raw).decode("ascii")
+            for name, raw in output_bytes.items()
+        }
+        binary.write_text(
+            f"#!{sys.executable} -B\n"
+            "import base64,json,re,sys\n"
+            "from pathlib import Path\n"
+            "if sys.argv[1:] == ['--version']:\n"
+            " print('codex-cli r10-fixture'); raise SystemExit(0)\n"
+            "prompt=sys.stdin.buffer.read().decode('utf-8')\n"
+            f"sys.stderr.write({observed_banner!r})\n"
+            "blocks=re.findall(r'```json\\n(.*?)\\n```',prompt,re.S)\n"
+            "routes=json.loads(blocks[-1])['output_routes']\n"
+            f"payloads={encoded!r}\n"
+            "for route in routes:\n"
+            " target=Path(route['path']); target.parent.mkdir(parents=True,exist_ok=True)\n"
+            " target.write_bytes(base64.b64decode(payloads[Path(route['canonical_path']).name]))\n"
+            "Path(sys.argv[sys.argv.index('-o')+1]).write_text('complete\\n')\n"
+            "print(json.dumps({'type':'turn.completed'},sort_keys=True))\n",
+            encoding="utf-8",
+        )
+        binary.chmod(0o755)
+        return real_codex_execute(*args, **kwargs)
+
+    session = compat.issue_posix_v2_compat_session_for_installed_front(
+        run_id=config["_run_id"], project_root=sp.parent, scratchpad=sp
+    )
     # R10 is specifically the Attempted:NO external-premise case, while the
     # generic Core execution policy independently mandates attempts for every
     # High queue row. The established dynamic-runtime fixture seam suppresses
     # only that orthogonal policy check while all identity, receipt, roster,
     # operator, gate, and PhaseIO completion checks remain production code.
-    with monkeypatch.context() as runtime_patch:
-        runtime_patch.setattr(
-            D,
-            "_execute_dynamic_verifier_launch",
-            deterministic_no_provider_execute,
-        )
-        runtime_patch.setattr(
-            sys.modules["plamen_validators"],
-            "_validate_poc_contract_for_rows",
-            lambda *_a, **_k: [],
-        )
-        assert D._run_dynamic_verifier_unit(
-            phase, sp, config, roster, units[0]
-        ) == []
+    try:
+        with monkeypatch.context() as runtime_patch:
+            runtime_patch.setattr(
+                D,
+                "_POSIX_COMPAT_V2_PROCESS_MARKER",
+                D._POSIX_COMPAT_V2_MARKER_TOKEN,
+            )
+            runtime_patch.setattr(D, "_POSIX_COMPAT_V2_SESSION_AUTHORITY", session)
+            runtime_patch.setattr(D, "_run_one_codex_exec", execute_after_dispatch)
+            runtime_patch.setattr(compat.shutil, "which", lambda _name: str(binary))
+            runtime_patch.setattr(
+                compat,
+                "_load_ambient_codex_auth",
+                lambda: ("PRIVATE_AUTH_JSON_COPY", b'{"tokens":{}}\n', "c" * 64),
+            )
+            runtime_patch.setattr(
+                sys.modules["plamen_validators"],
+                "_validate_poc_contract_for_rows",
+                lambda *_a, **_k: [],
+            )
+            assert D._run_dynamic_verifier_unit(
+                phase, sp, config, roster, unit
+            ) == []
+    finally:
+        session.close()
     assert D._verifier_completion_authority_issues(
-        sp, units[0].ordered_work_item_ids[0], min_bytes=1
+        sp, unit.ordered_work_item_ids[0], min_bytes=1
     ) == []
 
 
@@ -3168,6 +3225,8 @@ def test_fired_r10_live_projection_survives_full_canonical_receipt_replay(
             fired=True,
             backend="codex",
             suppress_candidate_inputs=False,
+            split_parent_linkage=True,
+            live_t9=True,
         )
     )
     _materialize_and_commit_report_prework(D, sp, config)
@@ -3201,7 +3260,7 @@ def test_fired_r10_live_projection_survives_full_canonical_receipt_replay(
             "|---|---|---|---|---|---|---|",
             (
                 "| L-01 | external premise | Low | src/lib.rs:L42 | "
-                "CONTESTED | - | H-993 |"
+                "CONTESTED | - | H-22 |"
             ),
             "",
             "## Excluded Findings",
@@ -3221,7 +3280,7 @@ def test_fired_r10_live_projection_survives_full_canonical_receipt_replay(
         "## Raw Candidate Ledger\n\n"
         "| Source Artifact | Candidate ID | Disposition |\n"
         "|---|---|---|\n"
-        "| verify_H-993.md | H-993 | PROMOTED L-01 |\n\n"
+        "| verify_H-22.md | H-22 | PROMOTED L-01 |\n\n"
         + ("canonical-r10-coverage-retention " * 24)
         + "\n",
         encoding="utf-8",
@@ -3499,7 +3558,7 @@ def test_strict_phaseio_split_parent_prework_floor(tmp_path, monkeypatch):
 
 
 def _strict_phaseio_split_parent_canonical_case(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, *, live_t9=False,
 ):
     """Prepare the exact R0-2b report predecessor for commit/replay probes."""
 
@@ -3511,6 +3570,7 @@ def _strict_phaseio_split_parent_canonical_case(
             backend="codex",
             suppress_candidate_inputs=False,
             split_parent_linkage=True,
+            live_t9=live_t9,
         )
     )
     _materialize_and_commit_report_prework(D, sp, config)
@@ -4438,7 +4498,7 @@ def test_phaseio_and_frozen_caches_revalidate_non_immediate_reparse_ancestor(
 def _case_rename_with_parent_times_restored(
     path: Path, alias_name: str
 ) -> tuple[Path, tuple[int, ...]]:
-    """Case-rename one entry while restoring its parent's stat witness."""
+    """Case-rename one entry and restore every writable parent timestamp."""
 
     parent = path.parent
     parent_metadata = os.lstat(parent)
@@ -4448,7 +4508,14 @@ def _case_rename_with_parent_times_restored(
         parent,
         ns=(parent_metadata.st_atime_ns, parent_metadata.st_mtime_ns),
     )
-    assert _fixture_metadata_state(os.lstat(parent)) == parent_state
+    restored_state = _fixture_metadata_state(os.lstat(parent))
+    # A rename changes POSIX/macOS ctime, and os.utime cannot set it back.
+    # Preserve the adversarial same-object/same-bytes/same-mtime setup without
+    # pretending that the platform lets a fixture restore immutable ctime.
+    writable_witness = (0, 1, 2, 4, 5, 6, 7)
+    assert tuple(restored_state[index] for index in writable_witness) == tuple(
+        parent_state[index] for index in writable_witness
+    )
     return path.with_name(alias_name), parent_state
 
 
@@ -4657,6 +4724,11 @@ def test_lexical_cache_revalidates_restored_timestamp_case_alias(
     alias, _parent_state = _case_rename_with_parent_times_restored(
         target, alias_name
     )
+    if _fixture_metadata_state(os.lstat(alias.parent)) != _parent_state:
+        pytest.skip(
+            "platform cannot restore the full parent cache witness after "
+            "rename (POSIX/macOS ctime is immutable)"
+        )
 
     with pytest.raises(
         ledger_module.ArtifactLedgerError, match="case/NFC alias"

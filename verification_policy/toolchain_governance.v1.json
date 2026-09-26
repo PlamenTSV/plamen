@@ -182,11 +182,11 @@
     },
     {
       "tool_id": "medusa",
-      "version_policy": "runtime version captured",
-      "integrity_policy": "resolved executable SHA-256",
+      "version_policy": "exact native v1.5.1 signed image member",
+      "integrity_policy": "Sigstore-authenticated release executable SHA-256 plus signed exact guest-member receipt",
       "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
-      "update_policy": {"state": "GOVERNED_DEBT", "reason": "installer uses a mutable Go module channel", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
-      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+      "update_policy": {"state": "REVIEWED_NATIVE_SIGNED_CONTENT", "acquisition_scope": "SETUP_ONLY", "policy_path": "verification_policy/medusa_acquisition.v1.json", "policy_sha256": "4112703567b4c398207eaf09c75503840704be44b663a43e82fae42aa32a0208", "signed_receipt_contract": "PLAMEN_NATIVE_IMAGE_MEMBER_RECEIPT_V2", "next_required_authority": "PLAMEN_NATIVE_SOURCE_BOOTSTRAP_COORDINATOR_RECEIPT_V1"},
+      "runtime_authority": {"identity_status": "MATCH", "deterministic_provider_authority": true, "mismatch_effect": "REVOKE_ON_SIGNED_IMAGE_MEMBER_MISMATCH"}
     },
     {
       "tool_id": "rustc",

@@ -7,6 +7,7 @@ import pytest
 
 from artifact_ledger import arm_semantic_mutation, finalize_semantic_mutation
 from preverify_frozen_projection import (
+    derive_preverify_finding_records_bytes,
     EVIDENCE_LOGICAL,
     INVENTORY_LOGICAL,
     PreverifyFrozenProjectionError,
@@ -84,6 +85,29 @@ def _mutate(root, project, run_id, relative, raw, kind):
         run_id=run_id,
         affected_record_ids=("INV-1",),
     )
+
+
+def test_records_ignore_preserved_source_headings_inside_markdown_fences():
+    inventory_raw = (
+        b"# Findings Inventory\n\n"
+        b"### Finding [INV-001]: Canonical candidate\n"
+        b"**Severity**: Medium\n"
+        b"**Description**: Canonical mechanism.\n"
+        b"**Preserved Source Block**:\n"
+        b"````markdown\n"
+        b"## Finding [B1-1]: Producer-local identity\n"
+        b"```solidity\n"
+        b"### Finding [INV-999]: Canonical-looking code decoy\n"
+        b"```\n"
+        b"### Finding [INV-998]: Canonical-looking source decoy\n"
+        b"````\n"
+    )
+
+    payload = json.loads(
+        derive_preverify_finding_records_bytes(inventory_raw).decode("utf-8")
+    )
+
+    assert [row["inventory_id"] for row in payload["records"]] == ["INV-001"]
 
 
 def test_exact_sources_commit_content_addressed_pair_and_replay(tmp_path):
@@ -413,6 +437,7 @@ def test_delivery_payload_crlf_source_uses_exact_bytes_across_hosts(tmp_path):
         b"# Finding Inventory\r\n\r\n"
         b"### Finding [INV-001]: candidate\r\n"
         b"**Source IDs**: DCI-1\r\n"
+        b"**Primary Artifact**: depth_consensus_invariant_findings.md\r\n"
         b"**Severity**: Medium\r\n"
         b"**Location**: src/A.sol:10\r\n"
         b"**Description**: Exact source bytes are authoritative.\r\n"

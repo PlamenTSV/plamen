@@ -59,6 +59,27 @@ REPAIR_OUTPUTS = {
 }
 
 
+def test_axis_repair_canonicalizes_fresh_temp_parent_alias(
+    tmp_path: Path,
+) -> None:
+    """A leased temp path may use a host alias such as macOS /var."""
+
+    real_parent = tmp_path / "real"
+    real_parent.mkdir()
+    alias_parent = tmp_path / "alias"
+    try:
+        alias_parent.symlink_to(real_parent, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    leased = alias_parent / "leased"
+    leased.mkdir()
+
+    canonical = DRIVER._axis_repair_canonical_temporary_root(leased)
+
+    assert canonical == leased.resolve(strict=True)
+    assert canonical.is_dir()
+
+
 def _replace_plan(
     *,
     scratchpad: Path,
@@ -460,7 +481,8 @@ def test_repair_worker_uses_disposable_staging_without_live_path_exposure(
     )
     if backend == "claude":
         assert set(observed["expected_outputs"]) == REPAIR_OUTPUTS
-    assert receipt["state"] == "EXECUTED"
+    if receipt["state"] != "EXECUTED":
+        pytest.fail("\n".join(issues), pytrace=False)
     assert issues == []
     assert plan_path.read_bytes() == before
     for name in REPAIR_OUTPUTS:

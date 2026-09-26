@@ -18,7 +18,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import msvcrt
 import os
 from pathlib import Path
 import re
@@ -26,6 +25,11 @@ import stat
 import time
 from typing import Any
 import uuid
+
+try:
+    import msvcrt
+except ModuleNotFoundError:  # pragma: no cover - exercised by POSIX collection
+    msvcrt = None
 
 from windows_private_execution_root import (
     WindowsPrivateExecutionRootAuthority,
@@ -40,6 +44,10 @@ LEASE_TIMEOUT_ENV = "PLAMEN_WINDOWS_LOW_INTEGRITY_LEASE_TIMEOUT_SECONDS"
 LEASE_TEST_OVERRIDE_ENV = "PLAMEN_TEST_ALLOW_WINDOWS_LEASE_OVERRIDE"
 DEFAULT_LEASE_TIMEOUT_SECONDS = 12 * 60 * 60
 DEFAULT_CALLER_LEASE_ACQUISITION_TIMEOUT_SECONDS = 30.0
+MAX_LEASE_STATE_BYTES = 1024 * 1024
+MAX_WRITABLE_ROOTS = 64
+MAX_OWNER_IDENTITY_BYTES = 256
+MAX_WINDOWS_PATH_CHARS = 32767
 _LOCK_FILE_NAME = "execution.lock"
 _STATE_FILE_NAME = "state.json"
 _FILE_ATTRIBUTE_REPARSE_POINT = getattr(
@@ -557,9 +565,17 @@ def _canonical_roots(
     *,
     lease_directory: Path,
 ) -> tuple[Path, ...]:
+    if len(roots) > MAX_WRITABLE_ROOTS:
+        raise WindowsLowIntegrityLeaseError(
+            f"at most {MAX_WRITABLE_ROOTS} writable roots are permitted"
+        )
     canonical = tuple(
         _validate_real_directory(root, purpose="writable root") for root in roots
     )
+    if any(len(str(item)) > MAX_WINDOWS_PATH_CHARS for item in canonical):
+        raise WindowsLowIntegrityLeaseError(
+            "writable root exceeds the Windows extended-path boundary"
+        )
     if len(set(canonical)) != len(canonical):
         raise WindowsLowIntegrityLeaseError("writable roots must be unique")
     for index, left in enumerate(canonical):
@@ -625,6 +641,10 @@ def _json_bytes(payload: dict[str, Any]) -> bytes:
 
 def _write_state(path: Path, payload: dict[str, Any]) -> str:
     raw = _json_bytes(payload)
+    if len(raw) > MAX_LEASE_STATE_BYTES:
+        raise WindowsLowIntegrityLeaseError(
+            "low-integrity lease state exceeds its fixed byte bound"
+        )
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}")
     try:
         with open(temporary, "xb") as handle:
@@ -651,7 +671,17 @@ def _read_state(path: Path) -> tuple[dict[str, Any] | None, str | None]:
             raise WindowsLowIntegrityLeaseError(
                 "lease state is not a real regular file"
             )
-        raw = path.read_bytes()
+        observed_size = path.stat().st_size
+        if observed_size < 0 or observed_size > MAX_LEASE_STATE_BYTES:
+            raise WindowsLowIntegrityLeaseError(
+                "lease state exceeds its fixed byte bound"
+            )
+        with open(path, "rb", buffering=0) as handle:
+            raw = handle.read(MAX_LEASE_STATE_BYTES + 1)
+        if len(raw) > MAX_LEASE_STATE_BYTES or len(raw) != observed_size:
+            raise WindowsLowIntegrityLeaseError(
+                "lease state changed or exceeded its fixed byte bound"
+            )
         payload = json.loads(raw.decode("utf-8", errors="strict"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise WindowsLowIntegrityLeaseError(
@@ -682,6 +712,21 @@ class WindowsLowIntegrityExecutionLease:
             )
         if not owner_identity or not isinstance(owner_identity, str):
             raise WindowsLowIntegrityLeaseError("lease owner identity is invalid")
+        try:
+            owner_identity_bytes = owner_identity.encode(
+                "utf-8", errors="strict"
+            )
+        except UnicodeError as exc:
+            raise WindowsLowIntegrityLeaseError(
+                "lease owner identity is invalid"
+            ) from exc
+        if (
+            len(owner_identity_bytes) > MAX_OWNER_IDENTITY_BYTES
+            or "\x00" in owner_identity
+        ):
+            raise WindowsLowIntegrityLeaseError(
+                "lease owner identity exceeds its fixed byte bound"
+            )
         now = time.monotonic()
         deadline = (
             now + DEFAULT_CALLER_LEASE_ACQUISITION_TIMEOUT_SECONDS
@@ -1003,6 +1048,10 @@ __all__ = [
     "LEASE_PROTOCOL",
     "LEASE_TEST_OVERRIDE_ENV",
     "LEASE_TIMEOUT_ENV",
+    "MAX_LEASE_STATE_BYTES",
+    "MAX_OWNER_IDENTITY_BYTES",
+    "MAX_WINDOWS_PATH_CHARS",
+    "MAX_WRITABLE_ROOTS",
     "WindowsLowIntegrityExecutionLease",
     "WindowsLowIntegrityLeaseError",
     "lease_capability_binding",

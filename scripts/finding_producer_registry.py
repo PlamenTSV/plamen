@@ -33,6 +33,47 @@ REGISTERED_ENUMERATION_OBLIGATION_SCHEMA = (
     "plamen.registered_enumeration_obligation.v1"
 )
 
+# The registered-delivery projection is replayed in Gate P's disposable
+# project snapshot.  These are semantic witnesses, not optional diagnostics:
+# omitting them makes a valid enumgap disposition look absent and strands every
+# exploration-clear obligation at the destructive pre-dedup boundary.
+REGISTERED_DELIVERY_SCRATCHPAD_AUTHORITY_FILES: tuple[str, ...] = (
+    "_artifact_state.json",
+    "_enumeration_obligations.json",
+    EXPLORATION_CLEAR_RECEIPT,
+    EXPLORATION_CLEAR_OBLIGATIONS,
+    "exploration_clear_prior_identity_map.json",
+    "exploration_clear_prior_aliases.json",
+    "enumgap_worklist.json",
+    "enumgap_exploration_findings.md",
+    "enumgap_disposition_receipt.json",
+    "enumgap_residual_obligations.json",
+    "enumgap_exploration_promotion_receipt.json",
+    "enumgap_inventory_append_plan.json",
+    "enumgap_inventory_append_commit.json",
+)
+
+
+def registered_delivery_scratchpad_authority_files(
+    scratchpad: str | Path,
+) -> tuple[str, ...]:
+    """Return the materialized witness closure for registered delivery.
+
+    Absence of the exploration obligation producer means this authority family
+    is not active.  Once active, every materialized witness travels into the
+    isolated consumer; partial families remain partial and fail there with the
+    same semantic debt instead of being silently converted into an empty set.
+    """
+
+    root = Path(scratchpad)
+    if not (root / EXPLORATION_CLEAR_OBLIGATIONS).is_file():
+        return ()
+    return tuple(
+        name
+        for name in REGISTERED_DELIVERY_SCRATCHPAD_AUTHORITY_FILES
+        if (root / name).is_file()
+    )
+
 MARKDOWN_FINDING_ARTIFACT = "MARKDOWN_FINDINGS"
 EXPLORATION_CLEAR_ARTIFACT = "EXPLORATION_CLEAR_RECEIPT_V1"
 EXPLORATION_CLEAR_OBLIGATION_ARTIFACT = (
@@ -523,6 +564,15 @@ class FindingProducer:
 
 _ALL = frozenset(REQUIRED_DELIVERY_CONSUMERS)
 _DELIVERY = _ALL
+# Niche findings have a dedicated, receipt-bearing inventory publisher in
+# ``promote_niche_to_inventory``.  They remain first-class registered
+# producers everywhere else, but exposing them to the generic pre-dedup
+# publisher creates two owners for the same inventory mutation.
+_NICHE_SPECIALIZED_DELIVERY = frozenset(
+    consumer
+    for consumer in REQUIRED_DELIVERY_CONSUMERS
+    if consumer != "pre_dedup_promotion"
+)
 
 # First-pass discovery prefixes are assigned by the spawn manifest, so the
 # registry cannot enumerate a closed semantic prefix list.  Keep the grammar
@@ -550,6 +600,65 @@ _DISCOVERY_LOCAL_ID_PATTERNS: tuple[str, ...] = (
 # canonical inventory/report IDs into findings.
 _L1_GRAPH_LOCAL_ID_PATTERNS: tuple[str, ...] = _DISCOVERY_LOCAL_ID_PATTERNS
 
+# The thorough-mode DA worker is a contrastive consumer of candidates emitted
+# by every depth producer.  Its artifact therefore carries upstream local IDs
+# instead of minting one role-specific namespace.  Keep that compatibility
+# grammar artifact-scoped: it must not widen ordinary depth-core producers.
+#
+# DA iteration workers may retain an upstream ID verbatim or qualify it as
+# ``DA<iteration>-<upstream-id>``.  Derive the qualified grammar from the same
+# source manifest instead of maintaining an unrelated approximation.  Run 79
+# demonstrated why: ``DA2-BLIND-A1`` and ``DA2-DS1`` were semantically valid
+# output, but the old generic wrapper only accepted a final ``-<digits>`` and
+# rejected upstream namespaces whose ordinal is attached to a letter.
+_DEPTH_DA_UPSTREAM_LOCAL_ID_PATTERNS: tuple[str, ...] = (
+    producer_numeric_id_pattern(),
+    r"BLIND-[A-Z]?-?\d+",
+    r"DCI-\d+", r"DEC-\d+", r"DST-\d+", r"DX-\d+", r"DN-\d+",
+    r"DNS-\d+", r"DS-\d+", r"DE-\d+", r"DT-\d+", r"PERT-\d+",
+    r"ATT-\d+", r"MAD-\d+", r"VS-\d+", r"SLITHER-\d+",
+    r"SP-\d+", r"MEDUSA-\d+", r"FUZZ-\d+",
+)
+
+
+def _depth_da_qualified_source_patterns() -> tuple[str, ...]:
+    """Return declared DA wrappers, including the worker's compact ordinal.
+
+    The DA prompt's qualified spelling removes the final separator from
+    ordinary ``PREFIX-N`` upstream IDs (``DS-1`` becomes ``DA2-DS1``), while
+    preserving embedded namespace separators (``MEDUSA-1`` may also remain
+    ``DA2-MEDUSA-1``).  Both are projections of a declared upstream grammar;
+    neither admits an undeclared source namespace.
+    """
+
+    patterns: list[str] = []
+    for source_pattern in _DEPTH_DA_UPSTREAM_LOCAL_ID_PATTERNS:
+        variants = [source_pattern]
+        for suffix in (r"-\d+", r"-[0-9]+"):  # regex text, not source IDs
+            if source_pattern.endswith(suffix):
+                variants.append(
+                    source_pattern[: -len(suffix)] + suffix.removeprefix("-")
+                )
+                break
+        patterns.extend(
+            rf"DA\d+-(?:{variant})" for variant in dict.fromkeys(variants)
+        )
+    return tuple(dict.fromkeys(patterns))
+
+
+_DEPTH_DA_CARRYOVER_LOCAL_ID_PATTERNS: tuple[str, ...] = (
+    *_DEPTH_DA_UPSTREAM_LOCAL_ID_PATTERNS,
+    r"DA-[A-Z0-9_-]+-\d+",
+    r"DA\d+-\d+",
+    *_depth_da_qualified_source_patterns(),
+    # DA workers can also mint a bounded descriptive slug for a genuinely
+    # adjacent finding. This is admitted only for DA-owned artifacts; an
+    # explicit finding heading plus substantive source content is still
+    # required before it becomes a registered action. The prompt prefers
+    # numeric IDs, but a presentation choice must not erase a real action.
+    r"DA\d+-[A-Z][A-Z0-9]{1,31}(?:-[A-Z][A-Z0-9]{1,31}){1,4}",
+)
+
 
 FINDING_PRODUCERS: tuple[FindingProducer, ...] = (
     FindingProducer(
@@ -560,24 +669,43 @@ FINDING_PRODUCERS: tuple[FindingProducer, ...] = (
         required_consumers=_DELIVERY,
     ),
     FindingProducer(
+        key="depth_da_carryover",
+        artifact_patterns=(
+            "depth_iter2_*_findings.md",
+            "depth_iter3_*_findings.md",
+            "depth_da_*_findings.md",
+        ),
+        local_id_patterns=_DEPTH_DA_CARRYOVER_LOCAL_ID_PATTERNS,
+        owner_phase="depth",
+        required_consumers=_DELIVERY,
+    ),
+    FindingProducer(
+        # The edge-case role legitimately invokes the storage-layout
+        # methodology, whose native SLS-N namespace is distinct from the
+        # role-native DE-N namespace. Keep that alias scoped to this exact
+        # producer artifact instead of widening every depth-core file.
+        key="depth_edge_case",
+        artifact_patterns=("depth_edge_case_findings.md",),
+        local_id_patterns=(r"DE-\d+", r"SLS-\d+"),
+        owner_phase="depth",
+        required_consumers=_DELIVERY,
+    ),
+    FindingProducer(
         key="depth_core",
         artifact_patterns=(
             "depth_consensus_invariant_findings.md",
             "depth_state_trace_findings.md",
-            "depth_edge_case_findings.md",
             "depth_external_findings.md",
             "depth_token_flow_findings.md",
             "depth_network_surface_findings.md",
             "depth_methodology_repair_findings.md",
-            "depth_iter2_*_findings.md",
-            "depth_iter3_*_findings.md",
-            "depth_da_*_findings.md",
             "design_stress_findings.md",
             "perturbation_findings.md",
         ),
         local_id_patterns=(
             r"DCI-\d+", r"DEC-\d+", r"DST-\d+", r"DX-\d+", r"DN-\d+",
             r"DNS-\d+", r"DA-[A-Z0-9_-]+-\d+", r"DA\d+-[A-Z0-9_-]+-\d+",
+            r"DA\d+-\d+",
             r"DS-\d+", r"DE-\d+", r"DT-\d+", r"PERT-\d+", r"ATT-\d+",
             r"MAD-\d+",
         ),
@@ -689,6 +817,24 @@ FINDING_PRODUCERS: tuple[FindingProducer, ...] = (
         owner_phase="depth",
         required_consumers=_DELIVERY,
     ),
+    # These two deterministic recon-prepass outputs enter canonical inventory
+    # before depth; their namespaces are owned by their exact artifacts.
+    # Keep them more specific than the generic niche glob so PSET/IFACE cannot
+    # be asserted by an unrelated niche worker artifact.
+    FindingProducer(
+        key="recon_prepass_interface_parity",
+        artifact_patterns=("niche_interface_parity_findings.md",),
+        local_id_patterns=(r"IFACE-\d+",),
+        owner_phase="recon",
+        required_consumers=_NICHE_SPECIALIZED_DELIVERY,
+    ),
+    FindingProducer(
+        key="recon_prepass_permissionless_setters",
+        artifact_patterns=("niche_permissionless_setters_findings.md",),
+        local_id_patterns=(r"PSET-\d+",),
+        owner_phase="recon",
+        required_consumers=_NICHE_SPECIALIZED_DELIVERY,
+    ),
     FindingProducer(
         key="niche",
         artifact_patterns=("niche_*_findings.md",),
@@ -698,7 +844,7 @@ FINDING_PRODUCERS: tuple[FindingProducer, ...] = (
         # not project it into the global identity grammar: EIP-N is public.
         legacy_local_id_patterns=(r"EIP-\d+",),
         owner_phase="depth",
-        required_consumers=_DELIVERY,
+        required_consumers=_NICHE_SPECIALIZED_DELIVERY,
     ),
     FindingProducer(
         key="validation_sweep",
@@ -782,7 +928,9 @@ FINDING_PRODUCERS: tuple[FindingProducer, ...] = (
     FindingProducer(
         key="exploration_skeptic",
         artifact_patterns=("exploration_skeptic_findings.md",),
-        local_id_patterns=(r"SKEP-\d+", r"SKEP-LEGACY-[A-F0-9]{12}"),
+        local_id_patterns=(
+            r"SKEP-\d+", r"SKEPTIC-\d+", r"SKEP-LEGACY-[A-F0-9]{12}",
+        ),
         owner_phase="exploration_skeptic",
         required_consumers=_ALL,
         action_contract="NEW_UPGRADE_REOPEN",
@@ -790,7 +938,14 @@ FINDING_PRODUCERS: tuple[FindingProducer, ...] = (
     FindingProducer(
         key="exploration_clear_additive",
         artifact_patterns=(EXPLORATION_CLEAR_RECEIPT,),
-        local_id_patterns=(r"SKEP-\d+", r"SKEP-LEGACY-[A-F0-9]{12}"),
+        # Repair-generated additive actions use the lifecycle's canonical
+        # ECRA namespace.  SKEP spellings remain accepted for additive rows
+        # emitted directly by the exploration producer and for old receipts.
+        local_id_patterns=(
+            r"ECRA-[A-F0-9]{24}",
+            r"SKEP-\d+",
+            r"SKEP-LEGACY-[A-F0-9]{12}",
+        ),
         lineage_id_patterns=(r"ECLR-[A-F0-9]{24}",),
         owner_phase="exploration_skeptic",
         required_consumers=_ALL,
@@ -1319,9 +1474,9 @@ def _load_bound_exploration_aliases(scratchpad: Path) -> dict[str, str]:
     if not path.is_file():
         return {}
     try:
-        from exploration_clear_lifecycle import load_canonical_prior_authority
+        from exploration_authority_bundle import load_immutable_prior_bundle
 
-        return dict(load_canonical_prior_authority(scratchpad).aliases)
+        return dict(load_immutable_prior_bundle(scratchpad).aliases)
     except Exception as exc:
         raise TypedProducerActionError(
             f"cannot validate exploration alias authority: {exc}"

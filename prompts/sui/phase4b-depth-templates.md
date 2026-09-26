@@ -71,7 +71,7 @@ This includes specific sub-patterns:
 
 ## MANDATORY DEPTH DIRECTIVE
 
-For EVERY finding you analyze or produce, you MUST apply at least 2 of these 3 techniques:
+For each finding you analyze or produce, apply at least two of these four techniques and record concrete outcomes:
 
 1. **Boundary Substitution**: For each comparison, arithmetic operation, or conditional in the finding's code path -- substitute the boundary values (0, 1, MAX_U64, MAX_U128, type_max, type_min, threshold-1, threshold+1). **Dual-extreme rule**: Always test BOTH the minimum AND maximum boundaries -- not just one end. Also test the exact equality boundary (=) for every `>` / `<` / `>=` / `<=` comparison -- off-by-one errors hide at `==`. For N-of-M selection/iteration constructs, test partial saturation states (1-of-N full, N-1-of-N full) in addition to all-empty and all-full. For Sui-specific boundaries: coin_value=0, shared_object at version=1 (just created), vector::length=0, dynamic field count=0, gas_budget=50_000_000_000 (50 SUI in MIST). Record what happens. Tag: `[BOUNDARY:X=val -> outcome]`
    Example: `[BOUNDARY:coin_value=0 -> empty coin passed to pool.add_liquidity -> abort at balance::split]`
@@ -90,7 +90,7 @@ For EVERY finding you analyze or produce, you MUST apply at least 2 of these 3 t
 A finding without at least 2 depth evidence tags is INCOMPLETE and will score poorly in confidence scoring.
 
 ## EXPLOITATION TRACE MANDATE
-For every Medium+ finding, produce a concrete exploitation trace: attacker action → state change → concrete profit/loss in dollar terms. 'Validation bypassed' or 'state corrupted' is NOT a terminal state — trace until tokens move to an attacker-controlled address, users lose measurable value, OR the attacker gains a privileged state that enables further exploitation (document the enabled capabilities). 'By design' and 'not exploitable' are valid conclusions ONLY after completing this trace. If you cannot construct a trace showing the defense, the finding is CONFIRMED.
+For every Medium+ finding, trace attacker action → reachable state transition → concrete harm. Quantify token or dollar impact when the claim is financial; for governance, authorization, integrity, or liveness claims, identify the exact action, right, result, or availability that changes. A validation bypass or corrupted intermediate state is not itself the terminal harm. Confirm only when the in-scope attack path and harm are supported by evidence; an unproven defense alone does not prove the attack. If only an external safety condition is unknown, retain the impact-level candidate under R10 with the exact `[EXTERNAL-ASSUMPTION: ...]` tag and either a citation or a `NEEDS_DEPENDENCY_RESEARCH` line. If the mechanism or harm path itself remains unproven, keep the candidate unresolved for independent verification.
 
 ## INVARIANT CONSISTENCY CHECK (HARD GATE)
 For each finding you CONFIRM at Medium+ severity, you MUST:
@@ -298,7 +298,7 @@ For EVERY question you investigate, apply at least 2 of these 3 techniques:
 For each finding you CONFIRM at Medium+ severity, you MUST check: does this finding's claimed impact contradict any Operational Implication in design_context.md? If the finding claims tokens are locked, lost, or desynchronized — trace the ACTUAL token/object flow and verify against the documented accounting model. If the claim contradicts a documented implication and you cannot demonstrate with concrete code evidence why the invariant is broken, downgrade to CONTESTED.
 
 ## EXPLOITATION TRACE MANDATE
-For every Medium+ finding, produce a concrete exploitation trace: attacker action → state change → concrete profit/loss in dollar terms. Trace until tokens move, users lose measurable value, OR the attacker gains a privileged state that enables further exploitation.
+For every Medium+ finding, trace attacker action → reachable state transition → concrete financial or non-financial harm. Quantify value when financial; otherwise identify the exact right, action, result, or availability affected.
 
 ## Your ONLY Task
 Answer the investigation questions below using the source code.

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import plamen_driver as D
@@ -48,6 +49,46 @@ def test_verify_shard_manifests_write_json_sidecars(tmp_path: Path):
     assert '"schema_version": "plamen.verification_queue.v1"' in payload
     assert '"finding id": "H-1"' in payload
     assert '"finding id": "H-2"' in payload
+
+
+def test_sealed_live_queue_shard_replay_is_read_only(tmp_path: Path):
+    sp = tmp_path
+    rows = [_row("H-1", "High"), _row("M-1", "Medium")]
+    D._write_queue_subset_manifest(sp / "verification_queue.md", rows)
+    expected = D.ensure_sc_verify_shard_manifests(sp)
+    sibling = next(
+        path
+        for path in (
+            sp / "compound_verification_delivery_receipt.json",
+            sp / "compound_verification_delivery_debt.json",
+        )
+        if path.is_file()
+    )
+    sibling.write_bytes(b"sealed T9 sibling bytes\n")
+    (sp / "verify_queue_transaction.receipt.json").write_text(
+        json.dumps({
+            "schema_version": "plamen.live_verify_queue_receipt.v1",
+            "state": "OUTPUT_COMMITTED",
+            "pipeline": "sc",
+            "run_id": "run-sealed-replay",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    before = {
+        path.relative_to(sp).as_posix(): path.read_bytes()
+        for path in sp.rglob("*")
+        if path.is_file()
+    }
+
+    replay = D.ensure_sc_verify_shard_manifests(sp)
+
+    after = {
+        path.relative_to(sp).as_posix(): path.read_bytes()
+        for path in sp.rglob("*")
+        if path.is_file()
+    }
+    assert replay == expected
+    assert after == before
 
 
 def test_verification_queue_writer_never_emits_blank_verify_filename(tmp_path: Path):

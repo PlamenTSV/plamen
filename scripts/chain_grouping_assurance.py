@@ -112,6 +112,15 @@ def _strict_json(path: Path) -> dict[str, Any]:
 
 def _atomic_write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if (
+            not path.is_symlink()
+            and path.is_file()
+            and path.read_bytes() == content
+        ):
+            return
+    except OSError:
+        pass
     temporary = path.with_name(f".{path.name}.p0w-assurance.tmp")
     with open(temporary, "wb") as handle:
         handle.write(content)

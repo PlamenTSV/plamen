@@ -6,8 +6,9 @@ import json
 
 import pytest
 
-from review_fixtures import (
-    cut4_transactional_recon_publication_r13_reference_model as m,
+m = pytest.importorskip(
+    "review_fixtures.cut4_transactional_recon_publication_r13_reference_model",
+    reason="optional private transactional-recon reference model is absent",
 )
 
 

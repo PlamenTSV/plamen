@@ -15,6 +15,8 @@ import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from artifact_ledger import read_artifact_ledger
+from finding_producer_registry import materialized_producer_paths
+from live_verify_queue_semantics import _normalize_context_paths
 import live_verify_queue_methodology_projection as _methodology_projection
 import live_verify_queue_prearm_inputs as _prearm
 import p0af_v2_queue_adapter as _p0af
@@ -29,6 +31,11 @@ from plamen_types import (
     SC_VERIFY_SHARD_MANIFESTS,
 )
 from production_source_scope import is_production_source_path
+from portable_path_contract import assert_lexically_bounded_relative_path
+from verification_method_compiler import (
+    build_verification_context_packets,
+    verification_reference_graph_artifacts,
+)
 from verify_queue_transaction import (
     execute_live_verify_queue_transaction,
     live_verify_queue_base_upstream_roster,
@@ -80,6 +87,17 @@ _METHODOLOGY_DIRECTORIES = (
 )
 _MAX_CONTEXT_FILES = 20_000
 _MAX_CONTEXT_BYTES = 1024 * 1024 * 1024
+_SOURCE_PATH_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_@+.-])"
+    r"([A-Za-z0-9_@+.-]+(?:/[A-Za-z0-9_@+.,()'-]+)+"
+    r"\.(?:sol|vy|rs|move|go|proto|daml))"
+    r"(?::(?:L)?\d+(?:-(?:L)?\d+)?)?"
+    r"(?=$|[\s,;`)'\"])",
+    re.IGNORECASE,
+)
+_INVENTORY_LOCATION_LINE_RE = re.compile(
+    r"(?im)^\s*\*{0,2}Location\*{0,2}\s*:\s*([^\r\n]+)$"
+)
 
 
 class LiveVerifyQueueDriverAdapterError(RuntimeError):
@@ -114,6 +132,14 @@ def _normal(value: Any) -> str:
 def _safe_relative(value: Any) -> str:
     text = str(value or "").strip().replace("\\", "/")
     pure = PurePosixPath(text)
+    try:
+        assert_lexically_bounded_relative_path(
+            text, label="live adapter relative path"
+        )
+    except ValueError as exc:
+        raise LiveVerifyQueueDriverAdapterError(
+            f"unsafe live adapter relative path: {value!r}"
+        ) from exc
     if (
         not text
         or pure.is_absolute()
@@ -501,37 +527,57 @@ def _inventory_source_paths(
     inventory_path: Path,
     records_path: Path,
 ) -> set[Path]:
-    text_parts: list[str] = []
+    """Resolve project files only from typed/field-scoped location values.
+
+    Free prose is deliberately excluded. A historical whole-document regex
+    greedily captured a finding description through its final ``.sol`` token,
+    then passed the paragraph to ``Path.is_file`` as one filename component.
+    Besides misclassifying evidence, that can exceed OS component limits and
+    halt queue cutover. Structured location fields are the sole authority;
+    absence safely falls back to the already bounded production file census.
+    """
+
+    location_values: list[str] = []
     if inventory_path.is_file():
-        text_parts.append(
-            inventory_path.read_text(encoding="utf-8", errors="replace")
+        inventory_text = inventory_path.read_text(
+            encoding="utf-8", errors="replace"
+        )
+        location_values.extend(
+            match.group(1).strip()
+            for match in _INVENTORY_LOCATION_LINE_RE.finditer(inventory_text)
         )
     if records_path.is_file():
-        text_parts.append(
-            records_path.read_text(encoding="utf-8", errors="replace")
-        )
-    text = "\n".join(text_parts).replace("\\", "/")
+        try:
+            payload = json.loads(
+                records_path.read_text(encoding="utf-8", errors="strict")
+            )
+        except (UnicodeError, json.JSONDecodeError, OSError):
+            payload = {}
+        records = payload.get("records") if isinstance(payload, Mapping) else None
+        if isinstance(records, list):
+            location_values.extend(
+                str(record.get("location") or "").strip()
+                for record in records
+                if isinstance(record, Mapping)
+                and str(record.get("location") or "").strip()
+            )
+
     result: set[Path] = set()
-    for match in re.finditer(
-        r"(?<![A-Za-z0-9_.-])"
-        r"([A-Za-z0-9_@+.,()' -]+(?:/[A-Za-z0-9_@+.,()' -]+)+"
-        r"\.(?:sol|vy|rs|move|go|proto|daml))"
-        r"(?::(?:L)?\d+(?:-(?:L)?\d+)?)?",
-        text,
-        flags=re.IGNORECASE,
-    ):
-        token = match.group(1).strip()
-        try:
-            relative = _safe_relative(token)
-        except LiveVerifyQueueDriverAdapterError:
-            continue
-        path = project_root.joinpath(*PurePosixPath(relative).parts)
-        try:
-            path.resolve().relative_to(project_root.resolve())
-        except ValueError:
-            continue
-        if path.is_file() and not path.is_symlink():
-            result.add(path)
+    for value in location_values:
+        normalized = value.replace("\\", "/")
+        for match in _SOURCE_PATH_TOKEN_RE.finditer(normalized):
+            try:
+                relative = _safe_relative(match.group(1))
+                path = project_root.joinpath(*PurePosixPath(relative).parts)
+                path.resolve().relative_to(project_root.resolve())
+                if (
+                    path.is_file()
+                    and not path.is_symlink()
+                    and is_production_source_path(path, project_root)
+                ):
+                    result.add(path)
+            except (LiveVerifyQueueDriverAdapterError, OSError, ValueError):
+                continue
     return result
 
 
@@ -540,22 +586,26 @@ def _inventory_scratchpad_artifacts(
     *,
     inventory_path: Path,
 ) -> set[str]:
+    """Capture registered producer evidence, not Markdown field spellings.
+
+    The typed verification queue can cite any registered finding producer via
+    Source Actions. Its isolated T7 compiler and the later live verifier must
+    see the same materialized files, regardless of how inventory prose labels
+    those actions.
+    """
     if not inventory_path.is_file():
         return set()
-    text = inventory_path.read_text(encoding="utf-8", errors="replace")
     result: set[str] = set()
-    for match in re.finditer(
-        r"(?im)^\s*\*{0,2}(?:Primary|Source)\s+Artifact\*{0,2}"
-        r"\s*:\s*`?([^`\r\n]+)",
-        text,
-    ):
-        value = match.group(1).strip()
+    for path in materialized_producer_paths(scratchpad, "resume_hashing"):
         try:
-            relative = _safe_relative(value)
-        except LiveVerifyQueueDriverAdapterError:
+            relative = _safe_relative(path.relative_to(scratchpad).as_posix())
+        except (LiveVerifyQueueDriverAdapterError, ValueError):
             continue
-        if (scratchpad / relative).is_file():
-            result.add(relative)
+        if path.is_symlink():
+            raise LiveVerifyQueueDriverAdapterError(
+                f"registered producer is a symlink: {relative}"
+            )
+        result.add(relative)
     return result
 
 
@@ -626,16 +676,28 @@ def _context_capture(
     inventory_path, records_path, frozen_inputs = (
         _frozen_context_sources(scratchpad, frozen_projection)
     )
-    graph_artifacts = tuple(
+    graph_artifacts = tuple(sorted({
         name
         for name in _GRAPH_ARTIFACT_NAMES
         if (scratchpad / name).is_file()
         and not (scratchpad / name).is_symlink()
-    )
+    } | set(verification_reference_graph_artifacts(scratchpad))))
     scratch_artifacts = _inventory_scratchpad_artifacts(
         scratchpad,
         inventory_path=inventory_path,
     )
+    # T7 also binds the logical canonical projections. The frozen receipt
+    # aliases are immutable inputs for queue construction, but typed rows may
+    # name their live logical counterparts as primary evidence. Capturing only
+    # the physical aliases makes T7 see MISSING while the verifier sees BOUND.
+    for logical in ("findings_inventory.md", "finding_records.json"):
+        candidate = scratchpad / logical
+        if candidate.is_symlink():
+            raise LiveVerifyQueueDriverAdapterError(
+                f"live adapter logical context is a symlink: {logical}"
+            )
+        if candidate.is_file():
+            scratch_artifacts.add(logical)
     project_files = _project_file_candidates(project_root)
     primary_paths = _inventory_source_paths(
         project_root,
@@ -751,6 +813,49 @@ def _replay_execution_projection(
         "safe_to_consume": True,
         "replayed": True,
     }
+
+
+def _validate_live_context_replay(
+    scratchpad: Path,
+    project_root: Path,
+) -> None:
+    """Fail once at queue publication if T7 would fail every verifier unit.
+
+    T7 compiles packets in an isolated copy of the captured denominator. The
+    verifier compiles from the live roots. Their exact normalized packets must
+    agree before dispatch; otherwise the queue is not safe to consume.
+    """
+
+    typed_path = scratchpad / "verification_queue.work_items.json"
+    packet_path = scratchpad / "verification_context_packets.json"
+    if (
+        not typed_path.is_file() or typed_path.is_symlink()
+        or not packet_path.is_file() or packet_path.is_symlink()
+    ):
+        raise LiveVerifyQueueDriverAdapterError(
+            "live adapter context replay inputs are unavailable"
+        )
+    try:
+        typed = json.loads(typed_path.read_text(encoding="utf-8", errors="strict"))
+        rows = typed["rows"]
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise ValueError("typed queue rows are not objects")
+        published = json.loads(
+            packet_path.read_text(encoding="utf-8", errors="strict")
+        )
+        current = _normalize_context_paths(build_verification_context_packets(
+            rows=rows,
+            scratchpad=scratchpad,
+            project_root=project_root,
+        ))
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, ValueError) as exc:
+        raise LiveVerifyQueueDriverAdapterError(
+            f"live adapter context replay could not be compiled: {exc}"
+        ) from exc
+    if published != current:
+        raise LiveVerifyQueueDriverAdapterError(
+            "live adapter T7 context differs from live verifier replay"
+        )
 
 
 def run_live_verify_queue_driver_cutover(
@@ -1002,6 +1107,7 @@ def run_live_verify_queue_driver_cutover(
                 "live adapter publication validation refused downstream use: "
                 + "; ".join(map(str, validation.get("issues") or ()))
             )
+        _validate_live_context_replay(root, project)
         return {
             "schema_version": SCHEMA_VERSION,
             "state": "OUTPUT_COMMITTED",

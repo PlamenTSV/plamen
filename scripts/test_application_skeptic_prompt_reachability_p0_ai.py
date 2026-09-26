@@ -34,3 +34,6 @@ def test_application_skeptic_standalone_prompt_is_reachable_for_sc_and_l1(
         assert "Application Skeptic" in rendered
         assert "driver-owned work plan" in rendered
         assert "independent" in rendered.lower()
+        # This phase reviews bound negative-methodology rows, not raw bug
+        # candidates; its own independent evidence contract remains in force.
+        assert "cannot close the item" in rendered

@@ -89,6 +89,29 @@ def _split_row(line: str) -> tuple[str, ...] | None:
     return tuple(cells)
 
 
+def _table_data_start(lines: Sequence[str], header: int, end: int) -> int:
+    """Return the first semantic row after an optional Markdown separator.
+
+    The header and every disposition row carry the table's semantic shape.
+    Markdown's hyphen separator is presentation syntax, so a provider dropping
+    one separator cell must not erase otherwise exact, typed dispositions.
+    Skip a following line only when it is unambiguously separator syntax; when
+    it is absent, consume the first data row directly.
+    """
+
+    candidate = header + 1
+    if candidate >= end:
+        return candidate
+    raw = lines[candidate].strip()
+    cells = _split_row(lines[candidate])
+    if (
+        (cells is not None and bool(cells) and all(_SEPARATOR_RE.fullmatch(cell) for cell in cells))
+        or (bool(raw) and "-" in raw and re.fullmatch(r"[|:\-\s]+", raw) is not None)
+    ):
+        return candidate + 1
+    return candidate
+
+
 def _enumeration_input(root: Path) -> tuple[list[dict[str, Any]], list[str], str]:
     path = root / "_enumeration_obligations.json"
     if not path.is_file():
@@ -290,14 +313,12 @@ def _coverage_rows(text: str) -> tuple[list[tuple[int, tuple[str, ...], str]], l
         if cells is not None and tuple(cell.casefold() for cell in cells) == _EXPECTED_HEADER:
             header = index
             break
-    if header is None or header + 1 >= end:
+    if header is None:
         return [], ["enumgap Coverage Record header is missing or malformed"]
-    separator = _split_row(lines[header + 1])
-    if separator is None or len(separator) != 4 or not all(_SEPARATOR_RE.fullmatch(cell) for cell in separator):
-        return [], ["enumgap Coverage Record separator is missing or malformed"]
+    data_start = _table_data_start(lines, header, end)
     rows: list[tuple[int, tuple[str, ...], str]] = []
     debt: list[str] = []
-    for index in range(header + 2, end):
+    for index in range(data_start, end):
         structural_raw = lines[index]
         raw = source_lines[index]
         cells = _split_row(structural_raw)

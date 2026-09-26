@@ -111,6 +111,17 @@ def test_missing_kernel_degrades_loudly_instead_of_claiming_coverage(
     tmp_path: Path, monkeypatch
 ):
     missing_home = tmp_path / "missing-install"
+    # Preserve the two authenticated methodology sources that the breadth
+    # prompt must bind before it reaches the independently optional semantic
+    # kernel.  This test models one missing installed member, not an absent or
+    # unauthenticated Plamen installation.
+    for relative in (
+        Path("prompts/shared/v2/phase3-breadth.md"),
+        Path("rules/finding-output-format.md"),
+    ):
+        destination = missing_home / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((REPO / relative).read_bytes())
     monkeypatch.setattr(D, "plamen_home", lambda: missing_home)
 
     prompt = _prompt(tmp_path)

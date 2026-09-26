@@ -1,8 +1,10 @@
 """Live startup reconciliation fixtures for P0-Z semantic freshness."""
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -58,6 +60,32 @@ def _contract(
     )
 
 
+def _producer_contract(
+    phase: str,
+    unit: str,
+    *,
+    output: str,
+) -> PhaseIOContract:
+    """A committed output with no inputs: the seal a resume gates on."""
+
+    key = "/".join((*BASE.values(), phase, unit))
+    return PhaseIOContract(
+        **BASE,
+        phase=phase,
+        work_unit_id=unit,
+        outputs=(ArtifactSpec(
+            root="scratchpad",
+            path=output,
+            owner_key=key,
+            artifact_class="DRIVER_GENERATED",
+            writer="DRIVER",
+            write_mode="REPLACE",
+        ),),
+        immutable_inputs=(),
+        model_invoked=False,
+    )
+
+
 def _record(sp: Path, contract: PhaseIOContract) -> None:
     launch = LaunchSpec(
         work_unit_key=contract.key,
@@ -90,6 +118,19 @@ def _record(sp: Path, contract: PhaseIOContract) -> None:
     record_work_unit_artifacts(sp, sp.parent, contract, launch, run_id=RUN_ID)
 
 
+def _restore_committed_output(sp: Path, name: str, sealed: bytes) -> None:
+    """Model the repair of a tampered committed output.
+
+    The ledger's re-execution authority deliberately refuses output-only
+    tamper (``authorize_deterministic_work_unit_reexecution``); the codebase's
+    answer to a committed output that changed from outside the run is exact
+    restoration of the sealed generation.  Restoring the bytes makes the
+    producer's commit record authoritative again without minting a new one.
+    """
+
+    (sp / name).write_bytes(sealed)
+
+
 def _fixture(tmp_path: Path):
     sp = tmp_path / ".scratchpad"
     sp.mkdir()
@@ -102,6 +143,14 @@ def _fixture(tmp_path: Path):
         "aggregate.md": "aggregate\n",
     }.items():
         (sp / name).write_text(text, encoding="utf-8")
+    # ``source.md`` is a COMMITTED OUTPUT of the completed ``source_phase``.
+    # Editing it after completion is external drift of that phase's own
+    # committed state -- the only input-side property a resume may rewind on.
+    # (An unregistered scratchpad file edited by hand is deliberately NOT a
+    # rewind trigger any more; see test_resume_freshness_intra_run_rewrites.)
+    producer = _producer_contract(
+        "source_phase", "producer", output="source.md"
+    )
     a = _contract(
         "derive_a", "worker.0001", source="source.md", output="derive_a.md"
     )
@@ -111,7 +160,7 @@ def _fixture(tmp_path: Path):
     aggregate = _contract(
         "aggregate", "driver", source="derive_a.md", output="aggregate.md"
     )
-    for contract in (a, b, aggregate):
+    for contract in (producer, a, b, aggregate):
         _record(sp, contract)
     phases = [_phase(name) for name in (
         "source_phase", "derive_a", "derive_b", "aggregate",
@@ -120,7 +169,7 @@ def _fixture(tmp_path: Path):
         completed=[phase.name for phase in phases],
         run_id=RUN_ID,
     )
-    return sp, phases, checkpoint, (a, b, aggregate)
+    return sp, phases, checkpoint, (a, b, aggregate, producer)
 
 
 def test_resume_rewinds_exact_semantic_descendants_not_independent_sibling(
@@ -134,13 +183,36 @@ def test_resume_rewinds_exact_semantic_descendants_not_independent_sibling(
         sp, str(tmp_path), checkpoint, phases, "core", "evm"
     )
 
-    assert removed == ["derive_a", "aggregate"]
-    assert checkpoint.completed == ["source_phase", "derive_b"]
+    # The owner of the tampered committed output and its TYPED descendants
+    # are rewound; the independent sibling keeps its completion.
+    assert removed == ["source_phase", "derive_a", "aggregate"]
+    assert checkpoint.completed == ["derive_b"]
     receipt = D.read_artifact_ledger(sp)
     assert receipt["work_units"][_contracts[0].key]["semantic_status"] == "STALE_INPUT"
     assert receipt["work_units"][_contracts[1].key]["semantic_status"] == "ACTIVE"
     assert receipt["work_units"][_contracts[2].key]["semantic_status"] == "STALE_INPUT"
     assert (sp / "semantic_resume_invalidation.json").is_file()
+    diagnostic = json.loads(
+        (sp / "semantic_resume_invalidation.json").read_text(encoding="utf-8")
+    )
+    assert diagnostic["reason"] == "EXTERNAL_INPUT_DRIFT"
+    assert diagnostic["changed_input_identities"] == ["scratchpad:source.md"]
+    assert diagnostic["external_changed_input_identities"] == [
+        "scratchpad:source.md"
+    ]
+    assert diagnostic["stale_work_unit_keys"] == [_contracts[0].key]
+    assert diagnostic["input_drift_rows"] == [{
+        "work_unit_key": _contracts[0].key,
+        "input_identities": ["scratchpad:source.md"],
+        "changed_input_identities": ["scratchpad:source.md"],
+        "reasons": ["PRODUCER_AUTHORITY_MISMATCH"],
+    }]
+    assert [
+        (row["identity"], row["owner_phase"], row["live_status"])
+        for row in diagnostic["output_tamper_rows"]
+    ] == [("scratchpad:source.md", "source_phase", "CONTENT_CHANGED")]
+    assert diagnostic["coverage_fallback_phases"] == []
+    assert diagnostic["unverified_untyped_downstream_phases"] == []
 
 
 def test_unchanged_semantic_resume_runs_no_repair_and_is_byte_stable(
@@ -168,8 +240,11 @@ def test_rerun_refreshes_receipts_and_second_resume_is_clean(
     (sp / "source.md").write_text("source-b\n", encoding="utf-8")
     assert D._reconcile_completed_checkpoint_artifacts(
         sp, str(tmp_path), checkpoint, phases, "core", "evm"
-    ) == ["derive_a", "aggregate"]
+    ) == ["source_phase", "derive_a", "aggregate"]
 
+    # Repairing the tampered committed output and rerunning the stale typed
+    # consumers refreshes their receipts; the second resume is clean.
+    _restore_committed_output(sp, "source.md", b"source-a\n")
     _record(sp, contracts[0])
     _record(sp, contracts[2])
     checkpoint.completed = [phase.name for phase in phases]
@@ -188,7 +263,7 @@ def test_stale_reexecution_rejects_tampered_invalidation_metadata(
     (sp / "source.md").write_text("source-b\n", encoding="utf-8")
     assert D._reconcile_completed_checkpoint_artifacts(
         sp, str(tmp_path), checkpoint, phases, "core", "evm"
-    ) == ["derive_a", "aggregate"]
+    ) == ["source_phase", "derive_a", "aggregate"]
 
     ledger_path = sp / "_artifact_state.json"
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
@@ -209,7 +284,7 @@ def test_stale_reexecution_rejects_nonstale_output_binding(
     (sp / "source.md").write_text("source-b\n", encoding="utf-8")
     assert D._reconcile_completed_checkpoint_artifacts(
         sp, str(tmp_path), checkpoint, phases, "core", "evm"
-    ) == ["derive_a", "aggregate"]
+    ) == ["source_phase", "derive_a", "aggregate"]
 
     ledger_path = sp / "_artifact_state.json"
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
@@ -229,7 +304,7 @@ def test_stale_reexecution_rejects_missing_output_binding(
     (sp / "source.md").write_text("source-b\n", encoding="utf-8")
     assert D._reconcile_completed_checkpoint_artifacts(
         sp, str(tmp_path), checkpoint, phases, "core", "evm"
-    ) == ["derive_a", "aggregate"]
+    ) == ["source_phase", "derive_a", "aggregate"]
 
     ledger_path = sp / "_artifact_state.json"
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
@@ -248,7 +323,7 @@ def test_stale_reexecution_trigger_must_belong_to_changed_denominator(
     (sp / "source.md").write_text("source-b\n", encoding="utf-8")
     assert D._reconcile_completed_checkpoint_artifacts(
         sp, str(tmp_path), checkpoint, phases, "core", "evm"
-    ) == ["derive_a", "aggregate"]
+    ) == ["source_phase", "derive_a", "aggregate"]
 
     ledger_path = sp / "_artifact_state.json"
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
@@ -287,15 +362,26 @@ def test_changed_worker_does_not_invalidate_same_phase_sibling_receipt(
 
     assert D._reconcile_completed_checkpoint_artifacts(
         sp, str(tmp_path), checkpoint, phases, "core", "evm"
-    ) == ["derive_a", "aggregate"]
+    ) == ["source_phase", "derive_a", "aggregate"]
     units = D.read_artifact_ledger(sp)["work_units"]
     assert units[contracts[0].key]["semantic_status"] == "STALE_INPUT"
     assert units[sibling.key]["semantic_status"] == "ACTIVE"
 
 
-def test_untyped_downstream_forces_safe_suffix_repair_during_migration(
+def test_untyped_downstream_is_repaired_under_external_drift(
     tmp_path: Path, monkeypatch,
 ):
+    """External drift repairs a downstream phase it cannot prove independent.
+
+    The old behaviour rewound the whole suffix on ANY input drift, which is
+    how the driver's own by-design rewrites re-ran an entire audit (DODO
+    run47).  The repair is now scoped to EXTERNAL drift; for a by-design
+    rewrite the same phase is kept and surfaced as human-review debt instead
+    (see `test_resume_freshness_intra_run_rewrites.py`).  Keeping it under
+    external drift was tried and rejected: the live verify-queue suite showed
+    real descendants surviving a change they consumed.
+    """
+
     sp, phases, checkpoint, _contracts = _fixture(tmp_path)
     legacy_phase = _phase("legacy_projection")
     phases.insert(2, legacy_phase)
@@ -308,14 +394,15 @@ def test_untyped_downstream_forces_safe_suffix_repair_during_migration(
         sp, str(tmp_path), checkpoint, phases, "core", "evm"
     )
 
-    assert removed == ["derive_a", "legacy_projection", "derive_b", "aggregate"]
+    assert set(removed) == {
+        "source_phase", "derive_a", "legacy_projection", "aggregate",
+    }
+    assert checkpoint.completed == ["derive_b"]
     receipt = __import__("json").loads(
         (sp / "semantic_resume_invalidation.json").read_text(encoding="utf-8")
     )
-    assert receipt["reason"] == "INPUT_DRIFT_WITH_UNTYPED_DESCENDANT"
-    assert receipt["coverage_fallback_phases"] == [
-        "legacy_projection", "derive_b", "aggregate",
-    ]
+    assert receipt["reason"] == "EXTERNAL_DRIFT_WITH_UNTYPED_DESCENDANT"
+    assert receipt["coverage_fallback_phases"] == ["legacy_projection"]
 
 
 def test_corrupt_semantic_ledger_repairs_without_destructive_archive(
@@ -337,6 +424,9 @@ def test_corrupt_semantic_ledger_repairs_without_destructive_archive(
         (sp / "semantic_resume_invalidation.json").read_text(encoding="utf-8")
     )
     assert receipt["reason"].startswith("SEMANTIC_LEDGER_INVALID:")
+    assert receipt["changed_input_identities"] == []
+    assert receipt["stale_work_unit_keys"] == []
+    assert receipt["input_drift_rows"] == []
 
 
 def test_resume_recovers_armed_mutation_without_artifact_ledger_conservatively(
@@ -347,6 +437,12 @@ def test_resume_recovers_armed_mutation_without_artifact_ledger_conservatively(
     sp.mkdir()
     source = sp / "findings_inventory.md"
     source.write_text("before\n", encoding="utf-8")
+    _record(
+        sp,
+        _producer_contract(
+            "inventory", "canonical", output="findings_inventory.md"
+        ),
+    )
     event = arm_semantic_mutation(
         sp,
         tmp_path,
@@ -433,10 +529,23 @@ def test_report_model_prelaunch_binding_matches_compiled_dynamic_prompt(
 def test_main_binds_typed_model_inputs_before_first_model_launch():
     import inspect
 
-    source = inspect.getsource(D.main)
-    bind_at = source.index("_bind_typed_model_phase_inputs(")
-    first_launch_at = source.index("rc = run_phase(phase, config, attempt=1)")
-    assert bind_at < first_launch_at
+    tree = ast.parse(textwrap.dedent(inspect.getsource(D.main)))
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    binds = [
+        node for node in calls
+        if isinstance(node.func, ast.Name)
+        and node.func.id == "_bind_typed_model_phase_inputs"
+    ]
+    launches = [
+        node for node in calls
+        if isinstance(node.func, ast.Name) and node.func.id == "run_phase"
+    ]
+
+    assert binds, "main must bind typed MODEL inputs"
+    assert launches, "main must retain an ordinary MODEL launch"
+    assert min(node.lineno for node in binds) < min(
+        node.lineno for node in launches
+    )
 
 
 def test_live_promotion_arms_before_mutation_and_rewinds_existing_consumer(
@@ -445,6 +554,17 @@ def test_live_promotion_arms_before_mutation_and_rewinds_existing_consumer(
     sp = tmp_path / ".scratchpad"
     sp.mkdir()
     (sp / "findings_inventory.md").write_text("before\n", encoding="utf-8")
+    (sp / "finding_records.json").write_text("{}\n", encoding="utf-8")
+    (sp / "_id_ledger.json").write_text("{}\n", encoding="utf-8")
+    for ordinal, name in enumerate(
+        ("findings_inventory.md", "finding_records.json", "_id_ledger.json")
+    ):
+        _record(
+            sp,
+            _producer_contract(
+                "inventory", f"canonical_{ordinal}", output=name
+            ),
+        )
     (sp / "queue.md").write_text("queue\n", encoding="utf-8")
     queue = _contract(
         "sc_verify_queue", "routing", source="findings_inventory.md",
@@ -492,3 +612,121 @@ def test_live_promotion_arms_before_mutation_and_rewinds_existing_consumer(
     assert inventory_event["status"] == "INVALIDATION_APPLIED"
     assert inventory_event["affected_record_ids"] == ["SKEP-001"]
     assert events["scratchpad:_id_ledger.json"]["status"] == "NO_CHANGE"
+
+
+def test_run19_delivery_refresh_survives_canonical_mutation_arm_veto(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An inventory-write veto must not hide genuine prior delivery.
+
+    Run19 reached SC semantic dedup with the breadth and recovered blind-spot
+    actions already represented in the inventory, but a stale canonical
+    allocation-ledger producer correctly vetoed a new depth-promotion write.
+    Delivery reconciliation is read-only and must still bind those exact
+    source/action referents instead of reporting that its receipt is absent.
+    """
+
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    source_actions = {
+        "analysis_core_state.md": ("B1-1", "B1-2", "B1-3"),
+        "analysis_access_control.md": ("B2-1",),
+        "analysis_external_dependencies.md": ("B3-1",),
+        "analysis_cross_chain_gateway.md": ("B4-1", "B4-2", "B4-3"),
+        "analysis_asset_flow_accounting.md": ("B5-1", "B5-2"),
+        "blind_spot_a_findings.md": ("BLIND-A-1", "BLIND-A-2"),
+    }
+    inventory_blocks: list[str] = ["# Finding Inventory", ""]
+    inventory_n = 1
+    for source_file, action_ids in source_actions.items():
+        producer_blocks: list[str] = []
+        for action_id in action_ids:
+            producer_blocks.extend([
+                f"## Finding [{action_id}]: Exact Run19 source action",
+                "**Severity**: Medium",
+                f"**Location**: contracts/Fixture.sol:L{inventory_n}",
+                "**Description**: A concrete reachable state transition can "
+                "cause a material accounting mismatch.",
+                "",
+            ])
+            inventory_block = [
+                f"### Finding [INV-{inventory_n:03d}]: Delivered source action",
+                f"**Source IDs**: {action_id}",
+                f"**Primary Artifact**: {source_file}",
+                "**Severity**: Medium",
+                f"**Location**: contracts/Fixture.sol:L{inventory_n}",
+                "**Description**: The exact registered action remains in the "
+                "canonical inventory.",
+                "",
+            ]
+            inventory_blocks.extend(inventory_block)
+            inventory_n += 1
+        (sp / source_file).write_text(
+            "\n".join(producer_blocks), encoding="utf-8"
+        )
+    inventory = sp / "findings_inventory.md"
+    inventory.write_text("\n".join(inventory_blocks), encoding="utf-8")
+    inventory_before = inventory.read_bytes()
+
+    def _veto(*_args, **_kwargs):
+        raise ArtifactLedgerError(
+            "scratchpad:_id_ledger.json: semantic input is not ACTIVE"
+        )
+
+    monkeypatch.setattr(D, "arm_semantic_mutation", _veto)
+    checkpoint = D.Checkpoint(run_id=RUN_ID)
+    config = {
+        "pipeline": "sc",
+        "mode": "thorough",
+        "language": "evm",
+        "cli_backend": "codex",
+        "project_root": str(tmp_path),
+        "_run_id": RUN_ID,
+    }
+    assert D._promote_findings_with_semantic_invalidation(
+        sp, config, checkpoint, owner_phase="sc_semantic_dedup"
+    ) == []
+
+    assert inventory.read_bytes() == inventory_before
+    receipt = json.loads(
+        (sp / "finding_delivery_receipt.json").read_text(encoding="utf-8")
+    )
+    assert receipt["source_action_count"] == 12
+    assert receipt["accounted_action_count"] == 12
+    assert receipt["status"] == "CLEAN"
+    assert {row["action_id"] for row in receipt["actions"]} == {
+        action_id
+        for action_ids in source_actions.values()
+        for action_id in action_ids
+    }
+    assert {row["disposition"] for row in receipt["actions"]} == {
+        "PROMOTED_FINDING"
+    }
+    assert D._validate_registered_finding_delivery_receipt(sp) == []
+    debt = (sp / "sc_semantic_dedup.degraded").read_text(encoding="utf-8")
+    assert "SEMANTIC_MUTATION_ARM_DEBT" in debt
+    assert "REGISTERED_PRODUCER_DELIVERY_REFRESH_DEBT" not in debt
+
+    # A colliding producer-local B1-1 must fail closed rather than inheriting
+    # the exact artifact-bound action's delivery.
+    (sp / "analysis_collision.md").write_text(
+        "## Finding [B1-1]: Colliding producer-local action\n"
+        "**Severity**: Medium\n"
+        "**Location**: contracts/Other.sol:L1\n"
+        "**Description**: A distinct reachable state transition uses the same "
+        "producer-local identifier.\n",
+        encoding="utf-8",
+    )
+    collision_receipt = D._refresh_registered_finding_delivery_receipt(sp)
+    collision_rows = [
+        row for row in collision_receipt["actions"]
+        if row["action_id"] == "B1-1"
+    ]
+    assert len(collision_rows) == 2
+    assert {
+        row["source_file"]: row["disposition"]
+        for row in collision_rows
+    } == {
+        "analysis_core_state.md": "PROMOTED_FINDING",
+        "analysis_collision.md": "RESIDUAL_DEBT",
+    }

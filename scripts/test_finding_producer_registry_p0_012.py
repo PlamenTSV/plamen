@@ -91,6 +91,107 @@ def test_driver_percontract_reemit_identity_is_owned_by_its_artifact_registry():
     assert R.producer_accepts_current_local_id(producer, "PCRE-1")
 
 
+def test_da_iter2_carryover_has_one_artifact_scoped_producer_namespace():
+    import finding_producer_registry as R
+
+    producer = R.producer_for_artifact("depth_da_iter2_findings.md")
+    assert producer is not None
+    assert producer.key == "depth_da_carryover"
+    for finding_id in (
+        "BLIND-A-1",
+        "VS-1",
+        "PERT-1",
+        "MEDUSA-1",
+        "DA2-BLIND-A1",
+        "DA2-BLIND-A3",
+        "DA2-DS1",
+        "DA2-DX1",
+        "DA3-MEDUSA-1",
+        "DA3-MEDUSA1",
+        "DA2-BLIND-A-1",
+        "DA2-REFUND-REENTRANCY",
+    ):
+        assert R.producer_accepts_current_local_id(producer, finding_id)
+    # Qualification must not become an arbitrary free-form namespace.
+    for finding_id in ("DA2-NOT-A-DECLARED-ID-001", "DA2-INV-001", "DA2-C-01"):
+        assert not R.producer_accepts_current_local_id(producer, finding_id)
+    assert R.producer_for_artifact("depth_state_trace_findings.md").key == (
+        "depth_core"
+    )
+
+
+def test_depth_edge_case_storage_layout_alias_is_exact_artifact_scoped():
+    """Run72's SLS identity belongs only to the edge-case role artifact."""
+    import finding_producer_registry as R
+
+    producer = R.producer_for_artifact("depth_edge_case_findings.md")
+    assert producer is not None
+    assert producer.key == "depth_edge_case"
+    assert R.producer_accepts_current_local_id(producer, "DE-1")
+    assert R.producer_accepts_current_local_id(producer, "SLS-1")
+
+    generic = R.producer_for_artifact("depth_state_trace_findings.md")
+    assert generic is not None
+    assert generic.key == "depth_core"
+    assert not R.producer_accepts_current_local_id(generic, "SLS-1")
+
+
+def test_run18_methodology_step_headings_are_not_registered_findings(
+    tmp_path: Path,
+):
+    """Replay Run18's RS-5/RS-1 prose headings without hiding real findings."""
+    import plamen_validators as V
+
+    _write(
+        tmp_path,
+        "analysis_methodology_repair_rescan.md",
+        "# Targeted Rescan Methodology Repair\n\n"
+        "## No Findings\n\n"
+        "### RS-5 — GatewayTransferNative lifecycle\n\n"
+        "Applied the time/lifecycle review. This remains an unresolved "
+        "external-dependency condition, not a new finding.\n\n"
+        "### RS-PC — GatewaySend localized per-contract/cluster pass\n\n"
+        "Applied RS-1 through RS-5 with no additional candidate.\n",
+    )
+    for name in (
+        "analysis_percontract_IDODORouteProxy.md",
+        "analysis_percontract_IUniswapV2Factory.md",
+    ):
+        _write(
+            tmp_path,
+            name,
+            "# Localized Rescan\n\n"
+            "### RS-1 through RS-5 applicability\n\n"
+            "The interface has no executable implementation body.\n\n"
+            "## No Findings\n\n"
+            "No new producer candidate is emitted for this exact scope.\n",
+        )
+
+    scan = V._scan_registered_finding_delivery_sources(tmp_path)
+    assert scan["actions"] == []
+    assert scan["residual_debt"] == []
+    assert all(row["source_action_count"] == 0 for row in scan["artifacts"])
+
+
+def test_invalid_explicit_methodology_finding_still_fails_closed(tmp_path: Path):
+    import plamen_validators as V
+
+    _write(
+        tmp_path,
+        "analysis_methodology_repair_rescan.md",
+        "### Finding [RS-5]: this is explicitly presented as a finding\n"
+        "**Severity**: Medium\n"
+        "**Location**: contracts/Gateway.sol:L1\n"
+        "**Description**: Explicit producer drift must remain visible.\n",
+    )
+    scan = V._scan_registered_finding_delivery_sources(tmp_path)
+    assert [row["action_id"] for row in scan["actions"]] == ["RS-5"]
+    assert scan["actions"][0]["disposition"] == "RESIDUAL_DEBT"
+    assert "outside producer rescan_methodology_repair grammar" in "\n".join(
+        scan["residual_debt"]
+    )
+
+
 def test_synthetic_registration_fails_when_one_projection_is_stale():
     import finding_producer_registry as R
 
@@ -1031,7 +1132,29 @@ def test_niche_canonical_block_parser_matches_general_unadorned_and_html(
         ).hexdigest()
         for row in sidecar["actions"]
     )
-    assert sidecar["blocking_debt_count"] == 1
+
+
+def test_hyphenated_prose_heading_is_not_a_bare_finding_identity(
+    tmp_path: Path,
+) -> None:
+    import plamen_parsers as P
+
+    path = tmp_path / "analysis_access_control.md"
+    _write(
+        tmp_path,
+        path.name,
+        "# Access-Control Breadth Analysis\n\n"
+        "## Finding [B2-1]: real registered action\n"
+        "**Severity**: Medium\n"
+        "**Location**: src/Gateway.sol:L7\n"
+        "**Description**: A real finding remains visible.\n\n"
+        "## Access-Control and Semantic-Operator Coverage\n"
+        "This is a methodology coverage section, not a finding action.\n",
+    )
+
+    rows = P._parse_depth_finding_blocks(path)
+
+    assert [row["id"] for row in rows] == ["B2-1"]
 
 
 def test_niche_same_local_id_from_two_sources_delivers_two_exact_actions(

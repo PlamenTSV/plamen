@@ -137,7 +137,7 @@ When an MCP tool call returns a timeout error or fails, do NOT retry the same ca
 
 **CRITICAL**: Spawn ALL breadth agents in a SINGLE message as parallel Task calls. Each agent is `subagent_type="general-purpose"`.
 
-**Opus 4.8 MANDATE**: You MUST spawn exactly the number of agents determined in Step 2. Do not consolidate, skip, or handle analysis yourself. Your role is orchestration — spawn agents and verify artifacts. If you believe fewer agents would suffice, spawn them all anyway. Missing output files cause gate failures, retries, and lost coverage. Spawn subagents simultaneously — they are independent analysis domains.
+**ROSTER COMPLETENESS**: You MUST spawn exactly the number of agents determined in Step 2. Do not consolidate, skip, or handle analysis yourself. Your role is orchestration — spawn agents and verify artifacts. If you believe fewer agents would suffice, spawn them all anyway. Missing output files cause gate failures, retries, and lost coverage. Spawn subagents simultaneously — they are independent analysis domains.
 
 Model selection:
 - **Light**: `model="sonnet"` for all

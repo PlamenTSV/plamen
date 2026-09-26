@@ -1,9 +1,11 @@
 """Typed EVM-first arm-before-trust role and composition authority.
 
-The module is deliberately isolated from scheduling, PhaseIO, and P0-AF.  It
-accepts only a digest-bound typed operator trace as positive authority.  Regex
-classification of prose is retained solely as a compatibility nominator and
-can never satisfy a composition predicate.
+The module is deliberately isolated from scheduling, PhaseIO, and P0-AF.  Its
+strict compatibility API accepts a digest-bound typed operator trace.  The
+live driver path instead seals an immutable model-authored semantic trace with
+driver-authored run, operator, and payload bindings before granting positive
+authority.  Regex classification of prose is retained solely as a
+compatibility nominator and can never satisfy a composition predicate.
 
 An out-of-scope role remains externally unknown.  It creates a bounded,
 candidate-scoped research obligation without asserting favorable or adverse
@@ -24,6 +26,8 @@ FACT_TRACE_SCHEMA = "plamen.authentication_role_fact_trace.v1"
 FACT_AUTHORITY_SCHEMA = "plamen.authentication_role_fact_authority.v1"
 COMPOSITION_SCHEMA = "plamen.arm_before_trust_composition_obligations.v1"
 EXTERNAL_RESEARCH_SCHEMA = "plamen.authentication_external_research_obligations.v1"
+AUTHENTICATION_ROLE_OPERATOR_ID = "arm-before-trust.v1"
+AUTHENTICATION_ROLE_OPERATOR_SCHEMA = "plamen.authentication_role_operator.v1"
 
 TRACE_FILE = "authentication_role_facts.input.json"
 AUTHORITY_FILE = "authentication_role_authority.json"
@@ -44,6 +48,11 @@ _TRACE_KEYS = {
     "operator_digest",
     "facts",
     "payload_digest",
+}
+_MODEL_TRACE_KEYS = {
+    "schema_version",
+    "ecosystem",
+    "facts",
 }
 _FACT_KEYS = {
     "producer_fact_id",
@@ -148,6 +157,88 @@ def trace_payload_digest(payload: Mapping[str, Any]) -> str:
     return _sha256(
         {key: value for key, value in payload.items() if key != "payload_digest"}
     )
+
+
+def authentication_role_operator_digest() -> str:
+    """Return the driver-owned digest of the fixed typed role operator.
+
+    This is a digest of a stable, platform-independent operator descriptor,
+    not a value a model is asked to reproduce from prose.
+    """
+    return _sha256(
+        {
+            "schema_version": AUTHENTICATION_ROLE_OPERATOR_SCHEMA,
+            "operator_id": AUTHENTICATION_ROLE_OPERATOR_ID,
+            "roles": sorted(_ROLES),
+            "polarities": sorted(_POLARITIES),
+            "provenance": sorted(_PROVENANCE),
+            "anchor_required_claims": sorted(_ANCHOR_REQUIRED),
+            "derived_required_claims": sorted(_DERIVED_REQUIRED),
+            "anchor_refutation_claims": sorted(_ANCHOR_REFUTATIONS),
+            "derived_refutation_claims": sorted(_DERIVED_REFUTATIONS),
+            "optional_claims": sorted(_OPTIONAL_CLAIMS),
+        }
+    )
+
+
+def _seal_model_trace(
+    payload: Mapping[str, Any] | None,
+    run_binding: Mapping[str, str],
+) -> tuple[dict[str, Any] | None, dict[str, Any], list[str]]:
+    """Separate MODEL semantic authority from DRIVER binding authority.
+
+    A current worker writes only ``_MODEL_TRACE_KEYS``.  Hash-bearing v1
+    worker output is accepted as a compatibility *proposal*, but every
+    producer-authored cryptographic claim is discarded and replaced.  The
+    original bytes remain the immutable PhaseIO input to the driver authority,
+    so this does not launder semantic mutation or weaken artifact provenance.
+    """
+    metadata: dict[str, Any] = {
+        "semantic_authority": "MODEL",
+        "cryptographic_authority": "DRIVER",
+        "producer_format": "MISSING",
+        "producer_cryptographic_fields": [],
+        "producer_cryptographic_claims": "ABSENT",
+    }
+    if payload is None:
+        return None, metadata, []
+
+    keys = set(payload)
+    issues: list[str] = []
+    if keys == _MODEL_TRACE_KEYS:
+        metadata["producer_format"] = "SEMANTIC_ONLY"
+    elif keys == _TRACE_KEYS:
+        cryptographic = sorted(
+            keys & {"run_binding_digest", "operator_digest", "payload_digest"}
+        )
+        metadata.update(
+            {
+                "producer_format": "LEGACY_HASH_BEARING_PROPOSAL",
+                "producer_cryptographic_fields": cryptographic,
+                "producer_cryptographic_claims": "REPLACED_UNTRUSTED",
+            }
+        )
+    else:
+        issues.append("typed semantic trace schema fields mismatch")
+        metadata["producer_format"] = "MALFORMED"
+
+    sealed: dict[str, Any] = {
+        "schema_version": payload.get("schema_version"),
+        "run_binding_digest": str(run_binding.get("binding_digest") or ""),
+        "ecosystem": payload.get("ecosystem"),
+        "operator_id": AUTHENTICATION_ROLE_OPERATOR_ID,
+        "operator_digest": authentication_role_operator_digest(),
+        "facts": payload.get("facts"),
+    }
+    sealed["payload_digest"] = trace_payload_digest(sealed)
+    metadata.update(
+        {
+            "sealed_run_binding_digest": sealed["run_binding_digest"],
+            "sealed_operator_digest": sealed["operator_digest"],
+            "sealed_payload_digest": sealed["payload_digest"],
+        }
+    )
+    return sealed, metadata, issues
 
 
 def _finalize(payload: dict[str, Any], field: str) -> dict[str, Any]:
@@ -394,12 +485,15 @@ def _normalize_fact(
     if provenance not in _PROVENANCE:
         issues.append("fact provenance is invalid")
         provenance = "IN_SCOPE"
+    producer_fact_id = _clean(raw.get("producer_fact_id"))
     trust_domain = _clean(raw.get("trust_domain_id"))
     effect = _clean(raw.get("privileged_effect"))
     anchor_identity = _clean(raw.get("anchor_identity"))
     anchor_default = _clean(raw.get("anchor_default"))
     derived_identity = _clean(raw.get("derived_identity"))
     degenerate_domain = _clean(raw.get("degenerate_input_domain"))
+    if not producer_fact_id:
+        issues.append("producer fact identity is missing")
     if not trust_domain:
         issues.append("trust domain identity is missing")
     if not effect:
@@ -407,9 +501,13 @@ def _normalize_fact(
     if role == "ANCHOR":
         if not anchor_identity or not _boundary_kind(anchor_default):
             issues.append("anchor identity or zero/empty default is missing")
+        if derived_identity or degenerate_domain:
+            issues.append("anchor fact carries derived-identity fields")
     elif role == "DERIVED_IDENTITY":
         if not _boundary_kind(derived_identity) or not degenerate_domain:
             issues.append("derived default identity or degenerate input domain is missing")
+        if anchor_identity or anchor_default:
+            issues.append("derived-identity fact carries anchor fields")
     external_dependency = _clean(raw.get("external_dependency"))
     external_surface = _clean(raw.get("external_surface"))
     if provenance == "EXTERNAL" and (not external_dependency or not external_surface):
@@ -463,7 +561,7 @@ def _normalize_fact(
 
     fact = {
         "fact_id": _fact_identity(raw, operator_digest),
-        "producer_fact_id": _clean(raw.get("producer_fact_id")),
+        "producer_fact_id": producer_fact_id,
         "role": role,
         "trust_domain_id": trust_domain,
         "polarity": polarity,
@@ -762,6 +860,13 @@ def _not_triggered_authority(
             "operator_id": "",
             "operator_digest": "",
             "trace_payload_digest": "",
+            "trace_authority": {
+                "semantic_authority": "NONE",
+                "cryptographic_authority": "DRIVER",
+                "producer_format": "NOT_APPLICABLE",
+                "producer_cryptographic_fields": [],
+                "producer_cryptographic_claims": "ABSENT",
+            },
             "input_bindings": [],
             "fact_count": 0,
             "positive_fact_count": 0,
@@ -783,6 +888,7 @@ def derive_authentication_role_authority(
     mode: str = "",
     run_id: str = "",
     source_snapshot_digest: str = "",
+    driver_seal_model_fields: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
     root = Path(scratchpad)
     run_binding, binding_issues = _load_run_binding(
@@ -824,9 +930,25 @@ def derive_authentication_role_authority(
                     input_bindings.append(_binding(trace_path, "TYPED_OPERATOR_TRACE"))
             except Exception:
                 payload = None
+    trace_authority: dict[str, Any] = {
+        "semantic_authority": "MODEL",
+        "cryptographic_authority": "PRODUCER",
+        "producer_format": "LEGACY_STRICT",
+        "producer_cryptographic_fields": [
+            "operator_digest",
+            "payload_digest",
+            "run_binding_digest",
+        ],
+        "producer_cryptographic_claims": "STRICTLY_VALIDATED",
+    }
+    sealing_issues: list[str] = []
+    if driver_seal_model_fields:
+        payload, trace_authority, sealing_issues = _seal_model_trace(
+            payload, run_binding
+        )
     trace_valid, trace_issues = _validate_trace(payload, run_binding)
-    all_issues = sorted(set(binding_issues + trace_issues))
-    trace_valid = trace_valid and not binding_issues
+    all_issues = sorted(set(binding_issues + sealing_issues + trace_issues))
+    trace_valid = trace_valid and not binding_issues and not sealing_issues
     operator_id = _clean(payload.get("operator_id")) if payload else ""
     operator_digest = _clean(payload.get("operator_digest")).lower() if payload else ""
     facts: list[dict[str, Any]] = []
@@ -880,6 +1002,7 @@ def derive_authentication_role_authority(
             "operator_id": operator_id,
             "operator_digest": operator_digest,
             "trace_payload_digest": str(payload.get("payload_digest") or "") if payload else "",
+            "trace_authority": trace_authority,
             "input_bindings": input_bindings,
             "fact_count": len(facts),
             "positive_fact_count": sum(row["authority_state"] == "POSITIVE" for row in facts),
@@ -1122,12 +1245,15 @@ def validate_authentication_role_authority(
 
 
 __all__ = [
+    "AUTHENTICATION_ROLE_OPERATOR_ID",
+    "AUTHENTICATION_ROLE_OPERATOR_SCHEMA",
     "AUTHORITY_FILE",
     "COMPOSITION_FILE",
     "EXTERNAL_RESEARCH_FILE",
     "FACT_AUTHORITY_SCHEMA",
     "FACT_TRACE_SCHEMA",
     "PROJECTION_FILE",
+    "authentication_role_operator_digest",
     "derive_authentication_role_authority",
     "derive_authentication_role_composition",
     "nominate_compatibility_roles",

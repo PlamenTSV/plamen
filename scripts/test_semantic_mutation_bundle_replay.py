@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from artifact_ledger import (
@@ -8,7 +9,12 @@ from artifact_ledger import (
     record_work_unit_artifacts,
     record_work_unit_inputs,
 )
-from phase_io_contracts import ArtifactSpec, LaunchSpec, PhaseIOContract
+from phase_io_contracts import (
+    ArtifactSpec,
+    DriverMergeEvent,
+    LaunchSpec,
+    PhaseIOContract,
+)
 
 
 BASE = {
@@ -260,4 +266,179 @@ def test_retained_bundle_receipt_rejects_unjournaled_successor_drift(
     assert unit["semantic_status"] == "INPUT_DEBT"
     assert unit["input_bindings"][
         "scratchpad:inventory_id_allocation_delta.json"
+    ]["status"] == "PRODUCER_AUTHORITY_MISMATCH"
+
+
+def _seed_ordinary_registered_merge_successor(
+    tmp_path: Path,
+) -> tuple[Path, Path]:
+    project = tmp_path / "ordinary-merge-project"
+    scratch = project / ".scratchpad"
+    scratch.mkdir(parents=True)
+    stable = "_enumeration_obligations.json"
+    source = "enumgap_exploration_findings.md"
+    mutable = ("findings_inventory.md", "finding_records.json", "_id_ledger.json")
+    source_key = "sc/light/evm/claude/enumgap_exploration/model"
+    source_contract = PhaseIOContract(
+        **BASE,
+        phase="enumgap_exploration",
+        work_unit_id="model",
+        outputs=(ArtifactSpec(
+            root="scratchpad",
+            path=source,
+            owner_key=source_key,
+            artifact_class="REQUIRED",
+            writer="DRIVER",
+            write_mode="REPLACE",
+            consumers=("enumgap_delivery/inventory_append",),
+        ),),
+        model_invoked=False,
+    )
+    record_work_unit_inputs(
+        scratch,
+        project,
+        source_contract,
+        _launch(source_contract),
+        run_id=RUN_ID,
+    )
+    (scratch / source).write_text("# source\n", encoding="utf-8")
+    assert record_work_unit_artifacts(
+        scratch,
+        project,
+        source_contract,
+        _launch(source_contract),
+        run_id=RUN_ID,
+        actor="DRIVER",
+    )["semantic_status"] == "ACTIVE"
+    producer_work_unit = (
+        "late_ci_recovery.exploration_skeptic.100344a9f26bf783"
+    )
+    producer_key = f"sc/light/evm/claude/inventory/{producer_work_unit}"
+    producer = PhaseIOContract(
+        **BASE,
+        phase="inventory",
+        work_unit_id=producer_work_unit,
+        outputs=tuple(
+            ArtifactSpec(
+                root="scratchpad",
+                path=name,
+                owner_key=producer_key,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="REPLACE",
+                consumers=(
+                    "enumgap_delivery/inventory_append",
+                    "sc_verify_queue/enumeration_obligation_reader",
+                ),
+            )
+            for name in (stable, *mutable)
+        ),
+        model_invoked=False,
+    )
+    record_work_unit_inputs(
+        scratch, project, producer, _launch(producer), run_id=RUN_ID,
+    )
+    for output in producer.outputs:
+        (scratch / output.path).write_text(
+            f"producer:{output.path}\n", encoding="utf-8",
+        )
+    assert record_work_unit_artifacts(
+        scratch,
+        project,
+        producer,
+        _launch(producer),
+        run_id=RUN_ID,
+        actor="DRIVER",
+    )["semantic_status"] == "ACTIVE"
+
+    successor_key = "sc/light/evm/claude/enumgap_delivery/inventory_append"
+    successor = PhaseIOContract(
+        **BASE,
+        phase="enumgap_delivery",
+        work_unit_id="inventory_append",
+        outputs=tuple(
+            ArtifactSpec(
+                root="scratchpad",
+                path=name,
+                owner_key=successor_key,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="MERGE",
+            )
+            for name in mutable
+        ),
+        immutable_inputs=(f"scratchpad:{source}",),
+        model_invoked=False,
+    )
+    assert record_work_unit_inputs(
+        scratch, project, successor, _launch(successor), run_id=RUN_ID,
+    )["semantic_status"] == "INPUTS_BOUND"
+    events: dict[str, DriverMergeEvent] = {}
+    for name in mutable:
+        path = scratch / name
+        before = path.read_bytes()
+        after = before + f"successor:{name}\n".encode("utf-8")
+        path.write_bytes(after)
+        identity = f"scratchpad:{name}"
+        events[identity] = DriverMergeEvent(
+            work_unit_key=successor.key,
+            contract_digest=successor.digest,
+            artifact_identity=identity,
+            before_sha256=hashlib.sha256(before).hexdigest(),
+            after_sha256=hashlib.sha256(after).hexdigest(),
+            source_identities=(f"scratchpad:{source}",),
+            identities_before=("INV-001",),
+            identities_after=("INV-001", "INV-002"),
+        )
+    assert record_work_unit_artifacts(
+        scratch,
+        project,
+        successor,
+        _launch(successor),
+        run_id=RUN_ID,
+        actor="DRIVER",
+        merge_events=events,
+    )["semantic_status"] == "ACTIVE"
+    return project, scratch
+
+
+def _consume_enumeration_obligations(scratch: Path, project: Path) -> dict:
+    contract = PhaseIOContract(
+        **BASE,
+        phase="sc_verify_queue",
+        work_unit_id="enumeration_obligation_reader",
+        outputs=(),
+        immutable_inputs=("scratchpad:_enumeration_obligations.json",),
+        model_invoked=False,
+    )
+    return record_work_unit_inputs(
+        scratch, project, contract, _launch(contract), run_id=RUN_ID,
+    )
+
+
+def test_historical_bundle_replays_across_exact_ordinary_merge_successor(
+    tmp_path: Path,
+) -> None:
+    project, scratch = _seed_ordinary_registered_merge_successor(tmp_path)
+
+    unit = _consume_enumeration_obligations(scratch, project)
+
+    assert unit["semantic_status"] == "INPUTS_BOUND"
+    assert unit["input_bindings"][
+        "scratchpad:_enumeration_obligations.json"
+    ]["status"] == "ACTIVE"
+
+
+def test_ordinary_merge_successor_live_drift_still_revokes_historical_bundle(
+    tmp_path: Path,
+) -> None:
+    project, scratch = _seed_ordinary_registered_merge_successor(tmp_path)
+    with (scratch / "finding_records.json").open("ab") as stream:
+        stream.write(b"unjournaled successor drift\n")
+
+    unit = _consume_enumeration_obligations(scratch, project)
+
+    assert unit["semantic_status"] == "INPUT_DEBT"
+    assert unit["input_bindings"][
+        "scratchpad:_enumeration_obligations.json"
     ]["status"] == "PRODUCER_AUTHORITY_MISMATCH"

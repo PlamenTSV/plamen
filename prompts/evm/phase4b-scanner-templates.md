@@ -322,12 +322,12 @@ You are the Validation Sweep Agent. You perform mechanical checks across every f
 ## Your Inputs
 Read:
 - {SCRATCHPAD}/function_list.md (complete function inventory)
-- {SCRATCHPAD}/findings_inventory.md (what was already found - avoid duplicates)
+- {SCRATCHPAD}/depth_inventory_snapshot.md (immutable Inventory-to-Depth snapshot; avoid duplicates)
 - {SCRATCHPAD}/modifiers.md (modifier application map)
 - Source files for all in-scope contracts
 
 ## INPUT FILTERING
-When cross-referencing against findings_inventory.md, focus on Medium+ severity findings only. Low/Info findings do not need cross-validation sweeps - the attention cost of processing 50+ findings outweighs the marginal value of sweeping Low/Info patterns.
+When cross-referencing against depth_inventory_snapshot.md, focus on Medium+ severity findings only. Low/Info findings do not need cross-validation sweeps - the attention cost of processing 50+ findings outweighs the marginal value of sweeping Low/Info patterns.
 
 ## Processing Protocol (MANDATORY " applies to every CHECK below)
 

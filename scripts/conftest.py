@@ -1,6 +1,6 @@
 """Shared pytest configuration for the Plamen scripts/ test suite.
 
-Two responsibilities, both zero-risk to test *logic*:
+Shared import paths and platform-aware test selection:
 
 1. ``sys.path`` net — put ``scripts/`` on ``sys.path`` so new test modules can
    ``import enumeration_gate`` etc. without repeating the
@@ -10,12 +10,16 @@ Two responsibilities, both zero-risk to test *logic*:
 2. Test-selection markers (registered in ../pyproject.toml) applied by FILENAME
    here — the single source of truth for which modules are `integration` / `slow`.
    Marking never removes a test: the full/nightly lane (`pytest` with no `-m`)
-   still runs every one. It only lets a fast inner loop skip the heavy files:
+   still runs every platform-applicable test. It lets a fast loop skip heavy files:
        fast:        pytest -m "not integration" -n auto
        integration: pytest -m "integration"            (serial, env-guarded)
    The heavy set is measured, not guessed: real OS-subprocess files + files whose
    real ``time.sleep`` is >= ~1s (heartbeat/timing tests). Sub-second sleepers and
    fully-mocked tests stay in the default (fast) lane.
+
+3. Pre-import collection exclusions keep POSIX-only compatibility modules off
+   Windows, where importing their OS primitives is unsupported. Portable test
+   modules remain collected; their POSIX fixtures skip only when invoked.
 """
 
 import hashlib
@@ -26,6 +30,20 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
+
+
+def _platform_collect_ignore_globs(os_name: str) -> list[str]:
+    """Return test-module globs that cannot be imported on *os_name*."""
+
+    if os_name == "nt":
+        return ["test_posix_v2_compat_*.py"]
+    return []
+
+
+# Collection ignores must be decided before pytest imports test modules.  The
+# POSIX V2 compatibility runtime imports fcntl/pwd at module scope, so a marker
+# or collection-time skip would be too late on Windows.
+collect_ignore_glob = _platform_collect_ignore_globs(os.name)
 
 # (0) Hang-proof self-runs — make ANY `pytest` of this suite non-blocking without
 # an exported env var. The driver's halt/purge prompts (wait_halt_choice /
@@ -51,7 +69,7 @@ for _entry in (_SCRIPTS_DIR, str(_REPO_ROOT)):
 # (2) Exact, source-bound quarantine authority for the release fast lane.
 _FAST_GOVERNANCE_SCHEMA = "plamen.fast-lane-skip-governance.v1"
 _FAST_GOVERNANCE_MANIFEST_SHA256 = (
-    "a3817408deba9d6a89ee4f0766baf438e521919bcb96dc80d2a2187457673561"
+    "308cded5a8bb7e5405d37992b0ffeac103fbfd2710678ffc6ecb2fc889ea8cab"
 )
 _FAST_GOVERNANCE_MANIFEST = Path(__file__).with_name(
     "fast_lane_skip_governance_r10.json"
@@ -131,7 +149,7 @@ _FAST_GOVERNANCE_HASHES = {
         "858dd7735dd18648e7c4574e95ea0b2a3ba137469da99e9419b38ce63e8bd86b"
     ),
     "quarantine_source_roster_sha256": (
-        "3165afe5458a71d9e820307a2a1b69a355986488871a53d2cd1bd84496fc7aad"
+        "97cf890eadebb093b8a03784542fdbc148fb0668c690e714387ddaecfea383db"
     ),
     "r9_default_nodes_sha256": (
         "22bbcf73f724b188768fb532fc832e5e6a85aa9fba1196fa4c0dde7e4db2de1d"
@@ -140,7 +158,7 @@ _FAST_GOVERNANCE_HASHES = {
         "f27577b1f91e246ccb65d3e167399c2cbcc6c4832a6ec4bcd4557966ccc118d4"
     ),
     "source_roster_sha256": (
-        "badef23e1e9eb2a59b97d76b9866791d4d6865015f51c8a59cd471d3f450f7bf"
+        "84c102d1f5d690be597e90ff36f78c92c1849c79ee28c41a9f716a760d2a7c6f"
     ),
     "unresolved_nodes_sha256": (
         "3176c06f7446119f92bdd97eb4f2482f620ffff7474558665ded06cf95e7a874"
@@ -208,6 +226,37 @@ def _require_supported_os_name(name: str) -> str:
             f"unsupported os.name for fast-lane governance: {name!r}"
         )
     return name
+
+
+def _materialized_private_governance_sources() -> frozenset[str]:
+    """Return the all-or-none private source set present in this checkout."""
+
+    materialized = frozenset(
+        path
+        for path in _FAST_GOVERNANCE_PRIVATE_SOURCE_PATHS
+        if (_REPO_ROOT / path).is_file()
+    )
+    if materialized and materialized != _FAST_GOVERNANCE_PRIVATE_SOURCE_PATHS:
+        raise pytest.UsageError(
+            "fast-lane private source materialization is partial"
+        )
+    return materialized
+
+
+def _applicable_fast_governance_entries(payload: dict) -> dict[str, dict]:
+    """Select governed nodes that can exist in this exact checkout."""
+
+    private_materialized = _materialized_private_governance_sources()
+    entries = {}
+    for row in payload["entries"]:
+        source = row["nodeid"].split("::", 1)[0]
+        if (
+            not private_materialized
+            and source in _FAST_GOVERNANCE_PRIVATE_SOURCE_PATHS
+        ):
+            continue
+        entries[row["nodeid"]] = row
+    return entries
 
 
 def _validate_fast_governance_payload(
@@ -285,15 +334,7 @@ def _validate_fast_governance_payload(
             raise pytest.UsageError(
                 "fast-lane private source policy is not bound to the source roster"
             )
-        private_materialized = {
-            path
-            for path in private_paths
-            if (_REPO_ROOT / path).is_file()
-        }
-        if private_materialized and private_materialized != private_paths:
-            raise pytest.UsageError(
-                "fast-lane private source materialization is partial"
-            )
+        private_materialized = _materialized_private_governance_sources()
         private_sources_absent = not private_materialized
         for row in sources:
             if private_sources_absent and row["path"] in private_paths:
@@ -424,11 +465,22 @@ def _is_complete_production_collection(config) -> bool:
 
 def _apply_fast_governance(config, items, payload: dict) -> None:
     _require_supported_os_name(os.name)
-    entries = {row["nodeid"]: row for row in payload["entries"]}
+    entries = _applicable_fast_governance_entries(payload)
     collected = [item.nodeid for item in items]
     if len(collected) != len(set(collected)):
         raise pytest.UsageError("duplicate collected pytest node identity")
     seen = set(collected)
+    # A partial/direct collection is itself proof that a node exists in the
+    # active checkout, even when its source belongs to the all-or-none private
+    # roster that is otherwise absent here. Apply the manifest row to that
+    # exact collected identity; do not require unrelated private sources to be
+    # materialized merely to preserve its quarantine markers.
+    manifest_entries = {row["nodeid"]: row for row in payload["entries"]}
+    entries.update(
+        (nodeid, manifest_entries[nodeid])
+        for nodeid in collected
+        if nodeid in manifest_entries
+    )
     if _is_complete_production_collection(config):
         missing = list(entries.keys() - seen)
         if missing:
@@ -447,33 +499,73 @@ def _apply_fast_governance(config, items, payload: dict) -> None:
 
 # (3) Filename-driven marker application. Stems only (no .py). Keep sorted.
 # A file lands in _INTEGRATION_STEMS if it spawns a real OS subprocess / external
-# tool, or does a real time.sleep >= ~1s. _SLOW_STEMS is the heavyweight subset
-# (real driver phase-loop / mass real import subprocesses).
+# tool, does a real time.sleep >= ~1s, or exercises a heavyweight real driver
+# transaction chain. _SLOW_STEMS is the heavyweight subset (real driver
+# phase-loop / transaction chain / mass real import subprocesses).
 _INTEGRATION_STEMS = frozenset(
     {
+        "test_posix_report_execution_lineage",
+        "test_breadth_refusal_checkpoint_retention",
+        "test_claude_phase_tool_boundary_driver_p1_f",
         "test_cross_os_hygiene",
+        "test_darwin_cas_helper",
         "test_driver_smoke",
+        "test_dynamic_verifier_backend_execution_authority_p0",
+        "test_dynamic_verifier_runtime_integration_p0_ak",
         "test_fuzz_workspace_adversarial_review_p2_a",
         "test_fuzz_workspace_authority_p2_a",
         "test_halt_ux_e2e",
         "test_l1_race_fuzz_registry",
+        "test_live_verify_queue_semantic_success_paths",
         "test_mechanical_heartbeat",
+        "test_mechanical_successor_consumer_p0_ag1",
         "test_negative_closure_broker_live_cutover",
         "test_opengrep",
         "test_p0_judge_table_parser",
         "test_p1_dm_phase_io_packaging",
         "test_phase_containment_regression",
+        "test_posix_v2_compat_poc_execution",
+        "test_posix_v2_compat_dependency_repair",
+        "test_posix_v2_compat_prewarm",
+        "test_posix_v2_compat_supply_chain_admission",
         "test_python_packaging_contracts",
+        "test_r10_demotion_gate",
         "test_pty_exec",
         "test_recon_hardened_subprocess",
         "test_recon_heartbeat",
+        "test_report_evidence_runtime_p1_k",
+        "test_report_staged_verifier_execution_authority",
+        "test_security_obligation_lifecycle_p1_c",
         "test_semantic_dedup_applied_authority_p0_qs",
         "test_severity_shadow_phase_runtime_p0_ag4",
+        "test_severity_empty_source",
+        "test_severity_zero_reconciliation",
+        "test_severity_planning_inputs",
+        "test_severity_planning_snapshot",
+        "test_severity_planning",
+        "test_severity_bind_postimage_cas",
+        "test_grouped_successor_history",
+        "test_severity_bind_postimages",
+        "test_severity_bind_transaction",
+        "test_severity_initial_source_integration",
+        "test_posix_v2_compat_severity_execution",
+        "test_severity_adjudication_work_p0_ag3",
         "test_severity_worker_debt_recovery_p0_ag4",
         "test_signal_and_ratelimit",
         "test_snapshot_startup_rewind_r0_8cd",
         "test_spike_mechanical_poc",
         "test_structural_integrity",
+        "test_verifier_completion_authority_v2",
+        "test_verification_operator_consumers_p0_ai_g",
+        "test_verification_report_tail_same_run_integration",
+        "test_report_index_summary_parity_successor_a0_a1",
+        "test_worker_execution_preimage_authority",
+        "test_report_model_preimages",
+        "test_report_model_lineage",
+        "test_canonical_report_model_lineage",
+        "test_report_summary_recovery",
+        "test_core_empty_report_entry_integration",
+        "test_core_empty_report_assembly_integration",
         "test_windows_copy_fallback_install",
         "test_worker_execution_receipts",
         "test_worker_process_tree_adversarial_review",
@@ -482,15 +574,49 @@ _INTEGRATION_STEMS = frozenset(
 )
 _SLOW_STEMS = frozenset(
     {
+        "test_posix_report_execution_lineage",
+        "test_breadth_refusal_checkpoint_retention",
+        "test_claude_phase_tool_boundary_driver_p1_f",
         "test_driver_smoke",
+        "test_dynamic_verifier_backend_execution_authority_p0",
+        "test_dynamic_verifier_runtime_integration_p0_ak",
         "test_fuzz_workspace_adversarial_review_p2_a",
         "test_fuzz_workspace_authority_p2_a",
+        "test_live_verify_queue_semantic_success_paths",
+        "test_mechanical_successor_consumer_p0_ag1",
         "test_negative_closure_broker_live_cutover",
+        "test_r10_demotion_gate",
+        "test_report_evidence_runtime_p1_k",
+        "test_report_staged_verifier_execution_authority",
+        "test_security_obligation_lifecycle_p1_c",
         "test_severity_shadow_phase_runtime_p0_ag4",
+        "test_severity_empty_source",
+        "test_severity_zero_reconciliation",
+        "test_severity_planning_inputs",
+        "test_severity_planning_snapshot",
+        "test_severity_planning",
+        "test_severity_bind_postimage_cas",
+        "test_grouped_successor_history",
+        "test_severity_bind_postimages",
+        "test_severity_bind_transaction",
+        "test_severity_initial_source_integration",
+        "test_posix_v2_compat_severity_execution",
+        "test_severity_adjudication_work_p0_ag3",
         "test_severity_worker_debt_recovery_p0_ag4",
         "test_snapshot_startup_rewind_r0_8cd",
         "test_spike_mechanical_poc",
         "test_structural_integrity",
+        "test_verifier_completion_authority_v2",
+        "test_verification_operator_consumers_p0_ai_g",
+        "test_verification_report_tail_same_run_integration",
+        "test_report_index_summary_parity_successor_a0_a1",
+        "test_worker_execution_preimage_authority",
+        "test_report_model_preimages",
+        "test_report_model_lineage",
+        "test_canonical_report_model_lineage",
+        "test_report_summary_recovery",
+        "test_core_empty_report_entry_integration",
+        "test_core_empty_report_assembly_integration",
         "test_worker_execution_receipts",
         "test_worker_process_tree_adversarial_review",
         "test_worker_stdout_output_and_stream_limits",
@@ -581,3 +707,48 @@ def fail_on_legacy_check_failures(request):
             details.extend(str(entry) for entry in entries[-(after - before):])
     detail_text = "\n".join(details) if details else f"{after - before} legacy check() failure(s)"
     pytest.fail(detail_text)
+
+
+
+
+# ---------------------------------------------------------------------------
+# The product REQUIRES CPython 3.12 (hash-locked cp312 wheels, attested runtime,
+# reviewed Markdown grammar). A suite run on any other interpreter is INVALID:
+# two unrelated subsystems fail closed by design, and an earlier per-test
+# "reclassify as skipped" guard was shown by independent review to be able to
+# hide a genuine assertion inside a test that also touched Markdown authority.
+# So refuse the whole run, loudly, instead of reclassifying anything.
+# ---------------------------------------------------------------------------
+
+def _wrong_interpreter_reason():
+    import sys
+    problems = []
+    if sys.version_info[:2] != (3, 12):
+        problems.append(
+            f"interpreter is CPython {sys.version_info[0]}.{sys.version_info[1]}; "
+            "the product requires 3.12"
+        )
+    try:
+        import plamen_markdown as _md
+        actual = _md.runtime_markdown_it_version()
+        if actual != _md.REVIEWED_MARKDOWN_IT_VERSION:
+            problems.append(
+                f"markdown-it-py {actual!r} is not the reviewed "
+                f"{_md.REVIEWED_MARKDOWN_IT_VERSION!r}"
+            )
+    except Exception as exc:  # pragma: no cover - import failure is its own signal
+        problems.append(f"plamen_markdown unavailable: {type(exc).__name__}")
+    if not problems:
+        return None
+    return (
+        "REFUSING TO RUN THE SUITE: " + "; ".join(problems) + ". Use "
+        "/opt/homebrew/opt/python@3.12/bin/python3.12 -m pytest (pytest is "
+        "installed in its user site). See docs/continuation/NEXT_ACTIONS.md, "
+        "'Is the CPython 3.12 pin justified'."
+    )
+
+
+def pytest_configure(config):  # noqa: ARG001 - pytest hook signature
+    reason = _wrong_interpreter_reason()
+    if reason is not None:
+        pytest.exit(reason, returncode=3)

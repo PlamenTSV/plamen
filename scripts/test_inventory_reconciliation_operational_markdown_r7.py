@@ -250,6 +250,26 @@ def test_legitimate_unicode_prose_is_preserved_while_testing_visibility(
     assert row["disposition"] == "RETAINED"
 
 
+def test_material_field_preserves_leading_inline_code_and_operator_spacing(
+    tmp_path: Path,
+) -> None:
+    mechanism = (
+        "`feePercent` applies `amount * feePercent / 1000` before delivery"
+    )
+    source = _finding("TF-1", mechanism=mechanism)
+    chunk = _finding("CC-1", source_ids=("TF-1",), mechanism=mechanism)
+    final = _finding(
+        "INV-001", source_ids=("TF-1", "CC-1"), mechanism=mechanism
+    )
+    _write_pipeline(tmp_path, source, chunk_text=chunk, inventory_text=final)
+
+    row = reconcile_inventory(tmp_path)["candidates"][0]
+
+    assert row["source_root_cause"] == mechanism
+    assert row["required_preservation_axes"] == []
+    assert row["disposition"] == "RETAINED"
+
+
 def test_assigned_h4_finding_cannot_produce_a_clean_zero_denominator(
     tmp_path: Path,
 ) -> None:
@@ -344,7 +364,7 @@ def test_additive_reemit_cannot_launder_invisible_entity_source_debt(
 
     with pytest.raises(
         reemit_authority.InventoryReemitError,
-        match="does not replay exact candidate delivery",
+        match="refuses to duplicate one-to-one final deliveries",
     ):
         reemit_authority._apply_inventory_reemit_repair_for_tests(tmp_path)
     replay = write_inventory_reconciliation(tmp_path)

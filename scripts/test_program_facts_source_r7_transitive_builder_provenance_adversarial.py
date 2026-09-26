@@ -49,12 +49,12 @@ def test_pinned_builder_cannot_mint_through_replaced_component_helpers(
     monkeypatch.setattr(
         audit_snapshot,
         "_methodology_component",
-        lambda _root: deepcopy(components["methodology"]),
+        lambda _root, _config=None: deepcopy(components["methodology"]),
     )
     monkeypatch.setattr(
         audit_snapshot,
         "_toolchain_component",
-        lambda _root, *, project_root=None: deepcopy(
+        lambda _root, *, project_root=None, config=None: deepcopy(
             components["toolchain"]
         ),
     )

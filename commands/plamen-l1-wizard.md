@@ -20,7 +20,7 @@ Output:
 ╚═╝     ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚═╝  ╚═══╝
 ```
 
-**L1 Infrastructure Auditor** v2.2.4 — Deterministic Driver
+**L1 Infrastructure Auditor** v3.0.0 — Deterministic Driver
 
 ```
 ┌─ L1 Infrastructure Mode ──────────────────────────────┐
@@ -292,7 +292,7 @@ Set `run_in_background: true` on the Bash tool call. Do NOT use `&` or `nohup` �
 The driver runs in the background. When it completes, Claude Code will notify you. At that point, check the exit code:
 
 - **Exit 0**: Pipeline completed. Tell the user: `Report is at {PROJECT_PATH}/AUDIT_REPORT.md`
-- **Exit 3 (degraded)**: Pipeline execution completed in a degraded state. Preserve the scratchpad and inspect its runtime debt and violations before resuming.
+- **Exit 3 (degraded)**: The driver stopped with declared debt; the exit code alone does not prove completion. Preserve the scratchpad. If the CLI says the active phase graph is incomplete, inspect the named next phase before resuming; if it says every active phase was traversed, inspect terminal delivery/runtime debt before treating any report as releasable.
 - **Exit 5 (startup decision required)**: The resume attempt stopped during startup without launching a new audit-model generation. Read the typed external startup-decision receipt and follow its exact restore-or-distinct-destination action; do not repeat resume unchanged.
 - **Exit 2 (rate limit / usage exhausted)**: The driver saved a checkpoint. Tell the user:
 

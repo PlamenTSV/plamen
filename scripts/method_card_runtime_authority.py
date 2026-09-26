@@ -468,7 +468,10 @@ def _current_snapshot(
         _fail("audit snapshot did not validate as an exact self-match")
     try:
         current_methodology = build_methodology_snapshot_component(
-            implementation_root
+            implementation_root,
+            pipeline=str(
+                snapshot["components"]["source_scope"].get("pipeline") or ""
+            ),
         )
     except Exception as exc:
         _fail(f"current methodology snapshot could not be built: {exc}", exc)

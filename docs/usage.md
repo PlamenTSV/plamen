@@ -1,8 +1,9 @@
 # Usage
 
-> V3's production commands currently apply to Windows. Linux/macOS are
-> source-development and validation hosts until the POSIX package transaction,
-> keeper, and recovery work in `continuation/GOAL.md` is complete.
+> Native POSIX release qualification remains incomplete. An installed macOS/Linux
+> compatibility runtime can run Codex audits with explicitly recorded reduced
+> isolation and tool limitations. This is not evidence of native containment or
+> Claude backend parity; see `continuation/GOAL.md` for the remaining work.
 
 > **Just installed?** See [getting-started.md](getting-started.md) first — what's required, what's optional, and how to run your first audit.
 
@@ -33,6 +34,17 @@ plamen core /path/to/project            # SC audit, Core mode
 plamen l1 thorough /path/to/node-client # L1 audit, Thorough mode
 ```
 
+On an installed macOS compatibility runtime, use these same public commands.
+`plamen` opens the wizard in a real terminal; `plamen start-config /path/config.json`
+starts a pre-created clean config, and `plamen resume /path/config.json` resumes
+without changing it. The installed front selects the internal driver transport;
+users do not need `--posix-compat-v2`, an agent shell, or a direct Python command.
+The wizard reports the installation's actual runtime limits and only offers
+audit backends supported by that installation. Canceling does not launch an audit.
+
+Do not replace the installed package while an audit is running: its workers may
+still read package files. Apply package updates after the run has stopped.
+
 ### Claude Code
 
 ```
@@ -44,12 +56,14 @@ plamen l1 thorough /path/to/node-client # L1 audit, Thorough mode
 
 The OpenAI Codex CLI (`codex exec`) is supported as an alternative, cost-saving backend (beta). It runs one `codex exec` per depth job, detects usage caps from natural-language output and auto-waits instead of halting, and seeds the full mandatory first-pass artifact set so recon/depth degrade losslessly.
 
-> **Before relying on Codex**, read [codex-backend.md](codex-backend.md) — it consolidates the known BETA limitations: reduced fan-out vs Claude, no MCP in audit subprocesses (governed Web fallback), ChatGPT-auth/usage-cap behavior, and that `plamen compare` is Claude-only. Model routing fails closed by default; fallback requires explicit authorization.
+> **Before relying on Codex**, read [codex-backend.md](codex-backend.md) — it consolidates the known BETA limitations: reduced fan-out vs Claude, no MCP in audit subprocesses (governed Web fallback), and ChatGPT-auth/usage-cap behavior. Model routing fails closed by default; fallback requires explicit authorization.
 
-Codex requires prior governed setup: run `plamen.py install --codex` from a
-complete reviewed source checkout. The installer publishes the signed package
-at `~/.plamen/`, materializes exact managed Node.js 24.20.0/npm 11.19.0 and
-Codex 0.152.0 payloads, and transactionally copies the Codex commands and
+Codex requires prior governed setup: run `plamen.py install` from a complete
+reviewed source checkout (`--codex` only selects the Codex config projection;
+it is not a separate backend package install). The installer publishes the
+signed package at `~/.plamen/`, materializes exact managed Node.js
+24.20.0/npm 11.19.0, resolves and authenticates the latest backend generation
+once for that transaction, and transactionally copies the Codex commands and
 configuration into `~/.codex/`. After that, invoke the slash commands (for
 example `/plamen-wizard` or `/plamen-l1-wizard`) or use the terminal wrapper:
 
@@ -78,7 +92,6 @@ symlink to a mutable source checkout.
 | `plamen l1 light /path` | L1 infrastructure audit in Light mode |
 | `plamen l1 core /path` | L1 infrastructure audit in Core mode |
 | `plamen l1 thorough /path` | L1 infrastructure audit in Thorough mode |
-| `plamen compare` | Diff two audit reports (post-mortem analysis) |
 | `plamen resume` | Resume an interrupted audit from last checkpoint |
 | `plamen resume /path/config.json` | Resume a specific audit config |
 

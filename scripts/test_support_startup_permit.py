@@ -27,8 +27,18 @@ def rotate_startup_permit(
     """Publish and replay a fresh startup epoch for one fixture scratchpad."""
 
     root = Path(scratchpad).resolve(strict=True)
-    runtime_namespace = root.parent / (
-        f".fixture-aux-runtime-{root.name}"
+    # Production keeps this provider-owned runtime namespace outside the
+    # audited project.  Mirror that boundary when a fixture root is the
+    # conventional in-project scratchpad; otherwise the registry lock becomes
+    # a late source-snapshot input and creates fixture-only audit drift.
+    if root.name.startswith(".scratchpad"):
+        runtime_parent = root.parent.parent
+        namespace_identity = f"{root.parent.name}-{root.name}"
+    else:
+        runtime_parent = root.parent
+        namespace_identity = root.name
+    runtime_namespace = runtime_parent / (
+        f".fixture-aux-runtime-{namespace_identity}"
     )
     with mock.patch.object(
         lease_authority,

@@ -18,7 +18,7 @@ trace each flag to a definitive classification.
 ## Your Inputs
 
 Read:
-- `{SCRATCHPAD}/semantic_invariants.md` — Pass 1 output (focus on flagged entries)
+- `{SCRATCHPAD}/semantic_invariant_pass1_snapshot.md` — the driver's byte snapshot of the Pass 1 output (focus on flagged entries)
 - `{SCRATCHPAD}/state_variables.md` — every state variable
 - `{SCRATCHPAD}/function_list.md` — every function
 - Source files referenced in the flagged entries (use Read; the project

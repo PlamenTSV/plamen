@@ -25,6 +25,9 @@ from phase_contract_compiler import (
 )
 from phase_io_contracts import resolve_phase_io_contract
 from severity_decision_ledger import compile_severity_prompt_contract
+from inventory_reconciliation import (
+    reconcile_inventory as _reconcile_inventory_for_prompt,
+)
 from work_unit_capabilities import (
     CapabilityResolutionError as WorkCapabilityResolutionError,
     compile_work_unit_capability_contract,
@@ -61,6 +64,7 @@ __all__ = [
     "_prune_sc_verify_shard_prompt",
     "_render_execution_contract",
     "_render_id_ledger_directive",
+    "_render_inventory_chunk_identity_checklist",
     "_render_expected_output_block",
     "_render_phase_isolation_block",
     "_render_forbidden_output_block",
@@ -74,7 +78,25 @@ __all__ = [
     "PhasePromptError",
     "resolve_v1_prompt",
     "scale_timeout",
+    "INTENT_AND_HARM_CHECK",
 ]
+
+
+INTENT_AND_HARM_CHECK = """## Intent and Harm Check
+
+Use docs, comments, and tests to identify intended behavior, then verify it
+against the reachable production code. Name the invariant or user-visible
+promise at issue and trace the path to its terminal financial or non-financial
+effect. A suspicious intermediate state or an unfavorable ratio alone is a
+candidate, not proof of harm. An unproven defense does not prove the attack.
+If the in-scope mechanism and harm path are established but an external safety
+condition is unknown, keep the impact-level candidate under R10 with the exact
+`[EXTERNAL-ASSUMPTION: ...]` tag and either a citation or a
+`NEEDS_DEPENDENCY_RESEARCH` line. If the mechanism or harm path
+itself remains unproven, keep the candidate unresolved and name the missing
+evidence; never silently drop it. Check an ordinary control path when one can
+distinguish a real divergence from intended behavior.
+"""
 
 
 class PhasePromptError(Exception):
@@ -86,6 +108,180 @@ class PhasePromptError(Exception):
     the scratchpad. A clean halt is always better than a runaway agent.
     """
     pass
+
+
+_INVENTORY_CANDIDATE_KEY_RE = re.compile(r"^INVC-[0-9A-F]{24}$", re.ASCII)
+_INVENTORY_SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
+
+
+def _render_inventory_chunk_identity_checklist(
+    scratchpad: Path,
+    phase_name: str,
+) -> str:
+    """Render the exact raw-identity denominator into an inventory prompt.
+
+    The reconciliation parser is already the post-write authority for inventory
+    coverage. Replaying it read-only before launch gives the worker the same
+    denominator instead of asking it to rediscover and count headings itself.
+    This projection carries identity metadata only; source files remain the
+    exclusive authority for finding substance.
+    """
+
+    if not re.fullmatch(r"inventory_chunk_[a-z]+", phase_name, re.ASCII):
+        raise PhasePromptError(
+            f"{phase_name}: inventory identity checklist phase is invalid"
+        )
+    try:
+        payload = _reconcile_inventory_for_prompt(
+            Path(scratchpad), phase_name=phase_name, persist=False
+        )
+    except Exception as exc:
+        raise PhasePromptError(
+            f"{phase_name}: exact inventory identity denominator cannot be compiled: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise PhasePromptError(
+            f"{phase_name}: exact inventory identity denominator is malformed"
+        )
+    candidates = payload.get("candidates")
+    denominator_count = payload.get("denominator_count")
+    denominator_digest = payload.get("denominator_digest")
+    if (
+        not isinstance(candidates, list)
+        or type(denominator_count) is not int
+        or denominator_count < 0
+        or denominator_count != len(candidates)
+        or not isinstance(denominator_digest, str)
+        or _INVENTORY_SHA256_RE.fullmatch(denominator_digest) is None
+    ):
+        raise PhasePromptError(
+            f"{phase_name}: exact inventory identity denominator is malformed"
+        )
+
+    denominator_rows: list[dict[str, Any]] = []
+    prompt_rows: list[dict[str, Any]] = []
+    candidate_keys: set[str] = set()
+    raw_identities: set[tuple[str, str]] = set()
+    for index, candidate in enumerate(candidates, start=1):
+        if not isinstance(candidate, dict):
+            raise PhasePromptError(
+                f"{phase_name}: inventory denominator row {index} is malformed"
+            )
+        candidate_key = candidate.get("candidate_key")
+        source_artifact = candidate.get("source_artifact")
+        source_sha256 = candidate.get("source_sha256")
+        source_finding_id = candidate.get("source_finding_id")
+        source_ordinal = candidate.get("source_ordinal")
+        source_block_sha256 = candidate.get("source_block_sha256")
+        artifact_path = (
+            Path(source_artifact)
+            if isinstance(source_artifact, str) and source_artifact
+            else None
+        )
+        if (
+            not isinstance(candidate_key, str)
+            or _INVENTORY_CANDIDATE_KEY_RE.fullmatch(candidate_key) is None
+            or artifact_path is None
+            or artifact_path.is_absolute()
+            or artifact_path.suffix.lower() != ".md"
+            or "\\" in source_artifact
+            or ":" in source_artifact
+            or "//" in source_artifact
+            or any(part in {"", ".", ".."} for part in artifact_path.parts)
+            or not isinstance(source_sha256, str)
+            or _INVENTORY_SHA256_RE.fullmatch(source_sha256) is None
+            or not isinstance(source_finding_id, str)
+            or not source_finding_id
+            or len(source_finding_id) > 256
+            or any(char in source_finding_id for char in "\r\n")
+            or type(source_ordinal) is not int
+            or source_ordinal < 1
+            or not isinstance(source_block_sha256, str)
+            or _INVENTORY_SHA256_RE.fullmatch(source_block_sha256) is None
+        ):
+            raise PhasePromptError(
+                f"{phase_name}: inventory denominator row {index} is malformed"
+            )
+        # The current chunk schema binds candidates by qualified Source-ID,
+        # so repeated IDs within one artifact cannot be represented exactly
+        # even when their parser ordinals differ. Refuse that denominator
+        # before launch instead of emitting two indistinguishable checklist
+        # tokens that the post-write gate must reject.
+        raw_identity = (source_artifact, source_finding_id)
+        if candidate_key in candidate_keys or raw_identity in raw_identities:
+            raise PhasePromptError(
+                f"{phase_name}: exact inventory identity denominator contains a "
+                "duplicate candidate"
+            )
+        candidate_keys.add(candidate_key)
+        raw_identities.add(raw_identity)
+        denominator_rows.append(
+            {
+                "candidate_key": candidate_key,
+                "source_artifact": source_artifact,
+                "source_sha256": source_sha256,
+                "source_finding_id": source_finding_id,
+                "source_ordinal": source_ordinal,
+                "source_block_sha256": source_block_sha256,
+            }
+        )
+        prompt_rows.append(
+            {
+                "candidate_key": candidate_key,
+                "required_source_id_token": (
+                    f"{source_artifact}:{source_finding_id}"
+                ),
+                "source_artifact": source_artifact,
+                "source_finding_id": source_finding_id,
+                "source_ordinal": source_ordinal,
+                "source_block_sha256": source_block_sha256,
+            }
+        )
+
+    if [row["candidate_key"] for row in denominator_rows] != sorted(candidate_keys):
+        raise PhasePromptError(
+            f"{phase_name}: exact inventory identity denominator is not canonical"
+        )
+    calculated_digest = hashlib.sha256(
+        json.dumps(
+            denominator_rows,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if calculated_digest != denominator_digest:
+        raise PhasePromptError(
+            f"{phase_name}: exact inventory identity denominator digest is invalid"
+        )
+
+    projection = {
+        "schema": "plamen.inventory-prompt-denominator/v1",
+        "phase_name": phase_name,
+        "denominator_count": denominator_count,
+        "denominator_digest": denominator_digest,
+        "rows": prompt_rows,
+    }
+    return (
+        "## EXACT ASSIGNED RAW-IDENTITY CHECKLIST (HARD)\n\n"
+        "The driver derived this identity-only checklist with the same parser used "
+        "by the post-write reconciliation gate. It does not synthesize, validate, "
+        "merge, or refute findings; read the named source block for all substantive "
+        "fields.\n\n"
+        f"Emit exactly {denominator_count} Master Table rows and exactly "
+        f"{denominator_count} Per-Finding Detail blocks. Emit one independent "
+        "detail block for every checklist row, even when two rows describe the "
+        "same mechanism. In that block, copy `required_source_id_token` exactly "
+        "into `**Source IDs**:`. Never satisfy one checklist row with another "
+        "row's block. Before returning, check off every `candidate_key`; zero "
+        "unchecked keys is mandatory.\n\n"
+        "```json\n"
+        + json.dumps(projection, indent=2, sort_keys=True, ensure_ascii=False)
+        + "\n```"
+    )
 
 
 _INVENTORY_RETRY_PROMPT_PHASES = frozenset({
@@ -495,10 +691,10 @@ def _sanitize_sc_no_subagent_wrapper(text: str) -> str:
     )
     text = re.sub(
         r"## RESUMPTION PROTOCOL .*?(?=\n(?:\*\*RETRY EXCEPTION\*\*|## SCIP|## VERIFY|## REPORT|## BREADTH|## INVENTORY|## PRIOR PHASE OUTPUTS))",
-        "## RESUMPTION PROTOCOL\n\n"
-        "Check whether your assigned output already exists and is complete. "
-        "If complete, stop. Otherwise execute the selected verification "
-        "contract directly.\n\n",
+        "## DRIVER-OWNED RESUMPTION\n\n"
+        "The driver adjudicates prior attempts. Do not probe canonical output "
+        "paths or decide that an existing artifact is complete. Read only "
+        "declared inputs and write the current attempt to its routed output.\n\n",
         text,
         count=1,
         flags=re.DOTALL,
@@ -2616,17 +2812,62 @@ def _build_graph_sweeps_artifact_directive(scratchpad: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_phase_prompt(v1_prompt: Path, phase: Phase, config: dict) -> str:
-    """Wrap the V1 prompt with a phase-scoping directive and config.
+_TYPED_MODEL_WRITE_UNITS = {
+    "chain": "model",
+    "chain_agent2": "model",
+    "chain_iter2": "model",
+    "report_index": "model",
+    "sc_semantic_dedup": "model",
+}
 
-    Two routes for Step 0 skip: (1) a $ARGUMENTS-shaped string that matches
-    plamen.md's shortcut-parse auto-skip logic, and (2) a prose directive at
-    the top. Either alone is error-prone; both together make skip reliable.
 
-    V1 prompt is section-extracted to the phase's assigned sections plus
-    the global preamble -- reduces ~65KB to ~10KB typical, prevents
-    mid-run compaction thrashing.
+def _model_and_driver_expected_artifacts(
+    phase: Phase, config: dict
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Split a phase's expected artifacts into MODEL- and DRIVER-written ones.
+
+    Returns ``((), ())`` when the phase has no resolvable typed contract, so
+    every untyped phase keeps its historical directive verbatim.
     """
+
+    unit = _TYPED_MODEL_WRITE_UNITS.get(phase.name)
+    if not unit:
+        return ((), ())
+    try:
+        contract = resolve_phase_io_contract(
+            pipeline=str(config.get("pipeline") or "sc"),
+            mode=str(config.get("mode") or "core"),
+            ecosystem=str(config.get("language") or "unknown"),
+            backend=str(config.get("cli_backend") or "claude"),
+            phase=phase.name,
+            work_unit_id=unit,
+            exact_inputs=tuple(
+                (config.get("_phase_io_exact_inputs") or {}).get(phase.name, ())
+            ),
+        )
+    except (ValueError, PromptContractError):
+        return ((), ())
+    model: list[str] = []
+    driver: list[str] = []
+    for spec in getattr(contract, "outputs", ()) or ():
+        name = str(getattr(spec, "path", "") or "").rsplit("/", 1)[-1]
+        if not name:
+            continue
+        if str(getattr(spec, "writer", "") or "").upper() == "MODEL":
+            model.append(name)
+        else:
+            driver.append(name)
+    expected = [str(value) for value in phase.expected_artifacts]
+    # Never widen the directive beyond the phase's own gate denominator.
+    model = [name for name in model if name in expected] or []
+    driver = [name for name in driver if name in expected]
+    if not model:
+        return ((), ())
+    return tuple(dict.fromkeys(model)), tuple(dict.fromkeys(driver))
+
+
+def build_phase_prompt(v1_prompt: Path, phase: Phase, config: dict) -> str:
+    """Bind one driver-owned phase objective to its exact inputs and outputs."""
     # v2.5.0: STANDALONE-FIRST architecture.
     # Priority: override (cost_directive IS full instruction) > standalone > V1 fallback.
     # This decouples the pipeline from the monolithic V1 prompt -- heading
@@ -2791,9 +3032,31 @@ def build_phase_prompt(v1_prompt: Path, phase: Phase, config: dict) -> str:
     # "Expected artifacts for phase `X`: " -- the LLM read this as "no
     # expected outputs" and skipped the RESUMPTION PROTOCOL's stale-artifact
     # check, re-running all subagents on resume.
-    expected_artifacts_list = ", ".join(phase.expected_artifacts) or (
+    # `phase.expected_artifacts` is the DISK-GATE denominator: it includes
+    # files the DRIVER writes from the model's output.  Naming those in a
+    # write directive tells the worker to write an artifact outside its own
+    # output authority, and the pre-launch consistency checker denies the
+    # launch for it.  When the phase has a typed MODEL contract, the write
+    # directive names exactly the MODEL-written outputs; the driver-written
+    # ones are named separately as files the worker must NOT write.
+    model_artifacts, driver_artifacts = _model_and_driver_expected_artifacts(
+        phase, config
+    )
+    expected_artifacts_list = ", ".join(
+        model_artifacts or phase.expected_artifacts
+    ) or (
         "(dynamic -- determined at runtime; check the relevant manifest "
         "and any prior-attempt artifacts in the scratchpad)"
+    )
+    driver_written_note = (
+        ""
+        if not driver_artifacts
+        else (
+            "\n\n" + ", ".join(f"`{name}`" for name in driver_artifacts)
+            + (" is" if len(driver_artifacts) == 1 else " are")
+            + " produced by the driver from your output. Do NOT write "
+            + ("it" if len(driver_artifacts) == 1 else "them") + "."
+        )
     )
 
     # Producer-contract block: renders phase.expected_artifacts as a hard
@@ -3064,6 +3327,9 @@ are not counted.
         shard_files = parse_inventory_shard_manifest(
             Path(config["scratchpad"]), phase.name
         )
+        inventory_identity_checklist = _render_inventory_chunk_identity_checklist(
+            Path(config["scratchpad"]), phase.name
+        )
         out_name = f"findings_{phase.name}.md"
         l1_inventory_note = ""
         if config.get("pipeline") == "l1":
@@ -3079,6 +3345,8 @@ are not counted.
 This is an inventory shard phase. Read ONLY these analysis artifacts:
 - {files}
 {l1_inventory_note}
+
+{identity_checklist}
 
 Write ONLY `{output}`.
 
@@ -3150,15 +3418,14 @@ block.
 
 Completion checklist before returning:
 - Count master-table rows and detail headings. They must be equal.
+- Both counts must equal the exact assigned `denominator_count` above.
 - For every `### Finding [CC-NN]` block, verify the block contains a literal
   `**Impact**:` line. If any block lacks it, fix the block before returning.
-- Every source ID that appears in a source finding is either listed in exactly
-  one detail block or explicitly listed in the Source Summary as deduplicated
-  into another CC finding.
+- Every `required_source_id_token` in the exact checklist appears in exactly
+  one independent detail block. A Source Summary mention is not a disposition.
 - The only file you wrote is `{output}`.
 
-Do local dedup only within this shard. Do not read unrelated `analysis_*.md`
-files.
+Do not deduplicate within this shard. Do not read unrelated `analysis_*.md` files.
 
 **OUTPUT ALLOWLIST**
 
@@ -3172,6 +3439,7 @@ set and its own subprocess. Cross-chunk consolidation is outside this shard.
 After the checklist passes, return one line and stop.
 """.format(
             files="\n- ".join(shard_files) if shard_files else "(none assigned)",
+            identity_checklist=inventory_identity_checklist,
             l1_inventory_note=l1_inventory_note,
             output=out_name,
         )
@@ -3419,6 +3687,8 @@ Cost discipline:
     if phase.name == "skeptic":
         report_scope_directive = """
 ## SKEPTIC PHASE OVERRIDE
+
+""" + INTENT_AND_HARM_CHECK + """
 
 The driver has written `{SCRATCHPAD}/skeptic_manifest.json`. That manifest is
 the authoritative list of trigger-selected findings (any tier) this phase MUST
@@ -4317,7 +4587,7 @@ current attempt from those inputs.
 Write exactly these expected artifacts: `{expected_artifacts_list}`. Write them
 only to the exact attempt-owned destinations in the final Runtime output routing
 block. The supervisor verifies and publishes those staged bytes after the worker
-returns.
+returns.{driver_written_note}
 """
     else:
         resumption_protocol = f"""## RESUMPTION PROTOCOL (MANDATORY SECOND ACTION -- after reading config)
@@ -4354,7 +4624,7 @@ $ARGUMENTS: {arguments_str}
 
 ## CONFIGURATION (already resolved -- DO NOT ask the user)
 
-Both naming conventions provided to match V1 prompt placeholders:
+Project aliases used by bound methodology:
 - PROJECT_PATH: {config['project_root']}
 - PROJECT_ROOT: {config['project_root']}
 - SCRATCHPAD: {config['scratchpad']}
@@ -4371,33 +4641,19 @@ Both naming conventions provided to match V1 prompt placeholders:
 - LAUNCHED_FROM_WRAPPER: true
 
 {subsystem_scope_directive}
-## HARD SCOPE DIRECTIVE (OVERRIDES V1 PROMPT STEP 0)
+## DRIVER-OWNED PHASE SCOPE
 
-You are running INSIDE a phase-scoped claude -p subprocess dispatched by
-`plamen_driver.py`. The V1 orchestrator prompt below describes the full
-pipeline from Step 0 onward. You MUST NOT execute it linearly.
-
-Mandatory rules:
-
-1. **Skip Step 0 entirely.** All wizard input is already collected (see
-   $ARGUMENTS and CONFIGURATION above). Do NOT call AskUserQuestion, do
-   NOT run the toolchain probe as an interactive step, do NOT ask the
-   user anything. If the V1 prompt's Step 0 says "If all config is
-   resolved AND wrapper-launch is present, skip the ENTIRE wizard" --
-   that condition IS met. Jump past Step 0.
+The driver has already resolved the configuration and selected this phase.
+Apply only the assigned methodology and the exact PhaseIO contract. Do not
+repeat the wizard, inspect future phases, or authorize phase completion from
+your own text; the driver validates and advances the pipeline.
 
 {section_rule}
 
 {execution_rule}
 
-4. **When your assigned sections finish, end the conversation.** Do not
-   continue beyond this subprocess's assigned work.
-
-5. **Do NOT initialize any V1 watchdog / phase_gate / stop-hook.** If the
-   V1 prompt below says `python ~/.claude/hooks/phase_gate.py --init ...`
-   or references `watchdog_state.json`, SKIP that step. The V2 driver has
-   its own Python gate that runs outside your process. V1 watchdogs
-   installed inside your subprocess will block the V2 driver and must not be activated.
+4. End after the assigned work. The driver owns retries, gates, and any
+   hook configuration; do not initialize another watchdog or phase gate.
 
 {execution_contract_directive}
 {expected_output_block}
@@ -4419,13 +4675,7 @@ Mandatory rules:
 {id_ledger_directive}
 {prior_phase_outputs_block}
 
-## MCP POLICY
-
-When an MCP tool call returns a timeout or fails, record `[MCP: TIMEOUT]`
-and switch to fallback (code analysis, grep, WebSearch). Do NOT retry
-the same MCP call. Claude Code's MCP timeout is 300s.
-
-## READ-PATH DISCIPLINE (MANDATORY -- applies to coordinator AND every Task subagent)
+## READ-PATH DISCIPLINE
 
 Every filesystem-reading tool call (Bash directory listing, Glob, Grep,
 Read, LS) MUST resolve to a path under `PROJECT_ROOT` or `SCRATCHPAD` as

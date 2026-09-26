@@ -18,6 +18,138 @@ import worker_execution_receipts as W
 CLAUDE_STREAM_SESSION = "11111111-2222-4333-8444-555555555555"
 
 
+def test_unreturned_process_failure_states_have_exact_cleanup_modes() -> None:
+    assert W._unreturned_process_failure_cleanup_mode(
+        W.PROCESS_CREATED_BUT_NOT_RETURNED_TERMINATED
+    ) == "UNRETURNED_TERMINAL_CLEANUP"
+    assert W._unreturned_process_failure_cleanup_mode(
+        W.PROCESS_CREATED_BUT_NOT_RETURNED_CONTAINED
+    ) == "UNRETURNED_EMERGENCY_CLEANUP"
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_method"),
+    [
+        (
+            W.PROCESS_CREATED_BUT_NOT_RETURNED_TERMINATED,
+            "abort",
+        ),
+        (
+            W.PROCESS_CREATED_BUT_NOT_RETURNED_CONTAINED,
+            "emergency",
+        ),
+    ],
+)
+def test_unreturned_process_failure_cleanup_uses_exact_runtime_route(
+    state: str,
+    expected_method: str,
+) -> None:
+    events: list[str] = []
+
+    class _Scope:
+        process_creation_state = state
+
+        def close(self) -> None:
+            events.append("close")
+
+        def emergency_close(self) -> None:
+            events.append("emergency-close")
+
+    class _Runtime:
+        postprocess_receipt = None
+
+        def abort_bound_scope_before_process_attach(
+            self,
+            scope: object,
+            reason_code: str,
+        ) -> dict[str, object]:
+            assert isinstance(scope, _Scope)
+            events.append(f"abort:{reason_code}")
+            return {"method": "abort"}
+
+        def emergency_close_to_quarantine_debt(
+            self,
+            scope: object,
+        ) -> dict[str, object]:
+            assert isinstance(scope, _Scope)
+            scope.emergency_close()  # type: ignore[attr-defined]
+            events.append("emergency-runtime")
+            return {"method": "emergency"}
+
+    lifecycle, postprocess = W._cleanup_unreturned_process_failure_scope(
+        _Scope(),
+        _Runtime(),
+        "PROCESS_CREATION_FAILED",
+    )
+
+    assert lifecycle == {"method": expected_method}
+    assert postprocess is None
+    if expected_method == "abort":
+        assert events == ["close", "abort:PROCESS_CREATION_FAILED"]
+    else:
+        assert events == ["emergency-close", "emergency-runtime"]
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "PROCESS_CREATED",
+        "PROCESS_CREATION_FAILED",
+        "PROCESS_CREATED_BUT_NOT_RETURNED",
+    ],
+)
+def test_unreturned_process_failure_state_has_no_generic_fallback(
+    state: str,
+) -> None:
+    with pytest.raises(
+        W.WorkerExecutionError,
+        match="unrecognized exact state",
+    ):
+        W._unreturned_process_failure_cleanup_mode(state)
+
+
+def _admitted_linux_process_authority_available() -> bool:
+    """True only when this Linux host exposes the reviewed process boundary."""
+
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        capability = W.process_tree_termination_capability()
+    except Exception:
+        return False
+    return (
+        capability.get("platform") == "LINUX"
+        and capability.get("exhaustive_descendant_termination_authority")
+        is True
+        and W._transaction_write_authority(capability) == "EXHAUSTIVE"
+    )
+
+
+_SUPPORTED_PHYSICAL_PROCESS_ONLY = pytest.mark.skipif(
+    os.name != "nt" and not _admitted_linux_process_authority_available(),
+    reason=(
+        "positive physical-process receipt coverage requires Windows Job/MIC "
+        "authority or an admitted Linux cgroup-v2 plus Landlock authority; "
+        "unsupported macOS is covered by the typed hard-stop regression"
+    ),
+)
+_WINDOWS_LEGACY_CLAUDE_ONLY = pytest.mark.skipif(
+    os.name != "nt",
+    reason=(
+        "legacy Claude runtime/auth/profile fixture is Windows-qualified; "
+        "POSIX model launch requires sealed outer-supervisor authority"
+    ),
+)
+_WINDOWS_LEGACY_WER_VALIDATION_ONLY = pytest.mark.skipif(
+    os.name != "nt",
+    reason=(
+        "legacy same-process WER input-validation ordering is Windows-qualified; "
+        "POSIX must hard-stop before inspecting caller-controlled values until "
+        "the authenticated native process authority is integrated"
+    ),
+)
+
+
 def _runtime_case(
     tmp_path: Path,
     *,
@@ -259,7 +391,7 @@ def _bindings(
     tmp_path: Path,
     *,
     environment_allowlist: tuple[str, ...] = (),
-    backend: str = "codex",
+    backend: str = "fixture",
     model: str = "fixture-model",
     **overrides: object,
 ) -> W.ExecutionBindings:
@@ -342,6 +474,7 @@ def _load(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_provider_owned_success_binds_process_authority_and_replays(tmp_path: Path) -> None:
     completed = _run(tmp_path)
 
@@ -357,7 +490,7 @@ def test_provider_owned_success_binds_process_authority_and_replays(tmp_path: Pa
 
     assert arm["schema_version"] == W.ARM_SCHEMA
     assert arm["launcher"]["identity"] == W.LAUNCHER_IDENTITY  # type: ignore[index]
-    assert arm["bindings"]["effective_backend"] == "codex"  # type: ignore[index]
+    assert arm["bindings"]["effective_backend"] == "fixture"  # type: ignore[index]
     assert arm["bindings"]["effective_model"] == "fixture-model"  # type: ignore[index]
     assert arm["process_intent"]["stdin"] == {"state": "DEVNULL"}  # type: ignore[index]
     assert arm["process_intent"]["timeout_seconds"] == "10"
@@ -388,6 +521,32 @@ def test_provider_owned_success_binds_process_authority_and_replays(tmp_path: Pa
     assert publish["destinations"][0]["post_state"] == "PRESENT"  # type: ignore[index]
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="macOS-specific unsupported process-authority regression",
+)
+def test_macos_process_launch_is_typed_debt_before_child_creation(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "macos-provider-launched.txt"
+    script = (
+        "from pathlib import Path; "
+        f"Path({str(marker)!r}).write_text('launched', encoding='utf-8'); "
+        + _script_for("worker-out/result.json")
+    )
+
+    with pytest.raises(
+        W.NativePosixProcessAuthorityUnavailable,
+        match="NATIVE_POSIX_PROCESS_AUTHORITY_UNAVAILABLE",
+    ):
+        _run(tmp_path, script=script)
+
+    assert not marker.exists()
+    assert not (tmp_path / ".worker_execution_receipts").exists()
+    assert not (tmp_path / "worker-out").exists()
+
+
+@_WINDOWS_LEGACY_CLAUDE_ONLY
 def test_claude_stream_stdout_is_armed_replayed_and_never_overclaims_producer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -452,6 +611,7 @@ def test_claude_stream_stdout_is_armed_replayed_and_never_overclaims_producer(
 
 
 @pytest.mark.parametrize("failure_kind", ["missing-result", "error", "late-row"])
+@_WINDOWS_LEGACY_CLAUDE_ONLY
 def test_claude_stream_stdout_semantic_rejection_is_durable_debt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -515,6 +675,7 @@ def test_claude_stream_command_flags_are_bound_before_arm(
         )
 
 
+@_WINDOWS_LEGACY_CLAUDE_ONLY
 def test_claude_stream_parser_runtime_drift_rejects_receipt_replay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -557,6 +718,7 @@ def test_claude_stream_parser_runtime_drift_rejects_receipt_replay(
         )
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_provider_implementation_closure_is_armed_and_replayed(
     tmp_path: Path,
 ) -> None:
@@ -604,6 +766,7 @@ def test_provider_implementation_closure_is_armed_and_replayed(
         )
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_provider_owned_bound_prompt_stdin_drives_real_subprocess_and_replays(
     tmp_path: Path,
 ) -> None:
@@ -655,6 +818,7 @@ def test_provider_owned_bound_prompt_stdin_drives_real_subprocess_and_replays(
     )
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_phaseio_only_staging_does_not_require_canonical_destination_absent(
     tmp_path: Path,
 ) -> None:
@@ -714,6 +878,7 @@ def test_phaseio_only_staging_does_not_require_canonical_destination_absent(
         object(),
     ),
 )
+@_WINDOWS_LEGACY_WER_VALIDATION_ONLY
 def test_stdin_must_be_an_exact_bound_semantic_input(
     tmp_path: Path, stdin_input: object
 ) -> None:
@@ -737,6 +902,7 @@ def test_stdin_must_be_an_exact_bound_semantic_input(
     assert not list(tmp_path.glob(".worker_execution_receipts/shard-001/arm_*.json"))
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_bound_stdin_mutation_is_rejected_on_replay(tmp_path: Path) -> None:
     bindings = _bindings(tmp_path)
     completed = W.run_observed_worker(
@@ -769,6 +935,7 @@ def test_bound_stdin_mutation_is_rejected_on_replay(tmp_path: Path) -> None:
         )
 
 
+@_WINDOWS_LEGACY_WER_VALIDATION_ONLY
 def test_symlinked_bound_stdin_is_rejected_before_launch(tmp_path: Path) -> None:
     bindings = _bindings(tmp_path)
     prompt = tmp_path / "launch-inputs" / "prompt.md"
@@ -797,6 +964,7 @@ def test_symlinked_bound_stdin_is_rejected_before_launch(tmp_path: Path) -> None
         )
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_arm_is_fsynced_before_child_can_observe_it(tmp_path: Path) -> None:
     # The child can only see an arm if persistence happened before Popen.
     evidence_glob = ".worker_execution_receipts/shard-001/arm_*.json"
@@ -811,6 +979,7 @@ def test_arm_is_fsynced_before_child_can_observe_it(tmp_path: Path) -> None:
     assert completed.receipt_path.is_file()
 
 
+@_WINDOWS_LEGACY_WER_VALIDATION_ONLY
 def test_preexisting_output_bytes_never_count_and_child_never_launches(tmp_path: Path) -> None:
     output = tmp_path / "worker-out" / "result.json"
     output.parent.mkdir()
@@ -842,6 +1011,7 @@ def test_preexisting_output_bytes_never_count_and_child_never_launches(tmp_path:
         (_script_for("worker-out/Result.json"), "OUTPUT_DENOMINATOR_MISMATCH"),
     ],
 )
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_missing_unassigned_and_miscased_outputs_leave_debt_not_completion(
     tmp_path: Path, script: str, reason: str
 ) -> None:
@@ -855,6 +1025,7 @@ def test_missing_unassigned_and_miscased_outputs_leave_debt_not_completion(
     assert not list(exc.arm_path.parent.glob("completion_*.json"))
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_nonzero_exit_records_streams_and_debt_but_no_completion(tmp_path: Path) -> None:
     script = "import sys; print('worker failed'); print('detail', file=sys.stderr); sys.exit(7)"
     with pytest.raises(W.WorkerExecutionIncomplete) as captured:
@@ -868,6 +1039,7 @@ def test_nonzero_exit_records_streams_and_debt_but_no_completion(tmp_path: Path)
     assert debt["completion_emitted"] is False
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_parser_rejection_is_visible_observation_debt(tmp_path: Path) -> None:
     with pytest.raises(W.WorkerExecutionIncomplete) as captured:
         _run(tmp_path, script=_script_for("worker-out/result.json", payload="not-json"))
@@ -878,6 +1050,7 @@ def test_parser_rejection_is_visible_observation_debt(tmp_path: Path) -> None:
     assert not list(captured.value.arm_path.parent.glob("completion_*.json"))
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_timeout_leaves_arm_streams_and_debt_but_no_completion(tmp_path: Path) -> None:
     with pytest.raises(W.WorkerExecutionIncomplete) as captured:
         W.run_observed_worker(
@@ -901,6 +1074,7 @@ def test_timeout_leaves_arm_streams_and_debt_but_no_completion(tmp_path: Path) -
     assert not list(captured.value.arm_path.parent.glob("completion_*.json"))
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_timeout_terminates_the_owned_process_tree_before_returning(tmp_path: Path) -> None:
     marker = tmp_path / "descendant-survived.txt"
     descendant = (
@@ -940,6 +1114,7 @@ def test_timeout_terminates_the_owned_process_tree_before_returning(tmp_path: Pa
     assert debt["process_observation"]["process_tree_terminated"] is True  # type: ignore[index]
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_launch_authority_changed_by_child_cannot_complete(tmp_path: Path) -> None:
     script = _script_for(
         "worker-out/result.json",
@@ -962,6 +1137,7 @@ def test_launch_authority_changed_by_child_cannot_complete(tmp_path: Path) -> No
     assert not list(captured.value.arm_path.parent.glob("completion_*.json"))
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_publish_failure_leaves_completion_publish_arm_and_debt_no_canonical_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -987,6 +1163,7 @@ def test_publish_failure_leaves_completion_publish_arm_and_debt_no_canonical_byt
     assert not (tmp_path / "canonical" / "result.json").exists()
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_identical_canonical_race_never_counts_as_provider_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1009,6 +1186,7 @@ def test_identical_canonical_race_never_counts_as_provider_publication(
     ]
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_output_tamper_or_deletion_is_rejected_on_replay(tmp_path: Path) -> None:
     completed = _run(tmp_path)
     output = tmp_path / "worker-out" / "result.json"
@@ -1036,6 +1214,7 @@ def test_output_tamper_or_deletion_is_rejected_on_replay(tmp_path: Path) -> None
         )
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_stream_deletion_is_rejected_on_replay(tmp_path: Path) -> None:
     completed = _run(tmp_path, script=_script_for("worker-out/result.json", extra="print('ok')"))
     receipt = _load(completed.receipt_path)
@@ -1053,6 +1232,7 @@ def test_stream_deletion_is_rejected_on_replay(tmp_path: Path) -> None:
         )
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_bound_input_tamper_is_rejected_on_replay(tmp_path: Path) -> None:
     completed = _run(tmp_path)
     (tmp_path / "launch-inputs" / "context.md").write_text("changed\n", encoding="utf-8")
@@ -1068,6 +1248,7 @@ def test_bound_input_tamper_is_rejected_on_replay(tmp_path: Path) -> None:
         )
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_canonical_publish_tamper_is_rejected_on_replay(tmp_path: Path) -> None:
     completed = _run(tmp_path)
     completed.published_paths[0].write_text('{"finding_id":"H-99"}', encoding="utf-8")
@@ -1083,6 +1264,7 @@ def test_canonical_publish_tamper_is_rejected_on_replay(tmp_path: Path) -> None:
         )
 
 
+@_WINDOWS_LEGACY_WER_VALIDATION_ONLY
 def test_launch_intent_environment_authority_must_match_provider_allowlist(
     tmp_path: Path,
 ) -> None:
@@ -1104,6 +1286,7 @@ def test_launch_intent_environment_authority_must_match_provider_allowlist(
     assert not list(tmp_path.glob(".worker_execution_receipts/shard-001/arm_*.json"))
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_transcript_state_is_explicit_and_published(tmp_path: Path) -> None:
     completed = _run(
         tmp_path,
@@ -1129,6 +1312,7 @@ def test_transcript_state_is_explicit_and_published(tmp_path: Path) -> None:
     }
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_worker_and_multiple_assessor_invocations_are_exactly_bound(tmp_path: Path) -> None:
     completed = _run(tmp_path)
     arm = _load(completed.arm_path)
@@ -1144,6 +1328,7 @@ def test_worker_and_multiple_assessor_invocations_are_exactly_bound(tmp_path: Pa
     ]
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_arm_tamper_is_rejected_even_when_completion_bytes_are_unchanged(tmp_path: Path) -> None:
     completed = _run(tmp_path)
     raw = completed.arm_path.read_bytes()
@@ -1162,6 +1347,7 @@ def test_arm_tamper_is_rejected_even_when_completion_bytes_are_unchanged(tmp_pat
         )
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_authority_hash_prevents_content_addressed_receipt_substitution(tmp_path: Path) -> None:
     completed = _run(tmp_path)
 
@@ -1176,6 +1362,7 @@ def test_authority_hash_prevents_content_addressed_receipt_substitution(tmp_path
         )
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_environment_is_allowlisted_hash_bound_and_values_are_not_persisted(tmp_path: Path) -> None:
     secretish_value = "not-persisted-value"
     completed = W.run_observed_worker(
@@ -1201,6 +1388,7 @@ def test_environment_is_allowlisted_hash_bound_and_values_are_not_persisted(tmp_
     assert len(arm["environment"]["effective_sha256"]) == 64
 
 
+@_WINDOWS_LEGACY_WER_VALIDATION_ONLY
 def test_unallowlisted_environment_and_identity_alias_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(W.WorkerExecutionError, match="not allowlisted"):
         W.run_observed_worker(
@@ -1232,6 +1420,7 @@ def test_unallowlisted_environment_and_identity_alias_are_rejected(tmp_path: Pat
         W.environment_allowlist_sha256(("PATH", "Path"))
 
 
+@_WINDOWS_LEGACY_WER_VALIDATION_ONLY
 def test_output_escape_and_case_colliding_assignment_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(W.WorkerExecutionError, match="unsafe component"):
         W.ExpectedOutput("finding-H-01", "../escape.json", "canonical/result.json")

@@ -7,6 +7,7 @@ than accept that story as authority.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 import sys
 
@@ -146,12 +147,27 @@ def _commit_circular_capture(
         exact_outputs=("report_assembly_source_capture.json",),
         exact_input_authorities=requirements,
     )
+    launch = _launch(contract)
+    preexecution_authority = RCA.build_report_capture_preexecution_authority(
+        scratchpad=scratch,
+        project_root=project,
+        run_id=RUN_ID,
+        contract=contract,
+        launch=launch,
+        expected_output_records={
+            "scratchpad:report_assembly_source_capture.json": {
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "size": len(raw),
+            },
+        },
+    )
     _commit_contract(
         project,
         scratch,
         contract,
-        _launch(contract),
+        launch,
         {"report_assembly_source_capture.json": raw},
+        preexecution_authority=preexecution_authority,
     )
     return raw
 
@@ -342,6 +358,30 @@ def test_source_candidate_rejects_same_circular_requirements(
             expected_config=config,
             source_capture_bytes=capture,
         )
+
+
+def test_valid_committed_capture_roundtrips_live_producer_authority(
+    tmp_path: Path,
+) -> None:
+    project, scratch, config, _snapshot, metadata = _fixture(tmp_path)
+    producer, launch = _registered_report_index_commit(project, scratch)
+    capture = _commit_circular_capture(
+        project,
+        scratch,
+        config,
+        metadata,
+        producer,
+        launch,
+        fixed={"report_index.md": "REPORT_INDEX"},
+        namespaces={},
+    )
+
+    assert RCA.load_committed_report_source_capture_bytes(
+        scratchpad=scratch,
+        project_root=project,
+        run_id=RUN_ID,
+        expected_config=config,
+    ) == capture
 
 
 def test_terminal_live_replay_rejects_producer_successor_drift(

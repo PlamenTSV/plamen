@@ -12,12 +12,11 @@ These tests lock in three guarantees:
   1. The tolerant glob in `_validate_confidence_iter2_mandatory` accepts
      both the canonical `depth_iter2_*_findings.md` form AND the de-facto
      `depth_iter2_*.md` form.
-  2. The canonicalizer `_canonicalize_depth_iter_filenames` renames the
-     non-canonical form to canonical so downstream strict-pattern
-     consumers (inventory parsers, never-cut gate, prompt builders)
-     also see them.
-  3. The canonicalizer is idempotent and does not clobber existing
-     canonical files.
+  2. The canonicalizer `_canonicalize_depth_iter_filenames` projects the
+     non-canonical form byte-for-byte so downstream strict-pattern consumers
+     also see it without mutating the model artifact.
+  3. The projection is idempotent and does not clobber existing canonical
+     files.
 """
 from __future__ import annotations
 
@@ -110,7 +109,9 @@ def test_iter2_gate_still_fails_on_missing_artifacts(tmp_path: Path):
     assert "iter2" in issues[0].lower()
 
 
-def test_canonicalizer_renames_non_canonical_iter2(tmp_path: Path):
+def test_canonicalizer_projects_non_canonical_iter2_without_mutating_source(
+    tmp_path: Path,
+):
     sp = tmp_path / ".scratchpad"
     sp.mkdir()
     _write(sp / "depth_iter2_state_trace.md", "content-A")
@@ -119,11 +120,14 @@ def test_canonicalizer_renames_non_canonical_iter2(tmp_path: Path):
     assert len(renamed) == 2, f"Expected 2 renames, got {renamed}"
     assert (sp / "depth_iter2_state_trace_findings.md").exists()
     assert (sp / "depth_iter2_edge_case_findings.md").exists()
-    assert not (sp / "depth_iter2_state_trace.md").exists()
-    assert not (sp / "depth_iter2_edge_case.md").exists()
-    # Content survives the rename
+    assert (sp / "depth_iter2_state_trace.md").exists()
+    assert (sp / "depth_iter2_edge_case.md").exists()
+    # Content survives the exact-byte projection in both source and target.
     assert (
         sp / "depth_iter2_state_trace_findings.md"
+    ).read_text(encoding="utf-8") == "content-A"
+    assert (
+        sp / "depth_iter2_state_trace.md"
     ).read_text(encoding="utf-8") == "content-A"
 
 
@@ -180,9 +184,9 @@ def test_canonicalizer_handles_da_iter_namespace(tmp_path: Path):
     target = sp / "depth_da_iter2_edge_case_findings.md"
     assert target.exists()
     text = target.read_text(encoding="utf-8")
-    assert "PLAMEN_ARTIFACT: depth_da_iter2_edge_case_findings.md" in text
-    assert "EXPECTED_OUTPUT: depth_da_iter2_edge_case_findings.md" in text
-    assert not (sp / "da_iter2_edge_case_findings.md").exists()
+    assert "PLAMEN_ARTIFACT: da_iter2_edge_case_findings.md" in text
+    assert "EXPECTED_OUTPUT: da_iter2_edge_case_findings.md" in text
+    assert (sp / "da_iter2_edge_case_findings.md").read_text() == text
 
 
 def test_iter2_gate_tolerates_da_iter_namespace(tmp_path: Path):
@@ -234,12 +238,11 @@ def test_canonicalizer_variant_matrix(tmp_path: Path):
     for src_name, expected in cases.items():
         case_dir = tmp_path / src_name.replace(".md", "")
         case_dir.mkdir()
-        _write(case_dir / src_name, f"content-of-{src_name}")
+        source_content = f"content-of-{src_name}"
+        _write(case_dir / src_name, source_content)
         D._canonicalize_depth_iter_filenames(case_dir)
-        produced = sorted(p.name for p in case_dir.glob("*.md"))
-        assert produced == [expected], (
-            f"{src_name}: expected [{expected}], got {produced}"
-        )
+        assert (case_dir / src_name).read_text() == source_content
+        assert (case_dir / expected).read_text() == source_content
 
 
 def test_canonicalizer_protects_non_iter_depth_files(tmp_path: Path):
@@ -283,6 +286,76 @@ def test_iter2_gate_tolerates_midstring_iteration_variant(tmp_path: Path):
     assert issues == [], (
         f"gate should accept mid-string iteration2 variant, got: {issues}"
     )
+
+
+def test_production_alias_projection_has_driver_phaseio_authority(
+    tmp_path: Path,
+):
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    source = sp / "depth_state_trace_iteration2_findings.md"
+    raw = b"<!-- model-owned alias -->\nsubstantive depth analysis\n"
+    source.write_bytes(raw)
+    config = {
+        "pipeline": "sc",
+        "mode": "thorough",
+        "language": "evm",
+        "cli_backend": "codex",
+        "project_root": str(tmp_path),
+        "_run_id": "depth-alias-projection-test",
+    }
+
+    projected = D._canonicalize_depth_iter_filenames(sp, config)
+
+    target = sp / "depth_iter2_state_trace_findings.md"
+    assert projected == [
+        "depth_state_trace_iteration2_findings.md -> "
+        "depth_iter2_state_trace_findings.md"
+    ]
+    assert source.read_bytes() == raw
+    assert target.read_bytes() == raw
+    ledger = D.read_artifact_ledger(sp)
+    units = [
+        unit for key, unit in ledger["work_units"].items()
+        if "/depth/alias_projection." in key
+    ]
+    assert len(units) == 1
+    unit = units[0]
+    assert unit["semantic_status"] == "ACTIVE"
+    assert unit["execution_state"] == "OUTPUT_COMMITTED"
+    assert set(unit["input_bindings"]) == {
+        "scratchpad:depth_state_trace_iteration2_findings.md"
+    }
+    artifact = unit["artifacts"][
+        "scratchpad:depth_iter2_state_trace_findings.md"
+    ]
+    assert artifact["writer"] == "DRIVER"
+    assert artifact["sha256"] == __import__("hashlib").sha256(raw).hexdigest()
+
+    # Byte-current replay performs no rewrite and preserves both identities.
+    assert D._canonicalize_depth_iter_filenames(sp, config) == projected
+    assert source.read_bytes() == raw
+    assert target.read_bytes() == raw
+
+
+def test_never_cut_alias_validation_is_observational(tmp_path: Path):
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    alias = sp / "depth_perturbation_findings.md"
+    raw = b"model perturbation analysis\n"
+    alias.write_bytes(raw)
+
+    missing = V._assert_never_cut_artifacts(
+        sp,
+        groups=[
+            ("perturbation_findings.md", "depth_perturbation_findings.md"),
+        ],
+    )
+
+    assert missing == []
+    assert alias.read_bytes() == raw
+    assert not (sp / "perturbation_findings.md").exists()
+    assert not (sp / "violations.md").exists()
 
 
 def test_expected_roles_excludes_uncanonicalized_iteration_variant(tmp_path: Path):

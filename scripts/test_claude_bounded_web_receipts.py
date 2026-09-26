@@ -285,6 +285,49 @@ def test_search_fetch_chain_and_report_claim_join(tmp_path: Path):
     )[0]
 
 
+def test_researched_row_may_cite_a_sibling_groups_session_fetch(tmp_path: Path):
+    """DODO run45 R-EXT: two rows of one query group cited a URL that a
+    sibling group had fetched successfully in the same session (receipt-backed,
+    content real). The old per-obligation equality discarded the whole
+    22-RESEARCHED artifact. The property is session-wide: every cited URL was
+    fetched successfully in this session, and the row's own obligation has a
+    successful fetch. A URL never fetched in-session still fails."""
+    fx = _fixture(tmp_path, obligations=_distinct_obligations())
+    rows = fx["authority"]["obligations"]
+    row_a, url_a = _search_success(
+        fx, row=rows[0], use="search-a", url="https://docs.openzeppelin.com/contracts/5.x/",
+    )
+    _fetch_success(fx, row_a, url_a, use="fetch-a")
+    row_b, url_b = _search_success(
+        fx, row=rows[1], use="search-b", url="https://docs.openzeppelin.com/upgrades-plugins/",
+    )
+    _fetch_success(fx, row_b, url_b, use="fetch-b")
+    header = (
+        "| Obligation ID | Dependency | Integration Surface | Assumed Behavior | Real Behavior | Source | Conformance | Fetch Status |\n"
+        "|---|---|---|---|---|---|---|---|\n"
+    )
+    rest = "".join(
+        f"| {row['obligation_id']} | oz | Vault | expected | — | — | — | NEEDS_DEPENDENCY_RESEARCH |\n"
+        for row in rows[2:]
+    )
+    cross = (
+        header
+        + f"| {row_a['obligation_id']} | oz | Vault | expected | documented | {url_a} | OK | RESEARCHED |\n"
+        + f"| {row_b['obligation_id']} | oz | Vault | expected | documented | {url_a} | OK | RESEARCHED |\n"
+        + rest
+    ).encode()
+    assert P.validate_dependency_source_receipt_coverage(
+        fx["policy"], report_bytes=cross,
+    ) == []
+    unfetched = cross.replace(url_a.encode(), b"https://docs.openzeppelin.com/never-fetched")
+    assert any(
+        "claim set differs" in issue or "lacks successful WebFetch receipt" in issue
+        for issue in P.validate_dependency_source_receipt_coverage(
+            fx["policy"], report_bytes=unfetched,
+        )
+    )
+
+
 def test_r57_selector_rewrites_whole_input_and_effective_digest_closes_post(
     tmp_path: Path,
 ):
@@ -678,10 +721,26 @@ def test_web_hook_context_requires_exact_event_name_cwd_and_permission_mode(tmp_
         {"hook_event_name": None},
         {"hook_event_name": ""},
         {"cwd": str(fx["scratchpad"])},
-        {"permission_mode": "dontAsk"},
+        # `dontAsk` USED to be listed here as "some other mode". It is now a
+        # REVIEWED mode for this lane -- the live Claude CLI reports it from
+        # 2.1.273, and the restricted-filesystem lane already accepted it. While
+        # it was pinned as rejected, every WebSearch in every DODO run raised
+        # before the evaluator ran and bounded web research was 100% inoperable
+        # (zero web receipts, not even denials, across runs 35/36/37).
+        # The test's intent -- an UNREVIEWED mode must be refused -- is
+        # preserved by the genuinely unreviewed modes below.
+        {"permission_mode": "bypassPermissions"},
+        {"permission_mode": "acceptEdits"},
+        {"permission_mode": "plan"},
         {"permission_mode": None},
     ):
         assert _run(fx, {**base, **mutation})[0] == 2
+    # And the reviewed modes must be admitted, or the lane is dead.
+    for mode in ("default", "dontAsk"):
+        assert _run(fx, {**base, "permission_mode": mode})[0] == 0, (
+            f"reviewed permission mode {mode} was refused; bounded web "
+            "research is inoperable"
+        )
 
 
 def test_batched_prefetch_is_denied_but_search_publication_would_authorize_fresh_call(tmp_path: Path):
@@ -711,17 +770,30 @@ def test_batched_prefetch_is_denied_but_search_publication_would_authorize_fresh
         },
     )
     assert _run(fx, search_post) == (0, {})
-    # Once any denial occurs the attempt is irrecoverably invalid, so later
-    # web calls stay denied even if other receipts arrive.
+    # Exactly one prior denial is tolerated: the worker's corrected request
+    # after a single denial is judged on its merits (run42 lost a complete
+    # R-EXT artifact to the old any-denial cascade). Now that the search is
+    # published, the same fetch is authorized.
     fresh = {**fetch, "tool_use_id": "fetch-after-search"}
-    assert _run(fx, fresh)[1]["hookSpecificOutput"]["permissionDecisionReason"] == "WEB_PRIOR_DENIAL"
+    assert _run(fx, fresh)[1]["hookSpecificOutput"]["permissionDecision"] == "allow"
     denied = [
         receipt for receipt in P._web_receipts(fx["policy"])
         if receipt["event_kind"] == "PRE_DENY"
     ]
     assert sorted(receipt["reason_code"] for receipt in denied) == [
-        "WEB_FETCH_UNSEARCHED", "WEB_PRIOR_DENIAL",
+        "WEB_FETCH_UNSEARCHED",
     ]
+    # The SECOND denial closes the session: a further unsearched fetch is
+    # denied on its merits, and everything after it is WEB_PRIOR_DENIAL.
+    other = _event(
+        fx, "PreToolUse", "WebFetch",
+        {"url": P._normalize_https_url("https://docs.openzeppelin.com/never-searched"),
+         "prompt": row["fetch_selector"]},
+        use="fetch-unsearched-2",
+    )
+    assert _run(fx, other)[1]["hookSpecificOutput"]["permissionDecisionReason"] == "WEB_FETCH_UNSEARCHED"
+    probe = {**fetch, "tool_use_id": "fetch-after-second-denial"}
+    assert _run(fx, probe)[1]["hookSpecificOutput"]["permissionDecisionReason"] == "WEB_PRIOR_DENIAL"
 
 
 def test_failure_receipt_blocks_retry_and_duplicate_post_is_rejected(tmp_path: Path):
@@ -1003,9 +1075,12 @@ def test_r55_seven_search_fourteen_fetch_shape_rejects_deterministically(
         denial_reasons.append(
             _run(fx, denied)[1]["hookSpecificOutput"]["permissionDecisionReason"]
         )
-    assert denial_reasons == ["WEB_FETCH_CHAIN_EXHAUSTED"] + [
+    # One prior denial is tolerated (the second drift fetch is judged on its
+    # own merits and is also chain-exhausted); the probing guard closes the
+    # session from the third request on.
+    assert denial_reasons == ["WEB_FETCH_CHAIN_EXHAUSTED"] * 2 + [
         "WEB_PRIOR_DENIAL"
-    ] * 4
+    ] * 3
 
     receipts = P._web_receipts(fx["policy"])
     assert sum(row["tool_name"] == "WebSearch" and row["event_kind"] == "PRE" for row in receipts) == 7
@@ -1016,12 +1091,18 @@ def test_r55_seven_search_fourteen_fetch_shape_rejects_deterministically(
     assert sum(row["event_kind"] == "POST_SUCCESS" and row["tool_name"] == "WebFetch" for row in receipts) == 5
     assert sum(row["event_kind"] == "POST_FAILURE" and row["reason_code"] == "WEB_RESPONSE_REJECTED" for row in receipts) == 2
     issues = P._web_receipt_state_issues(receipts)
-    assert len(issues) == 5
+    # Denials are receipts, not artifact defects: the five PRE_DENY rows no
+    # longer surface as blanket issues (DODO run42 lost a complete, fully
+    # receipt-backed R-EXT artifact to that cascade). The RESEARCHED-row join
+    # on the staged artifact owns the property "no researched row cites a
+    # denied target"; the denials themselves stay visible in the receipts.
+    assert issues == []
     assert not any("closure cardinality" in issue for issue in issues)
-    with pytest.raises(P.ClaudePhaseToolPolicyError, match="request was denied"):
-        P.bounded_web_receipt_lifecycle_projection(
-            fx["policy"], expected_session_id="session-1",
-        )
+    projection = P.bounded_web_receipt_lifecycle_projection(
+        fx["policy"], expected_session_id="session-1",
+    )
+    assert projection is not None
+    assert sum(row["event_kind"] == "PRE_DENY" for row in P._web_receipts(fx["policy"])) == 5
 
 
 def test_receipt_bound_related_host_redirect_recovers_without_source_laundering(

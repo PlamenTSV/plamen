@@ -19,6 +19,7 @@ import re
 import uuid
 from typing import Any, Iterable, Mapping
 
+import depth_dispatch_delta_authority
 from finding_producer_registry import producer_for_artifact, producer_patterns
 from methodology_application import (
     phase_dispatch_sha256,
@@ -34,6 +35,7 @@ MARKDOWN_NAME = "consensus_map.md"
 ASSURANCE = "INDEPENDENT_CORROBORATION_SIGNAL_ONLY"
 
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+_WORKER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _SOURCE_LABEL_RE = re.compile(
     r"(?im)^[ \t]*(?:[-*][ \t]+)?\*{0,2}(?:"
     r"Source[ \t]+Finding(?:s|\(s\))?|Source[ \t]+IDs?|"
@@ -79,6 +81,12 @@ def _digest(value: Any) -> str:
 
 
 def _atomic_text(path: Path, text: str) -> None:
+    if path.is_file() and not path.is_symlink():
+        try:
+            if path.read_text(encoding="utf-8", errors="strict") == text:
+                return
+        except (OSError, UnicodeError):
+            pass
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     tmp.write_text(text, encoding="utf-8", newline="\n")
@@ -277,6 +285,53 @@ def _dispatch_state(
             issues.append(f"depth worker-pool job is missing or duplicated: {output!r}")
             continue
         owners[output] = owner
+
+    deltas, delta_issues = depth_dispatch_delta_authority.load_deltas(
+        scratchpad
+    )
+    issues.extend(delta_issues)
+    try:
+        base_dispatch_sha = _sha(dispatch_path.read_bytes())
+        base_contract_sha = _sha(contract_path.read_bytes())
+    except OSError as exc:
+        issues.append(f"depth dispatch base bytes are unavailable: {exc}")
+        base_dispatch_sha = ""
+        base_contract_sha = ""
+    # A later attempt supersedes an earlier delta for the same additive output;
+    # neither attempt may rewrite the immutable base dispatch authorities.
+    delta_outputs: set[str] = set()
+    for delta in sorted(deltas, key=lambda row: int(row["attempt"])):
+        if (
+            delta.get("base_dispatch_sha256") != base_dispatch_sha
+            or delta.get("base_pool_contract_sha256") != base_contract_sha
+        ):
+            issues.append(
+                f"{delta['path']}: depth dispatch delta base binding differs"
+            )
+            continue
+        current_outputs = {
+            str(row.get("output") or "")
+            for row in delta.get("entries", ())
+            if isinstance(row, Mapping)
+        }
+        for raw in delta.get("entries", ()):
+            output = str(raw.get("output") or "")
+            if output in entries and output not in delta_outputs:
+                issues.append(
+                    f"{delta['path']}: depth dispatch delta collides with base output {output}"
+                )
+                continue
+            entries[output] = dict(raw)
+        for raw in delta.get("jobs", ()):
+            output = str(raw.get("output") or "")
+            owner = str(raw.get("agent_id") or "")
+            if output in owners and output not in delta_outputs:
+                issues.append(
+                    f"{delta['path']}: depth dispatch delta owner collides with base output {output}"
+                )
+                continue
+            owners[output] = owner
+        delta_outputs.update(current_outputs)
     if set(entries) != set(owners):
         issues.append("depth dispatch and worker-pool output denominators differ")
 
@@ -302,6 +357,9 @@ def _entry_issues(
     contract_sha = str(entry.get("dispatch_contract_sha256") or "")
     if not worker or worker != expected_owner:
         issues.append("dispatch worker does not match worker-pool owner")
+    worker_id_safe = _WORKER_ID_RE.fullmatch(worker) is not None
+    if not worker_id_safe:
+        issues.append("dispatch worker id is not a canonical filename component")
     if not _SHA_RE.fullmatch(prompt_sha):
         issues.append("dispatch prompt digest is missing or malformed")
     if not _SHA_RE.fullmatch(contract_sha):
@@ -309,15 +367,14 @@ def _entry_issues(
     elif worker_dispatch_contract_sha256("depth", dict(entry)) != contract_sha:
         issues.append("dispatch contract digest mismatch")
 
-    if _SHA_RE.fullmatch(prompt_sha):
-        stem = Path(output).stem
+    if _SHA_RE.fullmatch(prompt_sha) and worker_id_safe:
         candidates = sorted(
-            scratchpad.glob(f"_prompt_depth_worker_{stem}.attempt*.md")
+            scratchpad.glob(f"_prompt_depth_worker_{worker}.attempt*.md")
         )
         if not candidates:
-            issues.append("output-specific prompt snapshot is missing")
+            issues.append("worker-specific prompt snapshot is missing")
         elif not any(_sha(path.read_bytes()) == prompt_sha for path in candidates):
-            issues.append("no output-specific prompt snapshot matches dispatch")
+            issues.append("no worker-specific prompt snapshot matches dispatch")
 
     expected_markers = {
         "phase": "depth",
@@ -407,7 +464,18 @@ def build_confidence_consensus_authority(scratchpad: Path) -> dict[str, Any]:
     entries, owners, global_issues = _dispatch_state(scratchpad)
     observations: list[dict[str, Any]] = []
     input_bindings: list[dict[str, str]] = []
-    for name in ("skill_dispatch.json", "_depth_worker_pool_contract.json"):
+    delta_names = tuple(
+        path.name
+        for path in sorted(
+            scratchpad.glob("depth_dispatch_da_iter2_attempt_*.json")
+        )
+        if path.is_file() and not path.is_symlink()
+    )
+    for name in (
+        "skill_dispatch.json",
+        "_depth_worker_pool_contract.json",
+        *delta_names,
+    ):
         path = scratchpad / name
         if path.is_file():
             input_bindings.append({"path": name, "sha256": _sha(path.read_bytes())})
@@ -432,10 +500,20 @@ def build_confidence_consensus_authority(scratchpad: Path) -> dict[str, Any]:
         artifact_sha = _sha(data)
         input_bindings.append({"path": name, "sha256": artifact_sha})
         if entry is not None:
+            worker = str(
+                entry.get("worker_id") or entry.get("agent_id") or ""
+            ).strip()
             prompt_sha = str(entry.get("prompt_sha256") or "")
-            for prompt in sorted(
-                scratchpad.glob(f"_prompt_depth_worker_{Path(name).stem}.attempt*.md")
-            ):
+            prompt_candidates = (
+                sorted(
+                    scratchpad.glob(
+                        f"_prompt_depth_worker_{worker}.attempt*.md"
+                    )
+                )
+                if _WORKER_ID_RE.fullmatch(worker) is not None
+                else ()
+            )
+            for prompt in prompt_candidates:
                 if prompt.is_file() and _sha(prompt.read_bytes()) == prompt_sha:
                     input_bindings.append(
                         {"path": prompt.name, "sha256": prompt_sha}

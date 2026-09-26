@@ -47,6 +47,61 @@ def _fresh(sp: Path) -> None:
     )
 
 
+def _bind_depth_inputs(
+    sp: Path, project_root: Path, config: dict, jobs: list[dict]
+) -> None:
+    """Materialize the exact PhaseIO input denominator each depth leaf binds.
+
+    Depth prelaunch is strict: ``_prepare_typed_model_worker_launch`` refuses
+    to start a provider unless the attempt-scoped work unit reaches
+    ``INPUTS_BOUND``, and ``_build_depth_worker_prompt`` hard-requires the
+    state-trace bound-input consumption gate.  Without this fixture every job
+    is classified ``input_authority_debt``, ``_run_depth_worker_batch``
+    short-circuits at ``if not runnable_jobs: return 0, results``, and the
+    pool assertions below would never exercise the pool at all.
+
+    Order matters: ``constraint_variables.md`` / ``modifiers.md`` are
+    registered by ``_typed_worker_registered_input_paths`` ONLY when already
+    present on disk, while ``_compile_state_trace_bound_input_consumption_gate``
+    requires them unconditionally — so they are written before the denominator
+    is computed.
+    """
+
+    outputs = {str(job["output"]) for job in jobs}
+    for name in ("constraint_variables.md", "modifiers.md", "state_write_map.md"):
+        path = sp / name
+        if not path.exists():
+            path.write_text(
+                f"# {name}\n\n| Name | Detail |\n| --- | --- |\n"
+                "| fixture | none |\n",
+                encoding="utf-8",
+            )
+    for job in jobs:
+        registered = D._typed_worker_registered_input_paths(
+            phase_name="depth",
+            scratchpad=sp,
+            config=config,
+            agent_id=str(job.get("agent_id") or ""),
+            agent_role=str(job.get("role") or "") or None,
+            output=str(job["output"]),
+            work_category=str(job.get("category") or "standard"),
+            focus_area=str(job.get("focus") or job.get("role") or ""),
+        )
+        for name in registered:
+            # Never pre-create another leaf's output: that would make the pool
+            # believe a worker already produced its artifact.
+            if name in outputs:
+                continue
+            path = sp / name
+            if path.exists():
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                "{}\n" if path.suffix == ".json" else f"# {name}\n\nfixture\n",
+                encoding="utf-8",
+            )
+
+
 def _complete(sp: Path, name: str, owner: str) -> None:
     (sp / name).write_text(
         f"<!-- PLAMEN_ARTIFACT: {name} -->\n"
@@ -124,9 +179,12 @@ def test_depth_worker_batch_rate_limit_fails_fast(tmp_path: Path, monkeypatch):
         },
     ]
 
+    rate_limited_at: dict[str, float | None] = {"t": None}
+
     def _fake_worker(**kwargs):
         output = kwargs["job"]["output"]
         if output == "depth_token_flow_findings.md":
+            rate_limited_at["t"] = time.time()
             return {"output": output, "rc": 1, "status": "rate_limited"}
         stop_event.wait(timeout=10)
         return {"output": output, "rc": -2, "status": "incomplete"}
@@ -138,7 +196,9 @@ def test_depth_worker_batch_rate_limit_fails_fast(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(D, "_run_single_depth_worker_pty", _fake_worker)
     monkeypatch.setattr(D, "_cancel_pending_worker_futures", _fake_cancel)
 
-    started = time.time()
+    _bind_depth_inputs(
+        sp, tmp_path, {"mode": "light", "language": "evm", "pipeline": "sc"}, jobs
+    )
     rc, results = D._run_depth_worker_batch(
         scratchpad=sp,
         project_root=str(tmp_path),
@@ -154,10 +214,21 @@ def test_depth_worker_batch_rate_limit_fails_fast(tmp_path: Path, monkeypatch):
         retry_reasons_by_output={},
     )
 
+    # Guards the dead-test mode: if the prelaunch denominator is ever
+    # incomplete again, every job is classified `input_authority_debt`, the
+    # batch short-circuits at `if not runnable_jobs`, and no worker runs at
+    # all -- so the fail-fast property below would be vacuous.
+    assert rate_limited_at["t"] is not None, (
+        "the pool never dispatched the rate-limited worker"
+    )
     assert rc == 1
     assert cancel_called["value"]
     assert any(r.get("status") == "rate_limited" for r in results)
-    assert time.time() - started < 2.0
+    # Fail-fast: the batch must abandon the still-running second worker rather
+    # than wait out its 10s block.  Measured from rate-limit DETECTION, so the
+    # serial prelaunch input binding that precedes any worker dispatch is not
+    # charged against cancellation latency (the pool polls every 0.1s).
+    assert time.time() - rate_limited_at["t"] < 2.0
 
 
 def test_depth_worker_prompt_is_single_artifact_allowlist(tmp_path: Path):
@@ -344,6 +415,9 @@ def test_depth_worker_pool_feeds_structural_reason_to_next_attempt(
 
     monkeypatch.setattr(D, "_run_single_depth_worker_pty", _fake_worker)
 
+    _bind_depth_inputs(
+        sp, tmp_path, {"mode": "light", "language": "evm", "pipeline": "sc"}, jobs
+    )
     rc = D._run_depth_worker_pool_pty(
         scratchpad=sp,
         project_root=str(tmp_path),
@@ -475,6 +549,9 @@ def test_depth_worker_pool_runs_only_open_standard_rows(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(D, "_run_single_depth_worker_pty", _fake_worker)
 
+    _bind_depth_inputs(
+        sp, tmp_path, {"mode": "light", "language": "evm", "pipeline": "sc"}, jobs
+    )
     rc = D._run_depth_worker_pool_pty(
         scratchpad=sp,
         project_root=str(tmp_path),

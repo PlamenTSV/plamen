@@ -21,6 +21,8 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from portable_path_contract import assert_lexically_bounded_relative_path
+
 
 REPORT_EVIDENCE_RECORD_SCHEMA = "plamen.report_evidence_record.v1"
 REPORT_EVIDENCE_BUNDLE_SCHEMA = "plamen.report_evidence_bundle.v1"
@@ -708,8 +710,8 @@ def write_report_evidence_bundle(
     return bundle
 
 
-def _read_json_object(
-    path: Path, *, label: str, byte_budget: int = _MAX_JSON_BYTES
+def _json_object_from_bytes(
+    raw: bytes, *, label: str, byte_budget: int = _MAX_JSON_BYTES
 ) -> dict[str, Any]:
     def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         value: dict[str, Any] = {}
@@ -722,7 +724,6 @@ def _read_json_object(
         return value
 
     try:
-        raw = path.read_bytes()
         if len(raw) > byte_budget:
             raise ReportEvidenceError(f"{label} exceeds byte budget")
         value = json.loads(
@@ -743,6 +744,18 @@ def _read_json_object(
     if not isinstance(value, dict):
         raise ReportEvidenceError(f"{label} must be a JSON object")
     return value
+
+
+def _read_json_object(
+    path: Path, *, label: str, byte_budget: int = _MAX_JSON_BYTES
+) -> dict[str, Any]:
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ReportEvidenceError(
+            f"{label} is missing or invalid: {type(exc).__name__}: {exc}"
+        ) from exc
+    return _json_object_from_bytes(raw, label=label, byte_budget=byte_budget)
 
 
 def _artifact_source(scratchpad: Path, path: Path) -> dict[str, str]:
@@ -919,8 +932,20 @@ def _verdict(value: Any) -> str:
 
 
 def _assessment_path_for_verify(scratchpad: Path, verify_name: str) -> Path:
-    relative = Path(verify_name)
-    if relative.is_absolute() or ".." in relative.parts:
+    try:
+        bounded = assert_lexically_bounded_relative_path(
+            verify_name, label="verify artifact path"
+        )
+    except ValueError as exc:
+        raise ReportEvidenceError(
+            "verify artifact path is not lexically representable"
+        ) from exc
+    relative = Path(bounded)
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or relative.name != bounded
+    ):
         raise ReportEvidenceError("verify artifact path escapes the scratchpad")
     base = relative.with_suffix("")
     return scratchpad / f"{base.as_posix()}.execution_scope_assessment.json"
@@ -1295,6 +1320,8 @@ def _record_from_runtime_rows(
         manifest_row.get("verify_files")
         or ([manifest_row.get("verify_file")] if manifest_row.get("verify_file") else [])
     )
+    for verify_name in verify_files:
+        _assessment_path_for_verify(scratchpad, verify_name)
     candidate_id_set: set[str] = set()
     for source in (
         active.get("finding_id"),
@@ -1320,9 +1347,8 @@ def _record_from_runtime_rows(
     verify_texts: list[str] = []
     constituent_rows: dict[str, dict[str, Any]] = {}
     for name in verify_files:
+        _assessment_path_for_verify(scratchpad, name)
         relative = Path(name)
-        if relative.is_absolute() or ".." in relative.parts:
-            raise ReportEvidenceError("verify artifact path escapes the scratchpad")
         path = scratchpad / relative
         try:
             verify_text = path.read_text(encoding="utf-8", errors="replace")
@@ -1554,6 +1580,83 @@ def validate_report_evidence_repair_response(
         ):
             raise ReportEvidenceError("repair response item is invalid")
     return out
+
+
+def project_report_evidence_repair_response(
+    value: Mapping[str, Any], *, request: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Seal a model's semantic deltas with driver-owned request identity.
+
+    The request digest, record digests, schema version, and report IDs are
+    transport/provenance facts, not model judgments. Requiring a model to
+    reproduce them makes a semantically correct repair fail because of a
+    presentation typo. This adapter accepts the model-owned ``delta`` rows,
+    binds them to the validated request denominator, and returns the strict
+    canonical response consumed by the transaction.
+
+    Legacy responses remain accepted. If they provide a complete, unique set
+    of report IDs, those IDs recover an accidentally reordered response.
+    Otherwise the request's explicit item order is the route. Legacy hashes
+    and schema strings are inert and cannot override driver authority.
+    """
+
+    canonical_request = validate_report_evidence_repair_request(request)
+    if not isinstance(value, Mapping):
+        raise ReportEvidenceError("repair response must be an object")
+    raw_items = value.get("items")
+    if not isinstance(raw_items, list):
+        raise ReportEvidenceError("repair response items must be a list")
+    request_items = list(canonical_request["items"])
+    if len(raw_items) != len(request_items):
+        raise ReportEvidenceError(
+            "repair response must dispose the exact request denominator"
+        )
+    if any(not isinstance(item, Mapping) for item in raw_items):
+        raise ReportEvidenceError("repair response item must be an object")
+
+    requested_ids = [str(item["report_id"]) for item in request_items]
+    supplied_ids = [
+        _clean_text(item.get("report_id")).upper()
+        for item in raw_items
+    ]
+    if (
+        all(supplied_ids)
+        and len(set(supplied_ids)) == len(supplied_ids)
+        and set(supplied_ids) == set(requested_ids)
+    ):
+        by_id = dict(zip(supplied_ids, raw_items, strict=True))
+        routed_items = [by_id[report_id] for report_id in requested_ids]
+    else:
+        # Semantic-only prompts omit machine identity entirely. This path also
+        # makes a harmless typo in legacy copied metadata non-fatal while
+        # retaining the exact request-order denominator.
+        routed_items = raw_items
+
+    projected_items: list[dict[str, Any]] = []
+    for request_item, raw_item in zip(
+        request_items, routed_items, strict=True
+    ):
+        delta = raw_item.get("delta")
+        expected_fields = set(request_item["missing_fields"])
+        if not isinstance(delta, Mapping) or set(delta) != expected_fields:
+            raise ReportEvidenceError(
+                "repair response delta must cover the exact missing fields"
+            )
+        projected_items.append(
+            {
+                "report_id": request_item["report_id"],
+                "record_digest": request_item["record_digest"],
+                "delta": dict(delta),
+            }
+        )
+    projected = {
+        "schema_version": REPORT_EVIDENCE_REPAIR_RESPONSE_SCHEMA,
+        "request_digest": canonical_request["request_digest"],
+        "items": projected_items,
+    }
+    return validate_report_evidence_repair_response(
+        projected, request_digest=canonical_request["request_digest"]
+    )
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -2250,6 +2353,84 @@ def validate_report_evidence_runtime(scratchpad: Path) -> dict[str, Any]:
     return {"bundle": bundle, "typed_manifests": expected_typed}
 
 
+def validate_typed_report_evidence_shard(
+    bundle: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    shard: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Pure replay of one typed evidence shard against its exact bundle."""
+
+    shard_name = _clean_text(shard)
+    if not re.fullmatch(r"report_[a-z0-9_]+", shard_name):
+        raise ReportEvidenceError("typed report shard identity is invalid")
+    canonical_bundle = validate_report_evidence_bundle(bundle)
+    expected_keys = {
+        "schema_version",
+        "shard",
+        "source_manifest",
+        "bundle_digest",
+        "findings",
+        "manifest_digest",
+    }
+    if not isinstance(manifest, Mapping) or set(manifest) != expected_keys:
+        raise ReportEvidenceError("typed report manifest schema mismatch")
+    if (
+        manifest.get("schema_version") != REPORT_EVIDENCE_MANIFEST_SCHEMA
+        or manifest.get("shard") != shard_name
+        or manifest.get("bundle_digest")
+        != canonical_bundle["bundle_digest"]
+    ):
+        raise ReportEvidenceError("typed report manifest authority is stale")
+    unsigned = dict(manifest)
+    unsigned["manifest_digest"] = ""
+    if manifest.get("manifest_digest") != _digest(unsigned):
+        raise ReportEvidenceError("typed report manifest digest is invalid")
+    source_manifest = manifest.get("source_manifest")
+    if (
+        not isinstance(source_manifest, Mapping)
+        or set(source_manifest) != {"artifact", "sha256"}
+        or not _HEX64_RE.fullmatch(
+            _clean_text(source_manifest.get("sha256"))
+        )
+    ):
+        raise ReportEvidenceError(
+            "typed report source provenance is malformed"
+        )
+    rows = manifest.get("findings")
+    if (
+        not isinstance(rows, list)
+        or not rows
+        or len(rows) > _MAX_MANIFEST_ROWS
+    ):
+        raise ReportEvidenceError(
+            "typed report shard row denominator is invalid"
+        )
+    records_by_id = {
+        row["report_id"]: row for row in canonical_bundle["records"]
+    }
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ReportEvidenceError("typed report shard row is malformed")
+        record = validate_report_evidence_record(
+            row.get("report_evidence") or {}
+        )
+        report_id = record["report_id"]
+        if (
+            report_id in seen
+            or row.get("report_evidence_record_digest")
+            != record["record_digest"]
+            or records_by_id.get(report_id) != record
+        ):
+            raise ReportEvidenceError(
+                "typed report shard record binding is stale or duplicate"
+            )
+        seen.add(report_id)
+        records.append(record)
+    return canonical_bundle, records
+
+
 def load_typed_report_evidence_shard(
     scratchpad: Path,
     shard: str,
@@ -2275,58 +2456,9 @@ def load_typed_report_evidence_shard(
     )
     path = root / "report_evidence_manifests" / f"{shard_name}.json"
     manifest = _read_json_object(path, label=f"typed report manifest {shard_name}")
-    expected_keys = {
-        "schema_version",
-        "shard",
-        "source_manifest",
-        "bundle_digest",
-        "findings",
-        "manifest_digest",
-    }
-    if set(manifest) != expected_keys:
-        raise ReportEvidenceError("typed report manifest schema mismatch")
-    if (
-        manifest.get("schema_version") != REPORT_EVIDENCE_MANIFEST_SCHEMA
-        or manifest.get("shard") != shard_name
-        or manifest.get("bundle_digest") != bundle["bundle_digest"]
-    ):
-        raise ReportEvidenceError("typed report manifest authority is stale")
-    unsigned = dict(manifest)
-    unsigned["manifest_digest"] = ""
-    if manifest.get("manifest_digest") != _digest(unsigned):
-        raise ReportEvidenceError("typed report manifest digest is invalid")
-    source_manifest = manifest.get("source_manifest")
-    if (
-        not isinstance(source_manifest, Mapping)
-        or set(source_manifest) != {"artifact", "sha256"}
-        or not _HEX64_RE.fullmatch(_clean_text(source_manifest.get("sha256")))
-    ):
-        raise ReportEvidenceError("typed report source provenance is malformed")
-    rows = manifest.get("findings")
-    if not isinstance(rows, list) or not rows or len(rows) > _MAX_MANIFEST_ROWS:
-        raise ReportEvidenceError("typed report shard row denominator is invalid")
-    records_by_id = {row["report_id"]: row for row in bundle["records"]}
-    records: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for row in rows:
-        if not isinstance(row, Mapping):
-            raise ReportEvidenceError("typed report shard row is malformed")
-        record = validate_report_evidence_record(
-            row.get("report_evidence") or {}
-        )
-        rid = record["report_id"]
-        if (
-            rid in seen
-            or row.get("report_evidence_record_digest")
-            != record["record_digest"]
-            or records_by_id.get(rid) != record
-        ):
-            raise ReportEvidenceError(
-                "typed report shard record binding is stale or duplicate"
-            )
-        seen.add(rid)
-        records.append(record)
-    return bundle, records
+    return validate_typed_report_evidence_shard(
+        bundle, manifest, shard_name
+    )
 
 
 def render_typed_report_evidence_shard(
@@ -2868,7 +3000,7 @@ def _semantic_values_present(section: str, values: Iterable[Any]) -> bool:
 
 
 def _record_markdown_semantic_parity(
-    section: str, record: Mapping[str, Any]
+    section: str, record: Mapping[str, Any], *, expected_heading_title: str | None = None,
 ) -> bool:
     """Exact authoritative fields plus a per-constituent claim denominator."""
 
@@ -2878,7 +3010,7 @@ def _record_markdown_semantic_parity(
         section,
     )
     if heading is None or _semantic_text(heading.group("title")) != _semantic_text(
-        record.get("title")
+        record.get("title") if expected_heading_title is None else expected_heading_title
     ):
         return False
     exact_scalar_fields = (
@@ -2926,24 +3058,34 @@ def _record_markdown_semantic_parity(
     return True
 
 
-def finalize_report_evidence_delivery(
-    scratchpad: Path, *, report_path: Path, compare_only: bool = False
+def derive_final_report_evidence_delivery(
+    report_bytes: bytes,
+    bundle: Mapping[str, Any],
+    *,
+    repair_receipt_bytes: bytes | None = None,
+    heading_projection: Any = None,
 ) -> dict[str, Any]:
-    """Derive and optionally write the final typed delivery receipt.
+    """Pure receipt derivation over already authenticated captured inputs.
 
-    ``compare_only`` is the terminal/resume path: the receipt must already
-    exist with the exact canonical bytes derived from the delivered report.
-    It never fills a missing receipt and therefore cannot turn a later check
-    into a new producer attempt or rebless missing/tampered terminal state.
+    Schema validation here is not producer/runtime authentication. Callers must
+    join the bundle and repair bytes to the committed capture/runtime witness.
+    Legacy invalid-repair diagnostic handling remains unchanged; this helper
+    cannot turn a malformed repair receipt into repair authority.
     """
-
-    root = Path(scratchpad)
-    runtime = validate_report_evidence_runtime(root)
-    bundle = runtime["bundle"]
-    try:
-        markdown = Path(report_path).read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        raise ReportEvidenceError("delivered report is missing or unreadable") from exc
+    if type(report_bytes) is not bytes:
+        raise TypeError("report delivery derivation requires exact report bytes")
+    if repair_receipt_bytes is not None and type(repair_receipt_bytes) is not bytes:
+        raise TypeError("report delivery repair receipt requires exact bytes")
+    bundle = validate_report_evidence_bundle(bundle)
+    titles: dict[str, str] = {}
+    if heading_projection is not None:
+        from report_heading_presentation import projected_titles, ReportHeadingError
+        try:
+            titles = projected_titles(heading_projection, bundle)
+        except ReportHeadingError as exc:
+            raise ReportEvidenceError(str(exc)) from exc
+    markdown = report_bytes.decode("utf-8", errors="replace")
+    markdown = markdown.replace("\r\n", "\n").replace("\r", "\n")
     sections = _section_by_id(markdown)
     records = {record["report_id"]: record for record in bundle["records"]}
     unauthorized_proof = set(
@@ -2964,20 +3106,25 @@ def finalize_report_evidence_delivery(
         )
         semantic_by_id[rid] = (
             rid not in unauthorized_proof
-            and _record_markdown_semantic_parity(section, record)
+            and _record_markdown_semantic_parity(
+                section, record, expected_heading_title=titles.get(rid),
+            )
         )
         if "**Evidence and report limitation**:" in section:
             visible.add(rid)
     repair_attempts: dict[str, int] = {}
-    repair_receipt_path = root / "report_evidence_repair_receipt.json"
-    if repair_receipt_path.exists():
+    if repair_receipt_bytes is not None:
         try:
             repair_receipt = _validate_repair_receipt(
-                _read_json_object(
-                    repair_receipt_path,
+                _json_object_from_bytes(
+                    repair_receipt_bytes,
                     label="report evidence repair receipt",
                 )
             )
+            if repair_receipt["repaired_bundle_digest"] != bundle["bundle_digest"]:
+                raise ReportEvidenceError(
+                    "report evidence repair receipt belongs to another bundle"
+                )
             repair_attempts = {
                 _clean_text(key).upper(): value
                 for key, value in (repair_receipt.get("repair_attempts") or {}).items()
@@ -2994,7 +3141,7 @@ def finalize_report_evidence_delivery(
         markdown_semantic_parity=all(semantic_by_id.values()),
     )
     receipt["report_sha256"] = hashlib.sha256(
-        Path(report_path).read_bytes()
+        report_bytes
     ).hexdigest()
     receipt["record_markdown_parity"] = dict(sorted(parity_by_id.items()))
     receipt["record_semantic_parity"] = dict(sorted(semantic_by_id.items()))
@@ -3002,6 +3149,64 @@ def finalize_report_evidence_delivery(
     unsigned = dict(receipt)
     unsigned["receipt_digest"] = ""
     receipt["receipt_digest"] = _digest(unsigned)
+    return receipt
+
+
+def assess_final_report_evidence_delivery(
+    scratchpad: Path, *, report_path: Path,
+    project_root: Path | None = None, run_id: str | None = None,
+) -> dict[str, Any]:
+    """Authenticate runtime and assess delivery without publishing a receipt.
+
+    An existing quality receipt is neither read nor adopted as authority.
+    Publication belongs to the separately armed final-quality producer.
+    """
+    root = Path(scratchpad)
+    runtime = validate_report_evidence_runtime(root)
+    projection = None
+    if project_root is not None or run_id is not None:
+        if project_root is None or not isinstance(run_id, str) or not run_id.strip():
+            raise ReportEvidenceError("report heading authority context is incomplete")
+        if runtime["bundle"]["records"]:
+            from report_heading_presentation import (
+                load_authenticated_heading_projection, ReportHeadingError,
+            )
+            try:
+                projection = load_authenticated_heading_projection(
+                    root, project_root=project_root, run_id=run_id,
+                    bundle=runtime["bundle"],
+                )
+            except (ReportHeadingError, ValueError, OSError) as exc:
+                raise ReportEvidenceError(str(exc)) from exc
+    try:
+        report_bytes = Path(report_path).read_bytes()
+    except OSError as exc:
+        raise ReportEvidenceError("delivered report is missing or unreadable") from exc
+    repair_bytes = None
+    repair_path = root / "report_evidence_repair_receipt.json"
+    if repair_path.exists():
+        try:
+            repair_bytes = repair_path.read_bytes()
+        except OSError:
+            pass  # Preserve the legacy invalid-repair diagnostic fallback.
+    return derive_final_report_evidence_delivery(
+        report_bytes, runtime["bundle"], repair_receipt_bytes=repair_bytes,
+        heading_projection=projection,
+    )
+
+
+def finalize_report_evidence_delivery(
+    scratchpad: Path, *, report_path: Path, compare_only: bool = False,
+    project_root: Path | None = None, run_id: str | None = None,
+) -> dict[str, Any]:
+    """Authenticate runtime, derive once, then publish or compare exact bytes.
+
+    ``compare_only`` never fills a missing receipt or adopts changed bytes.
+    """
+    root = Path(scratchpad)
+    receipt = assess_final_report_evidence_delivery(
+        root, report_path=report_path, project_root=project_root, run_id=run_id,
+    )
     receipt_path = root / "report_evidence_quality_receipt.json"
     if compare_only:
         expected = _canonical_bytes(receipt) + b"\n"
@@ -3034,11 +3239,13 @@ __all__ = [
     "REPORT_EVIDENCE_REPAIR_RESPONSE_SCHEMA",
     "REPORT_QUALITY_RECEIPT_SCHEMA",
     "ReportEvidenceError",
+    "assess_final_report_evidence_delivery",
     "apply_report_evidence_repair_response",
     "apply_semantic_repair_delta",
     "build_report_evidence_bundle",
     "derive_presentation_assurance",
     "derive_quality_receipt",
+    "derive_final_report_evidence_delivery",
     "evidence_fields_from_execution_assessment",
     "finalize_report_evidence_delivery",
     "load_typed_report_evidence_shard",
@@ -3046,6 +3253,7 @@ __all__ = [
     "normalize_report_evidence_record",
     "plan_report_evidence_repair_output_bytes",
     "prepare_report_evidence_repair_apply_plan",
+    "project_report_evidence_repair_response",
     "project_report_evidence_markdown",
     "required_semantic_fields",
     "render_typed_report_evidence_shard",
@@ -3055,5 +3263,6 @@ __all__ = [
     "validate_report_evidence_repair_request",
     "validate_report_evidence_repair_response",
     "validate_report_evidence_runtime",
+    "validate_typed_report_evidence_shard",
     "write_report_evidence_bundle",
 ]

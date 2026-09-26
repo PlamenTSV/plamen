@@ -26,19 +26,23 @@ Plamen needs only these ambient installation tools:
 
 Do not install global Node, npm, npx, Claude Code, or Codex packages for
 Plamen. The installer downloads the exact official Node.js 24.20.0 archive
-for the host, verifies its checked-in SHA-256, authenticates the complete npm
-11.19.0 closure, and materializes exact Claude Code 2.1.252 and Codex 0.152.0
-payloads from the reviewed lock.
+for the host, verifies its checked-in SHA-256, and authenticates the complete
+npm 11.19.0 closure. Claude Code and Codex are deliberately separate from the
+frozen MCP safety lock: each install/update resolves upstream `latest` once,
+authenticates publisher/provenance and payload integrity, checks the CLI
+contract, and freezes the exact resolved bytes in a signed immutable generation
+receipt. Audit launches only replay that receipt and never resolve `latest`.
 
 The Python dependencies are also isolated. Plamen creates a private CPython
 3.12 environment and installs only hash-locked wheels; it never writes to the
 system or user site-packages and never uses `--break-system-packages`.
 
 Chain-specific compilers and analyzers are separate from the model runtime.
-Run `plamen setup` after installation to select reviewed recipes for Foundry,
-Solana/Anchor, Aptos, Sui, Soroban/Stellar, DAML/Canton, or Go/Rust L1 work.
-See [dependencies.md](dependencies.md) for platform details and operator-
-provided tools whose upstream installation channel cannot be pinned safely.
+Run `plamen setup` after installation to install the admitted, exact-version
+Cargo/Go recipes and inspect the status of bundled or operator-provided tools.
+Foundry, Solana/Anchor, Aptos, Sui, and DAML remain explicit operator
+prerequisites when their upstream installation channel cannot be pinned safely.
+See [dependencies.md](dependencies.md) for the exact cross-platform matrix.
 
 ## Acquire source
 
@@ -71,7 +75,7 @@ Windows PowerShell, with `python` resolving to CPython 3.12:
 python plamen.py install
 ```
 
-The installer first validates the exact governed 823-row source closure. It
+The installer first validates the exact governed 1,090-row source closure. It
 then performs a transactional publication to `~/.plamen`, commits an
 authenticated installation receipt, creates the private Python runtime,
 materializes managed Node/npm and both backends, and publishes the signed

@@ -1031,7 +1031,8 @@ def test_duplicate_json_identity_key_is_rejected_as_malformed_binding() -> None:
     )
 
     assert rows == []
-    assert any("malformed structured obligation evidence JSON" in row for row in issues)
+    assert any("evidence.marker_payload" in row for row in issues)
+    assert all("[FAIL_CLOSED]" not in row for row in issues)
 
 
 @pytest.mark.parametrize(
@@ -1111,7 +1112,8 @@ def test_evidence_marker_inside_backtick_or_tilde_fence_is_rejected() -> None:
         )
 
         assert rows == []
-        assert any("fenced structured obligation evidence" in issue for issue in issues)
+        assert any("evidence.fenced_marker" in issue for issue in issues)
+        assert all("[FAIL_CLOSED]" not in issue for issue in issues)
 
 
 @pytest.mark.parametrize(
@@ -1164,7 +1166,8 @@ def test_evidence_marker_schema_is_closed_and_string_typed(
     )
 
     assert rows == []
-    assert any("structured obligation evidence" in issue for issue in issues)
+    assert any("evidence.marker_payload" in issue for issue in issues)
+    assert all("[FAIL_CLOSED]" not in issue for issue in issues)
 
 
 def test_production_authority_has_no_test_only_terminal_fixture_reference() -> None:

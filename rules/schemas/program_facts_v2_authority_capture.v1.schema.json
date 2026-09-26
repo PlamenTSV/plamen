@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_v2_authority_capture.v1.schema.json",
+  "title": "Durable Program Facts v2 authority capture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "workspace_reference",
+    "worker_owner_work_unit_key",
+    "worker_execution_authority",
+    "worker_contract_manifest",
+    "worker_launch_manifest",
+    "worker_output",
+    "activation_owner_work_unit_key",
+    "activation_authority",
+    "candidate",
+    "public_artifacts",
+    "terminal_negative_authority",
+    "capture_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "plamen.program_facts_v2_authority_capture.v2"},
+    "run_id": {"type": "string", "minLength": 1, "maxLength": 512},
+    "workspace_reference": {"type": "object"},
+    "worker_owner_work_unit_key": {"type": "string", "minLength": 1},
+    "worker_execution_authority": {"type": "object"},
+    "worker_contract_manifest": {"type": "object"},
+    "worker_launch_manifest": {"type": "object"},
+    "worker_output": {"type": "object"},
+    "activation_owner_work_unit_key": {"type": "string", "minLength": 1},
+    "activation_authority": {"type": "object"},
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "workspace_reference", "execution_authority",
+        "dependency_closure", "candidate_sha256"
+      ],
+      "properties": {
+        "schema_version": {"const": "plamen.program_facts_workspace_candidate.v2"},
+        "workspace_reference": {"type": "object"},
+        "execution_authority": {"type": "object"},
+        "dependency_closure": {"type": "object"},
+        "candidate_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "public_artifacts": {
+      "type": "array", "minItems": 3, "maxItems": 3,
+      "prefixItems": [
+        {"$ref": "#/$defs/payload"},
+        {"$ref": "#/$defs/receipt"},
+        {"$ref": "#/$defs/debt"}
+      ],
+      "items": false
+    },
+    "terminal_negative_authority": {"const": false},
+    "capture_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "payload": {
+      "type": "object", "additionalProperties": false,
+      "required": ["logical_identity", "document"],
+      "properties": {
+        "logical_identity": {"const": "mechanical_program_facts.v2.json"},
+        "document": {"type": "object"}
+      }
+    },
+    "receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["logical_identity", "document"],
+      "properties": {
+        "logical_identity": {"const": "mechanical_program_facts_receipt.v2.json"},
+        "document": {"type": "object"}
+      }
+    },
+    "debt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["logical_identity", "document"],
+      "properties": {
+        "logical_identity": {"const": "mechanical_program_facts_debt.v2.json"},
+        "document": {"type": "object"}
+      }
+    }
+  }
+}

@@ -33,6 +33,9 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+import artifact_surface as AS
+from portable_path_contract import assert_lexically_bounded_relative_path
+
 try:
     import asset_representation_foundation as _asset_repr
 except ImportError:  # pragma: no cover - package import path
@@ -46,7 +49,25 @@ LEGACY_RECON_FEATURE_SCHEMA = "plamen.recon_feature_facts.v1"
 RECON_FEATURE_SCHEMA_V3 = _asset_repr.RECON_FEATURE_SCHEMA_V3
 APPLICATION_RECEIPT_SCHEMA = "plamen.security_obligation_application_receipt.v1"
 EVIDENCE_BINDING_SCHEMA = "plamen.security-obligation-evidence-binding.v1"
-RULE_CATALOG_VERSION = "p1-c.6"
+STAGED_DEPTH_GATE_CONTEXT_SCHEMA = (
+    "plamen.security-obligation-depth-staged-gate.v1"
+)
+RUN_CONTEXT_AUTHORITY_SCHEMA = (
+    "plamen.security-obligation-run-context-authority.v1"
+)
+_RUN_CONTEXT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "run_id",
+        "source_snapshot_digest",
+        "source_scope_digest",
+        "ecosystem",
+        "mode",
+        "pipeline",
+        "authority_digest",
+    }
+)
+RULE_CATALOG_VERSION = "p1-c.7"
 PRE_DEPTH_STAGE = "pre_depth"
 POST_DEPTH_STAGE = "post_depth"
 _STAGES = frozenset({PRE_DEPTH_STAGE, POST_DEPTH_STAGE})
@@ -90,18 +111,22 @@ _COMPLETE_MARKER_RE = re.compile(
 _PHASE_MARKER_RE = re.compile(
     r"<!--\s*PLAMEN_PHASE\s*:\s*depth\s*-->", re.IGNORECASE
 )
-_FINDING_REFERENT_RE = re.compile(
-    r"(?im)^#{2,4}\s+Finding\s+\[(?P<id>[^\]\r\n]+)\]"
-)
-_MARKDOWN_HEADING_RE = re.compile(
-    r"^(?P<hashes>#{1,6})[ \t]+(?P<title>.*?)[ \t]*#*[ \t]*$"
-)
-_FINDING_HEADING_TITLE_RE = re.compile(
-    r"^Finding\s+\[(?P<id>[^\]\r\n]+)\](?:\s+.*)?$", re.IGNORECASE
-)
+# A finding heading DECLARES its candidate when the word immediately before
+# the identity is a finding label.  ``### Obligation evidence bindings for
+# [VS-1]`` names the same identity but declares nothing -- it is a subsection
+# of VS-1, not a second VS-1.  The four regexes this replaces anchored on
+# ``^Finding[ \t]+\[id\]`` and on a hard-coded Pre/Postcondition vocabulary,
+# so bracket-free, bold, backticked and re-levelled spellings of one identity
+# became four different answers.
+_DECLARATION_LABEL_WORDS = frozenset({"finding", "candidate", "issue"})
+_LEAD_WORD_RE = re.compile(r"[A-Za-z]+")
+# The marker's binding is its JSON PAYLOAD, not the decoration around it.  The
+# driver's own obligation list renders each marker inside a list item after a
+# label, so anchoring on the whole line rejected artifacts for the shape the
+# driver itself published.
 _EVIDENCE_BINDING_RE = re.compile(
-    r"^\s*<!--\s*PLAMEN_SECURITY_OBLIGATION_EVIDENCE:\s*"
-    r"(?P<payload>\{.*\})\s*-->\s*$"
+    r"<!--\s*PLAMEN_SECURITY_OBLIGATION_EVIDENCE:\s*"
+    r"(?P<payload>\{.*?\})\s*-->"
 )
 _SAFE_PATH_DRIVE = re.compile(r"^[A-Za-z]:")
 _EVIDENCE_BINDING_KEYS = frozenset(
@@ -114,6 +139,9 @@ _EVIDENCE_BINDING_KEYS = frozenset(
         "symbol",
     }
 )
+_MAX_LEGACY_RECEIPT_TARGET_LENGTH = 4096
+_MAX_STAGED_DEPTH_OUTPUT_BYTES = 8 * 1024 * 1024
+_MAX_STAGED_PRE_AUTHORITY_BYTES = 16 * 1024 * 1024
 
 _FALLBACK_ARTIFACTS = (
     "external_interfaces.md",
@@ -168,6 +196,11 @@ _CONCEPT_TOKENS: dict[str, frozenset[str]] = {
     "external_interaction": frozenset(
         {"external", "callback", "hook", "receiver", "delegatecall", "staticcall", "call", "invoke", "cpi"}
     ),
+    # Emitted only from a mechanical callee relation whose exact target is an
+    # effectful external-call primitive.  Variable/function-name vocabulary
+    # cannot mint this evidence (for example a pure decoder's ``receiver`` or
+    # ``externalId`` locals).
+    "external_call_evidence": frozenset(),
     "callback_hook": frozenset({"callback", "hook", "receiver", "fallback", "oncall", "onreceive"}),
     "privilege": frozenset(
         {"admin", "owner", "governance", "role", "permission", "authority", "upgrade", "privileged"}
@@ -253,7 +286,12 @@ _RULES: tuple[dict[str, Any], ...] = (
         "rule_id": "security.external_call_surface.v1",
         "rule_version": "1.0.0",
         "class": "external_call_surface",
-        "groups": (("external_interaction",), ("callback_hook",), ("call_edge",)),
+        "groups": (
+            ("external_interaction",),
+            ("external_call_evidence",),
+            ("callback_hook",),
+            ("call_edge",),
+        ),
         "question": "Can untrusted call targets, callbacks, hooks, or reentrant external effects violate state or value assumptions?",
     },
     {
@@ -433,13 +471,18 @@ def _application_receipt_evidence_names(
 
 
 def _application_receipt_matches_current_universe(
-    root: Path, payload: Mapping[str, Any]
+    root: Path,
+    payload: Mapping[str, Any],
+    *,
+    run_context_authority: Mapping[str, Any] | None = None,
 ) -> bool:
     """Mirror the POST header gate before following receipt child artifacts."""
 
     try:
         _features, authority, _projection = derive_security_obligation_authority(
-            root, stage=PRE_DEPTH_STAGE
+            root,
+            stage=PRE_DEPTH_STAGE,
+            run_context_authority=run_context_authority,
         )
     except Exception:
         return False
@@ -461,6 +504,7 @@ def security_obligation_input_artifacts(
     scratchpad: Path,
     *,
     stage: str = POST_DEPTH_STAGE,
+    run_context_authority: Mapping[str, Any] | None = None,
 ) -> tuple[str, ...]:
     """Return the deterministic existing-file denominator for one derivation.
 
@@ -473,6 +517,10 @@ def security_obligation_input_artifacts(
 
     root = Path(scratchpad)
     stage_n = _normalized_stage(stage)
+    if run_context_authority is not None:
+        validate_security_obligation_run_context_authority(
+            run_context_authority
+        )
     names: set[str] = set()
 
     def add_existing(name: str) -> None:
@@ -480,7 +528,7 @@ def security_obligation_input_artifacts(
             names.add(name)
 
     for name in (
-        _CHECKPOINT_FILE,
+        *(() if run_context_authority is not None else (_CHECKPOINT_FILE,)),
         _GRAPH_FILE,
         RECON_FEATURE_FILE,
         _asset_repr.OPERATOR_ATTESTATION_FILE,
@@ -509,7 +557,9 @@ def security_obligation_input_artifacts(
         except Exception:
             receipt = None
         if isinstance(receipt, Mapping) and _application_receipt_matches_current_universe(
-            root, receipt
+            root,
+            receipt,
+            run_context_authority=run_context_authority,
         ):
             for name in _application_receipt_evidence_names(receipt):
                 add_existing(name)
@@ -529,6 +579,71 @@ def _normalized_stage(value: object) -> str:
     return stage
 
 
+def validate_security_obligation_run_context_authority(
+    value: Mapping[str, Any],
+) -> dict[str, str]:
+    """Strictly decode the immutable six-field P1-C execution context."""
+
+    if not isinstance(value, Mapping) or set(value) != _RUN_CONTEXT_FIELDS:
+        raise ValueError("security-obligation run context fields are not exact")
+    core = {
+        key: value[key]
+        for key in _RUN_CONTEXT_FIELDS
+        if key != "authority_digest"
+    }
+    run_id = value.get("run_id")
+    snapshot = value.get("source_snapshot_digest")
+    scope = value.get("source_scope_digest")
+    dimensions = {
+        key: value.get(key) for key in ("ecosystem", "mode", "pipeline")
+    }
+    if (
+        value.get("schema_version") != RUN_CONTEXT_AUTHORITY_SCHEMA
+        or not isinstance(run_id, str)
+        or _UUID4.fullmatch(run_id) is None
+        or not isinstance(snapshot, str)
+        or snapshot != snapshot.lower()
+        or _HEX64.fullmatch(snapshot) is None
+        or not isinstance(scope, str)
+        or scope != scope.lower()
+        or _HEX64.fullmatch(scope) is None
+        or any(
+            not isinstance(item, str)
+            or item != item.strip().lower()
+            or re.fullmatch(r"[a-z][a-z0-9_]{0,31}", item) is None
+            for item in dimensions.values()
+        )
+        or value.get("authority_digest") != _sha256_value(core)
+    ):
+        raise ValueError("security-obligation run context authority is invalid")
+    return {str(key): str(item) for key, item in value.items()}
+
+
+def build_security_obligation_run_context_authority(
+    *,
+    run_id: str,
+    source_snapshot_digest: str,
+    source_scope_digest: str,
+    ecosystem: str,
+    mode: str,
+    pipeline: str,
+) -> dict[str, str]:
+    """Build the canonical checkpoint-independent P1-C run context."""
+
+    core = {
+        "schema_version": RUN_CONTEXT_AUTHORITY_SCHEMA,
+        "run_id": str(run_id),
+        "source_snapshot_digest": str(source_snapshot_digest),
+        "source_scope_digest": str(source_scope_digest),
+        "ecosystem": _normalized_ecosystem(ecosystem),
+        "mode": str(mode).strip().lower(),
+        "pipeline": str(pipeline).strip().lower(),
+    }
+    return validate_security_obligation_run_context_authority(
+        {**core, "authority_digest": _sha256_value(core)}
+    )
+
+
 def _load_run_binding(
     root: Path,
     *,
@@ -536,7 +651,41 @@ def _load_run_binding(
     source_snapshot_digest: str = "",
     ecosystem: str = "",
     mode: str = "",
+    run_context_authority: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, str], list[str]]:
+    if run_context_authority is not None:
+        context = validate_security_obligation_run_context_authority(
+            run_context_authority
+        )
+        supplied = {
+            "run_id": str(run_id).strip().lower(),
+            "source_snapshot_digest": str(source_snapshot_digest).strip().lower(),
+            "ecosystem": (
+                _normalized_ecosystem(ecosystem) if ecosystem else ""
+            ),
+            "mode": str(mode).strip().lower(),
+        }
+        if any(
+            selected and selected != context[field]
+            for field, selected in supplied.items()
+        ):
+            raise ValueError(
+                "explicit security-obligation arguments differ from run context"
+            )
+        binding = {
+            key: context[key]
+            for key in (
+                "run_id",
+                "source_snapshot_digest",
+                "source_scope_digest",
+                "ecosystem",
+                "mode",
+                "pipeline",
+            )
+        }
+        binding["binding_digest"] = _sha256_value(binding)
+        return binding, []
+
     issues: list[str] = []
     checkpoint: Mapping[str, Any] = {}
     path = root / _CHECKPOINT_FILE
@@ -625,6 +774,12 @@ def _identifier_tokens_exact(value: object) -> list[str]:
 
 def _safe_relative_candidate_source_path(value: object) -> str:
     path = _asset_repr.normalize_bound_path(value)
+    try:
+        assert_lexically_bounded_relative_path(
+            path, label="security obligation candidate source path"
+        )
+    except ValueError:
+        return ""
     if (
         not path
         or path.startswith("/")
@@ -663,8 +818,40 @@ def _ambiguous_wrapper_symbols(value: object) -> list[str]:
     raw_candidates: list[str] = []
     identifiers = re.findall(r"[A-Za-z][A-Za-z0-9_]*", str(value or ""))
     for identifier in identifiers:
+        camel_parts = (
+            re.findall(
+                r"[A-Z]+(?=[A-Z][a-z]|[0-9]|$)|[A-Z]?[a-z]+|[0-9]+",
+                identifier,
+            )
+            if "_" not in identifier
+            else []
+        )
+        first_camel = (
+            _TOKEN_ALIASES.get(camel_parts[0].casefold(), camel_parts[0].casefold())
+            if camel_parts
+            else ""
+        )
+        structural_w_compound = (
+            len(camel_parts) > 1
+            and first_camel in owned_tokens | non_wrapper_words
+        )
         parts = [part for part in identifier.split("_") if part]
         for index, part in enumerate(parts):
+            part_camel = re.findall(
+                r"[A-Z]+(?=[A-Z][a-z]|[0-9]|$)|[A-Z]?[a-z]+|[0-9]+",
+                part,
+            )
+            part_first = (
+                _TOKEN_ALIASES.get(
+                    part_camel[0].casefold(), part_camel[0].casefold()
+                )
+                if part_camel
+                else ""
+            )
+            part_is_structural_w_compound = (
+                len(part_camel) > 1
+                and part_first in owned_tokens | non_wrapper_words
+            )
             if part in {"w", "W"} and index + 1 < len(parts):
                 stem = parts[index + 1]
                 stem_n = _TOKEN_ALIASES.get(stem.casefold(), stem.casefold())
@@ -674,20 +861,19 @@ def _ambiguous_wrapper_symbols(value: object) -> list[str]:
                 ):
                     raw_candidates.append(part + stem)
                 continue
-            if re.fullmatch(r"[wW][A-Za-z0-9]{2,31}", part):
+            if (
+                re.fullmatch(r"[wW][A-Za-z0-9]{2,31}", part)
+                and not part_is_structural_w_compound
+            ):
                 raw_candidates.append(part)
 
         # Preserve a direct camel-case spelling before any tokenization.  This
         # is identity, not semantic comparison: wCoin and WCoin are distinct.
         if "_" not in identifier and re.fullmatch(
             r"[wW][A-Za-z0-9]{2,31}", identifier
-        ):
+        ) and not structural_w_compound:
             raw_candidates.append(identifier)
         if "_" not in identifier:
-            camel_parts = re.findall(
-                r"[A-Z]+(?=[A-Z][a-z]|[0-9]|$)|[A-Z]?[a-z]+|[0-9]+",
-                identifier,
-            )
             for index, part in enumerate(camel_parts):
                 if part in {"w", "W"} and index + 1 < len(camel_parts):
                     raw_candidates.append(part + camel_parts[index + 1])
@@ -790,6 +976,46 @@ def _concept_evidence(value: object) -> list[tuple[str, str]]:
             if token in vocabulary:
                 rows.append((concept, token))
     return rows
+
+
+_EXTERNAL_EFFECT_CALLEES = frozenset(
+    {
+        "approve",
+        "call",
+        "callcode",
+        "delegatecall",
+        "deposit",
+        "depositandcall",
+        "invoke",
+        "mixswap",
+        "safeapprove",
+        "safetransfer",
+        "safetransfereth",
+        "safetransferfrom",
+        "send",
+        "staticcall",
+        "transfer",
+        "transferfrom",
+        "withdraw",
+        "withdrawandcall",
+        "withdrawgasfee",
+        "withdrawgasfeewithgaslimit",
+    }
+)
+
+
+def _external_effect_callee(value: object) -> str:
+    """Return the exact effectful callee primitive, if mechanically present.
+
+    The graph relation is the evidence that a call expression exists.  This
+    classifier intentionally ignores ambient identifiers and prose: a local
+    named ``externalId`` or ``receiver`` is not an external call.
+    """
+
+    head = re.split(r"[\s(]", str(value or "").strip(), maxsplit=1)[0]
+    bare = re.split(r"::|\.", head)[-1]
+    normalized = re.sub(r"[^a-z0-9]+", "", bare.casefold())
+    return bare if normalized in _EXTERNAL_EFFECT_CALLEES else ""
 
 
 def _source_row(
@@ -1031,6 +1257,34 @@ def _extract_graph_facts(
             kind="TYPED_GRAPH_FACT",
             binding_by_name=binding_by_name,
         )
+        # Some source graph providers collapse a qualified self-named wrapper
+        # call (for example ``gateway.withdrawAndCall`` inside the local
+        # ``withdrawAndCall`` helper).  Preserve the mechanically visible
+        # external-call shape only when an effectful wrapper identity and its
+        # call/revert option construction co-occur; the function name alone is
+        # never sufficient.
+        wrapper_call = _external_effect_callee(bare)
+        callee_heads = {
+            re.sub(
+                r"[^a-z0-9]+",
+                "",
+                re.split(r"::|\.", re.split(r"[\s(]", str(value), maxsplit=1)[0])[-1].casefold(),
+            )
+            for value in callees
+        }
+        if wrapper_call and callee_heads & {"calloptions", "revertoptions"}:
+            _add_fact(
+                store,
+                subject_id=subject,
+                concept="external_call_evidence",
+                polarity="PRESENT",
+                evidence_identity=(
+                    "graph:external-effect-wrapper-call:"
+                    + wrapper_call.casefold()
+                ),
+                fidelity="GRAPH_EXTERNAL_EFFECT_WRAPPER",
+                source=function_source,
+            )
         for symbol in _ambiguous_wrapper_symbols(f"{function_identity} {bare}"):
             wrapper_candidates.append(
                 {
@@ -1078,6 +1332,20 @@ def _extract_graph_facts(
                 fidelity="GRAPH_RELATION",
                 source=source,
             )
+            external_callee = _external_effect_callee(callee_text)
+            if external_callee:
+                _add_fact(
+                    store,
+                    subject_id=subject,
+                    concept="external_call_evidence",
+                    polarity="PRESENT",
+                    evidence_identity=(
+                        "graph:external-effect-call:"
+                        + external_callee.casefold()
+                    ),
+                    fidelity="GRAPH_EXTERNAL_EFFECT_RELATION",
+                    source=source,
+                )
             for concept, token in _concept_evidence(callee_text):
                 _add_fact(
                     store,
@@ -1516,13 +1784,27 @@ def _extract_fallback_facts(
         binding_by_name[name] = binding
         text = path.read_text(encoding="utf-8", errors="replace")
         for line_no, line in enumerate(text.splitlines(), start=1):
-            loci = list(_SOURCE_LOCUS_RE.finditer(line))
+            semantic_text = line
+            if name == "caller_map.md":
+                # ``caller_map.md`` is a three-column projection:
+                # Function | Location | Callers.  Incoming caller names are
+                # context, not facts about the located callee.  Restrict both
+                # the locus and semantic projection to the first two cells so
+                # a decoder/withdraw caller cannot contaminate (for example)
+                # a SafeMath or interface row.
+                cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+                if len(cells) < 3:
+                    continue
+                semantic_text = cells[0]
+                loci = list(_SOURCE_LOCUS_RE.finditer(cells[1]))
+            else:
+                loci = list(_SOURCE_LOCUS_RE.finditer(line))
             if not loci:
                 continue
-            concepts = _concept_evidence(line)
+            concepts = _concept_evidence(semantic_text)
             if len({concept for concept, _ in concepts}) < 2:
                 continue
-            ambiguous_symbols = _ambiguous_wrapper_symbols(line)
+            ambiguous_symbols = _ambiguous_wrapper_symbols(semantic_text)
             for locus_match in loci:
                 locus = _normalized_locus(locus_match)
                 subject = f"locus:{locus}"
@@ -1892,37 +2174,147 @@ def _universe_digest(obligations: Sequence[Mapping[str, Any]]) -> str:
 
 
 def _valid_legacy_receipt(status: str, key: str, target: str) -> bool:
-    if not key.strip() or not target.strip() or target.strip().casefold() in {"n/a", "none", "unknown"}:
+    target_n = target.strip()
+    if (
+        not key.strip()
+        or not target_n
+        or len(target_n) > _MAX_LEGACY_RECEIPT_TARGET_LENGTH
+        or target_n.casefold() in {"n/a", "none", "unknown"}
+    ):
         return False
-    if status == "R":
-        return bool(re.search(r"\b[A-Za-z][A-Za-z0-9_]*-\d+\b", target))
-    if status == "C":
-        return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:-]*(?:\s+[A-Za-z][A-Za-z0-9_.:-]*)*", target))
-    return len(target.strip()) >= 3
+    return status in {"R", "C", "D"}
 
 
-def _markdown_fence_transition(
-    line: str, active: tuple[str, int] | None
-) -> tuple[tuple[str, int] | None, bool]:
-    """Track CommonMark-style backtick/tilde fences with <=3-space indent."""
+def _resolve_finding_referent(
+    target: str, finding_sections: Mapping[str, str]
+) -> str:
+    """Resolve one target against the IDs actually parsed from this output.
 
-    indent = len(line) - len(line.lstrip(" "))
-    if indent > 3:
-        return active, False
-    stripped = line[indent:].rstrip("\r\n")
-    if active is not None:
-        marker, minimum = active
-        run = len(stripped) - len(stripped.lstrip(marker))
-        if run >= minimum and not stripped[run:].strip():
-            return None, True
-        return active, False
-    if not stripped or stripped[0] not in {"`", "~"}:
-        return None, False
-    marker = stripped[0]
-    run = len(stripped) - len(stripped.lstrip(marker))
-    if run < 3:
-        return None, False
-    return (marker, run), True
+    Finding IDs are opaque producer-owned identities.  Enumerating the parsed
+    section denominator avoids truncating multi-hyphen IDs with a generic
+    one-hyphen token regex.  Token boundaries also prevent a shorter ID such
+    as ``A-1`` from matching inside ``BLIND-A-1``.
+    """
+
+    target_n = target.casefold()
+    matches = {
+        finding_id
+        for finding_id in finding_sections
+        if re.search(
+            rf"(?<![A-Za-z0-9_-]){re.escape(finding_id)}(?![A-Za-z0-9_-])",
+            target_n,
+        )
+    }
+    return next(iter(matches)) if len(matches) == 1 else ""
+
+
+def _declared_finding_identity(heading_text: str):
+    """The identity a heading DECLARES, or None when it only names one.
+
+    ``### Finding [VS-1]``, ``### Finding VS-1``, ``### **Finding [VS-1]**``
+    and ``#### Finding `VS-1` `` are ONE identity: decoration and heading depth
+    are presentation.  ``### Obligation evidence bindings for [VS-1]`` names
+    VS-1 but declares nothing -- its lead word is ``for``, not a finding label.
+    """
+
+    identity = AS.candidate_identity(heading_text)
+    if identity is None:
+        return None
+    lead = AS.strip_decoration(heading_text)[: identity.offset]
+    words = _LEAD_WORD_RE.findall(lead)
+    if words and words[-1].casefold() in _DECLARATION_LABEL_WORDS:
+        return identity
+    return None
+
+
+def _finding_line_sections(
+    surf: "AS.ArtifactSurface",
+    *,
+    defects: list["AS.Defect"] | None = None,
+    source_label: str = "",
+) -> dict[str, tuple["AS.LogicalLine", ...]]:
+    """Identity-scoped finding sections read from the normalized surface.
+
+    Ownership changes only on a MEANING boundary:
+
+    * a heading that DECLARES a candidate takes ownership;
+    * a heading that names a DIFFERENT candidate ends the section;
+    * a heading with no identity at or above the declaration's level ends it;
+    * a heading that names the SAME candidate -- at any level -- EXTENDS it.
+
+    That last rule is the measured run48 discard.  ``### Obligation evidence
+    bindings for [VS-1]`` was an H3 sibling of ``### Finding [VS-1]``, so
+    depth-scoped parsing closed VS-1 before its own markers and reported ten
+    "lacks one exact same-section alias marker" issues against a 934-line
+    analysis that had actually done the work.
+    """
+
+    owned: dict[str, list[AS.LogicalLine]] = {}
+    declarations: dict[str, int] = {}
+    owner: str | None = None
+    owner_level = 0
+
+    for line in surf.lines:
+        if line.kind == AS.HEADING:
+            declared = _declared_finding_identity(line.heading_text)
+            if declared is not None:
+                owner = declared.key.casefold()
+                owner_level = line.heading_level
+                declarations[owner] = declarations.get(owner, 0) + 1
+                owned.setdefault(owner, []).append(line)
+                continue
+            named = AS.candidate_identity(line.heading_text)
+            if named is not None:
+                if owner is not None and named.key.casefold() == owner:
+                    owned[owner].append(line)
+                    continue
+                owner = None
+                continue
+            if owner is not None and line.heading_level > owner_level:
+                owned[owner].append(line)
+                continue
+            owner = None
+            continue
+        if owner is not None:
+            owned[owner].append(line)
+
+    sections: dict[str, tuple[AS.LogicalLine, ...]] = {}
+    for finding_id, lines in owned.items():
+        if declarations.get(finding_id, 0) == 1:
+            sections[finding_id] = tuple(lines)
+            continue
+        # FAIL_CLOSED: two declarations of one identity make the referent
+        # ambiguous, and guessing which one a receipt meant would silently
+        # bind evidence to the wrong candidate.  Normalize FIRST, then apply
+        # the conservative comparison to the normalized key.
+        if defects is not None:
+            first = lines[0].physical_start if lines else 0
+            defects.append(
+                AS.Defect(
+                    property_violated="identity.duplicate_finding_declaration",
+                    physical_line=first,
+                    observed=(
+                        f"{declarations.get(finding_id, 0)} headings declare "
+                        f"{finding_id.upper()}"
+                    ),
+                    expected=f"exactly one heading declaring {finding_id.upper()}",
+                    repair_hint=(
+                        f"{source_label or '<depth-output>'}: give each finding "
+                        "one declaring heading. Rename the duplicate, or make "
+                        "it a subsection heading that names the same id "
+                        f"(e.g. 'Obligation evidence bindings for "
+                        f"[{finding_id.upper()}]')."
+                    ),
+                    closure=AS.FAIL_CLOSED,
+                )
+            )
+    return sections
+
+
+def _section_text(lines: Sequence["AS.LogicalLine"]) -> str:
+    """The worker's original bytes for one identity-scoped section."""
+
+    return "\n".join(line.raw for line in lines)
 
 
 def _finding_sections(
@@ -1931,59 +2323,28 @@ def _finding_sections(
     issues: list[str] | None = None,
     source_label: str = "",
 ) -> dict[str, str]:
-    """Return non-overlapping finding sections using Markdown heading scope."""
+    """Text-returning adapter over :func:`_finding_line_sections`."""
 
-    collected: dict[str, list[str]] = {}
-    active_id = ""
-    active_level = 0
-    active_lines: list[str] = []
-    fence: tuple[str, int] | None = None
-
-    def close_active() -> None:
-        nonlocal active_id, active_level, active_lines
-        if active_id:
-            collected.setdefault(active_id, []).append("".join(active_lines))
-        active_id = ""
-        active_level = 0
-        active_lines = []
-
-    for line in (text or "").splitlines(keepends=True):
-        was_fenced = fence is not None
-        next_fence, fence_line = _markdown_fence_transition(line, fence)
-        heading = None
-        if not was_fenced and not fence_line:
-            heading = _MARKDOWN_HEADING_RE.fullmatch(line.rstrip("\r\n"))
-
-        if active_id and heading is not None:
-            level = len(heading.group("hashes"))
-            if level <= active_level:
-                close_active()
-
-        if not active_id and heading is not None:
-            title_match = _FINDING_HEADING_TITLE_RE.fullmatch(
-                heading.group("title").strip()
-            )
-            level = len(heading.group("hashes"))
-            if title_match and 2 <= level <= 4:
-                active_id = title_match.group("id").strip().casefold()
-                active_level = level
-
-        if active_id:
-            active_lines.append(line)
-        fence = next_fence
-    close_active()
-
-    sections: dict[str, str] = {}
-    for finding_id, rows in collected.items():
-        if len(rows) == 1:
-            sections[finding_id] = rows[0]
-            continue
-        if issues is not None:
-            issues.append(
-                "duplicate finding referent invalidated locally: "
-                f"{source_label or '<depth-output>'}:{finding_id}"
-            )
-    return sections
+    defects: list[AS.Defect] = []
+    sections = _finding_line_sections(
+        AS.surface(text), defects=defects, source_label=source_label
+    )
+    if issues is not None:
+        for defect in defects:
+            if defect.property_violated == (
+                "identity.duplicate_finding_declaration"
+            ):
+                finding_id = defect.expected.rsplit(" ", 1)[-1].casefold()
+                issues.append(
+                    "duplicate finding referent invalidated locally: "
+                    f"{source_label or '<depth-output>'}:{finding_id}"
+                )
+            else:
+                issues.append(defect.render())
+    return {
+        finding_id: _section_text(lines)
+        for finding_id, lines in sections.items()
+    }
 
 
 def _alias_evidence_binding(alias: Mapping[str, Any]) -> dict[str, str]:
@@ -2016,17 +2377,26 @@ def _closed_alias_evidence_binding(
     return _alias_evidence_binding(row)
 
 
-def _finding_alias_evidence_bindings(
-    section: str,
+_EVIDENCE_TOKEN = "PLAMEN_SECURITY_OBLIGATION_EVIDENCE"
+
+
+def _evidence_rows_from_lines(
+    lines: Sequence["AS.LogicalLine"],
     *,
-    issues: list[str],
+    defects: list["AS.Defect"],
     source_label: str,
 ) -> list[dict[str, str]]:
-    """Extract full-line structured bindings from one bound finding section.
+    """Structured alias bindings asserted by one identity-scoped section.
 
-    Natural-language tokens are intentionally not a fallback.  A malformed,
-    partial, or conflicting marker stays nonterminal and leaves its alias
-    queueable for repair.
+    A line that merely MENTIONS the marker token -- prose explaining WHERE the
+    markers were placed -- is neither harvested nor rejected.  That single rule
+    retires the measured run48 "malformed structured obligation evidence
+    ignored" family, which discarded three complete depth analyses for a
+    sentence that named the token while describing correct behaviour.
+
+    Nothing below is terminal: the alias binding is a SUPPORTING record, so a
+    fenced, malformed or conflicting marker degrades to visible debt carrying a
+    repair hint and leaves the alias queueable.
     """
 
     rows: list[dict[str, str]] = []
@@ -2039,57 +2409,111 @@ def _finding_alias_evidence_bindings(
             out[key] = value
         return out
 
-    fence: tuple[str, int] | None = None
-    for line_no, line in enumerate((section or "").splitlines(), start=1):
-        was_fenced = fence is not None
-        next_fence, fence_line = _markdown_fence_transition(line, fence)
-        if "PLAMEN_SECURITY_OBLIGATION_EVIDENCE" not in line:
-            fence = next_fence
-            continue
-        if was_fenced or fence_line:
-            issues.append(
-                "fenced structured obligation evidence ignored: "
-                f"{source_label}:{line_no}"
+    def debt(prop: str, line: "AS.LogicalLine", observed: str, hint: str) -> None:
+        defects.append(
+            AS.Defect(
+                property_violated=prop,
+                physical_line=line.physical_start,
+                observed=observed,
+                expected=(
+                    "one unfenced "
+                    f"<!-- {_EVIDENCE_TOKEN}: {{...}} --> marker per alias"
+                ),
+                repair_hint=f"{source_label}: {hint}",
+                closure=AS.closure_for_property(prop),
             )
-            fence = next_fence
+        )
+
+    for line in lines:
+        if _EVIDENCE_TOKEN not in line.raw:
             continue
-        match = _EVIDENCE_BINDING_RE.fullmatch(line)
-        if not match:
-            issues.append(
-                "malformed structured obligation evidence ignored: "
-                f"{source_label}:{line_no}"
+        if line.in_fence:
+            debt(
+                "evidence.fenced_marker",
+                line,
+                "marker inside a fenced block",
+                "a fenced marker reads as a quotation; move it out of the "
+                "code fence so it binds.",
             )
-            fence = next_fence
+            continue
+        if not line.in_comment:
+            # A prose line naming the token is a MENTION. classify_token is
+            # the shared predicate; a mention is never harvested and never
+            # rejected.
+            if AS.line_asserts(line, _EVIDENCE_TOKEN):
+                debt(
+                    "evidence.marker_grammar",
+                    line,
+                    "token asserted outside an HTML comment",
+                    "wrap the binding in <!-- ... --> so it is a marker "
+                    "rather than body text.",
+                )
+            continue
+        matches = list(_EVIDENCE_BINDING_RE.finditer(line.raw))
+        payloads = {match.group("payload").strip() for match in matches}
+        if len(payloads) > 1:
+            debt(
+                "evidence.conflicting_markers",
+                line,
+                f"{len(payloads)} different payloads on one line",
+                "put each alias binding on its own line.",
+            )
+            continue
+        if not matches:
+            debt(
+                "evidence.marker_grammar",
+                line,
+                "marker comment carries no '{...}' payload",
+                "emit the exact JSON payload the obligation list supplied.",
+            )
             continue
         try:
             raw = json.loads(
-                match.group("payload"), object_pairs_hook=unique_object
+                matches[0].group("payload"), object_pairs_hook=unique_object
             )
-        except (TypeError, ValueError):
-            issues.append(
-                "malformed structured obligation evidence JSON ignored: "
-                f"{source_label}:{line_no}"
+        except (TypeError, ValueError) as exc:
+            debt(
+                "evidence.marker_payload",
+                line,
+                f"payload is not unique-keyed JSON ({type(exc).__name__})",
+                "copy the payload verbatim; do not re-type or re-order it.",
             )
-            fence = next_fence
             continue
         if not isinstance(raw, Mapping):
-            issues.append(
-                "structured obligation evidence is not an object: "
-                f"{source_label}:{line_no}"
+            debt(
+                "evidence.marker_payload",
+                line,
+                f"payload is a {type(raw).__name__}, not an object",
+                "the payload must be a JSON object.",
             )
-            fence = next_fence
             continue
         row = _closed_alias_evidence_binding(raw)
         if row is None:
-            issues.append(
-                "structured obligation evidence schema or identity is invalid: "
-                f"{source_label}:{line_no}"
+            debt(
+                "evidence.marker_payload",
+                line,
+                "payload schema or alias identity is invalid",
+                "copy the payload verbatim from the obligation list.",
             )
-            fence = next_fence
             continue
         rows.append(row)
-        fence = next_fence
     rows.sort(key=_canonical_json)
+    return rows
+
+
+def _finding_alias_evidence_bindings(
+    section: str,
+    *,
+    issues: list[str],
+    source_label: str,
+) -> list[dict[str, str]]:
+    """Text-taking adapter over :func:`_evidence_rows_from_lines`."""
+
+    defects: list[AS.Defect] = []
+    rows = _evidence_rows_from_lines(
+        AS.surface(section).lines, defects=defects, source_label=source_label
+    )
+    issues.extend(defect.render() for defect in defects)
     return rows
 
 
@@ -2163,6 +2587,124 @@ def _manifest_output(
         ),
         None,
     )
+
+
+_OUTPUT_CONTRACT_FIELDS = (
+    "identity",
+    "owner_key",
+    "artifact_class",
+    "writer",
+    "write_mode",
+    "schema_version",
+    "minimum_gate",
+    "consumers",
+    "condition_id",
+)
+
+
+def _active_post_sidecar_owner_issue(
+    ledger: Mapping[str, Any],
+    current: Mapping[str, Any],
+    *,
+    identity: str,
+    run_id: str,
+) -> str:
+    """Replay the exact active POST owner of a superseded PRE sidecar."""
+
+    owner_key = str(current.get("owner_key") or "")
+    parts = owner_key.split("/")
+    if (
+        len(parts) != 6
+        or parts[4] != "depth"
+        or parts[5] != "security_obligations.post_depth"
+    ):
+        return f"PRE sidecar superseder is not the POST authority: {identity}"
+    if (
+        current.get("status") != "ACTIVE"
+        or current.get("authority_level") != "ACTIVE_AUTHORITY"
+        or current.get("writer") != "DRIVER"
+        or current.get("run_id") != run_id
+    ):
+        return f"PRE sidecar POST superseder is not currently active: {identity}"
+    work_units = ledger.get("work_units")
+    owner = work_units.get(owner_key) if isinstance(work_units, Mapping) else None
+    if not isinstance(owner, Mapping):
+        return f"PRE sidecar POST superseder work unit is missing: {identity}"
+    manifest = owner.get("contract_manifest")
+    contract_digest = str(owner.get("contract_digest") or "")
+    launch_digest = str(owner.get("launch_digest") or "")
+    if (
+        owner.get("run_id") != run_id
+        or owner.get("semantic_status") != "ACTIVE"
+        or owner.get("execution_state") != "OUTPUT_COMMITTED"
+        or not isinstance(manifest, Mapping)
+        or manifest.get("key") != owner_key
+        or manifest.get("model_invoked") is not False
+        or _manifest_digest(manifest) != contract_digest
+        or current.get("contract_digest") != contract_digest
+        or not _HEX64.fullmatch(launch_digest)
+        or current.get("launch_digest") != launch_digest
+    ):
+        return f"PRE sidecar POST superseder authority mismatch: {identity}"
+    output_spec = _manifest_output(manifest, identity)
+    if not isinstance(output_spec, Mapping) or output_spec.get("writer") != "DRIVER":
+        return f"PRE sidecar POST superseder output contract mismatch: {identity}"
+    if any(
+        current.get(field) != output_spec.get(field)
+        for field in _OUTPUT_CONTRACT_FIELDS
+    ):
+        return f"PRE sidecar POST superseder output/spec mismatch: {identity}"
+    artifacts = owner.get("artifacts")
+    produced = artifacts.get(identity) if isinstance(artifacts, Mapping) else None
+    current_snapshot = {
+        key: value for key, value in current.items() if key != "history"
+    }
+    if not isinstance(produced, Mapping) or dict(produced) != current_snapshot:
+        return f"PRE sidecar POST superseder output binding mismatch: {identity}"
+    return ""
+
+
+def _pre_sidecar_global_binding_issue(
+    ledger: Mapping[str, Any],
+    produced: Mapping[str, Any],
+    global_record: Any,
+    *,
+    identity: str,
+    run_id: str,
+) -> str:
+    """Accept only an exact live PRE record or its exact POST retirement."""
+
+    if not isinstance(global_record, Mapping):
+        return f"PRE sidecar global output binding missing: {identity}"
+    current = {
+        key: value for key, value in global_record.items() if key != "history"
+    }
+    if current == dict(produced):
+        return ""
+
+    history = global_record.get("history")
+    if not isinstance(history, list) or not history:
+        return f"PRE sidecar supersession history missing: {identity}"
+    post_issue = _active_post_sidecar_owner_issue(
+        ledger, current, identity=identity, run_id=run_id
+    )
+    if post_issue:
+        return post_issue
+    post_owner_key = str(current.get("owner_key") or "")
+    expected = dict(produced)
+    expected["status"] = "SUPERSEDED"
+    expected["authority_level"] = "RETIRED"
+    expected["superseded_by_owner_key"] = post_owner_key
+    producer_owner_key = str(produced.get("owner_key") or "")
+    candidates = [
+        dict(row)
+        for row in history
+        if isinstance(row, Mapping)
+        and str(row.get("owner_key") or "") == producer_owner_key
+    ]
+    if len(candidates) != 1 or candidates[0] != expected:
+        return f"PRE sidecar supersession history does not replay: {identity}"
+    return ""
 
 
 def _validate_pre_sidecar_consumption(
@@ -2250,37 +2792,24 @@ def _validate_pre_sidecar_consumption(
             or str(produced.get("launch_digest") or "") != producer_launch_digest
             or produced.get("writer") != "DRIVER"
             or produced.get("status") != "ACTIVE"
+            or produced.get("authority_level") != "ACTIVE_AUTHORITY"
             or str(produced.get("sha256") or "").lower() != digest
         ):
             return f"PRE sidecar producer output binding mismatch: {identity}"
-        output_contract_fields = (
-            "identity",
-            "owner_key",
-            "artifact_class",
-            "writer",
-            "write_mode",
-            "schema_version",
-            "minimum_gate",
-            "consumers",
-            "condition_id",
-        )
         if any(
             produced.get(field) != output_spec.get(field)
-            for field in output_contract_fields
+            for field in _OUTPUT_CONTRACT_FIELDS
         ):
             return f"PRE sidecar producer output/spec mismatch: {identity}"
-        global_snapshots: list[dict[str, Any]] = []
-        if isinstance(global_record, Mapping):
-            global_snapshots.append(
-                {key: value for key, value in global_record.items() if key != "history"}
-            )
-            history = global_record.get("history")
-            if isinstance(history, list):
-                global_snapshots.extend(
-                    dict(row) for row in history if isinstance(row, Mapping)
-                )
-        if dict(produced) not in global_snapshots:
-            return f"PRE sidecar global output binding mismatch: {identity}"
+        global_issue = _pre_sidecar_global_binding_issue(
+            ledger,
+            produced,
+            global_record,
+            identity=identity,
+            run_id=run_id,
+        )
+        if global_issue:
+            return global_issue
     if len(producer_keys) != 1:
         return "owner work unit consumed PRE sidecars from mixed producers"
     return ""
@@ -2439,12 +2968,32 @@ def _depth_receipts(
         if not _COMPLETE_MARKER_RE.search(text) or not _PHASE_MARKER_RE.search(text):
             issues.append(f"depth receipt artifact is not current-complete: {name}")
             continue
-        finding_sections = _finding_sections(
-            text, issues=issues, source_label=name
-        )
-        bound_finding_ids = set(finding_sections)
-        for line_no, line in enumerate(text.splitlines(), start=1):
-            match = _RECEIPT_RE.fullmatch(line)
+        # Normalize ONCE. The previous loop matched the receipt grammar
+        # against raw physical lines, so a receipt the worker rendered as code
+        # (run48 wrapped every one in backticks) was invisible here and its
+        # obligation silently looked undischarged. Representation decided
+        # whether the record existed at all -- the same bug class as the
+        # staged gate, pointing the other way.
+        surf = AS.surface(text)
+        section_defects: list[AS.Defect] = []
+        finding_sections = {
+            finding_id: _section_text(lines)
+            for finding_id, lines in _finding_line_sections(
+                surf, defects=section_defects, source_label=name
+            ).items()
+        }
+        for defect in section_defects:
+            if defect.property_violated == (
+                "identity.duplicate_finding_declaration"
+            ):
+                issues.append(
+                    "duplicate finding referent invalidated locally: "
+                    f"{name}:{defect.expected.rsplit(' ', 1)[-1].casefold()}"
+                )
+            else:
+                issues.append(defect.render())
+        for surf_line in surf.lines:
+            line_no, match = _receipt_claim(surf_line)
             if not match:
                 continue
             status = match.group("status").upper()
@@ -2460,24 +3009,21 @@ def _depth_receipts(
             referent_normalized = ""
             referent_alias_bindings: list[dict[str, str]] = []
             if status == "R":
-                referent_match = re.search(
-                    r"\b[A-Za-z][A-Za-z0-9_]*-\d+\b", target
+                referent = _resolve_finding_referent(
+                    AS.strip_decoration(target), finding_sections
                 )
-                referent = (
-                    referent_match.group(0).strip().casefold()
-                    if referent_match
-                    else ""
-                )
-                if not referent or referent not in bound_finding_ids:
+                if not referent:
                     issues.append(
                         "reported obligation receipt finding referent is not bound "
-                        f"in its current worker output: {name}:{line_no}"
+                        "uniquely in its current worker output: "
+                        f"{name}:{line_no}"
                     )
                     continue
                 referent_section = "\n".join(
-                    line
-                    for line in finding_sections[referent].splitlines()
-                    if _RECEIPT_RE.fullmatch(line) is None
+                    row
+                    for row in finding_sections[referent].splitlines()
+                    if _RECEIPT_RE.fullmatch(row.strip()) is None
+                    and _RECEIPT_RE.fullmatch(AS.strip_decoration(row)) is None
                 )
                 referent_identifiers = _identifier_tokens(referent_section)
                 referent_identifiers_exact = _identifier_tokens_exact(
@@ -2492,11 +3038,6 @@ def _depth_receipts(
                     source_label=f"{name}:{finding_id or referent.upper()}",
                 )
                 finding_id = referent.upper()
-            else:
-                issues.append(
-                    "producer-authored obligation disposition retained for "
-                    f"independent review: {name}:{line_no}: STATUS:{status}"
-                )
             identity = {
                 "display_id": match.group("display").upper(),
                 "covered_alias_ids": (
@@ -2617,7 +3158,11 @@ def _typed_application_receipts(
 
 
 def _apply_receipts(
-    obligations: list[dict[str, Any]], receipts: Sequence[Mapping[str, Any]], issues: list[str]
+    obligations: list[dict[str, Any]],
+    receipts: Sequence[Mapping[str, Any]],
+    issues: list[str],
+    *,
+    require_depth_enumeration: bool = True,
 ) -> None:
     by_display = {str(row["display_id"]): row for row in obligations}
     by_id = {str(row["obligation_id"]): row for row in obligations}
@@ -2650,7 +3195,7 @@ def _apply_receipts(
         row["receipts"].append(dict(receipt))
     for row in obligations:
         row["receipts"].sort(key=lambda value: str(value["receipt_id"]))
-        if not row["receipts"] or row["display_id"] == "SO-000":
+        if row["display_id"] == "SO-000":
             continue
         # A receipt cannot resolve contradictory applicability facts.  That is
         # an application-substrate conflict, not a finding disposition.
@@ -2663,6 +3208,22 @@ def _apply_receipts(
             if isinstance(alias, Mapping) and str(alias.get("alias_id") or "")
         }
         if required_alias_rows:
+            # ``ALIAS`` is optional for a singleton obligation for every
+            # producer disposition, not only for a reported finding.  Close
+            # that shorthand before measuring the structural denominator.
+            for receipt in row["receipts"]:
+                if receipt.get("receipt_kind") != "BOUND_DEPTH_MARKDOWN":
+                    continue
+                explicitly_claimed = {
+                    str(alias_id)
+                    for alias_id in receipt.get("covered_alias_ids") or []
+                    if str(alias_id)
+                }
+                if not explicitly_claimed and len(required_alias_rows) == 1:
+                    receipt["covered_alias_ids"] = [
+                        next(iter(required_alias_rows))
+                    ]
+
             for receipt in row["receipts"]:
                 if (
                     receipt.get("receipt_kind") != "BOUND_DEPTH_MARKDOWN"
@@ -2681,9 +3242,6 @@ def _apply_receipts(
                     if str(alias_id)
                 }
                 claimed = explicitly_claimed & set(required_alias_rows)
-                if not explicitly_claimed and len(required_alias_rows) == 1:
-                    claimed = {next(iter(required_alias_rows))}
-                    receipt["covered_alias_ids"] = sorted(claimed)
                 if len(claimed) != 1:
                     issues.append(
                         f"{row['display_id']} reported receipt lacks one exact current alias"
@@ -2714,6 +3272,28 @@ def _apply_receipts(
             for receipt in row["receipts"]
             if receipt.get("terminal_authority") is True
         ]
+        # Enumeration and disposition authority are separate questions.  A
+        # C/D row keeps its alias queueable, but it still proves that the
+        # depth pool enumerated that exact structural target.  Conversely, a
+        # reported finding for one alias must not manufacture coverage for its
+        # siblings.  Fail visibly only when the bound depth receipt set truly
+        # omitted part of the structural denominator.
+        required_aliases = set(required_alias_rows)
+        enumerated_aliases = {
+            str(alias)
+            for receipt in row["receipts"]
+            if receipt.get("receipt_kind") == "BOUND_DEPTH_MARKDOWN"
+            for alias in receipt.get("covered_alias_ids", [])
+            if str(alias) in required_aliases
+        }
+        if (
+            require_depth_enumeration
+            and required_aliases
+            and not required_aliases <= enumerated_aliases
+        ):
+            issues.append(
+                f"{row['display_id']} depth receipt set does not enumerate every structural target alias"
+            )
         if not terminal_receipts:
             pending_receipts = [
                 receipt
@@ -2725,7 +3305,6 @@ def _apply_receipts(
                 # reports prove only that the methodology question was
                 # touched. They remain repair work.
                 continue
-            required_aliases = set(required_alias_rows)
             covered_aliases = {
                 str(alias)
                 for receipt in pending_receipts
@@ -2735,11 +3314,7 @@ def _apply_receipts(
                 row["state"] = "PENDING_INDEPENDENT_VERIFICATION"
             else:
                 row["state"] = "PARTIAL_PENDING_INDEPENDENT_VERIFICATION"
-                issues.append(
-                    f"{row['display_id']} reported receipt does not cover every structural target alias"
-                )
             continue
-        required_aliases = set(required_alias_rows)
         if len(required_aliases) <= 1:
             row["state"] = "ACCOUNTED"
             continue
@@ -2757,6 +3332,22 @@ def _apply_receipts(
             )
 
 
+def _append_unresolved_producer_disposition_issues(
+    obligations: Sequence[Mapping[str, Any]], issues: list[str]
+) -> None:
+    """Retain C/D producer proposals without manufacturing phase debt.
+
+    Carry and dismissal receipts remain attached and non-terminal, so their
+    aliases remain queueable through ``read_repairable_security_obligations``.
+    They are methodology-routing state, not an authority-integrity failure:
+    turning each valid C/D proposal into ``issues`` permanently degraded the
+    completed depth phase even though the next attention/repair consumer still
+    received the exact alias.  Malformed, unknown, conflicting, or incomplete
+    receipts continue to append real issues at their validation sites.
+    """
+    _ = obligations, issues
+
+
 def _payload_digest(payload: Mapping[str, Any]) -> str:
     return _sha256_value({key: value for key, value in payload.items() if key != "authority_digest"})
 
@@ -2764,6 +3355,596 @@ def _payload_digest(payload: Mapping[str, Any]) -> str:
 def _finalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
     payload["authority_digest"] = _payload_digest(payload)
     return payload
+
+
+def _strict_json_object_bytes(raw: bytes, *, label: str) -> dict[str, Any]:
+    if type(raw) is not bytes or not raw or len(raw) > _MAX_STAGED_PRE_AUTHORITY_BYTES:
+        raise ValueError(f"{label} bytes are missing or exceed the bound")
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-finite JSON value: {value}")
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
+    except (UnicodeError, TypeError, ValueError) as exc:
+        raise ValueError(f"{label} is not strict JSON") from exc
+    if type(value) is not dict:
+        raise ValueError(f"{label} root is not an exact object")
+    return value
+
+
+def _closed_pre_run_binding(raw: Any) -> dict[str, str]:
+    fields = {
+        "run_id",
+        "source_snapshot_digest",
+        "source_scope_digest",
+        "ecosystem",
+        "mode",
+        "pipeline",
+        "binding_digest",
+    }
+    if (
+        not isinstance(raw, Mapping)
+        or set(raw) != fields
+        or any(type(raw[field]) is not str for field in fields)
+    ):
+        raise ValueError("PRE authority run binding is malformed")
+    binding = {field: str(raw[field]) for field in fields}
+    digest = binding.pop("binding_digest")
+    if (
+        not _UUID4.fullmatch(binding["run_id"])
+        or not _HEX64.fullmatch(binding["source_snapshot_digest"])
+        or not _HEX64.fullmatch(binding["source_scope_digest"])
+        or not binding["ecosystem"]
+        or not binding["mode"]
+        or not binding["pipeline"]
+        or digest != _sha256_value(binding)
+    ):
+        raise ValueError("PRE authority run binding does not replay")
+    return {**binding, "binding_digest": digest}
+
+
+def _compile_display_alias_roster(
+    obligations: Any,
+) -> list[dict[str, Any]]:
+    if not isinstance(obligations, list):
+        raise ValueError("PRE authority obligation roster is malformed")
+    roster: list[dict[str, Any]] = []
+    seen_displays: set[str] = set()
+    seen_obligations: set[str] = set()
+    seen_aliases: set[str] = set()
+    for index, raw in enumerate(obligations):
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"PRE authority obligation row {index} is malformed")
+        display_raw = raw.get("display_id")
+        obligation_id_raw = raw.get("obligation_id")
+        display = display_raw if type(display_raw) is str else ""
+        obligation_id = (
+            obligation_id_raw if type(obligation_id_raw) is str else ""
+        )
+        aliases_raw = raw.get("trigger_aliases")
+        if (
+            re.fullmatch(r"SO-\d{3}", display) is None
+            or not obligation_id
+            or display in seen_displays
+            or obligation_id in seen_obligations
+            or not isinstance(aliases_raw, list)
+        ):
+            raise ValueError(
+                f"PRE authority obligation identity row {index} is invalid"
+            )
+        aliases: list[dict[str, str]] = []
+        for alias_index, alias in enumerate(aliases_raw):
+            if not isinstance(alias, Mapping):
+                raise ValueError(
+                    f"PRE authority alias row {index}:{alias_index} is malformed"
+                )
+            if (
+                type(alias.get("alias_id")) is not str
+                or type(alias.get("subject_id")) is not str
+                or any(
+                    field in alias
+                    and alias.get(field) is not None
+                    and type(alias.get(field)) is not str
+                    for field in ("relation_id", "object_id", "symbol")
+                )
+            ):
+                raise ValueError(
+                    f"PRE authority alias row {index}:{alias_index} is malformed"
+                )
+            binding = _alias_evidence_binding(alias)
+            closed = _closed_alias_evidence_binding(binding)
+            alias_id = binding["alias_id"]
+            if closed is None or alias_id in seen_aliases:
+                raise ValueError(
+                    f"PRE authority alias row {index}:{alias_index} is invalid"
+                )
+            seen_aliases.add(alias_id)
+            aliases.append(closed)
+        aliases.sort(key=lambda row: row["alias_id"])
+        roster.append(
+            {
+                "display_id": display,
+                "obligation_id": obligation_id,
+                "aliases": aliases,
+            }
+        )
+        seen_displays.add(display)
+        seen_obligations.add(obligation_id)
+    roster.sort(key=lambda row: (row["display_id"], row["obligation_id"]))
+    return roster
+
+
+def _valid_staged_output_identity(value: Any) -> bool:
+    return bool(
+        type(value) is str
+        and re.fullmatch(r"scratchpad:[A-Za-z0-9_.-]+\.md", value)
+    )
+
+
+def compile_depth_staged_gate_context(
+    authority_bytes: bytes, output_identity: str
+) -> dict[str, Any]:
+    """Compile immutable PRE authority bytes into a pure staged-output gate.
+
+    The returned context contains only a closed display/alias projection and
+    cryptographic bindings to its source authority.  Neither compilation nor
+    validation consults the filesystem.
+    """
+
+    if not _valid_staged_output_identity(output_identity):
+        raise ValueError("staged depth output identity is not canonical")
+    authority = _strict_json_object_bytes(
+        authority_bytes, label="PRE security-obligation authority"
+    )
+    if (
+        authority.get("schema_version") != OBLIGATION_SCHEMA
+        or authority.get("stage") != PRE_DEPTH_STAGE
+        or authority.get("authority_digest") != _payload_digest(authority)
+    ):
+        raise ValueError("security-obligation authority is not valid PRE authority")
+    run_binding = _closed_pre_run_binding(authority.get("run_binding"))
+    obligations = authority.get("obligations")
+    roster = _compile_display_alias_roster(obligations)
+    try:
+        universe_digest = _universe_digest(obligations)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("PRE authority universe is malformed") from exc
+    if (
+        authority.get("authority_universe_digest") != universe_digest
+        or authority.get("obligation_count") != len(obligations)
+    ):
+        raise ValueError("PRE authority universe does not replay")
+    context: dict[str, Any] = {
+        "schema_version": STAGED_DEPTH_GATE_CONTEXT_SCHEMA,
+        "source_schema_version": OBLIGATION_SCHEMA,
+        "source_stage": PRE_DEPTH_STAGE,
+        "source_authority_sha256": _sha256_bytes(authority_bytes),
+        "authority_digest": str(authority["authority_digest"]),
+        "authority_universe_digest": universe_digest,
+        "run_binding_digest": run_binding["binding_digest"],
+        "display_alias_roster": roster,
+        "output_identity": output_identity,
+    }
+    context["context_digest"] = _sha256_value(context)
+    return context
+
+
+def _closed_staged_gate_context(
+    raw: Any,
+) -> tuple[dict[str, dict[str, Any]], str] | None:
+    fields = {
+        "schema_version",
+        "source_schema_version",
+        "source_stage",
+        "source_authority_sha256",
+        "authority_digest",
+        "authority_universe_digest",
+        "run_binding_digest",
+        "display_alias_roster",
+        "output_identity",
+        "context_digest",
+    }
+    if not isinstance(raw, Mapping) or set(raw) != fields:
+        return None
+    context = dict(raw)
+    supplied_digest = context.pop("context_digest", None)
+    if (
+        context.get("schema_version") != STAGED_DEPTH_GATE_CONTEXT_SCHEMA
+        or context.get("source_schema_version") != OBLIGATION_SCHEMA
+        or context.get("source_stage") != PRE_DEPTH_STAGE
+        or not _HEX64.fullmatch(str(context.get("source_authority_sha256") or ""))
+        or not _HEX64.fullmatch(str(context.get("authority_digest") or ""))
+        or not _HEX64.fullmatch(
+            str(context.get("authority_universe_digest") or "")
+        )
+        or not _HEX64.fullmatch(str(context.get("run_binding_digest") or ""))
+        or not _valid_staged_output_identity(context.get("output_identity"))
+        or supplied_digest != _sha256_value(context)
+    ):
+        return None
+    try:
+        roster = _compile_display_alias_roster(
+            [
+                {
+                    "display_id": row.get("display_id"),
+                    "obligation_id": row.get("obligation_id"),
+                    "trigger_aliases": row.get("aliases"),
+                }
+                for row in context.get("display_alias_roster", [])
+                if isinstance(row, Mapping)
+            ]
+        )
+    except (TypeError, ValueError):
+        return None
+    if roster != context.get("display_alias_roster"):
+        return None
+    return {
+        str(row["display_id"]): dict(row)
+        for row in roster
+    }, str(context["output_identity"])
+
+
+_RECEIPT_OPENER = "[OBLIG:security_obligations.md:"
+
+
+def _receipt_claim(line: "AS.LogicalLine"):
+    """-> (physical_line, match) for a receipt this line ASSERTS, else (0, None).
+
+    Parsing runs against the NORMALIZED value, so a list marker, a blockquote
+    marker, an enclosing backtick pair, bold, indentation and a soft wrap are
+    all presentation and all parse to the same receipt.  Backtick wrapping is
+    the literal cause of the run48 "malformed obligation receipt-like line
+    rejected" x4 family: the worker made its receipts render as code and the
+    gate discarded the artifact.
+
+    The receipt's own grammar is unchanged -- only what the gate reads changed.
+    """
+
+    if not isinstance(line, AS.LogicalLine) or line.in_fence:
+        return 0, None
+    segments = line.raw.split("\n")
+    for offset, segment in enumerate(segments):
+        for candidate in (segment.strip(), AS.strip_decoration(segment)):
+            if not candidate:
+                continue
+            match = _RECEIPT_RE.fullmatch(candidate)
+            if match is not None:
+                return line.physical_start + offset, match
+    match = _RECEIPT_RE.fullmatch(line.text)
+    if match is not None:
+        return line.physical_start, match
+    return 0, None
+
+
+def _asserts_receipt_opener(line: "AS.LogicalLine") -> bool:
+    """Does this line CLAIM a receipt, or merely talk about one?
+
+    A narrative mention ("every receipt line begins with [OBLIG:...") is not a
+    claim, so an unparseable mention produces no defect at all.
+    """
+
+    return AS.line_asserts(line, _RECEIPT_OPENER)
+
+
+def staged_depth_obligation_receipt_check(
+    outputs: Mapping[str, bytes], context: Mapping[str, Any]
+) -> "AS.CheckResult":
+    """Typed verdict for depth obligation receipts in staged bytes.
+
+    The closed conjuncts and the presentational ones used to share one
+    all-or-nothing reject list, so a decoration defect discarded a complete,
+    successful analysis.  They are split here:
+
+    * ``identity.*`` / ``dedup.*`` -- WHICH obligation, alias and finding a
+      receipt binds -- stay FAIL_CLOSED, applied to the NORMALIZED value.  A
+      permissive answer there would let a worker claim credit for an obligation
+      it never discharged, which removes a real candidate from human attention.
+    * everything else -- receipt line grammar, marker placement, marker counts,
+      fencing -- degrades to visible debt with a targeted repair hint.
+
+    Only :attr:`CheckResult.should_discard` may throw an artifact away.
+    """
+
+    defects: list[AS.Defect] = []
+
+    def blocking(prop: str, where: int, observed: str, expected: str, hint: str) -> None:
+        defects.append(
+            AS.Defect(
+                property_violated=prop,
+                physical_line=where,
+                observed=observed,
+                expected=expected,
+                repair_hint=hint,
+                closure=AS.closure_for_property(prop),
+            )
+        )
+
+    closed = _closed_staged_gate_context(context)
+    if closed is None:
+        blocking(
+            "identity.staged_gate_context",
+            0,
+            "gate context is not a current bound roster",
+            "a digest-bound depth staged gate context",
+            "Driver-side: recompile the staged gate context for this output.",
+        )
+        return AS.CheckResult(tuple(defects))
+    roster, output_identity = closed
+    if not isinstance(outputs, Mapping) or set(outputs) != {output_identity}:
+        blocking(
+            "identity.staged_output_denominator",
+            0,
+            f"staged outputs {sorted(map(str, outputs or ()))!r}",
+            f"exactly {output_identity!r}",
+            "Driver-side: stage exactly the one output this gate binds.",
+        )
+        return AS.CheckResult(tuple(defects))
+    raw = outputs.get(output_identity)
+    if (
+        type(raw) is not bytes
+        or not raw
+        or len(raw) > _MAX_STAGED_DEPTH_OUTPUT_BYTES
+    ):
+        blocking(
+            "identity.staged_output_bytes",
+            0,
+            f"{len(raw) if isinstance(raw, bytes) else 'non-bytes'} staged bytes",
+            f"1..{_MAX_STAGED_DEPTH_OUTPUT_BYTES} bytes",
+            "An absent or oversized artifact has no content to bind a receipt "
+            "to. Re-run the worker.",
+        )
+        return AS.CheckResult(tuple(defects))
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeError:
+        blocking(
+            "identity.staged_output_bytes",
+            0,
+            "output is not strict UTF-8",
+            "strict UTF-8 bytes",
+            "Re-emit the artifact as UTF-8.",
+        )
+        return AS.CheckResult(tuple(defects))
+
+    # STEP 3: normalize ONCE, at the top, and thread the parsed value down.
+    surf = AS.surface(text)
+    defects.extend(surf.defects)
+
+    sections = _finding_line_sections(
+        surf, defects=defects, source_label=output_identity
+    )
+    all_bindings = _evidence_rows_from_lines(
+        surf.lines, defects=defects, source_label=output_identity
+    )
+    section_bindings: dict[str, list[dict[str, str]]] = {}
+    for finding_id, lines in sections.items():
+        section_bindings[finding_id] = _evidence_rows_from_lines(
+            lines,
+            defects=[],  # already reported once, artifact-wide
+            source_label=f"{output_identity}:{finding_id.upper()}",
+        )
+    section_text = {
+        finding_id: _section_text(lines)
+        for finding_id, lines in sections.items()
+    }
+
+    claimed_aliases: set[tuple[str, str]] = set()
+    for line in surf.lines:
+        line_no, match = _receipt_claim(line)
+        if match is None:
+            if line.in_fence:
+                if _EVIDENCE_TOKEN not in line.raw and _RECEIPT_OPENER.casefold() in (
+                    line.raw.casefold()
+                ):
+                    defects.append(
+                        AS.Defect(
+                            property_violated="receipt.fenced_placement",
+                            physical_line=line.physical_start,
+                            observed="receipt inside a fenced block",
+                            expected="an unfenced receipt line",
+                            repair_hint=(
+                                f"{output_identity}: a fenced receipt reads as "
+                                "a quotation. Move it out of the code fence."
+                            ),
+                            closure=AS.closure_for_property(
+                                "receipt.fenced_placement"
+                            ),
+                        )
+                    )
+                continue
+            if _asserts_receipt_opener(line):
+                defects.append(
+                    AS.Defect(
+                        property_violated="receipt.line_grammar",
+                        physical_line=line.physical_start,
+                        observed=AS.strip_decoration(line.raw)[:160],
+                        expected=(
+                            "[OBLIG:security_obligations.md:SO-NNN] "
+                            "ALIAS:SOT-... STATUS:R|D|C KEY:... -> <finding-id>"
+                        ),
+                        repair_hint=(
+                            f"{output_identity}: copy the exact receipt prefix "
+                            "the obligation list supplied, then append "
+                            "'KEY:... -> <finding id>'."
+                        ),
+                        closure=AS.closure_for_property("receipt.line_grammar"),
+                    )
+                )
+            continue
+        status = match.group("status").upper()
+        key = match.group("key").strip()
+        target = match.group("target").strip()
+        if not _valid_legacy_receipt(status, key, target):
+            defects.append(
+                AS.Defect(
+                    property_violated="receipt.line_grammar",
+                    physical_line=line_no,
+                    observed=f"STATUS:{status} KEY:{key[:60]!r} -> {target[:60]!r}",
+                    expected="a non-empty KEY and target for a R/D/C status",
+                    repair_hint=(
+                        f"{output_identity}: fill in the KEY and the '-> "
+                        "<finding id>' target."
+                    ),
+                    closure=AS.closure_for_property("receipt.line_grammar"),
+                )
+            )
+            continue
+        if status != "R":
+            continue
+
+        display = match.group("display").upper()
+        display_row = roster.get(display)
+        aliases = (
+            list(display_row.get("aliases") or [])
+            if isinstance(display_row, Mapping)
+            else []
+        )
+        alias_by_id = {
+            str(alias.get("alias_id") or ""): alias
+            for alias in aliases
+            if isinstance(alias, Mapping)
+        }
+        explicit_alias = str(match.group("alias") or "").upper()
+        if display_row is None:
+            blocking(
+                "identity.receipt_display_binding",
+                line_no,
+                display,
+                f"one of {sorted(roster)!r}",
+                f"{output_identity}: this obligation is not in the current "
+                "roster. Copy a display id from the obligation list.",
+            )
+            continue
+        if explicit_alias:
+            alias_id = explicit_alias
+            if alias_id not in alias_by_id:
+                blocking(
+                    "identity.receipt_alias_binding",
+                    line_no,
+                    alias_id,
+                    f"one of {sorted(alias_by_id)!r}",
+                    f"{output_identity}: this alias is not bound to {display}. "
+                    "Copy the ALIAS from the obligation list.",
+                )
+                continue
+        elif len(alias_by_id) == 1:
+            alias_id = next(iter(alias_by_id))
+        else:
+            blocking(
+                "identity.receipt_alias_binding",
+                line_no,
+                f"no ALIAS and {len(alias_by_id)} candidates under {display}",
+                "an explicit ALIAS:SOT-... token",
+                f"{output_identity}: name the alias explicitly; "
+                f"{display} carries more than one.",
+            )
+            continue
+        claim = (display, alias_id)
+        if claim in claimed_aliases:
+            blocking(
+                "dedup.receipt_alias_claim",
+                line_no,
+                f"second receipt claiming {alias_id}",
+                f"one receipt per {display}/{alias_id}",
+                f"{output_identity}: report each alias once. Two claims on one "
+                "alias hide which finding actually discharges it.",
+            )
+            continue
+        claimed_aliases.add(claim)
+        referent = _resolve_finding_referent(
+            AS.strip_decoration(target), section_text
+        )
+        if not referent:
+            blocking(
+                "identity.receipt_finding_referent",
+                line_no,
+                target[:120],
+                f"exactly one of {sorted(k.upper() for k in section_text)!r}",
+                f"{output_identity}: end the receipt with '-> <finding id>' "
+                "naming exactly one finding declared in this artifact.",
+            )
+            continue
+        expected_binding = dict(alias_by_id[alias_id])
+        global_matches = [
+            row for row in all_bindings if row.get("alias_id") == alias_id
+        ]
+        local_matches = [
+            row
+            for row in section_bindings.get(referent, [])
+            if row.get("alias_id") == alias_id
+        ]
+        if (
+            len(global_matches) != 1
+            or len(local_matches) != 1
+            or global_matches[0] != expected_binding
+            or local_matches[0] != expected_binding
+        ):
+            # DEBT: the structured marker is a SUPPORTING record for a receipt
+            # whose identity already verified above. Discarding a whole
+            # analysis over a marker's placement or count is the measured
+            # run48 failure; the alias simply stays queueable for repair.
+            defects.append(
+                AS.Defect(
+                    property_violated="evidence.same_section_alias_marker",
+                    physical_line=line_no,
+                    observed=(
+                        f"{len(global_matches)} artifact-wide and "
+                        f"{len(local_matches)} in-section markers for {alias_id}"
+                    ),
+                    expected=(
+                        f"exactly one marker for {alias_id}, inside "
+                        f"{referent.upper()}"
+                    ),
+                    repair_hint=(
+                        f"{output_identity}: place the exact "
+                        f"<!-- {_EVIDENCE_TOKEN}: ... --> marker for "
+                        f"{alias_id} under the {referent.upper()} heading (a "
+                        "subsection heading naming the same id also counts)."
+                    ),
+                    closure=AS.closure_for_property(
+                        "evidence.same_section_alias_marker"
+                    ),
+                )
+            )
+    return AS.CheckResult(tuple(defects))
+
+
+def staged_depth_obligation_receipt_validator(
+    outputs: Mapping[str, bytes],
+    context: Mapping[str, Any],
+    *,
+    debt: list[str] | None = None,
+) -> list[str]:
+    """Legacy adapter: BLOCKING issues only.
+
+    Callers that treat a non-empty return as "discard the artifact" are now
+    correct by construction -- only a FAIL_CLOSED identity/dedup defect reaches
+    this list.  Pass ``debt`` to collect the non-blocking defects so they can be
+    published alongside the artifact instead of being lost; prefer
+    :func:`staged_depth_obligation_receipt_check` for the typed result.
+    """
+
+    result = staged_depth_obligation_receipt_check(outputs, context)
+    if debt is not None:
+        debt.extend(
+            dict.fromkeys(defect.render() for defect in result.debt_defects)
+        )
+    return list(
+        dict.fromkeys(defect.render() for defect in result.blocking_defects)
+    )
 
 
 def derive_security_obligation_authority(
@@ -2774,6 +3955,7 @@ def derive_security_obligation_authority(
     run_id: str = "",
     source_snapshot_digest: str = "",
     stage: str = POST_DEPTH_STAGE,
+    run_context_authority: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     root = Path(scratchpad)
     stage_n = _normalized_stage(stage)
@@ -2783,6 +3965,7 @@ def derive_security_obligation_authority(
         source_snapshot_digest=source_snapshot_digest,
         ecosystem=ecosystem,
         mode=mode,
+        run_context_authority=run_context_authority,
     )
     facts_by_id: dict[str, dict[str, Any]] = {}
     bindings: list[dict[str, Any]] = []
@@ -2882,7 +4065,16 @@ def derive_security_obligation_authority(
                 universe_digest=universe_digest,
             )
         )
-    _apply_receipts(obligations, receipts, issues)
+        _apply_receipts(
+            obligations,
+            receipts,
+            issues,
+            # POST authority is also used as a source/context lifecycle
+            # primitive before a depth pool exists.  Only an actual depth
+            # contract creates the enumerate-all receipt denominator.
+            require_depth_enumeration=(root / _DEPTH_CONTRACT_FILE).is_file(),
+        )
+        _append_unresolved_producer_disposition_issues(obligations, issues)
     all_bindings = bindings + receipt_bindings
     all_bindings.sort(key=lambda row: (str(row["artifact"]), str(row["role"])))
     degraded = bool(issues) or substrate_unavailable or any(
@@ -3020,6 +4212,25 @@ def render_security_obligations(authority: Mapping[str, Any]) -> str:
                 f"- {_escape_cell(row.get('display_id'))} "
                 f"`{_escape_cell(alias.get('alias_id'))}`: `{marker}`"
             )
+        lines.extend(
+            [
+                "",
+                "### Exact receipt prefixes",
+                "",
+                "Copy one complete prefix below byte-for-byte; do not retype, "
+                "shorten, case-normalize, or reconstruct an SO/alias identity. "
+                "If no exact prefix applies, omit the receipt-like claim "
+                "entirely so the alias remains explicit repair work.",
+                "",
+            ]
+        )
+        for row, alias in alias_rows:
+            lines.append(
+                "- `"
+                f"[OBLIG:security_obligations.md:{row.get('display_id')}] "
+                f"ALIAS:{alias.get('alias_id')} STATUS:"
+                "`"
+            )
     issues = authority.get("issues") if isinstance(authority.get("issues"), list) else []
     if issues:
         lines.extend(["", "## Coverage / authority debt", ""])
@@ -3036,6 +4247,12 @@ def render_security_obligations(authority: Mapping[str, Any]) -> str:
             "Emit one line per exact alias when an obligation has more than one "
             "alias. The `ALIAS:` field may be omitted only for a single-alias "
             "obligation.",
+            "",
+            "For any alias-bearing receipt, copy its complete canonical prefix "
+            "from `Exact receipt prefixes` byte-for-byte. Never retype or "
+            "reconstruct the alias. If you cannot copy an exact supplied "
+            "prefix, emit no receipt-like line for it; omission preserves "
+            "queueable debt, while a near-match forces a rejected attempt.",
             "",
             "The referenced finding section must also contain the ready-to-copy "
             "`PLAMEN_SECURITY_OBLIGATION_EVIDENCE` marker from the exact alias "
@@ -3054,6 +4271,11 @@ def render_security_obligations(authority: Mapping[str, Any]) -> str:
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
+    try:
+        if not path.is_symlink() and path.is_file() and path.read_bytes() == data:
+            return
+    except OSError:
+        pass
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_bytes(data)
     os.replace(tmp, path)
@@ -3067,6 +4289,7 @@ def write_security_obligation_authority(
     run_id: str = "",
     source_snapshot_digest: str = "",
     stage: str = POST_DEPTH_STAGE,
+    run_context_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = Path(scratchpad)
     root.mkdir(parents=True, exist_ok=True)
@@ -3077,6 +4300,7 @@ def write_security_obligation_authority(
         run_id=run_id,
         source_snapshot_digest=source_snapshot_digest,
         stage=stage,
+        run_context_authority=run_context_authority,
     )
     _atomic_write(
         root / FEATURE_FACT_FILE,
@@ -3378,6 +4602,7 @@ def validate_security_obligation_authority(
     run_id: str = "",
     source_snapshot_digest: str = "",
     stage: str = POST_DEPTH_STAGE,
+    run_context_authority: Mapping[str, Any] | None = None,
 ) -> list[str]:
     root = Path(scratchpad)
     issues: list[str] = []
@@ -3390,6 +4615,7 @@ def validate_security_obligation_authority(
                 run_id=run_id,
                 source_snapshot_digest=source_snapshot_digest,
                 stage=stage,
+                run_context_authority=run_context_authority,
             )
         )
     except Exception as exc:
@@ -3432,13 +4658,19 @@ __all__ = [
     "RECON_FEATURE_FILE",
     "RECON_FEATURE_SCHEMA",
     "RECON_FEATURE_SCHEMA_V3",
+    "RUN_CONTEXT_AUTHORITY_SCHEMA",
     "RULE_CATALOG_VERSION",
+    "STAGED_DEPTH_GATE_CONTEXT_SCHEMA",
+    "compile_depth_staged_gate_context",
+    "build_security_obligation_run_context_authority",
     "derive_security_obligation_authority",
     "read_pending_security_obligation_verification",
     "read_queueable_security_obligations",
     "read_repairable_security_obligations",
     "security_obligation_input_artifacts",
+    "staged_depth_obligation_receipt_validator",
     "render_security_obligations",
     "validate_security_obligation_authority",
+    "validate_security_obligation_run_context_authority",
     "write_security_obligation_authority",
 ]

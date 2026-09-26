@@ -81,6 +81,9 @@ class ProofScope(str, Enum):
 
 class AttemptResult(str, Enum):
     NOT_ATTEMPTED = "not_attempted"
+    # Actual execution was observed, but no selected-test or semantic oracle
+    # has been adjudicated. This is never reusable as mechanism/harm proof.
+    EXECUTED_UNPROVEN = "executed_unproven"
     COMPILE_FAILED = "compile_failed"
     RUN_FAILED = "run_failed"
     ASSERTION_FAILED = "assertion_failed"
@@ -221,8 +224,8 @@ class VerificationWorkItem:
     constituent_id: str
     severity: Severity
     claim_class: ClaimClass
-    locally_testable: bool
-    harness_available: bool
+    locally_testable: Optional[bool]
+    harness_available: Optional[bool]
     group_id: str = ""
 
     def __post_init__(self) -> None:
@@ -230,6 +233,12 @@ class VerificationWorkItem:
             raise ValueError("finding_id is required")
         if not self.constituent_id.strip():
             raise ValueError("constituent_id is required")
+        for value, field in (
+            (self.locally_testable, "locally_testable"),
+            (self.harness_available, "harness_available"),
+        ):
+            if value is not None and type(value) is not bool:
+                raise TypeError(f"{field} must be bool or None")
 
     @property
     def key(self) -> str:
@@ -316,6 +325,11 @@ class ExecutionReceipt:
         elif self.command_argv or self.runner_id or self.output_digest:
             raise ValueError("non-execution receipt cannot claim runner output")
 
+        if self.result is AttemptResult.EXECUTED_UNPROVEN:
+            if not self.attempted or self.proof_scope is not ProofScope.UNPROVEN:
+                raise ValueError("unadjudicated execution requires an attempt with UNPROVEN scope")
+            if "SEMANTIC_RESULT_UNASSESSED" not in self.debts:
+                raise ValueError("unadjudicated execution must retain semantic assessment debt")
         if self.result in {AttemptResult.COMPILE_FAILED, AttemptResult.RUN_FAILED}:
             if not self.attempted:
                 raise ValueError("compile/run failure requires an execution attempt")
@@ -436,6 +450,10 @@ def _blocker_validation_error(
         return "blocker lacks independent validation"
     if blocker.validated_by is blocker.authority:
         return "blocker proposer cannot validate its own non-execution decision"
+    if work_item.locally_testable is None:
+        return "local testability is unassessed and cannot justify non-execution"
+    if work_item.harness_available is None:
+        return "harness availability is unassessed and cannot justify non-execution"
     if work_item.locally_testable and work_item.harness_available:
         return "a locally testable row cannot be waived"
 
@@ -475,6 +493,27 @@ def evaluate_obligation(
 ) -> ExecutionObligation:
     """Determine execution coverage without deciding the finding's verdict."""
 
+    assessment_debts = tuple(
+        debt
+        for unknown, debt in (
+            (
+                work_item.locally_testable is None,
+                "LOCAL_TESTABILITY_UNASSESSED",
+            ),
+            (
+                work_item.harness_available is None,
+                "HARNESS_AVAILABILITY_UNASSESSED",
+            ),
+        )
+        if unknown
+    )
+
+    blocker_error = (
+        _blocker_validation_error(work_item, blocker)
+        if blocker is not None
+        else ""
+    )
+
     if not policy.requires_attempt(work_item.severity):
         return ExecutionObligation(
             work_item_key=work_item.key,
@@ -482,12 +521,15 @@ def evaluate_obligation(
             decision=Decision.OPTIONAL_BY_MODE,
             proof_scope=ProofScope.UNPROVEN,
             fuzz_required=False,
+            debts=(
+                assessment_debts
+                if not blocker_error
+                else (*assessment_debts, "INVALID_BLOCKER", blocker_error)
+            ),
         )
 
-    debts: tuple[str, ...] = ()
     if blocker is not None:
-        error = _blocker_validation_error(work_item, blocker)
-        if not error:
+        if not blocker_error:
             return ExecutionObligation(
                 work_item_key=work_item.key,
                 policy_digest=policy.policy_digest,
@@ -496,7 +538,6 @@ def evaluate_obligation(
                 fuzz_required=False,
                 blocker=blocker,
             )
-        debts = ("INVALID_BLOCKER", error)
 
     return ExecutionObligation(
         work_item_key=work_item.key,
@@ -507,7 +548,11 @@ def evaluate_obligation(
             work_item.claim_class in {ClaimClass.UNIT, ClaimClass.PROPERTY}
             and policy.requires_fuzz(work_item.severity)
         ),
-        debts=debts,
+        debts=(
+            assessment_debts
+            if not blocker_error
+            else (*assessment_debts, "INVALID_BLOCKER", blocker_error)
+        ),
     )
 
 
@@ -577,7 +622,10 @@ def make_execution_receipt(
         command_argv=tuple(command_argv),
         runner_id=runner_id,
         output_digest=output_digest,
-        debts=obligation.debts,
+        debts=(
+            tuple(sorted(set(obligation.debts) | {"SEMANTIC_RESULT_UNASSESSED"}))
+            if result is AttemptResult.EXECUTED_UNPROVEN else obligation.debts
+        ),
     )
     return _build_receipt(payload)
 

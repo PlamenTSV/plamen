@@ -463,6 +463,38 @@ def test_no_delta_public_derivation_is_exact_byte_identity() -> None:
     assert debt == []
 
 
+def test_union_ignores_fenced_source_identities_and_appends_matching_delta() -> None:
+    base = (
+        b"# Findings Inventory\n\n"
+        b"### Finding [H-1]: Canonical base\n"
+        b"**Severity**: Medium\n"
+        b"**Preserved Source Block**:\n"
+        b"````markdown\n"
+        b"## Finding [EN-2]: Inert producer source\n"
+        b"### Finding [INV-999]: Inert canonical-looking source\n"
+        b"````\n"
+    )
+    delta = {
+        "candidate_ids": ["EN-2"],
+        "candidate_count": 1,
+        "candidates": [_candidate("EN-2", "Live appended candidate", "Low")],
+    }
+
+    raw, fixed_point, debt = _derive_union(base, delta)
+
+    assert raw.startswith(base.rstrip() + b"\n\n")
+    assert raw.count(b"### Finding [EN-2]: Live appended candidate") == 1
+    assert fixed_point == {
+        "base_ids": ["H-1"],
+        "delta_ids": ["EN-2"],
+        "frozen_ids": ["EN-2", "H-1"],
+        "base_union_delta_equals_frozen": True,
+        "candidate_records_removed": 0,
+        "identity_collision_ids": [],
+    }
+    assert debt == []
+
+
 def test_delta_public_derivation_pins_append_collision_and_order() -> None:
     raw, fixed_point, debt = _derive_union(
         BASE_INVENTORY,

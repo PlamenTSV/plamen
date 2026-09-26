@@ -10,6 +10,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CONTINUATION = ROOT / "docs" / "continuation"
 RESEARCH = CONTINUATION / "research"
+EXPECTED_CONTINUATION_FILES = (
+    "docs/continuation/GOAL.md",
+    "docs/continuation/README.md",
+    "docs/continuation/E2E_RUNBOOK.md",
+    "docs/continuation/REQUIREMENTS.jsonl",
+    "docs/continuation/DECISIONS.md",
+    "docs/continuation/EVIDENCE_INDEX.json",
+    "docs/continuation/NEXT_ACTIONS.md",
+    "docs/continuation/CORPUS_MANIFEST.json",
+    "docs/continuation/MODEL_ROUTING_PORTABLE_REPLAY.json",
+    "docs/continuation/PRIVATE_ARTIFACTS.md",
+    "docs/continuation/NATIVE_BROKER_V2_CONTRACT.md",
+    "docs/continuation/REQUIREMENTS_RECONCILIATION.jsonl",
+    "scripts/replay_model_routing_research.py",
+    "scripts/test_model_routing_research_portable_replay.py",
+    "docs/continuation/research/",
+    "docs/continuation/research/PRIVATE_GAP_INDEX.json",
+)
 
 
 def _json(path: Path):
@@ -37,15 +55,9 @@ def test_research_manifest_reconciles_every_source_and_portable_byte():
         re.fullmatch(r"[0-9a-f]{64}", row["source_sha256"])
         for row in rows
     )
-    continuation_files = set(manifest["continuation_files"])
-    assert {
-        "docs/continuation/GOAL.md",
-        "docs/continuation/REQUIREMENTS.jsonl",
-        "docs/continuation/CORPUS_MANIFEST.json",
-        "docs/continuation/MODEL_ROUTING_PORTABLE_REPLAY.json",
-        "scripts/replay_model_routing_research.py",
-        "scripts/test_model_routing_research_portable_replay.py",
-    } <= continuation_files
+    continuation_files = manifest["continuation_files"]
+    assert continuation_files == list(EXPECTED_CONTINUATION_FILES)
+    assert len(continuation_files) == len(set(continuation_files))
     for relative in continuation_files:
         assert (ROOT / relative).exists(), f"missing continuation file: {relative}"
 

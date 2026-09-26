@@ -488,10 +488,16 @@ def validate_report_index_canonical_bundle(
         import plamen_validators as validators
 
         issues.extend(
-            validators._validate_report_index_status_authority(root)
+            validators._validate_report_index_status_authority(
+                root,
+                expected_run_id=run_id,
+            )
         )
         issues.extend(
-            validators._report_index_status_projection_debt(root)
+            validators._report_index_status_projection_debt(
+                root,
+                expected_run_id=run_id,
+            )
         )
         residual = validators._report_index_dropped_ids(
             root, run_id=run_id

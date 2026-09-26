@@ -1,6 +1,7 @@
 """Fixture-first adversarial tests for the P0-P2 report authority repair."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 import copy
 import hashlib
 import json
@@ -105,8 +106,16 @@ def _commit_contract(
     outputs: dict[str, bytes],
     *,
     actor: str = "DRIVER",
+    preexecution_authority: Mapping[str, object] | None = None,
 ) -> None:
-    record_work_unit_inputs(scratch, project, contract, launch, run_id=RUN_ID)
+    record_work_unit_inputs(
+        scratch,
+        project,
+        contract,
+        launch,
+        run_id=RUN_ID,
+        preexecution_authority=preexecution_authority,
+    )
     for relative, raw in outputs.items():
         target = scratch / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -217,12 +226,26 @@ def _commit_contradictory_source_capture(
         },
     )
     launch = _launch(contract)
+    preexecution_authority = RCA.build_report_capture_preexecution_authority(
+        scratchpad=scratch,
+        project_root=project,
+        run_id=RUN_ID,
+        contract=contract,
+        launch=launch,
+        expected_output_records={
+            "scratchpad:report_assembly_source_capture.json": {
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "size": len(raw),
+            },
+        },
+    )
     _commit_contract(
         project,
         scratch,
         contract,
         launch,
         {"report_assembly_source_capture.json": raw},
+        preexecution_authority=preexecution_authority,
     )
 
 

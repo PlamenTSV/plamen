@@ -805,7 +805,7 @@ def bind_severity_proposal(
         worker_identity=assessor,
         invocation_id=invocation,
         expected_input_sha256=assessor_input_sha256,
-        expected_output_sha256=_digest(normalized),
+        expected_output_sha256=severity_proposal_authority_digest(normalized),
     )
     assessment = {
         "candidate_id": expected_candidate,
@@ -1277,7 +1277,8 @@ def _normalize_evidence_receipts(
         evidence_key = evidence_id.casefold()
         digest = _text(row.get("content_sha256")).casefold()
         premise_ids = _string_list(
-            row.get("premise_ids"), field="evidence_receipt.premise_ids"
+            row.get("premise_ids"), field="evidence_receipt.premise_ids",
+            nonempty=False,
         )
         member_ids = _string_list(
             row.get("constituent_ids"), field="evidence_receipt.constituent_ids"
@@ -1491,6 +1492,44 @@ def _constituent_dispositions(
             "severity_status": severity_status,
         }
     return result
+
+
+def severity_proposal_authority_digest(proposal: Mapping[str, Any]) -> str:
+    """Digest the assessor's normalized proposal, not list ordering in JSON.
+
+    Decision construction canonicalizes evidence ID sets.  Launch receipts
+    must bind that same semantic postimage or an otherwise valid proposal with
+    unsorted evidence IDs will fail its own authority check.
+    """
+
+    parsed = _validate_severity_proposal(proposal, allow_incomplete_axes=True)
+    impact, _ = _validate_fact_axis(
+        parsed.get("impact"), axis="impact", allowed_classes=IMPACT_CLASSES
+    )
+    likelihood, _ = _validate_fact_axis(
+        parsed.get("likelihood"), axis="likelihood",
+        allowed_classes=LIKELIHOOD_CLASSES,
+    )
+    modifiers, _, _ = _normalize_modifiers(parsed.get("modifiers"))
+    adjustment, _ = _normalize_adjustment(parsed.get("adjustment"))
+    outcomes, _ = _constituent_diverges(
+        parsed["constituent_ids"], parsed["constituent_premise_outcomes"]
+    )
+    canonical = _validate_severity_proposal(
+        {
+            "schema_version": PROPOSAL_SCHEMA,
+            "candidate_id": parsed["candidate_id"],
+            "constituent_ids": parsed["constituent_ids"],
+            "impact": impact,
+            "likelihood": likelihood,
+            "modifiers": modifiers,
+            "proposed_severity": parsed["proposed_severity"],
+            "adjustment": adjustment,
+            "constituent_premise_outcomes": outcomes,
+        },
+        allow_incomplete_axes=True,
+    )
+    return _digest(canonical)
 
 
 def build_severity_decision(
@@ -3003,9 +3042,11 @@ def _bind_legacy_decision_to_run(
     return rebuilt
 
 
-def write_severity_decision_ledger(
-    path: Path, run_id: str, decisions: Iterable[Mapping[str, Any]]
+def build_severity_decision_ledger(
+    run_id: str, decisions: Iterable[Mapping[str, Any]]
 ) -> dict[str, Any]:
+    """Build the exact persisted severity-ledger payload without writing it."""
+
     run = _text(run_id)
     if not run:
         raise SeverityDecisionError("ledger run ID is empty")
@@ -3039,7 +3080,13 @@ def write_severity_decision_ledger(
         "decision_count": len(rows),
         "decisions": rows,
     }
-    payload = {**unsigned, "ledger_digest": _digest(unsigned)}
+    return {**unsigned, "ledger_digest": _digest(unsigned)}
+
+
+def write_severity_decision_ledger(
+    path: Path, run_id: str, decisions: Iterable[Mapping[str, Any]]
+) -> dict[str, Any]:
+    payload = build_severity_decision_ledger(run_id, decisions)
     target = Path(path)
     content = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
     try:
@@ -3442,6 +3489,7 @@ __all__ = [
     "bind_severity_adjudication",
     "bind_severity_proposal",
     "build_severity_decision",
+    "build_severity_decision_ledger",
     "build_severity_repair_request",
     "compile_severity_adjudication_prompt_contract",
     "compile_severity_prompt_contract",

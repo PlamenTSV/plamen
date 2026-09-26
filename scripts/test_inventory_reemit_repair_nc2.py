@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -55,7 +56,7 @@ def _inventory(root: Path, rows: list[tuple[str, str, tuple[str, ...]]]) -> None
     (root / "findings_inventory.md").write_text(text, encoding="utf-8")
 
 
-def test_semantically_rewritten_candidate_is_additively_reemitted_and_replays(
+def test_omitted_candidate_is_additively_reemitted_and_replays(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "analysis_evm_a.md").write_text(
@@ -63,7 +64,9 @@ def test_semantically_rewritten_candidate_is_additively_reemitted_and_replays(
     )
     _manifest(tmp_path, "analysis_evm_a.md")
     _chunk(tmp_path, [("CC-1", "source mechanism", ("TF-1",))])
-    _inventory(tmp_path, [("INV-001", "rewritten mechanism", ("TF-1", "CC-1"))])
+    # Additive repair restores an omitted delivery. Already-delivered semantic
+    # drift belongs to canonical projection repair, covered separately below.
+    _inventory(tmp_path, [])
     assert reconcile_inventory(tmp_path)["summary"]["HUMAN_REVIEW_DEBT"] == 1
 
     receipt = R._apply_inventory_reemit_repair_for_tests(tmp_path)
@@ -75,12 +78,35 @@ def test_semantically_rewritten_candidate_is_additively_reemitted_and_replays(
     assert "exact root for source mechanism" in inventory
     assert "exact impact for source mechanism" in inventory
     assert "INDEPENDENT_VERIFICATION_REQUIRED" in inventory
+    source_hash = hashlib.sha256((tmp_path / "analysis_evm_a.md").read_bytes()).hexdigest()
+    assert f"**Source Actions**: analysis_evm_a.md:TF-1@sha256:{source_hash}" in inventory
     inputs = D._inventory_reconciliation_input_paths(
         tmp_path, reconcile_inventory(tmp_path)
     )
     assert "inventory_reemit_intent.json" in inputs
     assert "inventory_reemit_receipt.json" in inputs
     assert R._apply_inventory_reemit_repair_for_tests(tmp_path) == receipt
+
+
+def _assert_projection_repair_required_without_writes(root: Path) -> None:
+    before = {path.name: path.read_bytes() for path in root.iterdir() if path.is_file()}
+    with pytest.raises(R.InventoryReemitError, match="repair the canonical projection instead"):
+        R._apply_inventory_reemit_repair_for_tests(root)
+    assert {path.name: path.read_bytes() for path in root.iterdir() if path.is_file()} == before
+    assert not (root / R.INTENT_FILE).exists()
+    assert not (root / "inventory_reemit_receipt.json").exists()
+
+
+def test_semantically_rewritten_delivered_candidate_requires_projection_repair(tmp_path: Path) -> None:
+    (tmp_path / "analysis_evm_a.md").write_text(
+        _finding("TF-1", "source mechanism"), encoding="utf-8"
+    )
+    _manifest(tmp_path, "analysis_evm_a.md")
+    _chunk(tmp_path, [("CC-1", "source mechanism", ("TF-1",))])
+    _inventory(tmp_path, [("INV-001", "rewritten mechanism", ("TF-1", "CC-1"))])
+    assert reconcile_inventory(tmp_path)["summary"]["HUMAN_REVIEW_DEBT"] == 1
+
+    _assert_projection_repair_required_without_writes(tmp_path)
 
 
 def test_reemit_contains_source_sibling_headings_inside_one_target_block(
@@ -103,7 +129,7 @@ def test_reemit_contains_source_sibling_headings_inside_one_target_block(
     (tmp_path / "analysis_evm_a.md").write_text(source, encoding="utf-8")
     _manifest(tmp_path, "analysis_evm_a.md")
     _chunk(tmp_path, [("CC-1", "source with analysis sections", ("TF-1",))])
-    _inventory(tmp_path, [("INV-001", "rewritten mechanism", ("TF-1", "CC-1"))])
+    _inventory(tmp_path, [])
 
     receipt = R._apply_inventory_reemit_repair_for_tests(tmp_path)
     replay = reconcile_inventory(tmp_path)
@@ -124,7 +150,7 @@ def test_reemit_contains_source_sibling_headings_inside_one_target_block(
     assert "### Postcondition Analysis" in inventory
 
 
-def test_many_to_one_collapse_reemits_each_candidate_independently(tmp_path: Path) -> None:
+def test_many_to_one_delivered_collapse_requires_projection_repair(tmp_path: Path) -> None:
     (tmp_path / "analysis_evm_a.md").write_text(
         _finding("TF-1", "mechanism A"), encoding="utf-8"
     )
@@ -134,6 +160,21 @@ def test_many_to_one_collapse_reemits_each_candidate_independently(tmp_path: Pat
     _manifest(tmp_path, "analysis_evm_a.md", "analysis_evm_b.md")
     _chunk(tmp_path, [("CC-1", "combined", ("TF-1", "RSW-2"))])
     _inventory(tmp_path, [("INV-001", "combined", ("TF-1", "RSW-2", "CC-1"))])
+    assert reconcile_inventory(tmp_path)["summary"]["HUMAN_REVIEW_DEBT"] == 2
+
+    _assert_projection_repair_required_without_writes(tmp_path)
+
+
+def test_two_omitted_candidates_reemit_independently(tmp_path: Path) -> None:
+    (tmp_path / "analysis_evm_a.md").write_text(
+        _finding("TF-1", "mechanism A"), encoding="utf-8"
+    )
+    (tmp_path / "analysis_evm_b.md").write_text(
+        _finding("RSW-2", "mechanism B"), encoding="utf-8"
+    )
+    _manifest(tmp_path, "analysis_evm_a.md", "analysis_evm_b.md")
+    _chunk(tmp_path, [("CC-1", "combined", ("TF-1", "RSW-2"))])
+    _inventory(tmp_path, [])
     assert reconcile_inventory(tmp_path)["summary"]["HUMAN_REVIEW_DEBT"] == 2
 
     receipt = R._apply_inventory_reemit_repair_for_tests(tmp_path)
@@ -156,7 +197,7 @@ def test_crash_after_inventory_replace_resumes_without_duplicate_reemit(
     )
     _manifest(tmp_path, "analysis_evm_a.md")
     _chunk(tmp_path, [("CC-1", "source mechanism", ("TF-1",))])
-    _inventory(tmp_path, [("INV-001", "rewritten mechanism", ("TF-1", "CC-1"))])
+    _inventory(tmp_path, [])
     original = R._write_receipt
 
     def crash(_root: Path, _intent: dict[str, object]) -> dict[str, object]:
@@ -183,7 +224,7 @@ def test_stale_reemit_receipt_cannot_hide_later_inventory_drift(tmp_path: Path) 
     )
     _manifest(tmp_path, "analysis_evm_a.md")
     _chunk(tmp_path, [("CC-1", "source mechanism", ("TF-1",))])
-    _inventory(tmp_path, [("INV-001", "rewritten mechanism", ("TF-1", "CC-1"))])
+    _inventory(tmp_path, [])
     R._apply_inventory_reemit_repair_for_tests(tmp_path)
     inventory = tmp_path / "findings_inventory.md"
     inventory.write_text(
@@ -223,7 +264,7 @@ def test_reemit_with_missing_or_novel_source_severity_keeps_core_verify_route(
     (tmp_path / "analysis_evm_a.md").write_text(source, encoding="utf-8")
     _manifest(tmp_path, "analysis_evm_a.md")
     _chunk(tmp_path, [("CC-1", "source mechanism", ("TF-1",))])
-    _inventory(tmp_path, [("INV-001", "rewritten mechanism", ("TF-1", "CC-1"))])
+    _inventory(tmp_path, [])
 
     R._apply_inventory_reemit_repair_for_tests(tmp_path)
 
@@ -244,7 +285,10 @@ def test_reemit_is_bound_as_driver_merge_before_reconciliation_phaseio(
     (sp / "analysis_evm_a.md").write_text(
         _finding("TF-1", "source mechanism"), encoding="utf-8"
     )
-    _manifest(sp, "analysis_evm_a.md")
+    (sp / "analysis_evm_b.md").write_text(
+        _finding("TF-2", "omitted independent mechanism"), encoding="utf-8"
+    )
+    _manifest(sp, "analysis_evm_a.md", "analysis_evm_b.md")
     Checkpoint(run_id=run_id).save(sp)
     config = {
         "pipeline": "sc",
@@ -259,7 +303,11 @@ def test_reemit_is_bound_as_driver_merge_before_reconciliation_phaseio(
         item for item in SC_PHASES if item.name == "inventory_chunk_a"
     )
     assert D._bind_typed_model_phase_inputs(chunk_phase, sp, config) == []
-    _chunk(sp, [("CC-1", "rewritten mechanism", ("TF-1",))])
+    # The canonical aggregate authenticates a qualified source action. The
+    # second discovery source is genuinely absent from the chunk/final output,
+    # so reconciliation must execute the additive MERGE rather than repair an
+    # existing one-to-one projection or accept unqualified provenance.
+    _chunk(sp, [("CC-1", "source mechanism", ("analysis_evm_a.md:TF-1",))])
     assert D._record_typed_model_phase_artifacts(
         chunk_phase, sp, config
     ) == []
@@ -276,10 +324,15 @@ def test_reemit_is_bound_as_driver_merge_before_reconciliation_phaseio(
         derivation_kind="single_shard",
     )
     assert issues == []
+    before_reemit = reconcile_inventory(sp)
+    assert before_reemit["summary"]["HUMAN_REVIEW_DEBT"] == 1
+    omitted = next(row for row in before_reemit["candidates"] if row["source_finding_id"] == "TF-2")
+    assert omitted["disposition"] == "HUMAN_REVIEW_DEBT"
 
     assert D._record_inventory_reconciliation_phase_io(
         scratchpad=sp, config=config, phase=phase
     ) == []
+    assert reconcile_inventory(sp)["summary"]["HUMAN_REVIEW_DEBT"] == 0
 
     ledger = read_artifact_ledger(sp)
     merge = ledger["work_units"][

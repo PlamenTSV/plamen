@@ -13,6 +13,7 @@ that merely discusses negative vocabulary is not authority and is ignored.
 """
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 import hashlib
 import json
@@ -22,6 +23,7 @@ import re
 from typing import Any, Mapping, Sequence
 import uuid
 
+import artifact_surface as AS
 from negative_closure_policy import terminal_negative_authorized
 import axis_canonical_prior as axis_prior_authority
 
@@ -31,18 +33,42 @@ CANDIDATE_NEGATIVE_SKILL = "CANDIDATE_NEGATIVE_AUTHORITY"
 LEDGER_PREFIX = "candidate_negative_proposals_"
 CANDIDATE_PLAN_FILE = "candidate_negative_skeptic_work_plan.json"
 CANDIDATE_DENOMINATOR_FILE = "candidate_negative_denominator.json"
+CANDIDATE_PLANNING_DEBT_FILE = "candidate_negative_planning_debt.json"
 APPLICATION_PLAN_SCHEMA = "plamen.application_skeptic_work_plan.v1"
 AXIS_CLEAR_ADAPTER_SCHEMA = "plamen.axis_clear_candidate_negative_adapter.v1"
 AXIS_CLEAR_PHASE = "axis_coverage"
 AXIS_WORKLIST_ARTIFACT = "axis_disposition_worklist.json"
 AXIS_APPLICATION_RECEIPT_ARTIFACT = "axis_disposition_receipt.json"
 AXIS_EXECUTION_EVIDENCE_ARTIFACT = "axis_execution_evidence_authority.json"
+DEPTH_CANDIDATE_NEGATIVE_STAGED_CONTEXT_SCHEMA = (
+    "plamen.depth_candidate_negative_staged_context.v1"
+)
+CANDIDATE_NEGATIVE_STAGED_CONTEXT_SCHEMA = (
+    "plamen.candidate_negative_staged_context.v2"
+)
+ATTENTION_REPAIR_ADAPTER_SCHEMA = (
+    "plamen.attention_repair_candidate_negative_adapter.v1"
+)
+ATTENTION_REPAIR_PHASE = "attention_repair"
+ATTENTION_REPAIR_QUEUE_ARTIFACT = "attention_repair_queue.md"
+ATTENTION_REPAIR_PLAN_ARTIFACT = "attention_repair_shard_plan.json"
+ATTENTION_REPAIR_APPLICATION_ARTIFACT = (
+    "attention_repair_application_receipt.json"
+)
+ATTENTION_REPAIR_PRODUCER_IDENTITY = "ATTENTION_REPAIR_APPLICATION_V1"
+
+_STAGED_METHODOLOGY_IDENTITY = "embedded:finding-output-format.md"
+_STAGED_CANDIDATE_NEGATIVE_PHASES = frozenset({"breadth", "rescan", "depth"})
+_MAX_STAGED_METHODOLOGY_BYTES = 512 * 1024
+_MAX_STAGED_DEPTH_ARTIFACT_BYTES = 8 * 1024 * 1024
+_MAX_STAGED_REASONS = 32
+_MAX_STAGED_REASON_BYTES = 1024
 
 _HEX_RE = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
-_HEADING_RE = re.compile(r"(?m)^(#{2,6})\s+(.+?)\s*$")
+_HEADING_RE = re.compile(r"(?m)^(#{1,6})\s+(.+?)\s*$")
 _FIELD_RE = re.compile(
     r"(?im)^\s*(?:[-*]\s*)?\*{0,2}"
-    r"(?P<field>Verdict|Status|Severity|Disposition|Result\s+Status|Assessment|"
+    r"(?P<field>Verdict|Status|Disposition|Result\s+Status|Assessment|"
     r"Conclusion|Exclusion|Outcome)\*{0,2}\s*:\s*(?P<value>[^\r\n]+)\r?$"
 )
 _RATIONALE_RE = re.compile(
@@ -59,9 +85,17 @@ _STRICT_OBLIG_RE = re.compile(
     r"STATUS\s*:\s*(?P<status>D|DISMISSED)\b\s*"
     r"(?:KEY\s*:\s*)?(?P<premise>[^\r\n]*)\r?$"
 )
+# One allowlist, shared by both location readers.  A production language
+# outside the list used to make a finding LOCATION-LESS, which then fed the
+# blocking semantic-claim hash -- an extension spelling silently decided a
+# fail-closed comparison.
+_SOURCE_EXT = (
+    "sol|vy|rs|move|go|ts|tsx|js|jsx|mjs|py|c|cc|cpp|h|hpp|wasm|cairo|sw|"
+    "daml|huff|yul|fe|tact|func|clar|nr|java|kt|scala|sv|zig|ml|ex|exs"
+)
 _LOCATION_RE = re.compile(
     r"(?i)(?P<path>[A-Za-z0-9_@.+()\-\\/ ]+\."
-    r"(?:sol|rs|move|go|ts|js|py|c|cc|cpp|h|hpp|wasm))"
+    r"(?:" + _SOURCE_EXT + r"))"
     r"\s*:\s*L?(?P<line>\d+)(?:\s*[-:]\s*L?\d+)?"
 )
 _EXTERNAL_RE = re.compile(
@@ -72,15 +106,87 @@ _EXPLICIT_ID_RE = re.compile(
     r"(?i)(?:Finding|Candidate|Issue)?\s*\[([A-Za-z][A-Za-z0-9_.:-]{0,95})\]"
 )
 _BRACKET_ID_RE = re.compile(r"\[([A-Za-z][A-Za-z0-9_.:-]{0,95})\]")
+_TABLE_ID_TOKEN = r"[A-Za-z][A-Za-z0-9_.:-]{0,95}"
+_BARE_TABLE_ID_RE = re.compile(rf"^{_TABLE_ID_TOKEN}$", re.ASCII)
+# An identity cell may carry the same Markdown decoration the heading
+# recognizer already tolerates: `[DEPTH-TF-2]`, `Finding [DEPTH-TF-2]`,
+# `Candidate DE-3`.  The ID token is the identity; the brackets and the role
+# word are presentation.  Anything else (`[A]/[B]`, `[A] see B`, prose) stays
+# DERIVED.
+# Identity is read by MEANING, through exactly one resolver
+# (`_identity_token`).  The retired `_DECORATED_TABLE_ID_RE` was a SECOND,
+# independently-tolerant regex for the SAME property as the heading
+# recognizer: `Finding DEPTH-TF-3` was an EXACT identity in a table cell
+# and a DERIVED one in a heading, so the same string produced opposite
+# verdicts depending on which Markdown construct carried it.
+_ID_CAPTURE_TOKEN = r"[A-Za-z](?:[A-Za-z0-9_.:-]{0,94}[A-Za-z0-9])?"
+_HEADING_LABELLED_ID_RE = re.compile(
+    r"(?i)^(?:Finding|Candidate|Issue|Hypothesis)\b\s*[:#]?\s*"
+    rf"\[?\s*(?P<id>{_ID_CAPTURE_TOKEN})\s*\]?"
+)
+# A BARE leading token is an identity only when it carries an ordinal.
+# `DEPTH-TF-3` / `DS-6` do; `Cross-chain`, `Overview` and `Rounding` do
+# not, so an ordinary English heading can never mint a candidate identity.
+_HEADING_BARE_ID_RE = re.compile(
+    rf"^\[?\s*(?P<id>{_ID_CAPTURE_TOKEN})\s*\]?\s*(?:[:\u2013\u2014]|-\s|$)"
+)
+# Columns whose cells carry a DISPOSITION.  `Severity` is deliberately absent:
+# it is a tier column and never disposes of a candidate.
+# A table row names a candidate ONLY when it carries a candidate identity.
+# That single property retired BOTH representation proxies that used to
+# stand in for it: a 30-word first-column vocabulary allowlist (renaming a
+# column `Subject` or `Scenario` discarded the artifact) and a purity COUNT
+# over every data row (appending one free-text self-report row RESCUED the
+# artifact).  A methodology self-report carries no candidate identity, so
+# it is skipped without a vocabulary; a real candidate reference carries
+# one, so it is still harvested.
+_TABLE_DISPOSITION_HEADERS = frozenset({
+    "verdict", "status", "disposition", "outcome", "assessment",
+    "result status", "conclusion", "exclusion",
+})
+_TABLE_ID_HEADERS = frozenset({"finding id", "candidate id", "issue id", "id"})
+# A table whose SUBJECT column names a methodology step rather than a code
+# artifact is the worker self-reporting which checks it performed -- e.g.
+#   | Check | Status | Location |
+#   | Replay check before state changes | n/a (absent) | - |
+# That row asserts "this CHECK does not apply", not "this CANDIDATE is not
+# applicable", and it carries no candidate denominator at all. Harvesting it
+# minted a DERIVED-identity NOT_APPLICABLE candidate and rejected the whole
+# artifact: DODO run34 discarded a 124KB breadth analysis carrying 17
+# correctly-IDed findings over exactly this row. Recognised only when the
+# table ALSO has no explicit ID column, so a real candidate table that happens
+# to use one of these words still harvests normally.
+# Zero-candidate attestation is read by MEANING through
+# `AS.is_zero_candidate_placeholder`.  The retired two-string allowlist
+# ({"—", "none new"}) minted a phantom candidate -- and therefore
+# discarded the artifact -- for `–`, `-`, `N/A`, `(none)`, `&mdash;` and
+# `no new candidates`, and it was column-position dependent when no ID
+# column was declared.
 _OBLIGATION_IN_TEXT_RE = re.compile(r"\[OBLIG:([^\]\r\n]+)\]", re.IGNORECASE)
 _AXW_RE = re.compile(r"^AXW-[0-9A-F]{24}$", re.ASCII)
+_STAGED_OUTPUT_ID_RE = re.compile(
+    r"^scratchpad:[A-Za-z0-9][A-Za-z0-9_.-]{0,254}\.md$", re.ASCII
+)
 
 _COMMITTED_INVARIANT_ID_PATTERN = r"(?:[A-Z][A-Z0-9]*-)*CI(?:-[A-Z0-9]+)+"
+# Decoration-tolerant: `**committed-invariant [CI-1]**`,
+# `#### committed-invariant [CI-1]`, `- committed-invariant [CI-1]` and
+# the bare canonical form are ONE header.  The retired whole-line anchor
+# permitted no decoration at all, so bolding the header lost the entire
+# committed invariant.
 _CI_HEADER_RE = re.compile(
-    r"(?im)^\s*committed-invariant\s*\[\s*(?P<id>[^\]\r\n]+)\s*\]\s*$"
+    r"(?im)^\s*(?:[-*+]\s+)?(?:\d+[.)]\s+)?(?:#{1,6}\s*)?(?:&gt;|>)?\s*"
+    r"[*_`]{0,3}committed-invariant[*_`]{0,3}\s*"
+    r"\[\s*(?P<id>[^\]\r\n]+?)\s*\][*_`]{0,3}\s*$"
 )
+# Same property, same tolerance as every other labelled field in this
+# module: a list bullet, a numbered item, `**bold**` or a backticked label
+# is presentation.  Writing the five mandated fields as a Markdown list
+# used to lose ALL FIVE at once.
 _CI_FIELD_RE = re.compile(
-    r"(?im)^\s*(?P<field>Locus|Shape|Assertion|Falsify Class|Provenance)\s*:\s*(?P<value>[^\r\n]+)\s*$"
+    r"(?im)^\s*(?:[-*+]\s+)?(?:\d+[.)]\s+)?[*_`]{0,3}"
+    r"(?P<field>Locus|Shape|Assertion|Falsify\s+Class|Provenance)"
+    r"[*_`]{0,3}\s*:\s*(?P<value>[^\r\n]+?)\s*$"
 )
 _CI_DECLARATION_RE = re.compile(
     r"(?im)^\s*(?:[-*]\s*)?(?:\*{0,2})?Invariant Commitment(?:\*{0,2})?\s*:\s*(?P<value>[^\r\n]+)\s*$"
@@ -111,7 +217,7 @@ _VALUE_BEARING_RE = re.compile(
     r"denial.of.service|dos|revert|brick|loss|steal|stolen)\b"
 )
 _CI_LOCUS_RE = re.compile(
-    r"^(?P<path>[^\r\n:]+(?:[\\/][^\r\n:]+)*\.(?:sol|rs|move|go|ts|js|py|c|cc|cpp|h|hpp|wasm))"
+    r"^(?P<path>[^\r\n:]+(?:[\\/][^\r\n:]+)*\.(?:" + _SOURCE_EXT + r"))"
     r"\s*:\s*L?(?P<line>[1-9][0-9]*)(?:\b|\s)",
     re.IGNORECASE,
 )
@@ -150,6 +256,91 @@ _LEGACY_ALIASES = {
     "N/A": "NOT_APPLICABLE",
     "NA": "NOT_APPLICABLE",
 }
+# Alias table keyed on the CANONICAL enum token (underscored, decoration
+# and trailing punctuation already removed by `AS.normalize_enum`).  The
+# measured one-character discard -- `NOT_APPLICABLE_PROPOSAL.` collapsing
+# to the legacy terminal `NOT_APPLICABLE` because the alias-prefix test
+# needed a SPACE and got a period -- is fixed here, at the root.
+_ENUM_ALIASES = {
+    "REFUTATION_PROPOSAL": "REFUTATION_PROPOSAL",
+    "NOT_APPLICABLE_PROPOSAL": "NOT_APPLICABLE_PROPOSAL",
+    "UNRESOLVED": "UNRESOLVED",
+    "REFUTED": "REFUTED",
+    "DISMISSED": "DISMISSED",
+    "SAFE": "SAFE",
+    "CLEAR": "CLEAR",
+    "NO_FINDING": "NO_FINDING",
+    "NO_FINDINGS": "NO_FINDING",
+    "NO_ISSUE": "NO_FINDING",
+    "NO_ISSUES": "NO_FINDING",
+    "FALSE_POSITIVE": "FALSE_POSITIVE",
+    "NOT_EXPLOITABLE": "NOT_EXPLOITABLE",
+    "INFEASIBLE": "INFEASIBLE",
+    "UNREACHABLE": "UNREACHABLE",
+    "BY_DESIGN": "BY_DESIGN",
+    "DUPLICATE": "DUPLICATE",
+    "ABSORBED": "ABSORBED",
+    "NOT_APPLICABLE": "NOT_APPLICABLE",
+    "N_A": "NOT_APPLICABLE",
+    "NA": "NOT_APPLICABLE",
+}
+# Column/field role maps passed to the shared reader.  Unknown columns are
+# ignored, never fatal; an ABSENT role yields None, never a positional
+# fallback.  `severity` stays a role of its own -- the one exclusion the
+# measured gate got right: a tier column never disposes of a candidate.
+_CN_COLUMN_ROLES = dict(AS.DEFAULT_COLUMN_ROLES)
+# A table whose SUBJECT column names a methodology step, probe, register entry
+# or ordinal is the worker self-reporting which checks it performed.  Those
+# words are now `title`-ROLE SYNONYMS resolved through `normalize_label`
+# (so `Skill&nbsp;Step`, `**Operator**` and `Criterion (v2)` all resolve),
+# not a bespoke frozenset compared by raw case-folded equality.
+#
+# This is now a PRECISION filter only.  It can no longer discard anything:
+# an unrecognised subject word makes the row a DERIVED candidate, and
+# DERIVED identity is visible debt, not a staged rejection.  Under the old
+# code renaming `Check` to `Subject`, `Mechanism`, `Scenario` or `Path`
+# harvested a phantom and threw the whole artifact away.
+_CN_COLUMN_ROLES["title"] = tuple(
+    dict.fromkeys(
+        AS.DEFAULT_COLUMN_ROLES["title"]
+        + (
+            "check", "checks", "step", "steps", "rule", "rules",
+            "criterion", "criteria", "control", "question",
+            "#", "no.", "num", "index", "ordinal",
+            "operator", "probe", "mutation", "perturbation",
+            "skill step", "skill", "task", "item", "test", "axis",
+            "invariant", "property", "parameter", "variable", "symbol",
+            "function", "contract", "file", "component", "area", "surface",
+            "scenario", "path", "mechanism", "subject", "target area",
+        )
+    )
+)
+_CN_FIELD_ROLES = {
+    "verdict": (
+        "verdict", "status", "disposition", "result status", "assessment",
+        "conclusion", "exclusion", "outcome", "determination",
+        "finding status", "producer disposition", "proposal", "decision",
+    ),
+}
+_CN_IDENTITY_FIELD_ROLES = {
+    "candidate_id": (
+        "finding id", "candidate id", "issue id", "hypothesis id",
+        "finding identifier", "candidate identifier", "id",
+    ),
+}
+# Obligation receipts are recognised on the NORMALIZED logical line, so a
+# receipt the worker wrapped in backticks (the literal DODO run48
+# behaviour), bolded, bulleted, numbered, blockquoted or laid out in a
+# table cell is the same receipt.
+_OBLIG_LINE_RE = re.compile(
+    r"(?i)^\[?\s*OBLIG\s*:\s*(?P<obligation>[^\]\r\n|]+?)\s*\]?\s*[|,;]?\s*"
+    r"STATUS\s*[:=]\s*(?P<status>D|DISMISSED)\b\s*[|,;.]?\s*"
+    r"(?:KEY\s*[:=]\s*)?(?P<premise>.*)$"
+)
+_NEGATION_RE = re.compile(
+    r"(?i)\b(?:no|not|never|without|irrelevant|unaffected|excluded|"
+    r"excludes|n/a|none)\b"
+)
 _TERMINAL_PROMPT_RE = re.compile(
     r"(?i)\b(?:SAFE|CLEAR|REFUTED|DISMISSED|NO[_ -]?FINDINGS?|"
     r"FALSE[_ -]?POSITIVE|NOT[_ -]?EXPLOITABLE|INFEASIBLE|UNREACHABLE|"
@@ -190,6 +381,84 @@ def _digest(value: Any) -> str:
 
 def _bytes_sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def candidate_negative_planning_debt_bytes(
+    *,
+    run_id: str,
+    plan_digest: str,
+    planning_contract_digest: str,
+    issues: Sequence[str],
+) -> bytes:
+    """Encode non-evidence debt when the exact planning union cannot bind."""
+
+    unsigned = {
+        "schema_version": "plamen.candidate_negative_planning_debt.v1",
+        "authority_class": "NON_EVIDENCE_PLANNING_DEBT",
+        "publication_eligible": False,
+        "run_id": _text(run_id),
+        "plan_digest": _text(plan_digest),
+        "planning_contract_digest": _text(planning_contract_digest),
+        "issues": sorted({_text(issue) for issue in issues if _text(issue)}),
+    }
+    payload = {**unsigned, "debt_digest": _digest(unsigned)}
+    return (_canonical_json(payload) + "\n").encode("utf-8")
+
+
+def validate_candidate_negative_planning_debt(raw: bytes) -> dict[str, Any]:
+    """Validate the typed alternative to a candidate-negative work plan."""
+
+    payload = _strict_json_loads(raw)
+    if not isinstance(payload, dict):
+        raise CandidateNegativeAuthorityError("planning debt is not an object")
+    required = {
+        "schema_version",
+        "authority_class",
+        "publication_eligible",
+        "run_id",
+        "plan_digest",
+        "planning_contract_digest",
+        "issues",
+        "debt_digest",
+    }
+    if set(payload) != required:
+        raise CandidateNegativeAuthorityError(
+            "planning debt has an unexpected field set"
+        )
+    if (
+        payload.get("schema_version")
+        != "plamen.candidate_negative_planning_debt.v1"
+        or payload.get("authority_class") != "NON_EVIDENCE_PLANNING_DEBT"
+        or payload.get("publication_eligible") is not False
+    ):
+        raise CandidateNegativeAuthorityError(
+            "planning debt has invalid authority metadata"
+        )
+    for field in ("plan_digest", "planning_contract_digest"):
+        if not isinstance(payload.get(field), str) or not _HEX_RE.fullmatch(
+            payload[field]
+        ):
+            raise CandidateNegativeAuthorityError(
+                f"planning debt has malformed {field}"
+            )
+    issues = payload.get("issues")
+    if (
+        not isinstance(issues, list)
+        or not issues
+        or issues != sorted(set(issues))
+        or any(not isinstance(issue, str) or not issue.strip() for issue in issues)
+    ):
+        raise CandidateNegativeAuthorityError(
+            "planning debt must contain canonical non-empty issues"
+        )
+    unsigned = {
+        key: value for key, value in payload.items() if key != "debt_digest"
+    }
+    if payload.get("debt_digest") != _digest(unsigned):
+        raise CandidateNegativeAuthorityError("planning debt digest mismatch")
+    if raw != (_canonical_json(payload) + "\n").encode("utf-8"):
+        raise CandidateNegativeAuthorityError("planning debt is not canonical JSON")
+    return payload
 
 
 def _strict_json_loads(raw: bytes) -> Any:
@@ -286,15 +555,43 @@ def _ci_blocks(text: str) -> tuple[list[dict[str, str]], set[str]]:
             {
                 "ci_id": raw_id,
                 "raw_block": raw_block,
-                "ci_block_sha256": _bytes_sha(raw_block.encode("utf-8")),
-                "locus": fields.get("locus", ""),
-                "shape": fields.get("shape", "").upper(),
+                # Digest the NORMALIZED block, so two invariants that differ
+                # only in whitespace or decoration are one invariant.
+                "ci_block_sha256": _bytes_sha(
+                    AS.normalized_text(raw_block).encode("utf-8")
+                ),
+                "locus": _clean_inline(fields.get("locus", "")),
+                # `Shape: conservation.` / `Shape: **CONSERVATION**` are the
+                # same shape.  The enum token is extracted BEFORE the closed
+                # vocabulary is consulted.
+                "shape": AS.normalize_enum(fields.get("shape", "")),
                 "assertion": fields.get("assertion", ""),
-                "falsify_class": fields.get("falsify_class", "").lower(),
-                "provenance": fields.get("provenance", ""),
+                "falsify_class": AS.normalize_enum(
+                    fields.get("falsify_class", "")
+                ).lower(),
+                "provenance": _clean_inline(fields.get("provenance", "")),
             }
         )
     return blocks, {ci_id for ci_id, count in counts.items() if count != 1}
+
+
+def _asserts_value_bearing(text: str) -> bool:
+    """True when the excerpt AFFIRMS value-bearing content.
+
+    Clause-scoped and negation-aware.  The retired whole-excerpt word scan
+    voided the non-value-bearing exemption for a clause that explicitly DENIED
+    harm ("(no revert possible)") and for a value-bearing word appearing only
+    inside a function name or file path in a docstring reference.
+    """
+
+    for line in AS.surface(text or "").lines:
+        for clause in re.split(r"[.;()\[\]]", line.text):
+            if not _VALUE_BEARING_RE.search(clause):
+                continue
+            if _NEGATION_RE.search(clause):
+                continue
+            return True
+    return False
 
 
 def _production_ci_locus(value: str) -> bool:
@@ -317,7 +614,11 @@ def _depth_invariant_commitment(
     """Bind one depth negative to one strict CI or an explicit narrow exemption."""
 
     declarations = [
-        match.group("value").strip()
+        # `_clean_inline` here for the same reason the Locus value gets it:
+        # a backticked declaration (``**Invariant Commitment**: `CI:CI-1` ``)
+        # is the same declaration.  The retired code cleaned the sibling
+        # fields but matched THIS one against the raw bytes.
+        _clean_inline(match.group("value"))
         for match in _CI_DECLARATION_RE.finditer(excerpt or "")
     ]
     base: dict[str, Any] = {
@@ -354,7 +655,7 @@ def _depth_invariant_commitment(
             if (
                 reason
                 and category in _NON_VALUE_CATEGORIES
-                and not _VALUE_BEARING_RE.search(excerpt or "")
+                and not _asserts_value_bearing(excerpt or "")
             ):
                 base.update(
                     status="NOT_REQUIRED_NON_VALUE_BEARING",
@@ -367,7 +668,7 @@ def _depth_invariant_commitment(
                     defects.append("reason")
                 if len(categories) != 1 or category not in _NON_VALUE_CATEGORIES:
                     defects.append("allowlisted category")
-                if _VALUE_BEARING_RE.search(excerpt or ""):
+                if _asserts_value_bearing(excerpt or ""):
                     defects.append("value-bearing source content")
                 base["reason"] = (
                     "non-value-bearing exemption lacks mechanical "
@@ -427,10 +728,36 @@ def _depth_invariant_commitment(
 
 
 def _normalize_legacy(value: str) -> str | None:
-    candidate = _clean_inline(value).upper().replace("-", " ").replace("_", " ")
+    """Canonical legacy enum for a producer disposition value, or None.
+
+    Property: `disposition.producer_enum` -- WHICH disposition the producer
+    wrote.  It is read from the NORMALIZED enum token, never from the raw
+    byte shape, so the measured one-character discards are gone at the root:
+
+        NOT_APPLICABLE_PROPOSAL.              -> NOT_APPLICABLE_PROPOSAL
+        NOT_APPLICABLE_PROPOSAL: no emission  -> NOT_APPLICABLE_PROPOSAL
+        **NOT_APPLICABLE_PROPOSAL**. §5 is ... -> NOT_APPLICABLE_PROPOSAL
+        REFUTATION_PROPOSAL.                  -> REFUTATION_PROPOSAL
+        NOT_APPLICABLE                        -> NOT_APPLICABLE  (still distinct)
+
+    The old implementation flattened `_` and `-` to spaces BEFORE matching, so
+    a trailing period defeated the `alias + " "` prefix test and silently
+    downgraded the correct nonterminal enum to the legacy terminal one -- which
+    then fired EVENT_NOT_APPLICABLE_WITH_NONZERO_DENOMINATOR and discarded
+    70,540 bytes of successful worker output (DODO run46 breadth).
+    """
+
+    token = AS.normalize_enum(value)
+    if token:
+        mapped = _ENUM_ALIASES.get(token)
+        if mapped is not None:
+            return mapped
+    # Multi-WORD legacy spellings ("NO FINDING", "BY DESIGN") cannot be a
+    # single enum token, so they keep the historic whole-value scan -- now on
+    # the decoration-stripped value.
+    candidate = AS.strip_decoration(value).strip(" |:*_-\t")
+    candidate = candidate.upper().replace("-", " ").replace("_", " ")
     candidate = re.sub(r"\s+", " ", candidate).strip()
-    # A field may add a parenthetical rationale after the enum.  Long prose
-    # containing a token is not accepted; the terminal must lead the field.
     for alias in sorted(_LEGACY_ALIASES, key=len, reverse=True):
         if candidate == alias or candidate.startswith(alias + " "):
             return _LEGACY_ALIASES[alias]
@@ -440,68 +767,235 @@ def _normalize_legacy(value: str) -> str | None:
 def _proposal_disposition(legacy: str) -> str:
     if legacy in {"NOT_APPLICABLE", "NOT_APPLICABLE_PROPOSAL"}:
         return "NOT_APPLICABLE_PROPOSAL"
-    if legacy == "UNRESOLVED":
+    if legacy in {"UNRESOLVED", "DUPLICATE", "ABSORBED"}:
+        # `DUPLICATE` / `ABSORBED` assert "same bug, different ID".  That is an
+        # identity alias, not a claim about the code, so it carries no
+        # falsifiable invariant and cannot be a refutation: demanding a
+        # one-to-one committed invariant for it charged every worker that
+        # followed the depth templates (which actively instruct this shape)
+        # with DEPTH_COMMITTED_INVARIANT_DEBT.  UNRESOLVED already has the
+        # exact fail-closed semantics required -- the adjudicator vetoes
+        # AGREE_NEGATIVE on a producer-unresolved candidate -- so the
+        # candidate stays open for independent review instead of being
+        # silently closed or blocking the artifact.
         return "UNRESOLVED"
     return "REFUTATION_PROPOSAL"
 
 
+def _identity_token(text: object, *, allow_bare: bool = False) -> str | None:
+    """THE candidate-identity resolver for this module.  Never raises.
+
+    Property: `identity.candidate_id` -- WHICH candidate a record is about.
+    The decision is fail-closed (an unresolved identity is recorded as DERIVED
+    and can never close a candidate) but it is NOT representation-bound: the
+    bytes are normalized first and the closed comparison then runs on the
+    normalized value.  All of these are ONE identity::
+
+        Finding [DS-6]      Finding DS-6      `DS-6`      **Finding [DS-6]**
+        #### Finding [DS-6] Candidate DS-6    Issue DS-6  | DS-6 |
+
+    ``allow_bare`` is True only where the surrounding structure already
+    declares the text to be an identity (a heading, or a cell under a declared
+    `Finding ID` column).  Elsewhere a bare token is a title, not an identity
+    -- `finding-output-format.md`: "IDs embedded in titles, notes, evidence or
+    other columns do not establish identity".
+    """
+
+    cleaned = AS.strip_decoration(text)
+    if not cleaned:
+        return None
+    for pattern in (_EXPLICIT_ID_RE, _BRACKET_ID_RE):
+        match = pattern.search(cleaned)
+        if match:
+            return match.group(1).upper()
+    match = _HEADING_LABELLED_ID_RE.match(cleaned)
+    if match:
+        token = match.group("id")
+        # An unbracketed role word must be followed by something shaped like
+        # an identifier, not by an ordinary noun: `Finding DS-6` is an
+        # identity, `Finding summary` is a container heading.
+        if any(ch.isdigit() for ch in token) or "-" in token:
+            return token.upper()
+    if allow_bare:
+        match = _HEADING_BARE_ID_RE.match(cleaned)
+        if match:
+            token = match.group("id")
+            if any(ch.isdigit() for ch in token):
+                return token.upper()
+    return None
+
+
+_CELL_ID_RE = re.compile(
+    r"(?i)^(?:(?:Finding|Candidate|Issue|Hypothesis)\s*[:#]?\s+)?"
+    rf"(?:\[\s*(?P<bracketed>{_ID_CAPTURE_TOKEN})\s*\]"
+    rf"|(?P<plain>{_ID_CAPTURE_TOKEN}))$"
+)
+
+
+def _whole_cell_identity(text: object) -> str | None:
+    """Identity of a value whose SURROUNDING STRUCTURE declares it an identity.
+
+    A declared `Finding ID` column, or a `**Finding ID**:` field.  The value
+    must be the identity and nothing else, so `[A]/[B]` and `DE-1 see ST-9`
+    stay DERIVED -- naming two candidates, or an ID plus prose, is genuinely
+    ambiguous identity, which is the one thing the closed family must not
+    guess at.  Decoration is removed first, so `` `DE-1` ``, `**[DE-1]**`,
+    `Finding [DE-1]` and `Candidate DE-1` are ONE identity.
+    """
+
+    cleaned = AS.strip_decoration(text)
+    if not cleaned:
+        return None
+    match = _CELL_ID_RE.match(cleaned)
+    if not match:
+        return None
+    return (match.group("bracketed") or match.group("plain")).upper()
+
+
+def _candidate_like_heading(label: str) -> bool:
+    """Return whether a heading can own one candidate-negative entity.
+
+    Candidate findings routinely contain nested headings (for example the
+    mandated ``### Precondition Analysis`` beneath an H2 finding).  Container
+    headings such as ``## Findings`` are not entities and must never inherit a
+    descendant's disposition merely because their lexical section spans it.
+    """
+
+    cleaned = AS.strip_decoration(label)
+    return bool(
+        re.match(r"(?i)^(?:finding|candidate|issue)\b", cleaned)
+        or _identity_token(cleaned, allow_bare=True)
+    )
+
+
 def _blocks(text: str) -> list[tuple[str, str, int]]:
-    matches = list(_HEADING_RE.finditer(text))
+    """Return heading-owned blocks with candidate-aware Markdown scoping.
+
+    A candidate-like heading owns its nested explanatory subsections and ends
+    at the next same-or-higher heading.  A deeper candidate-like heading also
+    begins a new entity and therefore terminates the current entity.  Every
+    non-candidate heading retains the old immediate-next-heading boundary so a
+    parent/container cannot borrow a child's candidate fields.
+    """
+
+    matches = [
+        match
+        for match in _HEADING_RE.finditer(text)
+        # A `#### committed-invariant [CI-6]` header is part of the candidate
+        # that declared it, not a new entity.  Promoting the header to a
+        # heading used to cut the invariant out of its own finding's block.
+        if not _CI_HEADER_RE.match(match.group(0))
+    ]
     result: list[tuple[str, str, int]] = []
     for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        result.append((match.group(2).strip(), text[match.start():end].strip(), match.start()))
+        label = match.group(2).strip()
+        end = len(text)
+        if index + 1 < len(matches):
+            end = matches[index + 1].start()
+        if _candidate_like_heading(label):
+            level = len(match.group(1))
+            end = len(text)
+            for successor in matches[index + 1:]:
+                successor_label = successor.group(2).strip()
+                if (
+                    len(successor.group(1)) <= level
+                    or _candidate_like_heading(successor_label)
+                ):
+                    end = successor.start()
+                    break
+        result.append((label, text[match.start():end].strip(), match.start()))
     return result
 
 
 def _source_item_id(label: str, *, fallback: Mapping[str, Any]) -> str:
-    for pattern in (_EXPLICIT_ID_RE, _BRACKET_ID_RE):
-        match = pattern.search(label)
-        if match:
-            return match.group(1).upper()
-    normalized = re.sub(r"\s+", " ", _clean_inline(label).casefold())
+    token = _identity_token(label, allow_bare=True)
+    if token:
+        return token
+    return _derived_source_item_id(label, fallback=fallback)
+
+
+def _derived_source_item_id(label: str, *, fallback: Mapping[str, Any]) -> str:
+    """Derive transport identity without interpreting producer prose as an ID."""
+
+    normalized = re.sub(r"\s+", " ", AS.strip_decoration(label).casefold())
     if normalized:
         return "ENTITY-" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:20].upper()
     return "ENTITY-" + _digest(dict(fallback))[:20].upper()
 
 
+def _identity_bearing_field(block: str) -> str | None:
+    """Identity declared by a labelled field inside a candidate block."""
+
+    if not block:
+        return None
+    for field in AS.read_fields(
+        AS.surface(block), "candidate_id", roles=_CN_IDENTITY_FIELD_ROLES
+    ):
+        if AS.is_zero_candidate_placeholder(field.value):
+            continue
+        token = _whole_cell_identity(field.value)
+        if token:
+            return token
+    return None
+
+
 def _source_item_identity(
-    label: str, *, fallback: Mapping[str, Any]
+    label: str, *, fallback: Mapping[str, Any], block: str = ""
 ) -> tuple[str, str]:
     """Return a local identity and whether it was explicitly producer-bound.
 
-    Heading hashes are useful for transporting an otherwise-lost negative, but
-    they are not stable enough to authorize a terminal exclusion.  Keeping the
-    distinction in the event lets the independent discriminator reopen the
-    candidate while deterministically vetoing an unsafe agreement.
+    FAIL_CLOSED property `identity.candidate_id`, applied to the NORMALIZED
+    value.  A DERIVED identity still exists only to TRANSPORT an otherwise-lost
+    negative: it is recorded as DERIVED on the event, so the independent
+    discriminator deterministically vetoes agreement and the candidate stays
+    open.  What changed is what the check READS -- `Finding [DS-6]`,
+    `Finding DS-6`, `` `DS-6` `` and `**Finding [DS-6]**` are now ONE identity,
+    where deleting two bracket characters used to discard a 126,589-byte depth
+    analysis carrying three correctly-IDed candidates.
     """
 
-    for pattern in (_EXPLICIT_ID_RE, _BRACKET_ID_RE):
-        match = pattern.search(label)
-        if match:
-            return match.group(1).upper(), "EXACT"
-    return _source_item_id(label, fallback=fallback), "DERIVED"
+    token = _identity_token(label, allow_bare=True)
+    if token:
+        return token, "EXACT"
+    token = _identity_bearing_field(block)
+    if token:
+        return token, "EXACT"
+    return _derived_source_item_id(label, fallback=fallback), "DERIVED"
+
+
+def _claim_norm(value: object) -> str:
+    """Canonical claim text: decoration, spacing and terminal punctuation out.
+
+    The old normalizer already absorbed whitespace, `**bold**`, backticks and
+    case, then stopped ONE character short of a trailing period -- so two
+    restatements of one candidate differing only by `.` hashed differently and
+    tripped the blocking CONFLICTING_ENTITY_CLAIM.
+    """
+
+    text = AS.strip_decoration(value)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" \t:;,.!?\u2013\u2014-").casefold()
 
 
 def _semantic_claim_sha256(
     label: str, *, exact_premise: str, guard_locus: str
 ) -> str:
-    claim = _clean_inline(label)
+    claim = AS.strip_decoration(label)
     claim = _EXPLICIT_ID_RE.sub(" ", claim)
     claim = _BRACKET_ID_RE.sub(" ", claim)
     claim = re.sub(
         r"(?i)^\s*(?:finding|candidate|issue)\b\s*[:\-]*\s*", "", claim
     )
-    claim = re.sub(r"\s+", " ", claim).strip(" :-\t").casefold()
+    # Only the FIRST premise segment participates.  `_premise` joins EVERY
+    # rationale line it can see, so two restatements that quoted a different
+    # subset of Reason/Evidence lines used to diverge and be reported as
+    # "conflicting semantic claims".
+    premise_head = _text(exact_premise).split(" | ")[0]
     return _digest(
         {
-            "claim": claim,
-            "premise_or_mechanism": re.sub(
-                r"\s+", " ", _clean_inline(exact_premise)
-            ).casefold(),
-            "guard_locus": re.sub(
-                r"\s+", " ", _clean_inline(guard_locus)
-            ).casefold(),
+            "claim": _claim_norm(claim),
+            "premise_or_mechanism": _claim_norm(premise_head),
+            "guard_locus": _claim_norm(guard_locus),
         }
     )
 
@@ -532,10 +1026,47 @@ def _premise(text: str, fallback: str) -> str:
 
 
 def _methodology_obligation(text: str, source_item_id: str) -> str:
-    match = _OBLIGATION_IN_TEXT_RE.search(text)
-    if match:
-        return "OBLIG:" + _clean_inline(match.group(1))
+    """Family join key: the obligation this negative ANSWERS.
+
+    An `[OBLIG:...]` token that merely appears inside a running sentence is a
+    MENTION, not an assertion, and must not rewrite the ledger/plan join key.
+    The measured defect: adding the explanatory clause
+    "(this also answers the driver row [OBLIG:OB-9])" to a Reason line moved
+    the candidate to a different family across retries.  Only a token that
+    OPENS a logical line (or a labelled obligation field) asserts the binding.
+    """
+
+    for line in AS.surface(text).lines:
+        stripped = line.text.strip()
+        match = _OBLIGATION_IN_TEXT_RE.match(stripped)
+        if match:
+            return "OBLIG:" + _clean_inline(match.group(1))
+        if line.cells:
+            for cell in line.cells:
+                cell_match = _OBLIGATION_IN_TEXT_RE.match(cell.strip())
+                if cell_match:
+                    return "OBLIG:" + _clean_inline(cell_match.group(1))
     return "CANDIDATE:" + source_item_id
+
+
+def _external_assumption(text: str) -> bool:
+    """Advisory flag: does this negative REST on an out-of-scope premise?
+
+    Clause-scoped and negation-aware.  The old whole-excerpt vocabulary scan
+    set the flag from a clause that explicitly DENIED an external dependency
+    ("... (off-chain relayer irrelevant)").
+    """
+
+    for line in AS.surface(text).lines:
+        if line.in_fence:
+            continue
+        for clause in re.split(r"[.;()\[\]]", line.text):
+            if not _EXTERNAL_RE.search(clause):
+                continue
+            if _NEGATION_RE.search(clause):
+                continue
+            return True
+    return False
 
 
 def _event(
@@ -550,17 +1081,23 @@ def _event(
     methodology_sha: str,
     harvest_kind: str,
     duplicate_ci_ids: set[str] | None = None,
+    source_identity: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     locations = _locations(excerpt)
-    item_id, identity_state = _source_item_identity(
-        label,
-        fallback={
-            "phase": phase,
-            "artifact": artifact.relative_path,
-            "label": label,
-            "legacy": legacy,
-        },
-    )
+    fallback_identity = {
+        "phase": phase,
+        "artifact": artifact.relative_path,
+        "label": label,
+        "legacy": legacy,
+    }
+    if source_identity is None:
+        item_id, identity_state = _source_item_identity(
+            label,
+            fallback=fallback_identity,
+            block=excerpt,
+        )
+    else:
+        item_id, identity_state = source_identity
     obligation = _methodology_obligation(excerpt, item_id)
     family_identity = {
         "producer_phase": phase,
@@ -631,7 +1168,7 @@ def _event(
         "guard_locus": guard_locus,
         "variants_examined": _variants(excerpt),
         "evidence_refs": locations,
-        "external_assumption": bool(_EXTERNAL_RE.search(excerpt)),
+        "external_assumption": _external_assumption(excerpt),
         "proof_scope": "NONE",
         "requires_independent_consumer": True,
         "harvest_kind": harvest_kind,
@@ -658,7 +1195,12 @@ def _downgrade_globally_reused_commitments(
         id_counts[ci_id] = id_counts.get(ci_id, 0) + 1
         block_counts[block_sha] = block_counts.get(block_sha, 0) + 1
     duplicate_ids = {key for key, count in id_counts.items() if count > 1}
-    duplicate_blocks = {key for key, count in block_counts.items() if count > 1}
+    # Block-DIGEST equality is not the property.  Two genuinely distinct
+    # invariants that happen to be worded identically collided, and one
+    # legitimately shared assertion restated verbatim downgraded BOTH.  Reuse
+    # is an IDENTITY relation: the same CI id discharging two proposals.
+    duplicate_blocks: set[str] = set()
+    del block_counts
     result: list[dict[str, Any]] = []
     for original in events:
         event = dict(original)
@@ -689,8 +1231,83 @@ def _downgrade_globally_reused_commitments(
     return result
 
 
+def _na_disposition(value: object) -> bool:
+    legacy = _normalize_legacy(value)
+    return legacy is not None and _proposal_disposition(legacy) == "NOT_APPLICABLE_PROPOSAL"
+
+
+def _block_attests_zero_candidates(block: str) -> bool:
+    """True when the block explicitly attests ZERO candidates.
+
+    Property: `identity.zero_denominator` -- does this record name a candidate
+    at all?  Read by MEANING, in EITHER representation: a table row under a
+    declared ID column, a table row whose only subject cell is a placeholder,
+    or the same two facts written as labelled fields
+    (``**Finding ID**: —`` + ``**Disposition**: NOT_APPLICABLE_PROPOSAL``).
+
+    The old predicate scanned only lines starting with ``|``, so the identical
+    attestation written as fields was invisible and a 10,220-byte rescan
+    artifact whose entire body was that attestation was discarded (DODO run46
+    rescan pc5).  Placeholder recognition was also a two-string allowlist; it
+    is now :func:`AS.is_zero_candidate_placeholder`.
+    """
+
+    if not block:
+        return False
+    surf = AS.surface(block)
+    placeholder = False
+    attests = False
+    for table in AS.read_tables(surf, roles=_CN_COLUMN_ROLES):
+        for row in table.rows:
+            identity_cell = row.get("candidate_id")
+            if identity_cell is not None:
+                if AS.is_zero_candidate_placeholder(identity_cell):
+                    placeholder = True
+            elif any(AS.is_zero_candidate_placeholder(cell) for cell in row.cells):
+                placeholder = True
+            for cell in row.cells:
+                if _na_disposition(cell):
+                    attests = True
+    for field in AS.read_fields(
+        surf, "candidate_id", roles=_CN_IDENTITY_FIELD_ROLES
+    ):
+        if AS.is_zero_candidate_placeholder(field.value):
+            placeholder = True
+    for field in AS.read_fields(surf, "verdict", roles=_CN_FIELD_ROLES):
+        if _na_disposition(field.value):
+            attests = True
+    return placeholder and attests
+
+
+def _block_names_a_candidate(label: str, block: str) -> bool:
+    """True when the block resolves a real candidate identity."""
+
+    if _identity_token(label, allow_bare=True):
+        return True
+    return _identity_bearing_field(block) is not None
+
+
+def _table_speaks_dispositions(table: "AS.Table") -> bool:
+    """True when EVERY data row of the table carries a recognised disposition.
+
+    A register whose status column carries free text (`**BROKEN** -> [B3-2]`,
+    `HOLDS`) reports on invariants or checks, not candidates, so one incidental
+    `N/A` in it names no candidate.  Precision filter only: a false answer now
+    costs at most one extra flagged record, never an artifact.
+    """
+
+    saw_row = False
+    for row in table.rows:
+        if not any(cell for cell in row.cells):
+            continue
+        saw_row = True
+        if _normalize_legacy(row.get("disposition") or "") is None:
+            return False
+    return saw_row
+
+
 def _table_events(
-    text: str,
+    surf: "AS.ArtifactSurface",
     *,
     phase: str,
     artifact: ArtifactInput,
@@ -699,44 +1316,103 @@ def _table_events(
     methodology_sha: str,
     duplicate_ci_ids: set[str],
 ) -> list[dict[str, Any]]:
-    lines = text.splitlines()
-    header: list[str] | None = None
-    status_indexes: list[int] = []
+    """Harvest structured table dispositions, addressed by column ROLE.
+
+    Every representation test this replaced is gone:
+
+    * ``line.strip().startswith("|")`` -- a GFM table that omits its outer
+      pipes is legal Markdown and used to be invisible, silently dropping the
+      producer's negative from the denominator.
+    * a 4-entry ID-header and a 7-entry disposition-header case-folded
+      allowlist -- ``Finding&nbsp;ID``, ``Determination``, ``Verdict / Status``
+      and ``Proposal`` now resolve by ROLE.
+    * ``len(identity_indexes) != 1 -> identity dropped for EVERY row`` --
+      adding a correct, MORE informative second ID column made the gate
+      strictly worse.  An ambiguous role now resolves to the most specific
+      header and records DEBT (``table.ambiguities``); nothing is dropped.
+    * the two-string zero-placeholder allowlist and its column-position
+      fallback -- replaced by ``AS.is_zero_candidate_placeholder``.
+    """
+
     events: list[dict[str, Any]] = []
-    for line in lines:
-        if not line.strip().startswith("|"):
-            header = None
-            status_indexes = []
+    for table in AS.read_tables(surf, roles=_CN_COLUMN_ROLES):
+        disposition_index = table.role_index("disposition")
+        if disposition_index is None:
             continue
-        cells = [_clean_inline(cell) for cell in line.strip().strip("|").split("|")]
-        normalized = [cell.casefold() for cell in cells]
-        candidates = [
-            index
-            for index, cell in enumerate(normalized)
-            if cell in {
-                "verdict", "status", "severity", "disposition", "outcome", "assessment"
-            }
-        ]
-        if candidates:
-            header = cells
-            status_indexes = candidates
-            continue
-        if all(not cell or re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
-            continue
-        if header is None or not status_indexes:
-            continue
-        label_parts = [
-            cell for index, cell in enumerate(cells)
-            if index not in status_indexes and cell and cell not in {"-", "N/A"}
-        ]
-        label = " | ".join(label_parts[:3]) or f"table-row-{len(events) + 1}"
-        excerpt = "| " + " | ".join(cells) + " |"
-        for status_index in status_indexes:
-            if status_index >= len(cells):
+        identity_index = table.role_index("candidate_id")
+        if identity_index is None:
+            first_role_is_subject = bool(
+                table.headers
+                and AS.normalize_label(table.headers[0])
+                in {AS.normalize_label(x) for x in _CN_COLUMN_ROLES["title"]}
+            )
+            if first_role_is_subject or not _table_speaks_dispositions(table):
+                # No candidate denominator: `finding-output-format.md`
+                # establishes table identity ONLY through a declared ID column.
                 continue
-            legacy = _normalize_legacy(cells[status_index])
+        for row in table.rows:
+            cells = list(row.cells)
+            legacy = _normalize_legacy(row.get("disposition") or "")
             if legacy is None:
                 continue
+            source_identity: tuple[str, str]
+            if identity_index is not None:
+                identity_cell = row.get("candidate_id") or ""
+                if (
+                    AS.is_zero_candidate_placeholder(identity_cell)
+                    and _proposal_disposition(legacy) == "NOT_APPLICABLE_PROPOSAL"
+                ):
+                    # An explicit zero-candidate attestation names no
+                    # candidate; harvesting it can only mint a phantom whose
+                    # derived identity then discarded the artifact.
+                    continue
+                token = _whole_cell_identity(identity_cell)
+            else:
+                token = None
+                non_status = [
+                    cell
+                    for index, cell in enumerate(cells)
+                    if index != disposition_index
+                ]
+                if (
+                    _proposal_disposition(legacy) == "NOT_APPLICABLE_PROPOSAL"
+                    and any(
+                        AS.is_zero_candidate_placeholder(cell)
+                        for cell in non_status
+                    )
+                    and not any(_whole_cell_identity(cell) for cell in non_status)
+                ):
+                    # The row's SUBJECT is an explicit zero-candidate
+                    # placeholder, so it names no candidate.  Column-position
+                    # free: the retired rule only looked at `cells[0]`, so
+                    # reordering two non-status columns flipped the verdict and
+                    # discarded the artifact.
+                    continue
+            label_parts = [
+                cell
+                for index, cell in enumerate(cells)
+                if index != disposition_index
+                and cell
+                and not AS.is_zero_candidate_placeholder(cell)
+            ]
+            label = " | ".join(label_parts[:3]) or f"table-row-{len(events) + 1}"
+            excerpt = "| " + " | ".join(cells) + " |"
+            if token:
+                source_identity = (token, "EXACT")
+            else:
+                source_identity = (
+                    _derived_source_item_id(
+                        label,
+                        fallback={
+                            "phase": phase,
+                            "artifact": artifact.relative_path,
+                            "label": label,
+                            "legacy": legacy,
+                            "table_row": excerpt,
+                        },
+                    ),
+                    "DERIVED",
+                )
             events.append(
                 _event(
                     phase=phase,
@@ -749,8 +1425,68 @@ def _table_events(
                     methodology_sha=methodology_sha,
                     harvest_kind="STRUCTURED_TABLE_ROW",
                     duplicate_ci_ids=duplicate_ci_ids,
+                    source_identity=source_identity,
                 )
             )
+    return events
+
+
+def _obligation_receipt_events(
+    surf: "AS.ArtifactSurface",
+    *,
+    phase: str,
+    artifact: ArtifactInput,
+    artifact_sha: str,
+    methodology_path: Path,
+    methodology_sha: str,
+    duplicate_ci_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Harvest obligation-dismissal receipts from NORMALIZED logical lines.
+
+    The retired `_STRICT_OBLIG_RE` was whole-line anchored against raw bytes:
+    the identical receipt wrapped in backticks so it renders as code -- the
+    literal DODO run48 worker behaviour -- bolded, bulleted, numbered, or laid
+    out in a table cell harvested ZERO events, silently dropping the producer's
+    dismissal from the independent-review denominator.  Decoration is now
+    removed before the receipt grammar is applied.
+    """
+
+    events: list[dict[str, Any]] = []
+    for line in surf.lines:
+        candidates = [line.text.strip()]
+        if line.cells:
+            candidates.append(" ".join(cell.strip() for cell in line.cells))
+        for text in candidates:
+            match = _OBLIG_LINE_RE.match(text)
+            if not match:
+                continue
+            obligation = _clean_inline(match.group("obligation"))
+            excerpt = match.group(0).strip()
+            events.append(
+                _event(
+                    phase=phase,
+                    artifact=artifact,
+                    artifact_sha=artifact_sha,
+                    label=obligation,
+                    excerpt=excerpt,
+                    legacy="DISMISSED",
+                    methodology_path=methodology_path,
+                    methodology_sha=methodology_sha,
+                    harvest_kind="STRICT_OBLIGATION_RECEIPT",
+                    duplicate_ci_ids=duplicate_ci_ids,
+                    # An obligation receipt disposes a DRIVER-OWNED obligation
+                    # row.  Its identity is stable by construction (the
+                    # obligation key) and its independent-review denominator is
+                    # the security-obligation authority, not the candidate
+                    # ledger.  The state stays DERIVED, so a receipt can never
+                    # CLOSE a candidate on its own.
+                    source_identity=(
+                        f"OBLIG:{obligation.strip().upper()}" or "OBLIG:UNKNOWN",
+                        "DERIVED",
+                    ),
+                )
+            )
+            break
     return events
 
 
@@ -763,13 +1499,29 @@ def _artifact_events(
 ) -> list[dict[str, Any]]:
     text = artifact.content.decode("utf-8", errors="replace")
     artifact_sha = _bytes_sha(artifact.content)
+    # STEP 3 of the migration recipe: normalize ONCE, at the top, and thread
+    # the parsed value down.  No gate below re-derives Markdown syntax.
+    surf = AS.surface(text)
     _artifact_ci_blocks, duplicate_ci_ids = _ci_blocks(text)
     events: list[dict[str, Any]] = []
     for label, block, _offset in _blocks(text):
-        for match in _FIELD_RE.finditer(block):
-            legacy = _normalize_legacy(match.group("value"))
+        block_surface = AS.surface(block)
+        fields = AS.read_fields(block_surface, "verdict", roles=_CN_FIELD_ROLES)
+        for field in fields:
+            legacy = _normalize_legacy(field.value)
             if legacy is None:
                 continue
+            if (
+                _proposal_disposition(legacy) == "NOT_APPLICABLE_PROPOSAL"
+                and not _block_names_a_candidate(label, block)
+                and _block_attests_zero_candidates(block)
+            ):
+                # A section whose body is the explicit zero-candidate
+                # attestation names NO candidate.  The gate is now "does this
+                # block resolve a candidate identity", not "does its heading
+                # happen to contain a bracket" -- the old proxy lost the
+                # exemption for any heading carrying brackets at all.
+                break
             events.append(
                 _event(
                     phase=phase,
@@ -787,7 +1539,7 @@ def _artifact_events(
             break
     events.extend(
         _table_events(
-            text,
+            surf,
             phase=phase,
             artifact=artifact,
             artifact_sha=artifact_sha,
@@ -796,30 +1548,47 @@ def _artifact_events(
             duplicate_ci_ids=duplicate_ci_ids,
         )
     )
-    for match in _STRICT_OBLIG_RE.finditer(text):
-        obligation = _clean_inline(match.group("obligation"))
-        excerpt = match.group(0).strip()
-        event = _event(
+    # A heading is the richer representation because it carries the complete
+    # entity block (including evidence and committed-invariant material).  A
+    # same-artifact table summary of the same exact candidate and normalized
+    # proposal adds no event.  Differing proposals are deliberately retained
+    # so ledger construction can expose representation conflict as debt.
+    heading_dispositions = {
+        (event["source_item_id"], event["proposed_disposition"])
+        for event in events
+        if event["harvest_kind"] == "STRUCTURED_ENTITY_FIELD"
+        and event["identity_state"] == "EXACT"
+    }
+    events = [
+        event
+        for event in events
+        if not (
+            event["harvest_kind"] == "STRUCTURED_TABLE_ROW"
+            and event["identity_state"] == "EXACT"
+            and (event["source_item_id"], event["proposed_disposition"])
+            in heading_dispositions
+        )
+    ]
+    events.extend(
+        _obligation_receipt_events(
+            surf,
             phase=phase,
             artifact=artifact,
             artifact_sha=artifact_sha,
-            label=obligation,
-            excerpt=excerpt,
-            legacy="DISMISSED",
             methodology_path=methodology_path,
             methodology_sha=methodology_sha,
-            harvest_kind="STRICT_OBLIGATION_RECEIPT",
             duplicate_ci_ids=duplicate_ci_ids,
         )
-        events.append(event)
+    )
     by_id: dict[str, dict[str, Any]] = {}
     for event in events:
-        prior = by_id.get(event["event_id"])
-        if prior is not None and prior != event:
-            raise CandidateNegativeAuthorityError(
-                f"conflicting derived event {event['event_id']}"
-            )
-        by_id[event["event_id"]] = event
+        # Two harvested representations sharing an event_id already share the
+        # proposal, artifact and excerpt digests, so they are the same event.
+        # The old code RAISED here, and every raise on this path became the
+        # opaque "staged candidate-negative parse failed" rejection with no
+        # repair path and no partial publication.  Keeping the first
+        # representation is loss-free and cannot close a candidate.
+        by_id.setdefault(event["event_id"], event)
     return [by_id[key] for key in sorted(by_id)]
 
 
@@ -1017,7 +1786,7 @@ def _validate_event_inner(event: Any) -> None:
                 or len(categories) != 1
                 or category not in _NON_VALUE_CATEGORIES
                 or categories[0] != category
-                or _VALUE_BEARING_RE.search(source_excerpt)
+                or _asserts_value_bearing(source_excerpt)
             ):
                 raise CandidateNegativeAuthorityError(
                     "non-value-bearing invariant exemption lacks mechanical authority"
@@ -1440,13 +2209,16 @@ def validate_candidate_negative_ledger(ledger: Any) -> None:
         raise CandidateNegativeAuthorityError("candidate-negative ledger digest mismatch")
 
 
-def build_candidate_negative_ledger(
+def _build_candidate_negative_ledger_from_bytes(
     *,
     phase: str,
     artifacts: Sequence[ArtifactInput],
-    methodology_path: Path,
+    methodology_bytes: bytes,
+    methodology_identity: str,
     prior_ledger: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Build a ledger from already-captured methodology and artifact bytes."""
+
     phase_n = _text(phase).casefold()
     if not phase_n:
         raise CandidateNegativeAuthorityError("candidate-negative phase is empty")
@@ -1455,12 +2227,13 @@ def build_candidate_negative_ledger(
             "axis_coverage negatives require the typed v2 adapter; "
             "Markdown is not an authority source"
         )
-    try:
-        method = Path(methodology_path).resolve(strict=True)
-        method_bytes = method.read_bytes()
-    except OSError as exc:
-        raise CandidateNegativeAuthorityError(f"bound methodology unavailable: {exc}") from exc
-    method_sha = _bytes_sha(method_bytes)
+    if type(methodology_bytes) is not bytes:
+        raise CandidateNegativeAuthorityError("bound methodology is not exact bytes")
+    method_name = _text(methodology_identity)
+    if not method_name or "\x00" in method_name:
+        raise CandidateNegativeAuthorityError("bound methodology identity is invalid")
+    method = Path(method_name)
+    method_sha = _bytes_sha(methodology_bytes)
 
     prior_events: list[dict[str, Any]] = []
     if prior_ledger is not None:
@@ -1519,6 +2292,16 @@ def build_candidate_negative_ledger(
     family_events: dict[str, list[dict[str, Any]]] = {}
     for event in events:
         family_events.setdefault(event["family_id"], []).append(event)
+        if (
+            event["identity_state"] == "DERIVED"
+            and event.get("harvest_kind") == "STRICT_OBLIGATION_RECEIPT"
+        ):
+            # The obligation key IS the stable identity for this event kind.
+            # "This candidate has no explicit ID" is not a property of a
+            # driver-owned obligation row, and charging it made every depth
+            # worker that correctly dismissed an obligation fail its gate.
+            # The event is still DERIVED, so it can never close a candidate.
+            continue
         if event["identity_state"] == "DERIVED":
             issues.append(
                 {
@@ -1528,7 +2311,14 @@ def build_candidate_negative_ledger(
                     "source_artifact": event["source_artifact"],
                 }
             )
-        if event.get("proposed_disposition") == "NOT_APPLICABLE_PROPOSAL":
+        if (
+            event.get("proposed_disposition") == "NOT_APPLICABLE_PROPOSAL"
+            and event.get("legacy_disposition") != "NOT_APPLICABLE_PROPOSAL"
+        ):
+            # Only the explicit producer proposal enum is admissible for a
+            # real candidate.  Legacy terminal spellings such as N/A remain
+            # debt; the zero-denominator table placeholder is filtered before
+            # an event exists.
             issues.append(
                 {
                     "code": "EVENT_NOT_APPLICABLE_WITH_NONZERO_DENOMINATOR",
@@ -1569,12 +2359,52 @@ def build_candidate_negative_ledger(
                 }
             )
             family_state = "CONFLICTED"
+        representation_dispositions: dict[str, set[str]] = {}
+        for row in current_rows:
+            representation_dispositions.setdefault(
+                row["harvest_kind"], set()
+            ).add(row["proposed_disposition"])
+        heading_proposals = representation_dispositions.get(
+            "STRUCTURED_ENTITY_FIELD", set()
+        )
+        table_proposals = representation_dispositions.get(
+            "STRUCTURED_TABLE_ROW", set()
+        )
+        if heading_proposals and table_proposals and (
+            heading_proposals != table_proposals
+        ):
+            issues.append(
+                {
+                    "code": "CONFLICTING_REPRESENTATION",
+                    "family_id": family_id,
+                    "event_ids": sorted(row["event_id"] for row in current_rows),
+                    "heading_proposals": sorted(heading_proposals),
+                    "table_proposals": sorted(table_proposals),
+                }
+            )
+            family_state = "CONFLICTED"
         if len(claim_hashes) > 1:
             issues.append(
                 {
                     "code": "CONFLICTING_ENTITY_CLAIM",
                     "family_id": family_id,
                     "semantic_claim_sha256s": claim_hashes,
+                }
+            )
+            family_state = "CONFLICTED"
+        family_proposals = {
+            row["proposed_disposition"] for row in rows
+        }
+        if (
+            "NOT_APPLICABLE_PROPOSAL" in family_proposals
+            and family_proposals != {"NOT_APPLICABLE_PROPOSAL"}
+        ):
+            issues.append(
+                {
+                    "code": "MIXED_CANDIDATE_PROPOSAL_DISPOSITIONS",
+                    "family_id": family_id,
+                    "event_ids": sorted(row["event_id"] for row in rows),
+                    "proposed_dispositions": sorted(family_proposals),
                 }
             )
             family_state = "CONFLICTED"
@@ -1630,6 +2460,858 @@ def build_candidate_negative_ledger(
     ledger = {**unsigned, "ledger_digest": _digest(unsigned)}
     validate_candidate_negative_ledger(ledger)
     return ledger
+
+
+def build_candidate_negative_ledger(
+    *,
+    phase: str,
+    artifacts: Sequence[ArtifactInput],
+    methodology_path: Path,
+    prior_ledger: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a candidate-negative ledger bound to a filesystem methodology."""
+
+    phase_n = _text(phase).casefold()
+    if not phase_n:
+        raise CandidateNegativeAuthorityError("candidate-negative phase is empty")
+    if phase_n == AXIS_CLEAR_PHASE:
+        raise CandidateNegativeAuthorityError(
+            "axis_coverage negatives require the typed v2 adapter; "
+            "Markdown is not an authority source"
+        )
+    try:
+        method = Path(methodology_path).resolve(strict=True)
+        method_bytes = method.read_bytes()
+    except OSError as exc:
+        raise CandidateNegativeAuthorityError(
+            f"bound methodology unavailable: {exc}"
+        ) from exc
+    return _build_candidate_negative_ledger_from_bytes(
+        phase=phase_n,
+        artifacts=artifacts,
+        methodology_bytes=method_bytes,
+        methodology_identity=method.as_posix(),
+        prior_ledger=prior_ledger,
+    )
+
+
+def _valid_staged_actor_identity(value: Any, *, allow_empty: bool) -> bool:
+    if type(value) is not str or value != value.strip():
+        return False
+    if not value:
+        return allow_empty
+    return (
+        len(value.encode("utf-8")) <= 256
+        and "\x00" not in value
+        and value.isprintable()
+    )
+
+
+def compile_candidate_negative_staged_context(
+    methodology_bytes: bytes,
+    output_identity: str,
+    producer_identity: str,
+    *,
+    phase: str,
+    invocation_id: str | None = None,
+) -> dict[str, Any]:
+    """Compile a phase-bound, filesystem-free producer admission context."""
+
+    phase_n = _text(phase).casefold()
+    if phase_n not in _STAGED_CANDIDATE_NEGATIVE_PHASES:
+        raise ValueError("staged candidate-negative producer phase is invalid")
+    if (
+        type(methodology_bytes) is not bytes
+        or not methodology_bytes
+        or len(methodology_bytes) > _MAX_STAGED_METHODOLOGY_BYTES
+    ):
+        raise ValueError("staged candidate-negative methodology bytes are invalid")
+    if type(output_identity) is not str or not _STAGED_OUTPUT_ID_RE.fullmatch(
+        output_identity
+    ):
+        raise ValueError("staged candidate-negative output identity is not canonical")
+    if not _valid_staged_actor_identity(producer_identity, allow_empty=False):
+        raise ValueError("staged candidate-negative producer identity is invalid")
+    invocation = "" if invocation_id is None else invocation_id
+    if not _valid_staged_actor_identity(invocation, allow_empty=True):
+        raise ValueError("staged candidate-negative invocation identity is invalid")
+    context: dict[str, Any] = {
+        "schema_version": CANDIDATE_NEGATIVE_STAGED_CONTEXT_SCHEMA,
+        "phase": phase_n,
+        "methodology_identity": _STAGED_METHODOLOGY_IDENTITY,
+        "methodology_base64": base64.b64encode(methodology_bytes).decode("ascii"),
+        "methodology_sha256": _bytes_sha(methodology_bytes),
+        "output_identity": output_identity,
+        "producer_identity": producer_identity,
+        "producer_invocation_id": invocation,
+    }
+    context["context_digest"] = _digest(context)
+    return context
+
+
+def _closed_candidate_negative_staged_context(
+    raw: Any,
+) -> tuple[str, bytes, str, str, str] | None:
+    fields = {
+        "schema_version",
+        "phase",
+        "methodology_identity",
+        "methodology_base64",
+        "methodology_sha256",
+        "output_identity",
+        "producer_identity",
+        "producer_invocation_id",
+        "context_digest",
+    }
+    if not isinstance(raw, Mapping) or set(raw) != fields:
+        return None
+    context = dict(raw)
+    supplied_digest = context.pop("context_digest", None)
+    encoded = context.get("methodology_base64")
+    phase = context.get("phase")
+    if (
+        context.get("schema_version") != CANDIDATE_NEGATIVE_STAGED_CONTEXT_SCHEMA
+        or phase not in _STAGED_CANDIDATE_NEGATIVE_PHASES
+        or context.get("methodology_identity") != _STAGED_METHODOLOGY_IDENTITY
+        or type(encoded) is not str
+        or len(encoded) > ((_MAX_STAGED_METHODOLOGY_BYTES + 2) // 3) * 4
+        or not _HEX_RE.fullmatch(str(context.get("methodology_sha256") or ""))
+        or type(context.get("output_identity")) is not str
+        or not _STAGED_OUTPUT_ID_RE.fullmatch(context["output_identity"])
+        or not _valid_staged_actor_identity(
+            context.get("producer_identity"), allow_empty=False
+        )
+        or not _valid_staged_actor_identity(
+            context.get("producer_invocation_id"), allow_empty=True
+        )
+        or supplied_digest != _digest(context)
+    ):
+        return None
+    try:
+        methodology = base64.b64decode(encoded.encode("ascii"), validate=True)
+    except (UnicodeError, ValueError):
+        return None
+    if (
+        not methodology
+        or len(methodology) > _MAX_STAGED_METHODOLOGY_BYTES
+        or base64.b64encode(methodology).decode("ascii") != encoded
+        or _bytes_sha(methodology) != context["methodology_sha256"]
+    ):
+        return None
+    return (
+        str(phase),
+        methodology,
+        context["output_identity"],
+        context["producer_identity"],
+        context["producer_invocation_id"],
+    )
+
+
+def compile_depth_candidate_negative_staged_context(
+    methodology_bytes: bytes,
+    output_identity: str,
+    producer_identity: str,
+    invocation_id: str | None = None,
+) -> dict[str, Any]:
+    """Compile a filesystem-free context for one staged depth artifact.
+
+    Raw methodology bytes are carried in canonical base64 as well as bound by
+    SHA-256.  The runtime freezes the returned plain mapping before producer
+    launch; the validator can therefore replay the same parser without a path
+    lookup or a closure over mutable process state.
+    """
+
+    if (
+        type(methodology_bytes) is not bytes
+        or not methodology_bytes
+        or len(methodology_bytes) > _MAX_STAGED_METHODOLOGY_BYTES
+    ):
+        raise ValueError("staged candidate-negative methodology bytes are invalid")
+    if type(output_identity) is not str or not _STAGED_OUTPUT_ID_RE.fullmatch(
+        output_identity
+    ):
+        raise ValueError("staged candidate-negative output identity is not canonical")
+    if not _valid_staged_actor_identity(producer_identity, allow_empty=False):
+        raise ValueError("staged candidate-negative producer identity is invalid")
+    invocation = "" if invocation_id is None else invocation_id
+    if not _valid_staged_actor_identity(invocation, allow_empty=True):
+        raise ValueError("staged candidate-negative invocation identity is invalid")
+    context: dict[str, Any] = {
+        "schema_version": DEPTH_CANDIDATE_NEGATIVE_STAGED_CONTEXT_SCHEMA,
+        "phase": "depth",
+        "methodology_identity": _STAGED_METHODOLOGY_IDENTITY,
+        "methodology_base64": base64.b64encode(methodology_bytes).decode("ascii"),
+        "methodology_sha256": _bytes_sha(methodology_bytes),
+        "output_identity": output_identity,
+        "producer_identity": producer_identity,
+        "producer_invocation_id": invocation,
+    }
+    context["context_digest"] = _digest(context)
+    return context
+
+
+def _closed_depth_candidate_negative_staged_context(
+    raw: Any,
+) -> tuple[bytes, str, str, str] | None:
+    fields = {
+        "schema_version",
+        "phase",
+        "methodology_identity",
+        "methodology_base64",
+        "methodology_sha256",
+        "output_identity",
+        "producer_identity",
+        "producer_invocation_id",
+        "context_digest",
+    }
+    if not isinstance(raw, Mapping) or set(raw) != fields:
+        return None
+    context = dict(raw)
+    supplied_digest = context.pop("context_digest", None)
+    encoded = context.get("methodology_base64")
+    if (
+        context.get("schema_version")
+        != DEPTH_CANDIDATE_NEGATIVE_STAGED_CONTEXT_SCHEMA
+        or context.get("phase") != "depth"
+        or context.get("methodology_identity") != _STAGED_METHODOLOGY_IDENTITY
+        or type(encoded) is not str
+        or len(encoded) > ((_MAX_STAGED_METHODOLOGY_BYTES + 2) // 3) * 4
+        or not _HEX_RE.fullmatch(str(context.get("methodology_sha256") or ""))
+        or type(context.get("output_identity")) is not str
+        or not _STAGED_OUTPUT_ID_RE.fullmatch(context["output_identity"])
+        or not _valid_staged_actor_identity(
+            context.get("producer_identity"), allow_empty=False
+        )
+        or not _valid_staged_actor_identity(
+            context.get("producer_invocation_id"), allow_empty=True
+        )
+        or supplied_digest != _digest(context)
+    ):
+        return None
+    try:
+        methodology = base64.b64decode(encoded.encode("ascii"), validate=True)
+    except (UnicodeError, ValueError):
+        return None
+    if (
+        not methodology
+        or len(methodology) > _MAX_STAGED_METHODOLOGY_BYTES
+        or base64.b64encode(methodology).decode("ascii") != encoded
+        or _bytes_sha(methodology) != context["methodology_sha256"]
+    ):
+        return None
+    return (
+        methodology,
+        context["output_identity"],
+        context["producer_identity"],
+        context["producer_invocation_id"],
+    )
+
+
+def _truncate_staged_reason(value: str) -> str:
+    raw = value.replace("\x00", "\\0").encode("utf-8")
+    if len(raw) <= _MAX_STAGED_REASON_BYTES:
+        return raw.decode("utf-8")
+    raw = raw[:_MAX_STAGED_REASON_BYTES]
+    while raw:
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raw = raw[:-1]
+    return "staged candidate-negative rejection reason exceeded its byte bound"
+
+
+def _bounded_staged_candidate_negative_reasons(
+    values: Sequence[str],
+) -> tuple[str, ...]:
+    reasons = sorted(
+        {
+            _truncate_staged_reason(str(value).strip())
+            for value in values
+            if str(value).strip()
+        }
+    )
+    if len(reasons) <= _MAX_STAGED_REASONS:
+        return tuple(reasons)
+    return tuple(
+        reasons[: _MAX_STAGED_REASONS - 1]
+        + ["additional candidate-negative rejection reasons were truncated"]
+    )
+
+
+# Every candidate-negative input-debt code, mapped to the PROPERTY it
+# protects.  The closure is not a judgement call: it is read from
+# `AS.closure_for_property`, which returns FAIL_CLOSED iff the dotted name's
+# first segment is one of {identity, dedup, severity, disposition}.
+#
+# WHY THESE NAMES.  The four closed families exist because a permissive answer
+# there REMOVES a candidate from human attention.  Discarding the staged
+# artifact is the *maximal* form of that removal: every OTHER candidate in the
+# same worker output disappears with it.  So the closed identity decision this
+# module owes is "a negative whose candidate cannot be re-addressed may never
+# CLOSE that candidate" -- which is carried structurally by
+# `identity_state: DERIVED` + `proof_scope: NONE` +
+# `requires_independent_consumer: True`, and vetoed downstream.  It is NOT
+# "the producer must have decorated its heading with brackets"; that residue
+# is a producer FORMAT obligation, and its correct failure action is a repair
+# hint, not the destruction of a 126,589-byte analysis.
+_CANDIDATE_NEGATIVE_ISSUE_PROPERTIES: Mapping[str, str] = {
+    "DEPTH_COMMITTED_INVARIANT_DEBT": "receipt.committed_invariant",
+    "DERIVED_SOURCE_ITEM_ID": "format.explicit_candidate_id_binding",
+    "DUPLICATE_SOURCE_ITEM_ID": "format.candidate_restatement",
+    "CONFLICTING_REPRESENTATION": "format.representation_consistency",
+    "CONFLICTING_ENTITY_CLAIM": "format.claim_restatement_consistency",
+    "MIXED_CANDIDATE_PROPOSAL_DISPOSITIONS": "format.family_disposition_mix",
+    "EVENT_NOT_APPLICABLE_WITH_NONZERO_DENOMINATOR": (
+        "format.nonterminal_enum_spelling"
+    ),
+}
+_CANDIDATE_NEGATIVE_REPAIR_HINTS: Mapping[str, str] = {
+    "DEPTH_COMMITTED_INVARIANT_DEBT": (
+        "Add one complete `committed-invariant [CI-N]` block (Locus, Shape, "
+        "Assertion, Falsify Class, Provenance) bound to this candidate."
+    ),
+    "DERIVED_SOURCE_ITEM_ID": (
+        "Name the candidate once, e.g. `## Finding [XX-1]: title` or a "
+        "`Finding ID` column. Decoration does not matter; an explicit ID does."
+    ),
+    "DUPLICATE_SOURCE_ITEM_ID": (
+        "One candidate is described more than once. Keep the richest "
+        "description and delete the restatement, or give the second one its "
+        "own ID."
+    ),
+    "CONFLICTING_REPRESENTATION": (
+        "A heading and a table row give this candidate different "
+        "dispositions. Make them agree."
+    ),
+    "CONFLICTING_ENTITY_CLAIM": (
+        "One ID carries two different claims. Give the second claim its own "
+        "candidate ID."
+    ),
+    "MIXED_CANDIDATE_PROPOSAL_DISPOSITIONS": (
+        "This candidate is both 'not applicable' and refuted. Choose one."
+    ),
+    "EVENT_NOT_APPLICABLE_WITH_NONZERO_DENOMINATOR": (
+        "Use the nonterminal `NOT_APPLICABLE_PROPOSAL` enum for a real "
+        "candidate; bare `N/A` is a legacy terminal spelling."
+    ),
+}
+# Kept for compatibility with existing callers/tests: the blocking set is now
+# derived, so this is exactly "every code whose property is not FAIL_CLOSED".
+_NON_BLOCKING_CANDIDATE_NEGATIVE_DEBT = frozenset(
+    code
+    for code, prop in _CANDIDATE_NEGATIVE_ISSUE_PROPERTIES.items()
+    if AS.closure_for_property(prop) != AS.FAIL_CLOSED
+)
+
+
+def _candidate_negative_issue_defect(
+    issue: Mapping[str, Any], *, phase_label: str
+) -> "AS.Defect":
+    code = _text(issue.get("code")) or "UNKNOWN_INPUT_DEBT"
+    prop = _CANDIDATE_NEGATIVE_ISSUE_PROPERTIES.get(
+        code, f"unclassified.{code.casefold()}"
+    )
+    observed = _text(issue.get("detail")) or code
+    return AS.Defect(
+        property_violated=prop,
+        physical_line=0,
+        observed=f"{phase_label}: {observed}",
+        expected="a re-addressable candidate record",
+        repair_hint=_CANDIDATE_NEGATIVE_REPAIR_HINTS.get(
+            code, f"candidate-negative input debt remains: {code}"
+        ),
+        closure=AS.closure_for_property(prop),
+    )
+
+
+def candidate_negative_check_result(
+    ledger: Mapping[str, Any], *, producer_phase: str = "depth"
+) -> "AS.CheckResult":
+    """Typed verdict for one candidate-negative ledger.
+
+    `result.should_discard` is the ONLY question a staged validator may ask
+    before throwing an artifact away.  Debt defects travel WITH the published
+    artifact (they are already on the ledger as `issues` and
+    `status: INPUT_DEBT`), so the candidate stays visible to human review
+    instead of vanishing with its worker's whole analysis.
+    """
+
+    phase_label = _text(producer_phase).casefold() or "producer"
+    defects: list[AS.Defect] = []
+    for issue in ledger.get("issues", []):
+        if not isinstance(issue, Mapping):
+            defects.append(
+                AS.Defect(
+                    property_violated="format.ledger_issue_shape",
+                    physical_line=0,
+                    observed=repr(issue)[:120],
+                    expected="an input-debt object",
+                    repair_hint="Rebuild the ledger; this row is malformed.",
+                    closure=AS.DEBT,
+                )
+            )
+            continue
+        defects.append(
+            _candidate_negative_issue_defect(issue, phase_label=phase_label)
+        )
+    if ledger.get("status") != "CLEAN" and not defects:
+        defects.append(
+            AS.Defect(
+                property_violated="format.ledger_status",
+                physical_line=0,
+                observed=_text(ledger.get("status")),
+                expected="CLEAN, or at least one explaining issue row",
+                repair_hint="Rebuild the ledger; its status has no explanation.",
+                closure=AS.DEBT,
+            )
+        )
+    return AS.CheckResult(tuple(defects))
+
+
+def _candidate_negative_debt_reasons(
+    ledger: Mapping[str, Any],
+    *,
+    producer_phase: str = "depth",
+) -> tuple[str, ...]:
+    """Reasons that DENY the staged artifact.
+
+    STEP 6 of the migration recipe: branch on `should_discard`, not on
+    `not accepted`.  Every presentation-derived code above now degrades with
+    visible debt plus a targeted repair hint; only a FAIL_CLOSED property can
+    still deny.
+    """
+
+    result = candidate_negative_check_result(
+        ledger, producer_phase=producer_phase
+    )
+    if not result.should_discard:
+        return ()
+    return _bounded_staged_candidate_negative_reasons(
+        tuple(defect.render() for defect in result.blocking_defects)
+    )
+
+
+def evaluate_staged_candidate_negative_receipt(
+    outputs: Mapping[str, bytes], context: Mapping[str, Any]
+) -> tuple[bool, tuple[str, ...]]:
+    """Evaluate one breadth/rescan/depth producer artifact before commit."""
+
+    closed = _closed_candidate_negative_staged_context(context)
+    if closed is None:
+        return False, ("staged candidate-negative gate context is invalid",)
+    phase, methodology, output_identity, producer_identity, invocation_id = closed
+    if not isinstance(outputs, Mapping) or set(outputs) != {output_identity}:
+        return False, ("staged candidate-negative output denominator mismatch",)
+    artifact_bytes = outputs.get(output_identity)
+    if (
+        type(artifact_bytes) is not bytes
+        or not artifact_bytes
+        or len(artifact_bytes) > _MAX_STAGED_DEPTH_ARTIFACT_BYTES
+    ):
+        return False, ("staged candidate-negative output bytes are invalid",)
+    try:
+        artifact_bytes.decode("utf-8", errors="strict")
+    except UnicodeError:
+        return False, ("staged candidate-negative output is not strict UTF-8",)
+    try:
+        ledger = _build_candidate_negative_ledger_from_bytes(
+            phase=phase,
+            artifacts=(
+                ArtifactInput(
+                    relative_path=output_identity,
+                    content=artifact_bytes,
+                    producer_identity=producer_identity,
+                    producer_invocation_id=invocation_id,
+                ),
+            ),
+            methodology_bytes=methodology,
+            methodology_identity=_STAGED_METHODOLOGY_IDENTITY,
+        )
+    except (CandidateNegativeAuthorityError, TypeError, ValueError) as exc:
+        reasons = _bounded_staged_candidate_negative_reasons(
+            (f"staged candidate-negative parse failed: {type(exc).__name__}: {exc}",)
+        )
+        return False, reasons
+    reasons = _candidate_negative_debt_reasons(
+        ledger, producer_phase=phase
+    )
+    return not reasons, reasons
+
+
+def staged_candidate_negative_receipt_validator(
+    outputs: Mapping[str, bytes], context: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """Runtime-compatible validator for breadth/rescan/depth producers."""
+
+    _accepted, reasons = evaluate_staged_candidate_negative_receipt(
+        outputs, context
+    )
+    return reasons
+
+
+def evaluate_staged_depth_candidate_negative_receipt(
+    outputs: Mapping[str, bytes], context: Mapping[str, Any]
+) -> tuple[bool, tuple[str, ...]]:
+    """Pure evaluation form returning an admission bit and bounded reasons."""
+
+    closed = _closed_depth_candidate_negative_staged_context(context)
+    if closed is None:
+        reasons = ("staged candidate-negative gate context is invalid",)
+        return False, reasons
+    methodology, output_identity, producer_identity, invocation_id = closed
+    if not isinstance(outputs, Mapping) or set(outputs) != {output_identity}:
+        reasons = ("staged candidate-negative output denominator mismatch",)
+        return False, reasons
+    artifact_bytes = outputs.get(output_identity)
+    if (
+        type(artifact_bytes) is not bytes
+        or not artifact_bytes
+        or len(artifact_bytes) > _MAX_STAGED_DEPTH_ARTIFACT_BYTES
+    ):
+        reasons = ("staged candidate-negative output bytes are invalid",)
+        return False, reasons
+    try:
+        artifact_bytes.decode("utf-8", errors="strict")
+    except UnicodeError:
+        reasons = ("staged candidate-negative output is not strict UTF-8",)
+        return False, reasons
+    try:
+        ledger = _build_candidate_negative_ledger_from_bytes(
+            phase="depth",
+            artifacts=(
+                ArtifactInput(
+                    relative_path=output_identity,
+                    content=artifact_bytes,
+                    producer_identity=producer_identity,
+                    producer_invocation_id=invocation_id,
+                ),
+            ),
+            methodology_bytes=methodology,
+            methodology_identity=_STAGED_METHODOLOGY_IDENTITY,
+        )
+    except (CandidateNegativeAuthorityError, TypeError, ValueError) as exc:
+        reasons = _bounded_staged_candidate_negative_reasons(
+            (f"staged candidate-negative parse failed: {type(exc).__name__}: {exc}",)
+        )
+        return False, reasons
+    reasons = _candidate_negative_debt_reasons(ledger)
+    return not reasons, reasons
+
+
+def staged_depth_candidate_negative_receipt_validator(
+    outputs: Mapping[str, bytes], context: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """Runtime-compatible top-level validator for one staged depth artifact."""
+
+    _accepted, reasons = evaluate_staged_depth_candidate_negative_receipt(
+        outputs, context
+    )
+    return reasons
+
+
+def _load_attention_repair_candidate_negative_authorities(
+    *,
+    queue_bytes: bytes,
+    plan_bytes: bytes,
+    application_receipt_bytes: bytes,
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    if (
+        type(queue_bytes) is not bytes
+        or not queue_bytes
+        or len(queue_bytes) > _MAX_STAGED_DEPTH_ARTIFACT_BYTES
+        or type(plan_bytes) is not bytes
+        or not plan_bytes
+        or len(plan_bytes) > _MAX_STAGED_DEPTH_ARTIFACT_BYTES
+        or type(application_receipt_bytes) is not bytes
+        or not application_receipt_bytes
+        or len(application_receipt_bytes) > _MAX_STAGED_DEPTH_ARTIFACT_BYTES
+    ):
+        raise CandidateNegativeAuthorityError(
+            "attention candidate-negative authority bytes are invalid"
+        )
+    try:
+        plan_raw = _strict_json_loads(plan_bytes)
+        receipt_raw = _strict_json_loads(application_receipt_bytes)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise CandidateNegativeAuthorityError(
+            "attention candidate-negative authority JSON is invalid: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    if not isinstance(plan_raw, dict) or not isinstance(receipt_raw, dict):
+        raise CandidateNegativeAuthorityError(
+            "attention candidate-negative authorities are not JSON objects"
+        )
+    try:
+        import attention_repair_shards as attention
+
+        issues = attention.validate_application_receipt_mapping(
+            plan_raw, receipt_raw
+        )
+        queue_binding, queue_rows = attention.parse_bound_queue_bytes(
+            queue_bytes
+        )
+    except Exception as exc:
+        if isinstance(exc, CandidateNegativeAuthorityError):
+            raise
+        raise CandidateNegativeAuthorityError(
+            "attention candidate-negative authority replay failed: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    if issues:
+        raise CandidateNegativeAuthorityError(
+            "attention candidate-negative authority is invalid: "
+            + "; ".join(issues)
+        )
+    plan_rows = [
+        dict(row)
+        for shard in plan_raw["shards"]
+        for row in shard["rows"]
+    ]
+    if (
+        _bytes_sha(queue_bytes) != plan_raw["queue_file_sha256"]
+        or queue_binding != plan_raw["parent_queue_binding_sha256"]
+        or queue_rows != plan_rows
+    ):
+        raise CandidateNegativeAuthorityError(
+            "attention candidate-negative plan lost its exact queue binding"
+        )
+    rows = receipt_raw.get("rows")
+    assert isinstance(rows, list)
+    return plan_raw, receipt_raw, [dict(row) for row in rows]
+
+
+def _attention_repair_source_item_id(
+    *, queue_binding_sha256: str, row: Mapping[str, Any]
+) -> str:
+    """Derive one stable typed identity solely from driver-bound row authority."""
+
+    row_no = int(row["row"])
+    suffix = _digest(
+        {
+            "queue_binding_sha256": queue_binding_sha256,
+            "row": row_no,
+            "kind": row["kind"],
+            "target": row["target"],
+        }
+    )[:16].upper()
+    return f"ATNR-{row_no:06d}-{suffix}"
+
+
+def build_attention_repair_candidate_negative_ledger(
+    *,
+    queue_bytes: bytes,
+    plan_bytes: bytes,
+    application_receipt_bytes: bytes,
+) -> dict[str, Any]:
+    """Adapt typed SAFE/NO_FINDING receipts into independent-review proposals.
+
+    The narrative aggregate is intentionally absent from this authority path.
+    Row identity comes from the self-bound shard plan and application receipt;
+    CONFIRMED and NEEDS_HUMAN rows are outside the negative denominator.
+    """
+
+    plan, receipt, rows = _load_attention_repair_candidate_negative_authorities(
+        queue_bytes=queue_bytes,
+        plan_bytes=plan_bytes,
+        application_receipt_bytes=application_receipt_bytes,
+    )
+    queue_binding = str(plan["parent_queue_binding_sha256"])
+    plan_sha = _bytes_sha(plan_bytes)
+    receipt_sha = _bytes_sha(application_receipt_bytes)
+    producer_invocation_id = queue_binding
+    artifact = ArtifactInput(
+        relative_path=ATTENTION_REPAIR_APPLICATION_ARTIFACT,
+        content=application_receipt_bytes,
+        producer_identity=ATTENTION_REPAIR_PRODUCER_IDENTITY,
+        producer_invocation_id=producer_invocation_id,
+    )
+    # The verdict is read through the SAME normalizer as every other
+    # disposition in this module, so `NO_FINDINGS`, `no issue`, `SAFE.` and
+    # `safe` are the enums they obviously are.  A second, narrower two-string
+    # vocabulary silently dropped those rows from the negative denominator --
+    # a fail-OPEN recall hole invisible in the receipt.
+    negative_rows = [
+        row
+        for row in rows
+        if _normalize_legacy(row.get("verdict")) in {"SAFE", "NO_FINDING"}
+    ]
+    events: list[dict[str, Any]] = []
+    for row in negative_rows:
+        source_item_id = _attention_repair_source_item_id(
+            queue_binding_sha256=queue_binding,
+            row=row,
+        )
+        label = (
+            f"attention repair row {row['row']} {row['kind']} "
+            f"{row['target']}: {row['notes'] or row['evidence']}"
+        )
+        events.append(
+            _event(
+                phase=ATTENTION_REPAIR_PHASE,
+                artifact=artifact,
+                artifact_sha=receipt_sha,
+                label=label,
+                excerpt=_canonical_json(row),
+                legacy=str(row["verdict"]),
+                methodology_path=Path(ATTENTION_REPAIR_PLAN_ARTIFACT),
+                methodology_sha=plan_sha,
+                harvest_kind="TYPED_ATTENTION_REPAIR_V1",
+                source_identity=(source_item_id, "EXACT"),
+            )
+        )
+    events.sort(key=lambda row: row["event_id"])
+    families = [
+        {
+            "family_id": event["family_id"],
+            "identity_state": "EXACT",
+            "event_ids": [event["event_id"]],
+            "current_event_ids": [event["event_id"]],
+            "proposal_ids": [event["proposal_id"]],
+            "semantic_claim_sha256s": [event["semantic_claim_sha256"]],
+        }
+        for event in sorted(events, key=lambda row: row["family_id"])
+    ]
+    negative_row_numbers = sorted(int(row["row"]) for row in negative_rows)
+    binding_unsigned = {
+        "schema_version": ATTENTION_REPAIR_ADAPTER_SCHEMA,
+        "plan_artifact": ATTENTION_REPAIR_PLAN_ARTIFACT,
+        "plan_artifact_sha256": plan_sha,
+        "plan_sha256": plan["plan_sha256"],
+        "queue_artifact": ATTENTION_REPAIR_QUEUE_ARTIFACT,
+        "queue_artifact_sha256": _bytes_sha(queue_bytes),
+        "application_receipt_artifact": ATTENTION_REPAIR_APPLICATION_ARTIFACT,
+        "application_receipt_artifact_sha256": receipt_sha,
+        "queue_binding_sha256": queue_binding,
+        "queue_file_sha256": plan["queue_file_sha256"],
+        "row_count": plan["row_count"],
+        "negative_row_count": len(negative_rows),
+        "negative_row_numbers": negative_row_numbers,
+        "producer_identity": ATTENTION_REPAIR_PRODUCER_IDENTITY,
+        "producer_invocation_id": producer_invocation_id,
+    }
+    binding = {
+        **binding_unsigned,
+        "binding_digest": _digest(binding_unsigned),
+    }
+    source_artifacts = (
+        [
+            _source_artifact_row(
+                relative_path=ATTENTION_REPAIR_APPLICATION_ARTIFACT,
+                sha256=receipt_sha,
+                size_bytes=len(application_receipt_bytes),
+                producer_identity=ATTENTION_REPAIR_PRODUCER_IDENTITY,
+                producer_invocation_id=producer_invocation_id,
+            )
+        ]
+        if events
+        else []
+    )
+    unsigned = {
+        "schema_version": LEDGER_SCHEMA,
+        "phase": ATTENTION_REPAIR_PHASE,
+        "methodology_path": ATTENTION_REPAIR_PLAN_ARTIFACT,
+        "methodology_sha256": plan_sha,
+        "source_artifacts": source_artifacts,
+        "status": "CLEAN",
+        "issues": [],
+        "families": families,
+        "event_count": len(events),
+        "events": events,
+        "attention_authority_binding": binding,
+    }
+    ledger = {**unsigned, "ledger_digest": _digest(unsigned)}
+    validate_candidate_negative_ledger(ledger)
+    return ledger
+
+
+def validate_attention_repair_candidate_negative_ledger(
+    ledger: Any,
+    *,
+    queue_bytes: bytes,
+    plan_bytes: bytes,
+    application_receipt_bytes: bytes,
+) -> None:
+    """Replay exact typed inputs and reject any adapted-ledger mutation."""
+
+    validate_candidate_negative_ledger(ledger)
+    expected = build_attention_repair_candidate_negative_ledger(
+        queue_bytes=queue_bytes,
+        plan_bytes=plan_bytes,
+        application_receipt_bytes=application_receipt_bytes,
+    )
+    if ledger != expected:
+        raise CandidateNegativeAuthorityError(
+            "attention candidate-negative typed adapter projection mismatch"
+        )
+
+
+def _attention_repair_authority_bytes(
+    scratchpad: Path,
+) -> tuple[bytes, bytes, bytes]:
+    root = Path(scratchpad)
+    names = (
+        ATTENTION_REPAIR_QUEUE_ARTIFACT,
+        ATTENTION_REPAIR_PLAN_ARTIFACT,
+        ATTENTION_REPAIR_APPLICATION_ARTIFACT,
+    )
+    captured: list[bytes] = []
+    for name in names:
+        path = root / name
+        try:
+            if path.is_symlink() or not path.is_file():
+                raise OSError("not one regular file")
+            with path.open("rb") as handle:
+                before = os.fstat(handle.fileno())
+                raw = handle.read()
+                after = os.fstat(handle.fileno())
+            current = path.stat()
+            identity = lambda row: (  # noqa: E731 - immutable stat projection
+                row.st_dev,
+                row.st_ino,
+                row.st_size,
+                row.st_mtime_ns,
+                row.st_ctime_ns,
+            )
+            if (
+                identity(before) != identity(after)
+                or identity(after) != identity(current)
+            ):
+                raise OSError("changed during exact-byte capture")
+        except OSError as exc:
+            raise CandidateNegativeAuthorityError(
+                f"attention candidate-negative {name} is unavailable: {exc}"
+            ) from exc
+        captured.append(raw)
+    return captured[0], captured[1], captured[2]
+
+
+def build_attention_repair_candidate_negative_ledger_from_scratchpad(
+    scratchpad: Path,
+) -> dict[str, Any]:
+    """Thin driver adapter over exact sibling authority files."""
+
+    queue, plan, receipt = _attention_repair_authority_bytes(scratchpad)
+    return build_attention_repair_candidate_negative_ledger(
+        queue_bytes=queue,
+        plan_bytes=plan,
+        application_receipt_bytes=receipt,
+    )
+
+
+def validate_attention_repair_candidate_negative_ledger_from_scratchpad(
+    ledger: Any,
+    *,
+    scratchpad: Path,
+) -> None:
+    """Replay a committed typed adapter ledger from its exact siblings."""
+
+    queue, plan, receipt = _attention_repair_authority_bytes(scratchpad)
+    validate_attention_repair_candidate_negative_ledger(
+        ledger,
+        queue_bytes=queue,
+        plan_bytes=plan,
+        application_receipt_bytes=receipt,
+    )
 
 
 def _load_axis_clear_authorities(
@@ -2406,6 +4088,11 @@ def build_candidate_negative_application_plan(
                         if proposed == ["NOT_APPLICABLE_PROPOSAL"]
                         else "NEGATIVE"
                     ),
+                    "candidate_terminal_requested_effect": (
+                        "OUT_OF_SCOPE"
+                        if proposed == ["NOT_APPLICABLE_PROPOSAL"]
+                        else "REFUTED_FULL"
+                    ),
                     "evidence_basis": evidence_basis,
                     "original_evidence": original_evidence,
                     "original_result": (
@@ -2592,13 +4279,18 @@ def adjudicate_candidate_negative(
                 )
                 identity_vetoes[work_id] = veto
             elif identity_exact:
+                requested_effect = (
+                    "OUT_OF_SCOPE"
+                    if proposed == {"NOT_APPLICABLE_PROPOSAL"}
+                    else "REFUTED_FULL"
+                )
                 authorized, policy_reason = terminal_negative_authorized(
                     work_item=item,
                     assessment=assessment,
                     authority=(closure_authorities or {}).get(work_id),
                     provider_validator=closure_provider_validator,
                     closure_authority=closure_authority,
-                    requested_effect="REFUTED_FULL",
+                    requested_effect=requested_effect,
                 )
                 if not authorized:
                     assessment["outcome"] = "DISAGREE_CANDIDATE"
@@ -3112,12 +4804,30 @@ def write_candidate_negative_denominator(
     return path
 
 
-def validate_generator_prompt_negative_contract(prompt: str, *, phase: str) -> None:
-    """Reject a rendered generator schema that grants terminal-negative authority.
+_PROMPT_PROHIBITION_RE = re.compile(
+    r"(?i)\b(?:never|not|no|non|forbidden|prohibit(?:ed|s)?|disallow(?:ed|s)?|"
+    r"ban(?:ned)?|must\s+not|do\s+not|don't|avoid|reject(?:ed|s)?|"
+    r"excluded?|instead\s+of|rather\s+than)\b"
+)
 
-    Negative words in prohibitions/explanations remain legal.  Only enum/schema
-    contract lines are inspected.  Verifiers and independent discriminators are
-    terminal consumers and therefore exempt.
+
+def validate_generator_prompt_negative_contract(prompt: str, *, phase: str) -> None:
+    """Reject a rendered generator schema that GRANTS terminal-negative authority.
+
+    Property: `disposition.generator_grant` -- does this contract line hand a
+    discovery worker terminal-negative authority?  FAIL_CLOSED, and now read
+    from the NORMALIZED logical line:
+
+    * soft wraps are joined before matching, so moving a prohibition onto the
+      next physical line no longer turns it into a grant (and no longer denies
+      the phase launch over a template re-wrap);
+    * a line that PROHIBITS the terminal vocabulary
+      (``Verdicts: REFUTATION_PROPOSAL, UNRESOLVED (never SAFE)``) is a
+      prohibition, not a grant;
+    * a heading is not an enum contract line.
+
+    Negative words in prohibitions/explanations remain legal.  Verifiers and
+    independent discriminators are terminal consumers and therefore exempt.
     """
 
     phase_n = _text(phase).casefold()
@@ -3127,36 +4837,67 @@ def validate_generator_prompt_negative_contract(prompt: str, *, phase: str) -> N
         "report_index",
     }:
         return
-    violations = []
-    for ordinal, line in enumerate(str(prompt or "").splitlines(), start=1):
-        match = _GENERATOR_CONTRACT_LINE_RE.match(line)
-        if match and _TERMINAL_PROMPT_RE.search(match.group(1)):
-            violations.append(ordinal)
+    violations: list[int] = []
+    for line in AS.surface(prompt or "").lines:
+        if line.kind == "HEADING" or line.heading_level:
+            continue
+        match = _GENERATOR_CONTRACT_LINE_RE.match(line.text)
+        if not match:
+            continue
+        grant = match.group(1)
+        if not _TERMINAL_PROMPT_RE.search(grant):
+            continue
+        if _PROMPT_PROHIBITION_RE.search(grant):
+            # The line names the terminal vocabulary in order to FORBID it.
+            continue
+        violations.append(line.physical_start)
     if violations:
         raise CandidateNegativeAuthorityError(
             "generator prompt grants terminal-negative authority at line(s): "
-            + ", ".join(map(str, violations))
+            + ", ".join(str(ordinal) for ordinal in sorted(set(violations)))
         )
 
 
 __all__ = [
     "ArtifactInput",
     "APPLICATION_PLAN_SCHEMA",
+    "ATTENTION_REPAIR_ADAPTER_SCHEMA",
+    "ATTENTION_REPAIR_APPLICATION_ARTIFACT",
+    "ATTENTION_REPAIR_PHASE",
+    "ATTENTION_REPAIR_PLAN_ARTIFACT",
+    "ATTENTION_REPAIR_PRODUCER_IDENTITY",
+    "ATTENTION_REPAIR_QUEUE_ARTIFACT",
     "AXIS_CLEAR_ADAPTER_SCHEMA",
     "AXIS_CLEAR_PHASE",
     "CANDIDATE_PLAN_FILE",
     "CANDIDATE_DENOMINATOR_FILE",
+    "CANDIDATE_PLANNING_DEBT_FILE",
+    "candidate_negative_planning_debt_bytes",
+    "validate_candidate_negative_planning_debt",
     "CANDIDATE_NEGATIVE_SKILL",
     "CandidateNegativeAuthorityError",
+    "CANDIDATE_NEGATIVE_STAGED_CONTEXT_SCHEMA",
+    "DEPTH_CANDIDATE_NEGATIVE_STAGED_CONTEXT_SCHEMA",
     "LEDGER_PREFIX",
     "LEDGER_SCHEMA",
     "build_candidate_negative_ledger",
+    "candidate_negative_check_result",
+    "build_attention_repair_candidate_negative_ledger",
+    "build_attention_repair_candidate_negative_ledger_from_scratchpad",
     "build_axis_clear_candidate_negative_ledger",
     "build_candidate_negative_application_plan",
+    "compile_depth_candidate_negative_staged_context",
+    "compile_candidate_negative_staged_context",
+    "evaluate_staged_depth_candidate_negative_receipt",
+    "evaluate_staged_candidate_negative_receipt",
     "adjudicate_candidate_negative",
+    "staged_depth_candidate_negative_receipt_validator",
+    "staged_candidate_negative_receipt_validator",
     "validate_candidate_negative_denominator",
     "write_candidate_negative_denominator",
     "validate_candidate_negative_ledger",
+    "validate_attention_repair_candidate_negative_ledger",
+    "validate_attention_repair_candidate_negative_ledger_from_scratchpad",
     "validate_axis_clear_candidate_negative_ledger",
     "validate_generator_prompt_negative_contract",
     "write_candidate_negative_ledger",

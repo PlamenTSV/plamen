@@ -69,16 +69,22 @@ def test_dedup_mechanical_repair_adds_passthrough_rows(tmp_path: Path):
         encoding="utf-8",
     )
 
+    model_bytes = (tmp_path / "dedup_decisions.md").read_bytes()
     repaired = _repair_dedup_missing_dispositions(tmp_path, "sc_semantic_dedup")
 
     assert repaired == 2
     assert _check_dedup_decision_coverage(tmp_path) == []
-    text = (tmp_path / "dedup_decisions.md").read_text(encoding="utf-8")
-    assert "Mechanical Missing Disposition Repair" in text
-    assert "PASSTHROUGH" in text
+    assert (tmp_path / "dedup_decisions.md").read_bytes() == model_bytes
+    repair = __import__("json").loads(
+        (tmp_path / "dedup_coverage_repair.json").read_text(encoding="utf-8")
+    )
+    assert len(repair["items"]) == 2
+    assert {item["disposition"] for item in repair["items"]} == {"PASSTHROUGH"}
 
 
-def test_fresh_dedup_coverage_gap_is_repaired_without_blocking(tmp_path: Path):
+def test_fresh_dedup_coverage_gap_is_repaired_without_blocking(
+    tmp_path: Path, monkeypatch,
+):
     sp = tmp_path / ".scratchpad"
     sp.mkdir()
     (sp / "_audit_started_with_markers.json").write_text("{}", encoding="utf-8")
@@ -87,6 +93,7 @@ def test_fresh_dedup_coverage_gap_is_repaired_without_blocking(tmp_path: Path):
         "| Pair | Decision |\n|---|---|\n| 1 | KEEP SEPARATE |\n",
         encoding="utf-8",
     )
+    model_bytes = (sp / "dedup_decisions.md").read_bytes()
     (sp / "findings_inventory_deduped.md").write_text("x" * 200, encoding="utf-8")
     phase = D.Phase(
         name="sc_semantic_dedup",
@@ -95,10 +102,22 @@ def test_fresh_dedup_coverage_gap_is_repaired_without_blocking(tmp_path: Path):
         base_timeout_s=1,
         min_artifact_bytes=10,
     )
+    # This fixture targets the coverage projection only; PhaseIO transaction
+    # mechanics have dedicated integration suites with fully bound ledgers.
+    monkeypatch.setattr(D, "_record_typed_model_phase_artifacts", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        D,
+        "_run_l1_prequeue_semantic_dedup_transaction",
+        lambda **_k: {"safe_to_consume": True},
+    )
 
     passed, missing = D._run_phase_validators(
         phase,
-        {"mode": "core", "pipeline": "sc", "project_root": str(tmp_path)},
+        {
+            "mode": "core", "pipeline": "sc", "language": "evm",
+            "cli_backend": "codex", "project_root": str(tmp_path),
+            "scratchpad": str(sp), "_run_id": "dedup-repair-test",
+        },
         sp,
         [],
         0,
@@ -107,6 +126,25 @@ def test_fresh_dedup_coverage_gap_is_repaired_without_blocking(tmp_path: Path):
 
     assert passed is True, missing
     assert missing == []
+    assert (sp / "dedup_decisions.md").read_bytes() == model_bytes
     decisions = (sp / "dedup_decisions.md").read_text(encoding="utf-8")
-    assert "Mechanical Missing Disposition Repair" in decisions
-    assert "PASSTHROUGH" in decisions
+    assert "Mechanical Missing Disposition Repair" not in decisions
+    repair = __import__("json").loads(
+        (sp / "dedup_coverage_repair.json").read_text(encoding="utf-8")
+    )
+    assert {item["disposition"] for item in repair["items"]} == {"PASSTHROUGH"}
+    contract, _launch = D._sc_dedup_coverage_repair_contract_and_launch({
+        "mode": "core", "pipeline": "sc", "language": "evm",
+        "cli_backend": "codex",
+    })
+    unit = D.read_artifact_ledger(sp)["work_units"][contract.key]
+    assert unit["semantic_status"] == "ACTIVE"
+    assert unit["execution_state"] == "OUTPUT_COMMITTED"
+    assert set(unit["input_bindings"]) == {
+        "scratchpad:dedup_candidate_pairs.md",
+        "scratchpad:dedup_decisions.md",
+    }
+    artifact = unit["artifacts"][
+        "scratchpad:dedup_coverage_repair.json"
+    ]
+    assert artifact["writer"] == "DRIVER"

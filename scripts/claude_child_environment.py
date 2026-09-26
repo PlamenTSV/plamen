@@ -216,12 +216,12 @@ _REVIEWED_FUNCTIONAL_CONTROLS = (
     | _FALSE_FUNCTIONAL_CONTROLS
     | _NUMERIC_FUNCTIONAL_CONTROLS
 )
-_FUNCTIONAL_CONTROLS_BY_VERSION = {
+LEGACY_FUNCTIONAL_CONTROLS_BY_VERSION = {
     "2.1.220": _REVIEWED_FUNCTIONAL_CONTROLS,
     "2.1.250": _REVIEWED_FUNCTIONAL_CONTROLS,
     "2.1.252": _REVIEWED_FUNCTIONAL_CONTROLS,
 }
-_REQUIRED_FUNCTIONAL_CONTROLS_BY_VERSION = {
+LEGACY_REQUIRED_FUNCTIONAL_CONTROLS_BY_VERSION = {
     "2.1.220": {
         "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
         "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1",
@@ -244,6 +244,7 @@ _REQUIRED_FUNCTIONAL_CONTROLS_BY_VERSION = {
         "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
     },
 }
+LEGACY_LATEST_FUNCTIONAL_CONTROLS_VERSION = "2.1.252"
 _CLOUD_CREDENTIAL_ENV = {
     "CLOUD_BEDROCK": frozenset(
         {
@@ -311,6 +312,65 @@ class ClaudeChildEnvironmentError(RuntimeError):
 
 
 _PRIVATE_HOME_OVERLAY_TOKEN = object()
+
+
+def _claude_install_generation_projection(
+    authority: object,
+    *,
+    claude_code_version: str,
+    allow_test_only: bool = False,
+) -> Any:
+    """Require one exact, already-authenticated Claude install generation.
+
+    Import is deliberately lazy: the authority is a POSIX backend concern and
+    importing its policy module during Windows startup would import ``fcntl``.
+    This function never resolves ``latest`` or examines ambient executable
+    bytes; it only projects the opaque authority supplied by the installer
+    boundary.
+    """
+
+    try:
+        import posix_backend_launch_policy as launch_policy
+
+        projection = (
+            launch_policy.TEST_ONLY_project_backend_install_generation(
+                authority
+            )
+            if allow_test_only
+            else launch_policy.require_backend_install_generation(authority)
+        )
+    except Exception as exc:
+        raise ClaudeChildEnvironmentError(
+            "authenticated Claude install-generation authority is required"
+        ) from exc
+    expected_behavior = launch_policy.backend_cli_behavior_contract_sha256(
+        "claude"
+    )
+    if (
+        projection.backend != "claude"
+        or projection.resolved_version != claude_code_version
+        or projection.cli_behavior_contract_sha256 != expected_behavior
+    ):
+        raise ClaudeChildEnvironmentError(
+            "Claude install-generation semantic conformance mismatched"
+        )
+    return projection
+
+
+def _install_generation_receipt_fields(projection: Any | None) -> dict[str, Any]:
+    return {
+        "install_generation_sha256": (
+            None if projection is None else projection.install_generation_sha256
+        ),
+        "cli_behavior_contract_sha256": (
+            None
+            if projection is None
+            else projection.cli_behavior_contract_sha256
+        ),
+        "cli_conformance_sha256": (
+            None if projection is None else projection.cli_conformance_sha256
+        ),
+    }
 
 
 def _canonical_json(value: Mapping[str, Any]) -> bytes:
@@ -447,18 +507,36 @@ def _canonical_functional_controls(
     controls: Mapping[str, str],
     *,
     claude_code_version: str,
+    install_generation_authority: object | None = None,
+    allow_test_only_install_generation: bool = False,
 ) -> dict[str, str]:
     source, names = _normalize_environment(
         controls,
         label="functional controls",
     )
-    allowed = _FUNCTIONAL_CONTROLS_BY_VERSION.get(claude_code_version)
-    required = _REQUIRED_FUNCTIONAL_CONTROLS_BY_VERSION.get(
-        claude_code_version
-    )
+    projection = None
+    if install_generation_authority is not None:
+        projection = _claude_install_generation_projection(
+            install_generation_authority,
+            claude_code_version=claude_code_version,
+            allow_test_only=allow_test_only_install_generation,
+        )
+    if projection is None:
+        allowed = LEGACY_FUNCTIONAL_CONTROLS_BY_VERSION.get(
+            claude_code_version
+        )
+        required = LEGACY_REQUIRED_FUNCTIONAL_CONTROLS_BY_VERSION.get(
+            claude_code_version
+        )
+    else:
+        allowed = _REVIEWED_FUNCTIONAL_CONTROLS
+        required = LEGACY_REQUIRED_FUNCTIONAL_CONTROLS_BY_VERSION[
+            LEGACY_LATEST_FUNCTIONAL_CONTROLS_VERSION
+        ]
     if allowed is None or required is None:
         raise ClaudeChildEnvironmentError(
-            "Claude functional-control version is unsupported"
+            "Claude functional-control version lacks authenticated "
+            "install-generation semantic conformance"
         )
     canonical: dict[str, str] = {}
     for actual_name, value in source.items():
@@ -508,12 +586,30 @@ def normalize_claude_functional_controls(
     controls: Mapping[str, str],
     *,
     claude_code_version: str,
+    install_generation_authority: object | None = None,
 ) -> dict[str, str]:
-    """Public version-pinned compiler for reviewed functional controls."""
+    """Compile controls for a legacy fixture or authenticated generation."""
 
     return _canonical_functional_controls(
         controls,
         claude_code_version=claude_code_version,
+        install_generation_authority=install_generation_authority,
+    )
+
+
+def TEST_ONLY_normalize_claude_functional_controls(
+    controls: Mapping[str, str],
+    *,
+    claude_code_version: str,
+    install_generation_authority: object,
+) -> dict[str, str]:
+    """Structural seam; its authority class is rejected by production APIs."""
+
+    return _canonical_functional_controls(
+        controls,
+        claude_code_version=claude_code_version,
+        install_generation_authority=install_generation_authority,
+        allow_test_only_install_generation=True,
     )
 
 
@@ -976,6 +1072,7 @@ def compile_claude_child_environment(
     phase_environment_policies: Sequence[str],
     home_variable_policy: str,
     functional_controls: Mapping[str, str] | None = None,
+    install_generation_authority: object | None = None,
 ) -> CompiledClaudeChildEnvironment:
     """Compile a minimal child environment from reviewed named authorities."""
 
@@ -1043,15 +1140,37 @@ def compile_claude_child_environment(
             profile_source,
             label="authorized private-home overlay",
         )
+    claude_code_version = preflight_auth_receipt["claude_code_version"]
+    generation_projection = (
+        None
+        if install_generation_authority is None
+        else _claude_install_generation_projection(
+            install_generation_authority,
+            claude_code_version=claude_code_version,
+        )
+    )
+    legacy_required = LEGACY_REQUIRED_FUNCTIONAL_CONTROLS_BY_VERSION.get(
+        claude_code_version
+    )
+    if generation_projection is None and legacy_required is None:
+        raise ClaudeChildEnvironmentError(
+            "Claude child environment requires authenticated "
+            "install-generation semantic conformance"
+        )
     controls = _canonical_functional_controls(
         (
-            _REQUIRED_FUNCTIONAL_CONTROLS_BY_VERSION[
-                preflight_auth_receipt["claude_code_version"]
-            ]
+            (
+                legacy_required
+                if generation_projection is None
+                else LEGACY_REQUIRED_FUNCTIONAL_CONTROLS_BY_VERSION[
+                    LEGACY_LATEST_FUNCTIONAL_CONTROLS_VERSION
+                ]
+            )
             if functional_controls is None
             else functional_controls
         ),
-        claude_code_version=preflight_auth_receipt["claude_code_version"],
+        claude_code_version=claude_code_version,
+        install_generation_authority=install_generation_authority,
     )
     try:
         auth_receipt = reconcile_claude_auth_environment(
@@ -1226,6 +1345,7 @@ def compile_claude_child_environment(
         "final_environment_key_set_sha256": _key_set_digest(child),
         "credential_values_recorded": False,
         "credential_content_hashes_recorded": False,
+        **_install_generation_receipt_fields(generation_projection),
     }
     receipt = {**core, "receipt_sha256": _digest(core)}
     compiled = CompiledClaudeChildEnvironment(
@@ -1269,6 +1389,9 @@ def _replay_claude_child_environment_receipt(
         "final_environment_key_set_sha256",
         "credential_values_recorded",
         "credential_content_hashes_recorded",
+        "install_generation_sha256",
+        "cli_behavior_contract_sha256",
+        "cli_conformance_sha256",
         "receipt_sha256",
     }
     if set(clone) != expected_fields:
@@ -1392,6 +1515,32 @@ def _replay_claude_child_environment_receipt(
         is None
         or clone.get("credential_values_recorded") is not False
         or clone.get("credential_content_hashes_recorded") is not False
+        or any(
+            value is not None
+            and (
+                not isinstance(value, str)
+                or _SHA256_RE.fullmatch(value) is None
+            )
+            for value in (
+                clone.get("install_generation_sha256"),
+                clone.get("cli_behavior_contract_sha256"),
+                clone.get("cli_conformance_sha256"),
+            )
+        )
+        or (
+            clone.get("install_generation_sha256") is None
+            and (
+                clone.get("cli_behavior_contract_sha256") is not None
+                or clone.get("cli_conformance_sha256") is not None
+            )
+        )
+        or (
+            clone.get("install_generation_sha256") is not None
+            and (
+                clone.get("cli_behavior_contract_sha256") is None
+                or clone.get("cli_conformance_sha256") is None
+            )
+        )
         or not isinstance(digest, str)
         or _SHA256_RE.fullmatch(digest) is None
         or digest != _digest(clone)
@@ -1513,6 +1662,7 @@ __all__ = [
     "ClaudePrivateHomeOverlayAuthority",
     "CompiledClaudeChildEnvironment",
     "PRIVATE_HOME_OVERLAY_AUTHORITY_SCHEMA",
+    "TEST_ONLY_normalize_claude_functional_controls",
     "compile_claude_child_environment",
     "normalize_claude_functional_controls",
     "normalize_claude_phase_environment_policies",

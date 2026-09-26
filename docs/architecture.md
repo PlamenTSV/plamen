@@ -89,8 +89,10 @@ them into the installed Codex projection.
 
 Installation owns a private hash-locked Python environment and an immutable
 model-runtime generation. Managed Node.js 24.20.0 executes its authenticated
-npm 11.19.0 closure to materialize exact Claude Code 2.1.252 and Codex 0.152.0
-payloads. Ambient Node/npm/npx or global backend executables are never launch
+npm 11.19.0 closure. Each explicit install/update resolves authenticated
+upstream `latest` metadata once, verifies the selected Claude Code and Codex
+CLI payloads, and freezes their exact bytes and closure in signed generation
+receipts. Ambient Node/npm/npx or global backend executables are never launch
 authority.
 
 A signed current selection binds the generation receipt, census, request,
@@ -464,8 +466,9 @@ added in v2.1.0 as a cost-saving option (still beta):
 - Codex audit subprocesses are ephemeral and use `--ignore-user-config`, so they load no ambient MCP servers. `rag_sweep` uses governed Web/local precedent research.
 - Sandbox constraints are adapted for Codex's execution model.
 - The authenticated installation carries both model backends. The signed
-  current selection identifies the exact Codex 0.152.0 resource closure, and
-  the installed public front holds generation authority through `codex exec`.
+  current selection identifies the exact receipt-bound Codex resource closure,
+  and the installed public front holds generation authority through
+  `codex exec`.
 - Install or upgrade both backends with `plamen install` from complete governed
   source. The driver selects the requested backend without consulting a global
   Codex installation.

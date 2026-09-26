@@ -1,0 +1,540 @@
+{
+ "ranking_note": "Ordered by impact class (HALT > DENY_WORKER_THEN_HALT > DENY_WORKER_THEN_DEGRADE > NOISE), using the verdict-corrected impact, not the original claim. Within a class, ordered by run47 phase order so the first row of each class is the first blocker run47 will meet. Where verdicts disagree on class the conflict is recorded in `conflicts` and the more detailed/executed verdict is used. `run47_first_hit` = first phase in remaining order where the action's defect fires.",
+ "actions": [
+  {
+   "rank": 1,
+   "impact": "HALT",
+   "safe": true,
+   "title": "Driver-composed multi-artifact write directive is one token: render per-artifact from the MODEL contract and tokenize backticked lists per element",
+   "merged_findings": [
+    "F01(a)",
+    "F01(b)",
+    "F02",
+    "F05",
+    "F06",
+    "F07",
+    "F28.A"
+   ],
+   "phases_affected": [
+    "sc_semantic_dedup",
+    "chain",
+    "chain_agent2",
+    "skeptic",
+    "report_index"
+   ],
+   "run47_first_hit": "sc_semantic_dedup (degrades via PASSTHROUGH scaffold); first HALT at chain_agent2 (no scaffold, critical) then report_index",
+   "sites": [
+    "scripts/plamen_prompt.py:2972 (expected_artifacts_list = ', '.join(phase.expected_artifacts))",
+    "scripts/plamen_prompt.py:4500 (and sibling renders :4291/:4376/:4422; _render_expected_output_block :1993-2020)",
+    "scripts/plamen_prompt.py:~4902 build_phase_prompt typed_unit map",
+    "scripts/claude_worker_prompt_consistency.py:26 _PATH_TOKEN_RE / _path_tokens"
+   ],
+   "property": "Every artifact a write directive names is inside the unit's MODEL output authority, evaluated per named artifact (set containment), and the write directive is derived from the same typed PhaseIO contract the driver hands the checker, not from Phase.expected_artifacts (the disk-gate denominator, which includes DRIVER-written files such as findings_inventory_deduped.md).",
+   "minimal_change": "(1) plamen_prompt.py build_phase_prompt: add 'sc_semantic_dedup':'model' and 'chain':'model' to the typed_unit map at ~4902; compute model_outputs = [basename(o.identity) for o in contract.outputs if o.writer=='MODEL'] and driver_outputs = the rest; use model_outputs everywhere `{expected_artifacts_list}` is rendered inside a write sentence (:4376, :4422, :4500) and in _render_expected_output_block's Required-outputs list, rendering each as its own backtick token (`a`, `b`); render driver_outputs only in a negated sentence ('`X` is produced by the driver from your output; do NOT write it'); raise PhasePromptError if a mapped phase's contract does not resolve (no silent fallback); keep Phase.expected_artifacts for the non-transactional RESUMPTION branch only. (2) claude_worker_prompt_consistency._path_tokens: after a quoted/backticked span fails to resolve as one authority path, re-tokenize its interior with the same artifact/path alternatives of _PATH_TOKEN_RE; if that yields >=2 tokens and the residue is only list separators (`^[\\s,;]*(?:\\band\\b)?[\\s,;]*$`), emit the constituents instead of the span; otherwise keep the span. Do not touch _PathAuthority.contains/_resolve_identity/unique-basename admission. (3) Leave plamen_types.py:2671 expected_artifacts unchanged.",
+   "fixture": "Rendered run47-config prompts (build_phase_prompt, cli_backend=claude, claude_exec_mode=headless, project=/Users/ptsanev/dodo-v3-validation-run47/omni-chain-contracts) checked against resolve_phase_io_contract(sc,thorough,evm,claude-pty,<phase>,'model') outputs as absolute paths: sc_semantic_dedup L119 `dedup_decisions.md, findings_inventory_deduped.md`; chain L120 `hypotheses.md, finding_mapping.md, enabler_results.md`; chain_agent2 L120; skeptic L119; report_index L119 -> all must yield no UNREGISTERED_OUTPUT_WRITE. Negative control: `hypotheses.md, bogus.md` in one span -> exactly one UNREGISTERED_OUTPUT_WRITE with subject bogus.md. Unit control: `report_index.md, report_coverage.md` per-element vs `report_index.md`+`bogus.md`. Existing single-output leaves (run46 _prompt_invariants.attempt2.md:118, _prompt_inventory_chunk_a.attempt1.md:118) must remain clean.",
+   "fail_closed_risk": "NONE. Prompt-lint tokenization and prompt rendering only; PhaseIO outputs, staged validators, canonical_apply, gate denominators untouched; an unregistered element still denies.",
+   "conflicts": "F04 verdict classed the sc_semantic_dedup launch as HALT; F01/F02/F03 verdicts executed the post-denial path and show the PASSTHROUGH scaffold (plamen_driver.py:104743) makes it DENY_WORKER_THEN_DEGRADE. chain_agent2 and report_index have no scaffold -> HALT (F06, F07). Also note: per-name backticking alone still denies sc_semantic_dedup on findings_inventory_deduped.md (F02) -- (1) is mandatory, (2) alone is insufficient."
+  },
+  {
+   "rank": 2,
+   "impact": "HALT",
+   "safe": true,
+   "title": "Depth-promotion receipt flags breadth/rescan negative proposals as undelivered: gate on 'no registered delivery', not 'ID absent from findings_inventory.md'",
+   "merged_findings": [
+    "G-06"
+   ],
+   "phases_affected": [
+    "sc_verify_queue (live boundary)"
+   ],
+   "run47_first_hit": "sc_verify_queue -- deterministic on run47 data (analysis_token_flow_accounting.md:B2-21..B2-24 present in candidate_negative_proposals_*.json, absent from inventory)",
+   "sites": [
+    "scripts/plamen_validators.py:~10531 _validate_depth_promotion_receipt loop",
+    "scripts/plamen_validators.py:~9055 owner_phase=='depth' filter (reference for parity)"
+   ],
+   "property": "A content-bearing candidate from a registered producer has an exact-identity delivery somewhere (inventory source-action referent, candidate_negative_proposals ledger entry CANDIDATE:<id>, or typed preservation debt); a depth-promotion receipt has authority only over depth-owned producers.",
+   "minimal_change": "In _validate_depth_promotion_receipt: (a) resolve producer = _registered_producer_for_artifact(p.name, consumer='pre_dedup_promotion') and `continue` when producer.owner_phase != 'depth' (same filter as ~L9055); (b) before flagging (p.name, fid), treat it as delivered when the existing referent check passes OR an entry with source_item_id/methodology_obligation_id == 'CANDIDATE:'+fid exists in a registered candidate_negative_proposals_{phase}.json for that source artifact OR fid is in preserved_identity_keys. No verdict-string allowlist; undelivered REFUTATION_PROPOSAL/NOT_APPLICABLE_PROPOSAL still flags. Leave the caller's incomplete()->sys.exit for genuinely undelivered identities; leave Gate P and report_index prework unchanged.",
+   "fixture": "Replay _validate_depth_promotion_receipt read-only against /Users/ptsanev/dodo-v3-validation-run47/omni-chain-contracts/.scratchpad (expect only the transient depth_identity_preservation_debt.json issue) and /Users/ptsanev/dodo-v3-validation-run46/omni-chain-contracts/.scratchpad (B5-10..12, PC4-1/2 must clear). Red controls: same `## Candidate [B2-21]` REFUTATION_PROPOSAL block with NO ledger entry -> flagged; depth-owned CONFIRMED finding unpromoted -> flagged (test_pipeline_v2_8_9_retention::test_gate_now_has_teeth stays green). Existing: test_live_verify_queue_main_boundary_a0.py 11 pass, test_verdict_and_prededup_recall_safety.py 17 pass.",
+   "fail_closed_risk": "NONE. Identity stays fail-closed (lost candidates still halt); the T0-T9 queue authority, Gate P and prework are not touched. The original proposed 'retry then degrade to legacy manifest' is REJECTED (it would mint queue identity/severity outside the sole authority).",
+   "conflicts": "The finding's stated trigger (producer KeyError) was not reproduced; the executed trigger is this recognizer. Line numbers in plamen_driver.py shifted during the session (file being edited live)."
+  },
+  {
+   "rank": 3,
+   "impact": "HALT",
+   "safe": true,
+   "title": "report_index consolidation gate treats the survivor report ID as a disposition subject: parse Consolidation Map by header role and un-merge unauthorized subjects into BODY",
+   "merged_findings": [
+    "G-01",
+    "G-13(routing part)"
+   ],
+   "phases_affected": [
+    "report_index"
+   ],
+   "run47_first_hit": "report_index attempt 1 (STEP 1.5 consolidation is MANDATORY in the prompt, so any merge triggers it)",
+   "sites": [
+    "scripts/report_disposition_authority.py:1228 validate_index_dispositions, :1182 _first_column_ids, :86 _ID_RE",
+    "scripts/plamen_driver.py:~29000 _derive_report_index_canonical_staged_target (add DISPOSITION_DEBT_BODY_RECOVERY before STATUS_AUTHORITY_PROJECTION)",
+    "scripts/plamen_validators.py:26053 _generate_report_index_retry_hint; scripts/plamen_driver.py:96500 idx_in routing"
+   ],
+   "property": "No candidate IDENTITY leaves the report body without typed authority. Subjects are the absorbed internal IDs (Consolidated From / +-joined Internal Hypothesis cell), never the survivor report ID; an ID present in any Master row's Internal Hypothesis cell (including H-1+H-2) is BODY and needs no alias; an unauthorized merge/exclusion is a repairable form defect (restore to BODY with UNRESOLVED-DISPOSITION debt), not a phase failure.",
+   "minimal_change": "(1) validate_index_dispositions: replace _first_column_ids on the Consolidation Map with a shared header-role parser (survivor cols {report id, survivor, merged into}; subject cols {consolidated from, absorbed*, constituents, internal*, source ids}; ambiguous/absent headers -> every internal ID in the row is a subject); report-shaped tokens (_REPORT_ID_RE) in survivor cells must resolve to a Master row else are debt, never subjects. Per subject: in a Master Internal Hypothesis cell (split on '+') -> accounted; applied-alias authority whose alias_target resolves -> CONSOLIDATED_ALIAS; else UNRESOLVED-DISPOSITION debt. Excluded rows with DUPLICATE OF/MERGE_INTO <X> accept CONSOLIDATED_ALIAS with matching alias_target. (2) Canonical successor: for each UNRESOLVED-DISPOSITION subject re-insert an exact Master row from typed upstream (queue work item title/location, severity_binding tier, status_binding token) with Trust Adj. UNRESOLVED-DISPOSITION, strip it from the offending map/excluded row, append report_semantic_retention_risks + REPORT_INDEX_DISPOSITION_DEBT; run _validate_report_index_inputs on the projected bytes. (3) Driver :96500: route 'disposition is unauthorized'/'status authority' issues to the successor repair, arm a model retry only for completeness/severity-provenance classes; hint text states unauthorized merges are auto-restored to BODY.",
+   "fixture": "Parity-clean fixture cloned from test_contract_hardening_regression.py::test_report_index_dropout_repair_inserts_into_existing_master_table (H-1/H-2 CONFIRMED Low with verify files): (a) control two-row index -> []; (b) Master `| L-01 | ... | H-1+H-2 |` + `## Consolidation Map` `| L-01 | H-1, H-2 | ... |` -> must pass after fix (currently 'L-01: consolidation is lexically accounted but alias disposition is unauthorized'); (c) Excluded `| H-2 | Low | ... | DUPLICATE OF L-01 |` -> currently 'H-2: identity is lexically accounted but non-body disposition is unauthorized'. Laws: gate(repair(x)) passes for (b),(c); repair is identity on (a); repair idempotent. Existing test test_report_index_triage_safety_allows_medium_non_security_or_merge must be re-read (it currently pins the contradiction).",
+   "fail_closed_risk": "NONE for identity/dedup/severity. Disposition: repair direction is BODY-only (un-merge); applied dedup aliases, REFUTED exclusions and APPENDIX zero-harm decisions remain authority-only; ambiguous headers over-flag into BODY. Edits report_disposition_authority.py, so route through independent review as a REPORT_ASSEMBLY-seam change.",
+   "conflicts": "none"
+  },
+  {
+   "rank": 4,
+   "impact": "HALT",
+   "safe": true,
+   "title": "Tier-writer SCOPE line names contract-forbidden fallback and placeholder manifests: rewrite template line 223 as three sentences and delete the report_index.md fallback",
+   "merged_findings": [
+    "F23(template)",
+    "F10(unverified twin)"
+   ],
+   "phases_affected": [
+    "report_body_writer_critical_high",
+    "report_body_writer_medium",
+    "report_body_writer_low_info"
+   ],
+   "run47_first_hit": "first body-writer shard with >=1 finding (all three are critical=True)",
+   "sites": [
+    "prompts/shared/v2/phase6b-tier-writers.md:223"
+   ],
+   "property": "The SCOPE line names only the registered manifest paths (rendered by the BODY-WRITER PHASE OVERRIDE) and the registered verify set; a fallback the contract forbids (phase_io_contracts.py:11180-11190; driver fails closed at plamen_driver.py:22796 when a manifest is absent) is never a legal instruction.",
+   "minimal_change": "Replace the single physical line 223 with: (1) 'SCOPE: Write ONLY the exact driver-assigned tier output file named in the phase override.' (2) 'Your inputs are the driver-rendered body manifest, its matching typed evidence manifest, and the `verify_*.md` files those manifests reference, exactly as listed in the BODY-WRITER PHASE OVERRIDE; do NOT read `report_index.md`.' (3) 'Do NOT read or write other tier files or the final report. Do NOT proceed to assembly or any subsequent phase. Return and stop.' Delete the 'If NO manifest was provided, fall back to `report_index.md`' clause. (Verified: 0 issues under the UNCHANGED recognizer; sentence (2) still relies on the glob rule of action 8 only if the checker later tightens.)",
+   "fixture": "Authority from a run46 filesystem-only _ctp policy (tools Edit/Glob/Grep/Read/Write), inputs <sp>/body_manifests/report_<tier>.json, <sp>/report_evidence_manifests/report_<tier>.json, exact verify files; output <sp>/report_<tier>.md. Original line 223 -> exactly 5 issues (UNREGISTERED_ARTIFACT_READ report_index.md, verify_*.md; UNREGISTERED_OUTPUT_WRITE body_manifests/<shard>.json, report_evidence_manifests/<shard>.json, report_index.md); rewritten lines -> (). Negative control: 'Write `body_manifests/<shard>.json`' as a genuine write directive with no such output -> still denied.",
+   "fail_closed_risk": "NONE. Template text only; hook policies and contracts unchanged.",
+   "conflicts": "F23's recognizer half ('split before If') is folded into action 16 as a general sentence-terminator split, not an If-allowlist."
+  },
+  {
+   "rank": 5,
+   "impact": "HALT",
+   "safe": true,
+   "title": "attention_repair monolithic validator hard-fails on line-literal/verdict spelling: accept :88/#L88, convert residual rows to NEEDS_HUMAN debt, align the driver's own hint and override with the shard contract",
+   "merged_findings": [
+    "G-03"
+   ],
+   "phases_affected": [
+    "attention_repair (monolithic path, <=10 queue rows; sharded path already contract-consistent)"
+   ],
+   "run47_first_hit": "attention_repair (if monolithic; note headless run47 forces the shard plan per F26/F13-unverified, so this may be dormant on run47 -- verify before relying)",
+   "sites": [
+    "scripts/plamen_validators.py:16708 _validate_attention_repair (:16908 SHA line, :16967 verdict set, :16986 target:Lline regex)",
+    "scripts/attention_repair_shards.py:621 parse_shard_output, _path_line_literal_present",
+    "scripts/plamen_validators.py:25509 _generate_attention_repair_retry_hint; scripts/plamen_prompt.py:3867/3881 monolithic override; prompts/shared/v2/phase4b4-attention-repair.md:59",
+    "scripts/plamen_driver.py:96753 gate call and :10630 _phase_content_gate_issues (FC4)"
+   ],
+   "property": "Every queue row has a bound receipt whose evidence cites the EXACT queue target followed by a line (`{re.escape(target)}(?::L?|#L?)\\d+\\b`) and whose verdict is in the closed set; rows that cannot be bound are retained as NEEDS_HUMAN path debt (unresolved_paths) with coverage_accepted=False, not a phase failure. No basename/dir-suffix aliasing and no verdict synonym table (those would let a string table close coverage on possibly a different file).",
+   "minimal_change": "(1) Both validators: evidence regex accepts :88, :L88, #L88 against the exact target; SHA token regex tolerates markdown emphasis/backticks around the label and value (`^\\s*[*_`]*QUEUE_BINDING_SHA256[*_`]*:\\s*`?<64hex>`?\\s*$`), 64-hex exact. Out-of-set verdict / evidence lacking the exact target / Target-cell drift -> NEEDS_HUMAN receipt row (raw verdict+evidence preserved in notes, target appended to unresolved_paths) instead of hard return. Keep HARD: SHA mismatch, queue semantic binding, missing/duplicate/surplus rows, CONFIRMED without ATT-N. (2) Add `residual_rows_as_debt: bool` to the receipt transaction: gate at :96753 passes False on attempt 1 (hinted retry runs), _phase_content_gate_issues passes True so FC4 commits COMPLETED_WITH_DEBT with an INCOMPLETE application receipt (unresolved_paths consumer at plamen_validators.py:13437 already carries it). (3) Retry hint lists exactly SAFE/CONFIRMED/NO_FINDING/NEEDS_HUMAN and `path:L<line>`; monolithic override + template L59 embed attention_repair_shards.PATH_RECEIPT_CONTRACT verbatim.",
+   "fixture": "Driver-shaped bound queue (QUEUE_BINDING_SHA256 via attention_queue_binding_sha256, target contracts/lib/Fee.sol): evidence `contracts/lib/Fee.sol:88`, `#L88`, bold/backticked SHA -> pass; basename-only evidence, verdict COVERED, Target-cell drift -> NEEDS_HUMAN debt row + INCOMPLETE receipt, no hard; hint verdict list == strict set; FC4 path commits COMPLETED_WITH_DEBT.",
+   "fail_closed_risk": "NONE. Closure (SAFE/NO_FINDING/CONFIRMED) still requires exact target identity; disposition of unbound rows is NEEDS_HUMAN (open), never CLEAR.",
+   "conflicts": "Finding claimed no retry hint is written (false: _ensure_retry_hint L93047 writes one) and that the sharded path is a proxy (false: PATH_RECEIPT_CONTRACT is verbatim). Only the monolithic lane is defective."
+  },
+  {
+   "rank": 6,
+   "impact": "HALT",
+   "safe": true,
+   "title": "Dynamic verifier shard raises SystemExit on a single provider refusal: iterate all units and commit COMPLETED_WITH_DEBT like every other unit-debt class",
+   "merged_findings": [
+    "G-05"
+   ],
+   "phases_affected": [
+    "sc_verify_crithigh",
+    "sc_verify_high_*",
+    "sc_verify_medium_*",
+    "sc_verify_low_*"
+   ],
+   "run47_first_hit": "first Opus verify unit that returns rc -5 (probabilistic; three Opus refusals on this repo's content documented in HANDOFF \u00a74/\u00a75)",
+   "sites": [
+    "scripts/plamen_driver.py:~37288-37324 _handle_dynamic_verifier_phase (provider_refusal break + raise SystemExit(EXIT_DEGRADED))",
+    "scripts/plamen_driver.py:~37020-37033 unit debt record fallback_action"
+   ],
+   "property": "A provider refusal is a per-work-unit evidence-availability fact; affected queue rows are retained as UNVERIFIED runtime debt (verification_runtime_debt.json, already honored by report gates) and the run continues. Halt only when the tier has >=1 unit AND zero COMPLETED receipts AND every unit's receipt reason_class == PROVIDER_POLICY_REFUSAL_DEBT (typed over receipts, never strings).",
+   "minimal_change": "Delete `provider_refusal = True; break` and the `if provider_refusal: ... raise SystemExit(EXIT_DEGRADED)` block; let the refused unit's issue string flow into the existing `issues` list so the sentinel + DYNAMIC_VERIFIER_DEBT + _commit_verification_transaction path commits COMPLETED_WITH_DEBT (already classified CONSUME_WITH_DEBT by _blocking_phase_authority_issues). Do NOT call _retain_dynamic_verification_debt in the shard handler (aggregate owns the single ACTIVE binding). Change the refusal debt record's fallback_action EXPLICIT_OPERATOR_RESUME_REQUIRED -> RETAIN_UNVERIFIED_REARM_OPTIONAL. Add the typed all-units-refused halt predicate after the loop. Do NOT touch site 2 (_commit_verification_transaction INCOMPLETE on SEMANTIC_IDENTITY/CONTAINMENT) -- that is the identity/containment fail-closed gate and unit debt never reaches it (verified). Sonnet re-arm is a separate typed VerifierLaunchSpec follow-up, never a silent fallback.",
+   "fixture": "Update test_verifier_coordinator_refusal_commits_incomplete_and_stops_next_unit (also the copy re-run with _PHASE='sc_verify_crithigh', cli_backend='claude', headless, thorough) to assert: next unit IS invoked, refused unit's receipt bytes unchanged, shard sentinel lists PROVIDER_POLICY_REFUSAL_DEBT, phase commit COMPLETED_WITH_DEBT, and (aggregate test) the refused work_item_ids appear in verification_runtime_debt.json as UNVERIFIED. Route facts: phase_model(sc_verify_*) under run47 config = claude-opus-5; posix_v2_compat_runtime.py:4118-4135 maps RESULT_CYBER_REFUSAL to rc -5.",
+   "fail_closed_risk": "NONE. Refused rows keep upstream severity as UNVERIFIED debt; no verdict minted; SEMANTIC_IDENTITY/CONTAINMENT block untouched.",
+   "conflicts": "none"
+  },
+  {
+   "rank": 7,
+   "impact": "HALT",
+   "safe": true,
+   "title": "report_assemble quarantines a complete report on a redactable two-digit internal ID: one shared token predicate for sanitizer and gate, alias-resolve without a verb allowlist, redact-with-debt, FAIL only in identity positions",
+   "merged_findings": [
+    "G-07"
+   ],
+   "phases_affected": [
+    "report_assemble"
+   ],
+   "run47_first_hit": "report_assemble when any tier body contains a mapped/unmapped two-digit H-NN outside see/related-to verbs, or an underscore-adjacent internal token in a PoC path",
+   "sites": [
+    "scripts/plamen_parsers.py:~6463 _sanitize_client_body (_CLIENT_BODY_INTERNAL_ID_RE, context-free is_public_report_id)",
+    "scripts/plamen_validators.py:19641 _rewrite_public_report_references (verb allowlist)",
+    "scripts/plamen_validators.py:22314-22425 _run_report_quality_gate internal_id_leak (Check 2)",
+    "scripts/plamen_driver.py:106080-106154 assembly ok=False -> _commit_report_integrity_no_ship"
+   ],
+   "property": "After assembly every private-identity token in the delivered body is either resolved to its ledger-authorized public alias (report_traceability_internal.md) or redacted with visible debt; identity-bearing positions (`### [X-NN]` headings, Master Index / Appendix identity cells) stay fail-closed. Do NOT pad H-N -> H-0N (namespace conflation).",
+   "minimal_change": "(1) _sanitize_client_body uses the gate's own extractors (extract_unambiguous_internal_ids + _report_internal_hypothesis_ids) with the same public_report_ids/internal_hypothesis_ids the gate builds at 22390-22417, replacing the separate regex + context-free is_public_report_id (fixes the '_' left-boundary and two-digit-H asymmetries by construction). (2) _rewrite_public_report_references: drop the verb allowlist; resolve any such token through the traceability mapping, rewrite, record public_reference_alias_selfheal INFO. (3) Unresolvable prose tokens -> neutral phrase + internal_id_redaction INFO row (token, section, offset) into report_quality.md and the human-review appendix. (4) internal_id_leak FAIL only for tokens surviving in a `### [X-NN]` heading or identity cell. (5) Run Check 2 after the repair pass on rewritten bytes.",
+   "fixture": "End-to-end with production _assemble_report_python + _run_report_quality_gate: (C) 'shares its root cause with H-13' with H-13 mapped -> currently `internal IDs leaked into AUDIT_REPORT.md: ['H-13']`, must resolve; (D) 'see H-21' unmapped (Appendix-A-excluded hypothesis) -> redact + debt, not halt; (E) 'test/poc/PoC_INV-012.t.sol' -> redact/resolve, not halt; existing Exp9 single-digit cases stay sanitized; a leaked token inside `### [M-03] ... H-13` heading -> still FAIL.",
+   "fail_closed_risk": "NONE. Severity/dedup/disposition untouched; identity positions still FAIL; no new allowlist (the verb allowlist is removed).",
+   "conflicts": "The finding's Exp9 evidence was wrong (those tokens are already sanitized pre-gate); the halt-producing shapes are C/D/E above."
+  },
+  {
+   "rank": 8,
+   "impact": "HALT",
+   "safe": true,
+   "title": "Glob/placeholder read tokens (`verify_*.md`, `verify_<ID>.md`, `depth_*_findings.md`) never bind: family-token satisfiability against registered inputs in _PathAuthority.contains",
+   "merged_findings": [
+    "F09",
+    "F18(recognizer)",
+    "F19(recognizer)",
+    "F20",
+    "F21",
+    "F23(family part)",
+    "F28.6",
+    "F13(unverified)",
+    "F16(unverified)",
+    "F04b(glob part)"
+   ],
+   "phases_affected": [
+    "chain",
+    "report_index",
+    "report_body_writer_*",
+    "crossbatch",
+    "post_verify_extract",
+    "chain_iter2"
+   ],
+   "run47_first_hit": "chain (L254 `{SCRATCHPAD}/depth_*_findings.md`, L300); first HALT at report_index (L163/L347/L362/L452), then body writers",
+   "sites": [
+    "scripts/claude_worker_prompt_consistency.py:257-273 _PathAuthority.contains (single authority seam; read/search/write loops inherit)",
+    "scripts/claude_worker_prompt_consistency.py _contains_exact_project_artifact (PROJECT_ROOT-located globs)",
+    "scripts/plamen_driver.py:22668 chain composition (alternative: render the concrete registered depth_*_findings.md list via a placeholder in _render_runtime_placeholders)"
+   ],
+   "property": "A token that cannot name a file (contains `*`, `?`, `[`, or a `<...>`/`{...}` placeholder segment) denotes a family; a read/search directive on it is consistent iff, with placeholders mapped to `[^/]+` (single segment, never crosses '/'), at least one registered input or own-output identity resolving into the same directory fullmatches it; zero matches stays UNREGISTERED_ARTIFACT_READ; a family never satisfies a WRITE directive (write authority stays exact). Runtime exact_read_files still enforces per-member authority, so lint acceptance widens nothing.",
+   "minimal_change": "In _PathAuthority.contains, after the existing exact/unique-basename test: if the stripped token contains any of `*?[<{`, build regex = re.escape(literal runs) with each `*`, `<...>`, `{...}` -> `[^/]+`; if the token is rooted/has '/', resolve its directory via _resolve_identity and return any(fullmatch(pattern, basename(p)) for p in self.exact with dirname(p)==that dir) (casefold when case_insensitive); if bare basename, match over basenames of self.exact (not unique_basenames -- a glob legitimately names several). Apply the same predicate in _contains_exact_project_artifact. In the write branch, skip the family rule (deny as today). Alternative/complement for chain only: replace the two `depth_*_findings.md` bullets (phase4c-chain-agent1.md:31, :77) with the driver's concrete registered list from config['_phase_io_exact_inputs']['chain'].",
+   "fixture": "Repro G: 'Read ALL `verify_*.md` files' with scratchpad:verify_H-1.md registered -> (); with none -> UNREGISTERED_ARTIFACT_READ. Repro H: `verify_<ID>.md` with verify_H-1.md registered -> (); with only verify_core.md -> still denied (per-ID member required); `depth_<x>/../secret.md` -> denied (segment bound). Composed chain prompt via build_phase_prompt against the plamen_driver.py:22661-22690 denominator (run47-shaped scratchpad with 4 depth files) -> no glob denials at L254/L300. Composed report_index prompt L163/L347/L362/L452 -> () once action 9 registers verify_core.md + verify_<id>.md. run47 _plamen.log 10:00:40 `UNREGISTERED_ARTIFACT_READ@46:.../analysis_*.md` (rescan_repair) is the live precedent for this class.",
+   "fail_closed_risk": "NONE. Lint recognizer only; a family over zero registered members still denies; write authority exact; runtime hook unchanged.",
+   "conflicts": "F09 verdict classed chain as HALT; F10/F04b verdicts show chain's MECHANICAL_BASELINE scaffold makes it DENY_WORKER_THEN_DEGRADE (recall-lossy: Agent 1 grouping/enabler enumeration never runs); F11 says either depending on _validate_chain_grouping_assurance_phase_io accepting the scaffold. report_index has no SC scaffold on a fresh run -> HALT regardless. F04b's proposed 'fnmatch + no unregistered file could match' is rejected (consults filesystem state; TOCTOU)."
+  },
+  {
+   "rank": 9,
+   "impact": "HALT",
+   "safe": true,
+   "title": "Template read lists name artifacts the unit's contract never registers (chain: dedup_absorbed_map.md; report_index: obligation_ledger.json, verify_core.md, verify_<id>.md): register present-iff inputs at the driver denominator",
+   "merged_findings": [
+    "F10",
+    "F17",
+    "F18(registration)",
+    "F19(registration)",
+    "F20(B)",
+    "F21(B)",
+    "F28.7"
+   ],
+   "phases_affected": [
+    "chain",
+    "report_index"
+   ],
+   "run47_first_hit": "chain L256 (degrade on scaffold); HALT at report_index L346/L347/L362",
+   "sites": [
+    "scripts/plamen_driver.py:22661-22690 chain/model exact-input branch (optional set)",
+    "scripts/plamen_driver.py:22696-22790 report_index/model exact-input branch; scripts/phase_io_contracts.py:~11633 legacy default + semantic-input allowlist",
+    "(optional) scripts/plamen_prompt.py:~4905 typed_unit map add 'chain':'model'"
+   ],
+   "property": "Every artifact the composed prompt directs the worker to read is in the unit's registered input denominator whenever it exists on disk; the denominator is derived from the contract graph (artifacts whose declared consumer is this phase, e.g. phase_io_contracts.py:6169 dedup_absorbed_map.md consumers=('chain/chain_agent1',...)) rather than a second hand-maintained list; exact paths only, never a glob in the contract.",
+   "minimal_change": "(1) chain: add 'dedup_absorbed_map.md' to the `optional` set passed through _exact_existing_model_inputs (registered iff regular file on disk); preferably replace the literal optional set with an `artifacts_consumed_by('chain/')` lookup over the registered _artifact specs so future consumer declarations self-register. (2) report_index: extend exact_inputs with obligation_ledger.json (present-iff, like external_research_gaps.md), verify_core.md (present-iff; always written by sc_verify_aggregate at ~96543), and the exact verify_<id>.md files enumerated from the authenticated queue publication work items (item.expected_output_file over load_candidate_universe_authority(...).candidates, existing files only, pattern `verify_[A-Za-z0-9_.-]+\\.md`) -- the same hash-bound denominator skeptic/crossbatch/report_body already bind at 22280/22329/22808; mirror the same family into the worker policy exact_read_files; add the same optional set to the report_index/model semantic-input allowlist in phase_io_contracts.py. Do NOT register findings_inventory.md/hypotheses.md bulk reads (prompt forbids them; scope override enforces).",
+   "fixture": "Chain: run47-shaped scratchpad in both states (dedup_absorbed_map.md present/absent, 4 depth files) composed via build_phase_prompt, contract resolve_phase_io_contract(...,'chain','model', exact_inputs) -> zero UNREGISTERED_ARTIFACT_READ for L256 when present (mirror test_invariants_prompt_phase_io_consistency.py). report_index: run46 scratchpad copy (obligation_ledger.json exists there and in run47) + verify_core.md + N verify_<id>.md -> composed prompt L346/L347/L362 clear; negative control with no verify_<id>.md registered -> `verify_*.md` still denied (via action 8). Note driver line numbers cited are from the source tree, which shifted during the session.",
+   "fail_closed_risk": "NONE. Inputs are immutable, digest-bound reads; obligation retention validator (_validate_obligation_ledger_retention) unchanged; sc_semantic_dedup remains sole writer of dedup_absorbed_map.md; mandatory-input absence still raises.",
+   "conflicts": "F17/F19 proposed 'or delete the template lines' -- rejected by F18: the index legitimately needs verify_<id>.md as fallback-only detail and the driver-injected directive (plamen_prompt.py:3392-3426) names it anyway."
+  },
+  {
+   "rank": 10,
+   "impact": "DENY_WORKER_THEN_HALT",
+   "safe": true,
+   "title": "Search-directive treats the PATTERN as a search ROOT: classify roots by clause role and path-shape, never by character allowlist",
+   "merged_findings": [
+    "F11",
+    "F28.5",
+    "F28.I",
+    "F14(unverified)",
+    "F04b(tag part)"
+   ],
+   "phases_affected": [
+    "chain",
+    "post_verify_extract"
+   ],
+   "run47_first_hit": "chain L300 ('Search ALL depth agent output files (`depth_*_findings.md`) for `[CROSS-DOMAIN-DEP: {domain}]` tags')",
+   "sites": [
+    "scripts/claude_worker_prompt_consistency.py:676-721 search branch; :437 _directive_clauses; _path_tokens"
+   ],
+   "property": "In a search clause a token is a ROOT candidate only if it is in root position (direct object of the search verb or governed by in/under/within/at/inside/beneath) AND is path-shaped by the checker's own grammar (fullmatches the unquoted path alternatives of _PATH_TOKEN_RE: no whitespace, no `[`/`]`/`{`/`:` outside a root prefix); a token governed by for/matching/containing/named/titled/called is the PATTERN and is never a root or read target. Artifact-suffixed tokens keep the read-denominator check.",
+   "minimal_change": "In the search branch, for each token locate its span in the clause and test the preposition immediately preceding it (regex on clause text left of the span); classify governed-by-for/matching/... as pattern and skip; for remaining tokens require the path-shape fullmatch before _resolve_identity/safe-root evaluation. Do not enumerate '[', '<', '#', '(', '|', '=' (representation list). Keep '.', '..', PROJECT_ROOT and scratchpad spellings under existing fail-closed handling.",
+   "fixture": "Line 77 sentence (composed L300) with run47 chain authority -> both codes vanish; existing positive 'Search `scripts` for deployment helpers.' still flags `scripts`; 'Grep for `.transfer(`' (repro F) -> no UNSAFE_SEARCH_ROOT; post_verify_extract L236-237 ('Find any `[VER-NEW-*]`\u2026', '`## New Observations`') -> no issues; a glob root with zero registered matches -> still denied (via action 8).",
+   "fail_closed_risk": "NONE. Lint recognizer only; genuine directory roots (bare `src`, `contracts`) are still path-shaped and still checked.",
+   "conflicts": "F11 verdict classed chain as DENY_WORKER_THEN_HALT contingent on the FC4 chain-grouping check rejecting the scaffold; see action 8 conflicts."
+  },
+  {
+   "rank": 11,
+   "impact": "DENY_WORKER_THEN_HALT",
+   "safe": true,
+   "title": "Obligation receipts (`[OBLIG:...] STATUS:D`) are charged candidate-identity debt: key STRICT_OBLIGATION_RECEIPT families on the obligation key and exempt them from DERIVED/CI/duplicate debt",
+   "merged_findings": [
+    "SV-01"
+   ],
+   "phases_affected": [
+    "depth (all candidate-negative-gated categories: standard, scanner, niche, sibling, fuzz, da, design_stress, perturbation)"
+   ],
+   "run47_first_hit": "depth attempt 1, any worker emitting a no-ALIAS STATUS:D/DISMISSED receipt (prompt lines 123/128 reference bare STATUS:D; SOA validator tolerates it)",
+   "sites": [
+    "scripts/candidate_negative_authority.py:1153 _artifact_events harvest loop (_STRICT_OBLIG_RE :82)",
+    "scripts/candidate_negative_authority.py:1880/1909 _build_candidate_negative_ledger_from_bytes (DERIVED_SOURCE_ITEM_ID, DEPTH_COMMITTED_INVARIANT_DEBT, DUPLICATE_SOURCE_ITEM_ID, CONFLICTING_ENTITY_CLAIM)"
+   ],
+   "property": "An obligation receipt disposes a driver-owned obligation row whose identity is stable by construction and whose independent review denominator is security_obligation_authority; 'candidate has no re-addressable identity' and 'value-bearing refutation lacks a committed invariant' are not properties of that event kind. Keyed on structural provenance of the event (how it was minted), not on a string allowlist.",
+   "minimal_change": "(1) In _artifact_events pass source_identity=('OBLIG:'+normalized obligation key, 'DERIVED') for STRICT_OBLIGATION_RECEIPT events (family key = obligation key; DERIVED keeps the CANDIDATE_IDENTITY_UNRESOLVED closure veto at :3693/:3817). (2) In the ledger builder compute per-family harvest kinds and suppress DERIVED_SOURCE_ITEM_ID, DEPTH_COMMITTED_INVARIANT_DEBT, DUPLICATE_SOURCE_ITEM_ID and CONFLICTING_ENTITY_CLAIM for families whose events are all STRICT_OBLIGATION_RECEIPT; everything else untouched. Do NOT introduce identity_state='OBLIGATION' (rejected by _validate_event_inner enum :1229 -> parse failure, verified). Make the bounded reason name the remedies ('add ALIAS:<SOT-ID> or omit the receipt').",
+   "fixture": "Harness h_sv01*.py shape: CONFIRMED finding + `[OBLIG:security_obligations.md:SO-004] STATUS:D KEY:... -> no finding`, `[OBLIG:function_summary.md:X.y] STATUS:DISMISSED ...`, `[OBLIG:opengrep_findings.md:12] STATUS:D ...`, two per-alias D receipts -> accepted; controls: unnamed heading negative -> DERIVED_SOURCE_ITEM_ID; EXACT depth REFUTATION_PROPOSAL without CI -> DEPTH_COMMITTED_INVARIANT_DEBT. Methodology bytes prompts/shared/v2/phase4b-depth.md; context via compile_depth_candidate_negative_staged_context. Add to scripts/test_candidate_negative_authority_run12.py.",
+   "fail_closed_risk": "NONE. Disposition stays fail-closed (DERIVED cannot close); R-receipt binding remains owned by staged_depth_obligation_receipt_validator.",
+   "conflicts": "run47 has no single-alias SO row and its prompts mandate ALIAS on multi-alias rows, so the trigger requires the common ALIAS-omission deviation; not yet observed (no run has committed a depth artifact)."
+  },
+  {
+   "rank": 12,
+   "impact": "DENY_WORKER_THEN_HALT",
+   "safe": true,
+   "title": "_table_events mints phantom candidates from ID-less tables, reads the Severity column as a disposition, and rejects bracketed IDs: gate table identity on the contract's ID-column rule",
+   "merged_findings": [
+    "SV-02",
+    "SV-03",
+    "SV-04",
+    "SV-05"
+   ],
+   "phases_affected": [
+    "depth (all roles; Perturbation Block, skill `| # | Check | Status | Location |` checklists, Chain Summary, FINDING INDEX)",
+    "breadth/rescan (same harvester, SV-03)"
+   ],
+   "run47_first_hit": "depth attempt 1 (Perturbation Block is mandated after every Medium+ CONFIRMED finding in depth-token-flow/state-trace prompts L448-460; cross-chain skill \u00a72b tables bound to depth-external)",
+   "sites": [
+    "scripts/candidate_negative_authority.py:944-990 _table_events (status-column set incl. 'severity'; _METHODOLOGY_SUBJECT_HEADERS on normalized[0]; _table_speaks_dispositions :895/:980; ID-less first-cell zero-denominator case :1015-1029)",
+    "scripts/candidate_negative_authority.py:1001-1005 (_BARE_TABLE_ID_RE.fullmatch on identity_cell)",
+    "scripts/candidate_negative_authority.py:68-72 _FIELD_RE ('Severity' label)",
+    "scripts/candidate_negative_authority.py:2342 retry reason text"
+   ],
+   "property": "finding-output-format.md: a table establishes candidate identity ONLY via exactly one column headed Finding ID / Candidate ID / Issue ID / ID; a table with no such column carries no candidate denominator and yields zero candidate events. Severity is a tier column, never a disposition source. The ID token is the identity; enclosing `[...]`/backticks are Markdown decoration (as the heading recognizer already treats them).",
+   "minimal_change": "(a) ID-less tables: when identity_indexes is empty set header=None, status_indexes=[] and continue; delete the _METHODOLOGY_SUBJECT_HEADERS branch, the _table_speaks_dispositions branch+helper, and the ID-less zero-denominator special case (all representation proxies with no positive consumer -- verified DERIVED table identities only feed rejection). Fallback if maintainers insist on keeping test_idless_table_speaking_dispositions_is_still_harvested: SV-02's ownership scoping (skip ID-less tables lexically inside a _candidate_like_heading block via _blocks). (b) Semantic roles: disposition columns = {verdict,status,disposition,outcome,assessment,result status,conclusion,exclusion}; remove 'severity' from status_indexes/_table_speaks_dispositions/semantic-claim hash; drop `Severity` from _FIELD_RE. (c) Identity cell: replace fullmatch with decoration-aware `^(?:(?:Finding|Candidate|Issue)\\s+)?(?:\\[(?P<b>ID)\\]|(?P<p>ID))$` (ID = `[A-Za-z][A-Za-z0-9_.:-]{0,95}`), uppercased capture as exact_table_id; `[A]/[B]`, `[A] see B`, prose stay DERIVED. (d) Reword :2342 reason: 'N/A is not a candidate disposition; put exactly one of REFUTATION_PROPOSAL / NOT_APPLICABLE_PROPOSAL / UNRESOLVED in the Verdict/Status cell matching the finding block; leave tier cells as a canonical tier or `-`'. (e) Prompt hygiene (not a gate): plamen_driver.py L72950-72960 / phase4b-depth.md L470-480 tell workers to write the concrete reason instead of bare N/A.",
+   "fixture": "Red->green in scripts/test_candidate_negative_harvest_precision.py: (1) run47-prompt-shaped `### Perturbation Block - DST-1` `| Operator | Probe | Verdict |` with `safe \u2014 ...:L88`x2 + `N/A`x2 under a CONFIRMED finding -> accepted; all-`safe` -> accepted; (2) `| # | Check | Status | Location |` all-N/A (agents/skills/evm/cross-chain-message-integrity/SKILL.md \u00a72b bytes) -> accepted for depth and breadth; `| # | Skill Step | Status | Notes |` all-N/A -> accepted; (3) refuted DEPTH-TF-2 with complete CI and Chain Summary Severity `N/A`/`Not Applicable`/`N/A (refuted)` -> accepted; FINDING INDEX Severity N/A -> accepted; (4) Chain Summary `| [DEPTH-TF-2] | ... |` with heading -> accepted, one EXACT family; `` `[DEPTH-TF-2]` `` -> accepted; controls: `| Finding ID | Verdict |` with `| DE-3 | N/A |` -> REJECT (EVENT_NOT_APPLICABLE_WITH_NONZERO_DENOMINATOR); `| ID | Verdict |` `| DE-4 | SAFE |` in depth without CI -> REJECT; two ID columns -> no EXACT credit; `[A]/[B]` cell -> DERIVED; Verdict cell N/A on a real ID -> REJECT; replay real run47 analysis_cross_chain_message_gateway.md and run46 analysis_economic_design.md -> ACCEPT (no regression of run34/run46 repairs). Baseline suite: 157 pass, 1 pre-existing failure (test_zero_placeholder_without_explicit_id_header_remains_visible).",
+   "fail_closed_risk": "NONE. Tables WITH an ID column keep the full per-row contract; heading-based harvest, dedup, severity and disposition authority untouched; only phantom minting from ID-less tables and tier cells is removed.",
+   "conflicts": "SV-02 corrected fix keeps _table_speaks_dispositions (ownership scoping) while SV-03 corrected fix deletes it and inverts test_idless_table_speaking_dispositions_is_still_harvested; SV-03's approach is the contract's own identity property and subsumes SV-02; choose it and invert the test, or take SV-02's scoping as the conservative fallback (does not clear top-level skill checklists outside a finding block)."
+  },
+  {
+   "rank": 13,
+   "impact": "DENY_WORKER_THEN_HALT",
+   "safe": true,
+   "title": "Committed-invariant block parsing rejects natural representations and vetoes non-value-bearing exemptions on vocabulary: leading-enum parse, token-bound provenance, root-bound locus, declared-tier consistency, CI debt as visible debt not denial",
+   "merged_findings": [
+    "SV-07",
+    "SV-08"
+   ],
+   "phases_affected": [
+    "depth (every REFUTATION_PROPOSAL and every NOT_REQUIRED_NON_VALUE_BEARING exemption)"
+   ],
+   "run47_first_hit": "depth attempt 1 (run47 breadth already emits the SV-08 phrasing, e.g. analysis_core_state_params.md:1263; the same model in depth would be rejected)",
+   "sites": [
+    "scripts/candidate_negative_authority.py:128 _CI_FIELD_RE, :135 _CI_DECLARED_ID_RE, :424 _production_ci_locus, :433-540 _depth_invariant_commitment, :153 _VALUE_BEARING_RE (:481/:494 and duplicate at :1361-1382)",
+    "scripts/candidate_negative_authority.py:2316 _candidate_negative_debt_reasons (issue-code partition)",
+    "staged context: DEPTH_CANDIDATE_NEGATIVE_STAGED_CONTEXT_SCHEMA / _closed_depth_candidate_negative_staged_context (+project_root_posix); plamen_driver.py:72540 context compile"
+   ],
+   "property": "Shape/Falsify Class are the leading enum token (same 'terminal must lead the field' convention as _normalize_legacy) with a second distinct enum in the remainder -> DEBT; provenance binds iff the candidate ID equals a whole normalized token (alphabet keeps '.', dotted IDs are legal); a locus under the bound project root is production whether absolute or relative; a non-value-bearing exemption is complete iff exactly one allowlisted category, a reason, and the block's own declared Severity is Informational (the candidate's typed claim, not vocabulary anywhere in its prose); DEPTH_COMMITTED_INVARIANT_DEBT is input debt (candidate stays open), not a staged rejection.",
+   "minimal_change": "(1) _CI_FIELD_RE tolerates bold/backtick-wrapped labels and list markers; _clean_inline each value. (2) shape/falsify: leading `[A-Za-z_]+` token upper/lower-cased, accept iff in enum set and no other enum member appears as a whole word in the remainder (else 'ambiguous ...' DEBT). (3) Provenance: keep alphabet, normalize tokens with rstrip('.:;,)').upper(), bind on whole-token equality. (4) Declaration: after _clean_inline, leading `(?:CI\\s*:\\s*)?(<CI-ID>)\\b`, DEBT if a second CI id follows. (5) Locus: add closed field project_root_posix to the staged context (bump schema, include in context_digest; driver passes Path(config['project_root']).resolve().as_posix()); in _production_ci_locus relativize an absolute path under the root then apply existing relative rules; absolute without root or outside root stays DEBT; pass the same root in the canonical post-barrier harvest. (6) Delete _VALUE_BEARING_RE; exemption completeness = category + reason + parsed Severity == Informational (High+ with exemption -> DEBT). (7) In _candidate_negative_debt_reasons keep identity/dedup/disposition codes (DERIVED_SOURCE_ITEM_ID, DUPLICATE_SOURCE_ITEM_ID, CONFLICTING_REPRESENTATION, CONFLICTING_ENTITY_CLAIM, MIXED_CANDIDATE_PROPOSAL_DISPOSITIONS, EVENT_NOT_APPLICABLE_WITH_NONZERO_DENOMINATOR) as staged rejections; exclude DEPTH_COMMITTED_INVARIANT_DEBT (surfaces as INPUT_DEBT on ledger/receipt, routes to UNRESOLVED_DEBT -> HUMAN_REVIEW/re-open at :3719-3726/:4200).",
+   "fixture": "Harness h_sv07.py / h6.py cases (real phase4b-depth.md methodology bytes, contexts for scratchpad:depth_token_flow_findings.md and scratchpad:blind_spot_b_findings.md): `Shape: CONSERVATION (totalSupply == \u03a3 balances)`, `Falsify Class: property (guard check)`, `Provenance: DEPTH-TF-2.`, `Provenance: depth REFUTATION_PROPOSAL @ DEPTH-TF-2.`, `**Invariant Commitment**: CI-2`, `CI:CI-2 (below)`, `` `CI:CI-2` ``, `**Locus**:` bolded label, absolute locus under run root -> accepted; Informational + DOCUMENTATION_ONLY block with 'no funds at risk / does not affect token transfers' -> NOT_REQUIRED_NON_VALUE_BEARING, accepted; Severity: High + exemption -> DEBT, ledger INPUT_DEBT, candidate open, staged accepted with visible debt. Must remain DEBT: `Shape: CONSERVATION / ROUNDTRIP`, `CI:CI-2 and CI:CI-3`, `Provenance: DEPTH-TF-21` for DEPTH-TF-2, absolute locus outside root, `Locus: ../x.sol:L1`; dotted `B2.3` binds as whole token; duplicate/derived identity -> still staged rejected. Tests beside test_depth_non_value_exemption_requires_typed_reason in scripts/test_candidate_negative_authority_p1_f.py.",
+   "fail_closed_risk": "NONE. A REFUTATION_PROPOSAL with commitment DEBT is 'input debt, not negative closure' (finding-output-format.md); no disposition, identity, dedup or severity authority changes; identity codes remain staged rejections.",
+   "conflicts": "SV-08 part (7) makes SV-07's residual parse failures non-denying; (1)-(5) remain necessary so complete CIs are not mis-recorded as debt."
+  },
+  {
+   "rank": 14,
+   "impact": "DENY_WORKER_THEN_HALT",
+   "safe": true,
+   "title": "`Verdict: DUPLICATE/ABSORBED` is an identity alias, not a refutation: map to UNRESOLVED and let a live Verdict own the block's disposition",
+   "merged_findings": [
+    "SV-09"
+   ],
+   "phases_affected": [
+    "depth (all workers; prompt actively steers this shape at prompts/evm/phase4b-depth-templates.md:202-210 and phase4b-depth.md:151-155)"
+   ],
+   "run47_first_hit": "depth attempt 1 when any worker records an absorbed/duplicate candidate as instructed",
+   "sites": [
+    "scripts/candidate_negative_authority.py:564 _proposal_disposition (via _LEGACY_ALIASES :176-197)",
+    "scripts/candidate_negative_authority.py:1086-1090 _artifact_events field harvesting (_FIELD_RE :68-72)",
+    "scripts/test_candidate_negative_authority_p1_f.py:272-273 parametrized expectation",
+    "prompts/evm/phase4b-depth-templates.md:207 (prompt hygiene)"
+   ],
+   "property": "DUPLICATE/ABSORBED asserts 'same bug, other ID' and carries no falsifiable invariant about the code; UNRESOLVED already has the exact fail-closed semantics required (adjudicate_candidate_negative :3696/:3704/:3824 vetoes AGREE_NEGATIVE with PRODUCER_UNRESOLVED_CANNOT_CLOSE). A candidate block's disposition is proposed by its own Verdict/Disposition field; narrative Outcome/Assessment/Conclusion/Status lines are harvested only when no Verdict/Disposition field exists.",
+   "minimal_change": "(A) _proposal_disposition: return 'UNRESOLVED' for DUPLICATE and ABSORBED (removes them from the depth CI denominator at :770/:1907 automatically; no new enum). Update the p1_f test rows to ('DUPLICATE','UNRESOLVED'), ('ABSORBED','UNRESOLVED'). (B) _artifact_events: if the block has a Verdict/Disposition field whose value does not normalize to a negative alias (CONFIRMED/PARTIAL/CONTESTED or explicit proposal enums), harvest no narrative labels for that block; blocks without such a field keep any-label harvesting. (C) Prompt hygiene: reconcile phase4b-depth-templates.md:207 with phase4b-depth.md:151 to instruct `**Verdict**: UNRESOLVED` + `Notes:/Discovery Steer:` pointer to the surviving ID.",
+   "fixture": "Harness h_sv09*.py (context for scratchpad:depth_state_trace_findings.md): `**Verdict**: DUPLICATE of DEPTH-TF-1`, `DUPLICATE \u2014 absorbed into DEPTH-ST-2`, `ABSORBED into DEPTH-ST-2`, `CONTESTED` + `**Outcome**: not exploitable...`, `CONFIRMED` + `**Assessment**: safe...`, Chain Summary row `| DEPTH-ST-3 | ... | DUPLICATE of DEPTH-TF-1 | Informational |`, `## Non-Reportable / Absorbed Candidates` row -> all accepted; must still reject: REFUTATION_PROPOSAL without CI, `Verdict: SAFE` without CI, `Status: REFUTED` with no Verdict, `Verdict: NOT EXPLOITABLE`, derived-identity `Status: SAFE`.",
+   "fail_closed_risk": "NONE. The worker's alias is never applied (only sc_semantic_dedup/report_dedup apply hash-bound aliases); UNRESOLVED cannot close; identity/dedup untouched.",
+   "conflicts": "Rejected the proposed ALIAS_PROPOSAL enum (touches _validate_event_inner, application plan/adjudication, application_skeptic.py, plamen_validators.py, work_unit_capabilities.py, plamen_parsers.py and the capability line)."
+  },
+  {
+   "rank": 15,
+   "impact": "DENY_WORKER_THEN_HALT",
+   "safe": true,
+   "title": "Security-obligation receipts and evidence markers are recognized by line decoration, not payload: one shared claim-text helper for receipts and payload-based marker recognition",
+   "merged_findings": [
+    "SV-10",
+    "SV-11"
+   ],
+   "phases_affected": [
+    "depth (standard/scanner workers with security_obligation_authority.json registered; STATUS:R receipts)"
+   ],
+   "run47_first_hit": "depth attempt 1 (run46/run47 security_obligations.md L109-111 renders every marker as '- SO-xxx `SOT-...`: `<!-- ... -->`' and the prompt says 'copy the complete generated marker' with no undecorated-line rule; prompt shows receipt format inside backticks)",
+   "sites": [
+    "scripts/security_obligation_authority.py:3476 _RECEIPT_LIKE_RE, :3539-3553 staged_depth_obligation_receipt_validator, :98 _RECEIPT_RE, :2873/:2902 POST parser",
+    "scripts/security_obligation_authority.py:129 _EVIDENCE_BINDING_RE, :2372 fence skip, :2381 'malformed structured obligation evidence ignored', :3521 unconditional merge, :3614 same-section alias marker check, _finding_alias_evidence_bindings"
+   ],
+   "property": "Only a line that ASSERTS a receipt makes a claim: after stripping at most one list marker and one enclosing backtick pair, text starting with the opener '[OBLIG:security_obligations.md:' is a claim and must fullmatch _RECEIPT_RE (typo'd alias / '=>' still rejected); non-opener-anchored receipt-like text (prose recap, table cell, bold) is a mention. The marker's binding is its JSON payload (exact key set, duplicate-key hook, object equality with the expected alias binding) plus its enclosing Finding section; identical payloads dedupe to one binding; two DIFFERENT payloads for one alias or one alias bound in two sections stay rejected; marker defects reject only when a STATUS:R receipt in that section depends on them, otherwise they are nonterminal debt.",
+   "minimal_change": "(1) Add _receipt_claim_text(line)->str|None (strip ws, one of -/*/+/'N.' marker, one backtick pair; return only if opener-anchored, case-insensitive); use it in the staged validator (:3539) and POST parser (:2873, :2902 filter) in place of raw fullmatch; classify: claim+fullmatch -> validate as today; claim without fullmatch -> keep 'malformed ... rejected'; mention -> no issue (informational note). (2) In _finding_alias_evidence_bindings replace _EVIDENCE_BINDING_RE.fullmatch with a search for `<!--\\s*PLAMEN_SECURITY_OBLIGATION_EVIDENCE:\\s*(?P<payload>\\{.*?\\})\\s*-->` anywhere on the line (each parsed), dedupe parsed payloads per section by equality; keep or drop fence-skipping symmetrically but at minimum do not reject an artifact for a fenced/malformed marker no STATUS:R receipt claims. (3) Scope the merge at :3521 to markers that an R receipt depends on; include the canonical form + observed line in the retry reason. (4) Prompt sentence: receipt is a standalone line (optionally in a list), not inside a table or prose.",
+   "fixture": "run46/run47 security_obligation_authority.json via compile_depth_staged_gate_context (scratchpad:depth_external_findings.md / depth_token_flow_findings.md): canonical receipt -> 0 issues (baseline); same receipt backticked, bulleted, table cell, bold, and canonical + backticked prose recap -> 0 issues after fix; column-0 alias typo and '=>' -> still rejected (tests at test_security_obligation_authority_run12.py:875-899, :1027); marker as '- <marker>', '`<marker>`', '- `<marker>`', '> <marker>', '<marker> (copied)', indented, two identical -> accepted; tampered payload, wrong section, conflicting duplicate payloads, alias in two sections -> rejected; marker-without-receipt -> nonterminal.",
+   "fail_closed_risk": "NONE. R still requires the exact payload binding in the exact finding section; duplicate alias claims still reject; C/D remain nonterminal.",
+   "conflicts": "SV-10's proposed 'ignore anything still failing fullmatch' is rejected (would pass typo'd column-0 receipts)."
+  },
+  {
+   "rank": 16,
+   "impact": "DENY_WORKER_THEN_HALT",
+   "safe": true,
+   "title": "Graph-consumption gate requires each CONSUMED marker exactly once and contradicts the prompt's UNAVAILABLE instruction: require >=1 acknowledgement per projection, bind UNAVAILABLE claims to the profiled Status header",
+   "merged_findings": [
+    "SV-12"
+   ],
+   "phases_affected": [
+    "depth (4 standard core roles in Thorough)"
+   ],
+   "run47_first_hit": "depth attempt 1 (run47 has state_write_map.md with '> **Status**: UNAVAILABLE'; prompt L197 instructs the UNAVAILABLE form, driver block L381-400 demands CONSUMED exactly once)",
+   "sites": [
+    "scripts/plamen_driver.py:72843-72851 _staged_depth_composite_receipt_validator (text.count(...) != 1)",
+    "_compile_depth_graph_consumption_gate profile (+available flag; bump _DEPTH_GRAPH_CONSUMPTION_SCHEMA)",
+    "prompts/evm/phase4b-depth-templates.md:41; plamen_driver.py:73048-73067 driver block; prompts/shared/v2/phase4b-depth.md:304-321 (bare form)",
+    "scripts/test_depth_graph_prepublication_gate.py:86-93"
+   ],
+   "property": "Each bound graph projection was acknowledged at least once, in unfenced text, as CONSUMED or (only when its bound bytes declare Status UNAVAILABLE) as UNAVAILABLE; a restated receipt does not falsify consumption; an UNAVAILABLE claim for a POPULATED projection is a false claim and still rejects.",
+   "minimal_change": "Strip fenced blocks and HTML comments, then for each name in _DEPTH_GRAPH_CONSUMPTION_INPUTS require >=1 match of `\\[GRAPH-ARTIFACT: (CONSUMED|UNAVAILABLE):<name>\\]`; drop the != 1 duplicate rejection; add `available: bool` to the per-projection profile derived from the file's '> **Status**:' header/empty table (included in the context digest); reject UNAVAILABLE-only acknowledgement when available==True. Unify the three prompt spellings to the two accepted forms (or accept the bare form as CONSUMED).",
+   "fixture": "Harness against /Users/ptsanev/dodo-v3-validation-run47/omni-chain-contracts/.scratchpad via _compile_depth_worker_staged_gate_context: exact-once -> (); `[GRAPH-ARTIFACT: UNAVAILABLE:state_write_map.md]` -> accepted after fix (currently rejected); marker restated in a trace row -> accepted; fenced echo only -> rejected; absent -> rejected; UNAVAILABLE for a POPULATED projection -> rejected. Update test_depth_graph_prepublication_gate.py accordingly; keep test_standard_sc_prompt_contains_literal_exact_markers as prompt-shape only.",
+   "fail_closed_risk": "NONE. No identity/dedup/severity/disposition path reads these markers.",
+   "conflicts": "none"
+  },
+  {
+   "rank": 17,
+   "impact": "DENY_WORKER_THEN_DEGRADE",
+   "safe": true,
+   "title": "Prompt-lint negation and coordinator checks are physical-line and verb-anchored: sentence-scoped clauses, noun-anchored negation, object-bound coordinator nouns, list-mode negation, bold prefixes; plus the SC/L1 dedup override wording",
+   "merged_findings": [
+    "F03",
+    "F04",
+    "F02(unverified twin)",
+    "F28.B/C/D/E/J",
+    "F23(recognizer part)",
+    "F12(unverified)",
+    "F06(unverified)",
+    "F15(unverified)",
+    "F24(E, unverified)"
+   ],
+   "phases_affected": [
+    "sc_semantic_dedup (confirmed)",
+    "chain_iter2, post_verify_extract, exploration_skeptic/enumgap/axis_coverage (unverified siblings)"
+   ],
+   "run47_first_hit": "sc_semantic_dedup L132-133 ('Execute it as a single agent (yourself) -- do NOT' / 'spawn subagents.')",
+   "sites": [
+    "scripts/claude_worker_prompt_consistency.py:358 _is_negated, :437 _directive_clauses, :779-786 coordinator branch, :638 list-mode inheritance, :811 list-mode reset, :42 _DIRECTIVE_PREFIX_RE, validate loop (prompt.splitlines())",
+    "scripts/plamen_prompt.py:3805-3806 (SC) and :3754-3755 (L1) dedup override"
+   ],
+   "property": "A DENIED_COORDINATOR_INSTRUCTION requires an AFFIRMATIVE directive: a coordinator noun that is the object of a non-negated tool-action verb, judged at sentence scope (soft-wrapped continuation lines joined; clauses split at sentence terminators and ' -- '/' \u2014 '/';'/':'), with negation tested against clause[:noun.start()], and a role complement ('as a single agent (yourself)') treated as self-description. A list item carrying its own (negated) verb is governed by that verb; list mode survives indented continuation lines. Emphasis markup never hides text from the model.",
+   "minimal_change": "(1) Validate loop: fold a non-blank, non-heading, non-list-start, non-table/fence line into its predecessor when the predecessor does not end in sentence-terminal punctuation/colon; attribute issues to the first physical line. (2) _directive_clauses: split at `(?<=[.!?])\\s+(?=[A-Z])` (abbreviation guard; skip boundaries inside recognized path spans) and at ' -- ', ' \u2014 ', ';', ':'. (3) Coordinator branch: extract the object NP after the verb (up to the next preposition other than leading to/with, conjunction, separator or '('), require _COORDINATOR_RE inside it or an explicit `Agent tool`/`Task tool`; test _NEGATION_RE against clause[:noun.start()]. (4) List mode: when a verb is inherited, run _is_negated over the whole clause; keep mode across indented continuations. (5) _DIRECTIVE_PREFIX_RE: optional `(?:\\*\\*|__)?` before the verb (note F24: this turns the five non-direct typed phases' orchestrator scaffolding into launch denials unless they are added to the `direct` set first). (6) Template: plamen_prompt.py:3805-3806 and :3754-3755 -> single line 'Execute it yourself. Do NOT spawn subagents.' (verified 0 issues; do not use 'as one worker' -- 'worker' is a coordinator noun).",
+   "fixture": "Positive controls must stay denied: 'Spawn four breadth agents.', 'Use the Agent tool to fan out.', 'Execute the analysis by delegating to sub-agents.'. Negative controls must clear: 'Execute it as a single agent (yourself) -- do NOT\\nspawn subagents.' (wrapped), 'Run the methodology directly, without spawning subagents.', 'Do NOT\\nspawn subagents.', chain-iter2 L41-42 'Do not\\n   call RAG, vulnerability-database, WebSearch, or WebFetch tools.', repro C (inherited write list + 'Do NOT modify `hypotheses.md`'), repro J ('Read `x.md`. If `y.md` is missing, write `a.md`' -> y.md not in the read clause), repro E ('3. **Use the Task tool \u2026**' -> DENIED). Composed sc_semantic_dedup prompt (run47 config) L132-133 -> no DENIED_COORDINATOR_INSTRUCTION.",
+   "fail_closed_risk": "NONE. Launch lint only; genuine coordinator/tool instructions still deny; runtime tool policy (Agent in _ALWAYS_DENIED) unchanged.",
+   "conflicts": "F04 verdict rated this HALT; F01/F02/F03 executed the post-denial path (PASSTHROUGH scaffold at plamen_driver.py:104743, _validate_rc_parity has no dedup branch) -> degrade. Either way the semantic-dedup model never runs and 546 candidate pairs are never adjudicated; combine with action 1 to launch the worker."
+  },
+  {
+   "rank": 18,
+   "impact": "DENY_WORKER_THEN_DEGRADE",
+   "safe": true,
+   "title": "Queue<->verify parity ignores retained runtime debt: subtract _verification_runtime_debt_coverage in _validate_verify_files_for_queue and use it at crossbatch and the report_index hard post-check",
+   "merged_findings": [
+    "G-12"
+   ],
+   "phases_affected": [
+    "crossbatch (confirmed live effect: wasted retry + degraded valid artifact)",
+    "report_index (conditional sys.exit at plamen_driver.py:105132 when soft issues already exist)"
+   ],
+   "run47_first_hit": "crossbatch in any run carrying non-refusal unit execution debt",
+   "sites": [
+    "scripts/plamen_validators.py:27650-27675 _validate_verify_files_for_queue",
+    "scripts/plamen_driver.py:96720 (crossbatch validator call) and :105132 (report_index hard_post_issues)"
+   ],
+   "property": "Every active queue row is accounted for by exact verifier completion OR an exact, receipt-bound retained runtime-debt row -- the same predicate _validate_report_verification_denominator (:28247/:28063) already implements.",
+   "minimal_change": "After computing `missing`, `covered, debt_issues = _verification_runtime_debt_coverage(scratchpad, missing)`; report only uncovered IDs and append debt_issues (same shape as :28304-28313). At :96720 and :105132 call the same accounted-for predicate. Do NOT touch the aggregate resume branch (:10425-10440) or shard resume (:10339-10363): exact-retry-on-resume is designed (test_resume_retries_dynamic_debt_despite_plausible_verifier_prose). Drop the proposed _validate_verify_evidence_tags change (already skips absent files at :33604). Optionally mention retained-debt IDs in _generate_crossbatch_retry_hint.",
+   "fixture": "Harness h_g12.py fixture: typed queue + work plan (H-01, H-02), dynamic roster, PhaseIO-bound verification_runtime_debt.json for H-01 via _retain_dynamic_verification_debt, verify_H-02.md on disk -> _validate_verify_files_for_queue currently 'queue has 2 active row(s), only 1 verify file(s)... H-01'; after fix []; malformed/stale/wrong-run debt receipt -> still reported missing.",
+   "fail_closed_risk": "NONE. Debt rows keep proof_authority NONE / UNRESOLVED / CONTESTED; malformed receipts cover nothing.",
+   "conflicts": "Finding's resume/aggregate halt scenario refuted (designed exact-retry); refusal path does not reach debt retention (see action 6)."
+  },
+  {
+   "rank": 19,
+   "impact": "NOISE",
+   "safe": true,
+   "title": "Pre-launch prompt-lint denial is only an ERROR log line: record typed prompt-lint debt on the phase (violations.md / Appendix B) so a skipped model pass is auditable",
+   "merged_findings": [
+    "F01(a) corrected fix tail"
+   ],
+   "phases_affected": [
+    "every restricted Claude leaf (sc_semantic_dedup passthrough case especially)"
+   ],
+   "run47_first_hit": "n/a (visibility only)",
+   "sites": [
+    "scripts/plamen_driver.py:~78100-78118 _run_transactional_headless_leaf (ClaudeWorkerPromptConsistencyError handler)"
+   ],
+   "property": "A denied launch that the driver then degrades around is a phase debt, not a log line.",
+   "minimal_change": "In the except handler, before `return EXIT_ERROR`, append a typed PROMPT_LINT_DENIAL debt row (phase, unit, issue tuples) via the existing _append_phase_io_debt path so it reaches phase_completion_debt.md/Appendix B.",
+   "fixture": "run46 _plamen.log L59/L64 (invariants/invariants_p2 denials followed by 'continuing') -- assert a debt row exists after the change.",
+   "fail_closed_risk": "NONE.",
+   "conflicts": "none"
+  },
+  {
+   "rank": 20,
+   "impact": "NOISE",
+   "safe": true,
+   "title": "Regression harness: compose every direct typed-model phase prompt with build_phase_prompt against a run-shaped scratchpad and require validate_claude_worker_prompt_consistency == () against the resolved contract",
+   "merged_findings": [
+    "F01.4",
+    "F02.4",
+    "F05 tests",
+    "F07 tests",
+    "F10.3",
+    "F28.8",
+    "F17.3",
+    "F20.C"
+   ],
+   "phases_affected": [
+    "all _SC_THOROUGH_HEADLESS_TYPED_MODEL_PHASES (and L1 equivalents)"
+   ],
+   "run47_first_hit": "n/a (this is the pin for actions 1, 8, 9, 10, 17)",
+   "sites": [
+    "scripts/test_worker_prompt_phaseio_alignment.py (currently covers depth/rescan/breadth, never report_index/chain); scripts/test_direct_transactional_resumption_prompt.py (single-artifact instantiate only)"
+   ],
+   "property": "For every direct transactional phase x thorough x claude-headless, the composed prompt's read/write/search directives are consistent with the resolved PhaseIO MODEL contract inputs+outputs and a real leaf policy's tools.",
+   "minimal_change": "Parametrize over every SC phase with _is_direct_execution_phase True (plus chain), build the prompt with build_phase_prompt over a minimal round-shaped and single-round-shaped scratchpad, resolve the model contract with the driver's exact-input builders, assert issues == (); add negative cases (one unregistered artifact in the write list; a glob with zero registered members) that must still deny.",
+   "fixture": "Copy of /Users/ptsanev/dodo-v3-validation-run46/omni-chain-contracts/.scratchpad (116 findings, 546 dedup pairs) as the run-shaped fixture; the composed prompts in the session scratchpad (drift_harness.py prompts/*.md).",
+   "fail_closed_risk": "NONE.",
+   "conflicts": "none"
+  }
+ ],
+ "coverage_notes": [
+  "prompt-lint: Method: (A) raw templates for every post-inventory phase rendered with {SCRATCHPAD}=/audit/p/.scratchpad,{PROJECT_ROOT}=/audit/p and linted against resolve_phase_io_contract(sc,thorough,evm,claude[-pty],phase,unit) with driver-emulated maximal exact_inputs (harness_a.py); (B) the driver's real composition via plamen_prompt.build_phase_prompt (headless exec mode, as run47 config.json) for the 17 TYPED_MODEL_TRANSACTION phases, D._build_depth_worker_prompt for all 21 depth jobs (standard, scanner, sidecar, 9 niche, DA-iter2) with empty AND fully populated scratchpads, D._attention_shard_worker_prompt, the three p1dm typed-aux prompts + compile_phase_io_prompt, the skill-injection block and the supervisor-block template (harness_b/d.py); (C) the eight real run46 depth prompts and the typed-aux prompt linted with the CURRENT checker and their actual _ctp p.json policies \u2014 all pass, so the depth fan-out itself is clean; (D) methodology files embedded by repair workers (harness_e.py); (E) minimal reproductions of every recognizer defect. Existing tests: test_worker_prompt_phaseio_alignment.py has 3 pre-existing failures (depth-state-trace prompt builder raises 'state-trace bound input scratchpad:constraint_variables.md is unavailable or unsafe' in the test fixture; run47 has the file, so not a live risk). NOT checked: (1) lanes where the checker never runs \u2014 sc_verify_* shards (tool_policy filesystem+shell+foreground-only, plamen_driver.py:36957), application_skeptic (own stdout transport, 63570-63690), severity_adjudication_shadow (own per-shard stdin transport), rag_sweep (network/mcp policy) \u2014 their prompt<->PhaseIO drift (if any) surfaces only as runtime read denials, not launch denials; (2) driver-only phases (sc_verify_queue, sc_verify_aggregate, sc_mechanical_verify, report_assemble, report_dedup, report_floor, report_*_merge) spawn no model; (3) the live supervisor block rendered from the actual policy (only its template text was linted; it lints clean) and _bb_policy_report_prompt_suffix / _compile_axis_coverage_model_prompt bodies (need live worklists; their literals contain no read/tool directives by grep); (4) the exact optional-input set at run47 time (which optional files exist changes which UNREGISTERED_ARTIFACT_READ rows fire for optional artifacts, e.g. dedup_absorbed_map.md, obligation_ledger.json); (5) the registered inputs of the depth METHODOLOGY_APPLICATION_REPAIR worker (only the embedded-methodology denial mechanism was verified against run47's rescan twin); (6) Codex backend prompts (_translate_prompt_for_codex) \u2014 out of scope for the Claude restricted lane.",
+  "staged-validators: Harness-verified (python3.12, scripts on sys.path): candidate_negative_authority.evaluate_staged_candidate_negative_receipt / evaluate_staged_depth_candidate_negative_receipt with the real phase4b-depth.md methodology bytes (SV-01..09), security_obligation_authority.staged_depth_obligation_receipt_validator with run46's real security_obligation_authority.json + ledger marker (SV-10/11), exploration_clear_lifecycle.compile_initial_receipt against run46 project root (SV-16), plamen_parsers._skeptic_section_by_id (SV-15), crossbatch regexes (SV-17). SV-12/13/14 are code-read only (no run46 depth or attention outputs exist: all four run46 core depth workers were denied by the prompt checker before launch, and .worker_transactions/depth/*/attempts/*/output dirs are empty). Not checked: (a) verify shards (sc_verify_*) \u2014 _field_from_markdown/_has_poc_ledger_sections/_poc_attempted_value are already tolerant alias parsers and PoC-skip enforcement is bounded-retry-then-WARN, so no representation-only halt was identified, but the closed skip-code enum and `Attempted: YES` Test File/Command requirements were not exercised against a live verifier file; (b) chain/chain_agent2/chain_iter2 \u2014 finding_mapping typed header roles (plamen_parsers:1420-1500) and HYPOTHESIS_ID_PATTERN look property-based but the chain-agent1 template gives no exact finding_mapping header contract and I did not test which header spellings the worker actually emits; (c) rag_sweep (precedent_evidence_authority.extract_proposal_artifact requires exactly one BEGIN/END marker pair \u2014 a prose echo of the marker text would invalidate the block, but the phase degrades to UNAVAILABLE by design); (d) application_skeptic (Claude path is a stdout JSON-schema packet parsed by application_skeptic_stdout_digest \u2014 mechanical, not prose), severity_adjudication_shadow (JSON with exact keys per severity_decision_ledger._ADJUDICATION_PROPOSAL_FIELDS; the template file is a driver-planned placeholder so the worker-facing packet was not inspected), sc_semantic_dedup, sc_mechanical_verify, post_verify_extract (soft), report_index/report_body_writer_*/report_assemble/report_dedup/report_disposition/report_floor recognizers (only sampled _parse_report_index_master_rows and _report_dedup_decision_dispositions, both header-aware); (e) the claude_worker_prompt_consistency checker for post-depth prompts (the rescan METHODOLOGY_APPLICATION_REPAIR denial is already in the handoff; breadth/depth repair-twin prompts were not re-run through validate_claude_worker_prompt_consistency here); (f) run47 currently has no caller_map.md/callee_map.md/state_write_map.md/function_summary.md on disk (inventory_chunk_a just completed) \u2014 if they are not produced before depth, _compile_depth_graph_consumption_gate raises and every standard worker is prelaunch-blocked (DEPTH_WORKER_PRELAUNCH_INPUT_DEBT), which is a contract/ordering question outside the staged-validator lens. Impact classification: a persistent staged rejection of any of the 7 SC core depth artifacts (4 roles + 3 blind-spot scanners, plamen_validators._DEPTH_CORE_ARTIFACTS) ends in sys.exit(EXIT_DEGRADED) at plamen_driver.py:109779 after attempt 2, hence DENY_WORKER_THEN_HALT for SV-01..12; niche/aux/attention/skeptic rejections degrade with debt.",
+  "driver-gates: Scope covered: every critical post-inventory SC Thorough phase (depth, attention_repair, sc_semantic_dedup, rag_sweep, chain, chain_agent2, sc_verify_queue, sc_verify_* dynamic units, sc_verify_aggregate, report_index, report_body_writer_*, report_*_merge, report_assemble) \u2014 pre-launch transaction halts, the generic retry/degrade/FC4 loop (plamen_driver.py:108700-110060, _phase_content_gate_issues :10596, _resume_phase_contract_issues :10161), and the validators they call; predicates were exercised with fixture probes under /opt/homebrew/opt/python@3.12/bin/python3.12 (probe scripts in the session scratchpad, no repo edits). Not checked: (1) no real depth->report artifacts exist on this machine \u2014 every run <=47 ended at or before inventory (run46 depth workers were denied by the prompt checker, HANDOFF \u00a74), so failure scenarios are code+fixture derived, not replayed against a run47 artifact; (2) the prompt-consistency (PROMPT_DENIAL) lens for the upcoming templates was not re-run (needs composed prompts + PhaseIO contracts per work unit); (3) non-critical phases (exploration_skeptic, enumgap, axis_coverage, application_skeptic, chain_iter2, sc_mechanical_verify, post_verify_extract, skeptic, crossbatch beyond G-12, severity_adjudication_shadow, report_dedup*, report_disposition, report_floor) were only confirmed to be degrade-not-halt by their Phase.critical=False declaration, not audited predicate-by-predicate; (4) chain_state_resolution source-digest drift after driver-side hypotheses.md repairs (state_symbol_authority.py:594) and the foreign-write pattern table (_future_phase_write_patterns) were read but not probed; (5) posix-compat/staged validators for verify severity_proposal JSON sidecars (severity_decision_ledger.py:parse_severity_proposal strict schema) were read but not fixture-tested; (6) run48 directory contains only config.json.",
+  "contract-drift: Method: a read-only harness (scratchpad/drift_harness.py) imported the source-tree driver (PLAMEN_HOME=/Users/ptsanev/plamen-v3; prompts/, agents/, rules/ verified byte-identical to ~/.plamen), copied the run46 project+scratchpad into the session scratchpad, composed each unit's prompt with the driver's own builders (build_phase_prompt, _build_depth_worker_prompt, _attention_shard_worker_prompt, verification_method_compiler._render_compiled_prompt skeleton), resolved the contract with the driver's own resolvers (_typed_model_phase_contract_and_launch, _typed_model_worker_contract_and_launch, _attention_phase_io_contract_and_launch, resolve_phase_io_contract), and replayed validate_claude_worker_prompt_consistency and prompt_contract_conflicts exactly as _run_transactional_headless_leaf does (inputs = immutable + bounded_lookup + trusted methodology paths; tools = the 5-tool run46 policy; safe roots = run46 project subdirs). Full output: scratchpad/run4.log, drift_results.json, prompts/*.md. NOT covered / caveats: (1) for chain, skeptic, crossbatch, post_verify_extract, sc_semantic_dedup, report_dedup_agent, report_disposition, report_body the dynamic denominators do not exist yet on run46/run47 disk, so static contracts with code-derived representative exact inputs were used; for skeptic/report_dedup_agent/report_disposition/crossbatch the static contract resolved with EMPTY outputs, so write-side hits there (e.g. skeptic 'Write ONLY skeptic_findings.md...') are harness artifacts and were excluded -- only the comma-joined token (F01) is asserted for skeptic. (2) report_index used the static base contract because the dynamic branch requires R10 consumer authority; the dynamic branch only narrows that list, so unregistered-read findings stand. (3) rag_sweep tool policy was inferred from code (no network_authority path in the driver); the legacy headless MCP lane (plamen_driver.py:91160) was not exercised. (4) Verify-shard prompts were built from the compiled-contract skeleton with synthetic ids and no rows/modules; per-row lines were not rendered. (5) claude-pty exec mode and Codex backend were not exercised (run46/47 config is claude_exec_mode=headless). (6) DRIVER_ONLY phases (sc_verify_queue/aggregate, sc_mechanical_verify, severity_adjudication_shadow, report_assemble/dedup/floor, application_skeptic) have no MODEL unit on this lane, so their template drift is reported as NOISE only. (7) run47 was read-only and at 10:27 had completed invariants_p2; none of the post-inventory predictions have executed yet, so all impacts are predictions from the product checker on driver-composed prompts, not observed halts. (8) Line numbers cited for plamen_driver.py are from the current source tree, not the installed generation a0966553.",
+  "grammar-receipts: Checked: full read of scripts/claude_stream_json_evidence.py parser/state machine and expected-init normalizers; scripts/posix_v2_compat_claude.py completion validate/replay; posix_v2_compat_runtime.py receipt replay, model-exec failure mapping, Claude research evidence writer; driver typed contracts _record_typed_model_worker_artifact, _dependency_research_posix_compat_receipt (+commit/replay), _attention_posix_compat_receipt, axis-repair receipt replay, attention-shard authority, verifier_model_execution_authority.replay_posix_v2_compat_dynamic_verifier_receipt, posix_compat_model_incorporation, _staged_depth_composite_receipt_validator, _phase_staged_rejection_reasons, _record_permission_denial_coverage_debt, detect_rate_limit/event_is_rate_limited. Mechanically replayed every real Claude worker stream from runs 43-47 (117 streams) through the current parser with the exact compat binding and session id (scratchpad/replay.py): 113 ACCEPT; the only non-accepts are the two SIGTERMed streams (ORDER_RESULT_REQUIRED, correct) and four refusal streams, of which run43 chunk_c attempt1 is a recovered refusal with a delivered artifact (SG-1). No real run46/47 stream was rejected by the grammar on a representation ground, so SG-2..SG-8 rest on the CLI 2.1.278 binary's own event vocabulary (extracted by byte-regex from the executable) plus mutation replays, not on an observed production rejection; they are labelled PLAUSIBLE where noted. Could NOT check: (1) the exact runtime conditions under which 2.1.278 emits model_fallback/model_consent_fallback, keep_alive (gated by a stream-input flag) and stderr warnings in `-p` mode \u2014 only their existence/constructor sites in the binary; (2) posix_v2_compat_claude.validate_posix_v2_compat_claude_completion end-to-end (needs the token-protected plan record) \u2014 its init/model checks were verified by code reading against the real receipts' expected_init_contract and real modelUsage rows (aux row canonicalModel 'claude-haiku-4-5' matches the pinned literal); (3) run47's live depth receipts (none exist yet; depth had not started at read time); (4) the rag_sweep lane under compat: the plan compiler forbids MCP (`mcp != {\"mcpServers\": {}}` fails, mcp__ tools rejected) and the template's WebSearch fallback path \u2014 whether its PhaseIO tool set includes WebSearch/WebFetch was not resolved, so a possible PROMPT_DENIAL/UNAVAILABLE-degrade there is unassessed; (5) the attention_repair/axis_coverage/verify receipt contracts were read and contain no Codex-only pins for Claude (they branch on contract.backend and require provider_event_profile is None, which Claude non-research receipts satisfy) \u2014 not replayed against real receipts since none exist for those phases yet."
+ ],
+ "remains_unverifiable_before_live_run": [
+  "Whether run47's chain phase HALTS or DEGRADES after the pre-launch denial: depends on _validate_chain_grouping_assurance_phase_io / _commit_content_with_gate_debt accepting the MECHANICAL_BASELINE scaffold with no grouping relation (F09/F11 say halt, F10/F04b say degrade); no run has reached chain.",
+  "Whether sc_semantic_dedup HALTS (F04) or DEGRADES on the PASSTHROUGH scaffold (F01/F02/F03) -- the latter is the executed simulation; only a live launch settles it.",
+  "Every SV-* depth staged-validator trigger: no DODO run has ever committed a depth core artifact (run46 pre-launch denials; run47 429 rate limits), so the model's actual spelling of perturbation blocks, CI blocks, severity cells, obligation receipts, markers and alias verdicts is unobserved; triggers are prompt-conformant shapes reproduced on the real validators, not replayed artifacts.",
+  "G-05 (Opus refusal in a verify unit) and G-07 (two-digit internal ID leak) are probabilistic model behaviors; the halt paths are code-verified, the triggers are not.",
+  "G-03 monolithic attention_repair: run47 is headless and _prepare_attention_repair_shard_plan may force the sharded (clean) lane regardless of row count (F26/F13-unverified); confirm the routing before spending on the monolithic fix.",
+  "All UNVERIFIED items beyond cap were not independently reproduced here and are folded only where they share a fix site: F13/F16 (glob) -> action 8; F14 -> action 10; F12/F06/F15/F24 -> action 17; F10 -> action 4; F08 -> action 1. Independent UNVERIFIED items with no confirmed sibling: F05 (precedent_context.md optional-input drift for chain_agent2/chain_iter2), F03/F27 (rag_sweep WebSearch fallback vs no network_authority), F11 (verifier manifest relative path + verify_<ID>.* output placeholders), F25 (embedded PLAMEN_METHOD_BYTES linted as directives), SG-1..SG-8 (stream grammar: recovered refusals, api_retry enum, permission_denied, unknown subtypes, rate_limit rows, stderr, init applicability, rate-limit tail scan), RX-1/RX-2/RX-3 (R-EXT Codex-pinned receipt contract, unresearched-row URL raise, permission-denial debt path), SV-13/14/15/16/17, G-08/G-09/G-10/G-13, F22/F24/F26. SG-7 (INIT_APPLICABILITY_MISMATCH on any CLI auto-update adding an agent/capability name) has a run44 precedent and would deny every remaining phase; it is the highest-value unverified item.",
+  "The dynamic exact-input denominators for chain, skeptic, crossbatch, post_verify_extract, report_body, report_index (R10 consumer authority) do not exist on disk yet; static contracts with code-derived inputs were used, so the optional-input membership at run47 time (dedup_absorbed_map.md, obligation_ledger.json, verify_core.md) may shift which reads deny.",
+  "plamen_driver.py was being edited during the session (line numbers shifted between reads; the source tree currently fails toolchain_control_authority's runtime-closure manifest on import), so cited driver lines must be re-resolved against the installed generation a0966553 before patching."
+ ]
+}

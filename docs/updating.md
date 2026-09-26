@@ -34,7 +34,7 @@ the installed package by copying or linking a checkout over it.
 ## What the installer authenticates
 
 Before changing live state, `plamen install` validates the exact governed
-823-row source closure. It then publishes the new package transactionally and
+source closure. It then publishes the new package transactionally and
 commits a receipt that binds the installed package, managed runtime, adapter,
 and model-runtime projection. An interrupted transaction is recovered or
 rejected; a partially published package is not accepted as current.
@@ -43,7 +43,9 @@ The same transaction manages:
 
 - a private, hash-locked CPython 3.12 dependency environment;
 - the reviewed Node.js 24.20.0 archive and complete npm 11.19.0 closure;
-- immutable Claude Code 2.1.252 and Codex 0.152.0 backend payloads;
+- Claude Code and Codex CLI releases resolved from authenticated upstream
+  `latest` metadata exactly once for that install/update, then frozen as
+  immutable, signed generation receipts;
 - a signed current selection binding generation, receipt, census, request,
   policy, executable resource closures, and permitted MCP launches;
 - the authenticated `plamen` command front and backend integration files.

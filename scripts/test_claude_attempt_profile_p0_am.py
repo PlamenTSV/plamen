@@ -361,7 +361,9 @@ def test_attempt_profile_copies_only_credentials_and_synthesizes_state(
     assert "disabledMcpServers" not in project_state
     assert project_state["mcpContextUris"] == []
     assert project_state["projectOnboardingSeenCount"] == 0
-    assert "private" not in profile.state_path.read_text(encoding="utf-8")
+    # macOS canonicalizes its temporary root beneath /private; assert that the
+    # inherited project entry/value is absent instead of matching a host path.
+    assert "large" not in profile.state_path.read_text(encoding="utf-8")
     settings = json.loads(
         (profile.config_dir / "settings.json").read_text(encoding="utf-8")
     )
@@ -1786,7 +1788,7 @@ def test_postprocess_state_atomic_replacement_is_denied_or_rejected(
         )
         with pytest.raises(
             C.ClaudeAttemptProfileError,
-            match="identity",
+            match="identity|single-link",
         ):
             C.replay_claude_attempt_profile_postprocess_binding(
                 profile,
@@ -2179,6 +2181,7 @@ def test_bound_prelaunch_cleanup_rejects_any_process_attachment(
         "process_creation_state",
         "creation_attempted",
         "process_object_returned",
+        "termination_proven",
         "accepted",
     ),
     [
@@ -2186,9 +2189,24 @@ def test_bound_prelaunch_cleanup_rejects_any_process_attachment(
             "CREATION_FAILED_WITHOUT_PROCESS_OBJECT",
             True,
             False,
+            False,
             True,
         ),
-        ("PROCESS_CREATED", True, True, False),
+        (
+            C.PROCESS_CREATED_BUT_NOT_RETURNED_TERMINATED,
+            True,
+            False,
+            True,
+            True,
+        ),
+        (
+            "PROCESS_CREATED_BUT_NOT_RETURNED_CONTAINED",
+            True,
+            False,
+            False,
+            False,
+        ),
+        ("PROCESS_CREATED", True, True, False, False),
     ],
 )
 def test_bound_prelaunch_cleanup_uses_monotonic_process_creation_state(
@@ -2197,6 +2215,7 @@ def test_bound_prelaunch_cleanup_uses_monotonic_process_creation_state(
     process_creation_state: str,
     creation_attempted: bool,
     process_object_returned: bool,
+    termination_proven: bool,
     accepted: bool,
 ) -> None:
     profile, kwargs, _secret = _materialized_fixture(
@@ -2227,7 +2246,7 @@ def test_bound_prelaunch_cleanup_uses_monotonic_process_creation_state(
         "creation_attempted": creation_attempted,
         "process_object_returned": process_object_returned,
         "attached": False,
-        "created_process_termination_proven": False,
+        "created_process_termination_proven": termination_proven,
     }
     monkeypatch.setattr(
         C,
@@ -2245,7 +2264,7 @@ def test_bound_prelaunch_cleanup_uses_monotonic_process_creation_state(
     if not accepted:
         with pytest.raises(
             C.ClaudeAttemptProfileError,
-            match="no-process creation state",
+            match="no-live-process creation state",
         ):
             C.prove_claude_bound_prelaunch_scope_closed(
                 profile,
@@ -2259,8 +2278,10 @@ def test_bound_prelaunch_cleanup_uses_monotonic_process_creation_state(
         scope,
     )
     receipt = profile.revoke_bound_prelaunch_scope(token)
-    assert receipt["process_creation_state"] == (
-        "CREATION_FAILED_WITHOUT_PROCESS_OBJECT"
+    assert receipt["process_creation_state"] == process_creation_state
+    assert receipt["process_created"] is termination_proven
+    assert receipt["created_process_termination_proven"] is (
+        termination_proven
     )
     assert receipt["completion_authority"] is False
     assert C.replay_claude_attempt_profile_revocation(

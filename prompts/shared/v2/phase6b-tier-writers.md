@@ -216,8 +216,10 @@ filename from severity; the driver-owned manifest is the only authority.
 1. **Do NOT invent code that does not exist in the source files.** Every code snippet must be copied from an actual source file you read during this session.
 2. **Do NOT extrapolate line numbers.** Use only line numbers from findings_inventory.md, verify_*.md, or your own file reads.
 3. **Do NOT fabricate PoC results.** If you did not find a verify_*.md file for a finding, state that verification was not executed — do not invent test output.
-4. **Do NOT assume severity.** Use the exact severity from the manifest (or report_index.md if no manifest).
+4. **Do NOT assume severity.** Use the exact severity from the driver-rendered manifest.
 
 ---
 
-SCOPE: Write ONLY the exact driver-assigned tier output file named in the phase override. If the driver provided a `body_manifests/<shard>.json`, that manifest plus its matching `report_evidence_manifests/<shard>.json` typed authority are your SINGLE SOURCE OF TRUTH — do NOT read `report_index.md` (it lists ALL findings across all shards and causes scope violations). Read ONLY those manifests and the `verify_*.md` files they reference. If NO manifest was provided, fall back to `report_index.md` for your tier assignments. Do NOT read or write other tier files or the final report. Do NOT proceed to assembly or any subsequent phase. Return and stop.
+SCOPE: Write ONLY the exact driver-assigned tier output file named in the phase override.
+Your inputs are the driver-rendered body manifest, its matching typed evidence manifest, and the `verify_*.md` files those manifests reference, exactly as listed in the BODY-WRITER PHASE OVERRIDE; do NOT read `report_index.md` (it lists ALL findings across all shards and causes scope violations).
+Do NOT read or write other tier files or the final report. Do NOT proceed to assembly or any subsequent phase. Return and stop.

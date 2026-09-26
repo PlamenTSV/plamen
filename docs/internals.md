@@ -191,8 +191,9 @@ runtime under `~/.plamen/`; the mutable source checkout is not a runtime
 dependency. The installer creates a signed, receipt-bound Claude projection
 under `~/.claude/` using governed link/copy representations and transactionally
 copies/merges Codex roles, skills, commands, `AGENTS.md`, and `config.toml` under
-`~/.codex/`. Managed backend launchers are bound to exact Claude Code 2.1.252 and
-Codex 0.152.0 selections running on managed Node.js 24.20.0/npm 11.19.0.
+`~/.codex/`. Managed backend launchers are bound to the exact signed Claude Code
+and Codex CLI generations selected during install/update and run on managed
+Node.js 24.20.0/npm 11.19.0.
 
 ### Execution model
 

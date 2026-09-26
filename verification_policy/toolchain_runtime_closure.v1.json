@@ -328,7 +328,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "plamen.py",
-      "sha256": "659d189450a37eaa8a02e4c7955a9221bef9f9ff115a86fcdc73bd9813c38e19"
+      "sha256": "74c05e8c80ea57781bc0055952cbb77da4339e61c1e17011b4b9079df3b5826d"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -505,6 +505,48 @@
       "sha256": "046c00c140ab8e371a7103e52c58f6fd49793621d49bc3e92a42ea0430872a79"
     },
     {
+      "digest_mode": "raw-v1",
+      "kind": "runtime-data",
+      "path": "runtime/toolchains/js/node/node-v24.20.0-darwin-arm64.tar.gz",
+      "sha256": "40e5607e5ecb3db9192723776da2d75d966260fc74a7a9e731c1bd67dda96bc8"
+    },
+    {
+      "digest_mode": "raw-v1",
+      "kind": "runtime-data",
+      "path": "runtime/toolchains/js/node/node-v24.20.0-darwin-x64.tar.gz",
+      "sha256": "9e5b2644cf107befb6aefca676b96d3296bc10138096f022ed378d6233ed81f4"
+    },
+    {
+      "digest_mode": "raw-v1",
+      "kind": "runtime-data",
+      "path": "runtime/toolchains/js/node/node-v24.20.0-linux-arm64.tar.xz",
+      "sha256": "5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7"
+    },
+    {
+      "digest_mode": "raw-v1",
+      "kind": "runtime-data",
+      "path": "runtime/toolchains/js/node/node-v24.20.0-linux-x64.tar.xz",
+      "sha256": "2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2"
+    },
+    {
+      "digest_mode": "raw-v1",
+      "kind": "runtime-data",
+      "path": "runtime/toolchains/js/node/node-v24.20.0-win-arm64.zip",
+      "sha256": "31c6799744de8a54601643098040c68c3697e56c94e407d61d0e5fa5f34191d7"
+    },
+    {
+      "digest_mode": "raw-v1",
+      "kind": "runtime-data",
+      "path": "runtime/toolchains/js/node/node-v24.20.0-win-x64.zip",
+      "sha256": "6cac9ffbca8f6a47091e4b5c772e0606049c3871cb67d900c0cedde630e545ba"
+    },
+    {
+      "digest_mode": "raw-v1",
+      "kind": "runtime-data",
+      "path": "runtime/toolchains/js/yarn/yarn-v1.22.22.tar.gz",
+      "sha256": "88268464199d1611fcf73ce9c0a6c4d44c7d5363682720d8506f6508addf36a0"
+    },
+    {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/adaptive_attention_authority.py",
@@ -549,8 +591,26 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/apple_container_provider.py",
+      "sha256": "92f67a32dd15a390af9beadbaf792e8c7bf456b4008a05db6ff11e90b1c36706"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/apple_egress_network.py",
+      "sha256": "6ab29e1a35df367600abfe35be584bc00c8ca4018f0977bfab7b2f9784a97d94"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/apple_supervisor_adapter.py",
+      "sha256": "87400fe0b07e43a34e6b18196b16ef07f685d2ad07e1bb75420c5803fb6e267f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/application_skeptic.py",
-      "sha256": "2da0bb88a85edc2dcef9015b300fa86345fc26b51358c5f2eb8d0426c6ecc2a3"
+      "sha256": "6ca4d85a30dd9a821635c07be49c0abcf033e778b2974e9844579b5e7e81582e"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -562,37 +622,49 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/artifact_ledger.py",
-      "sha256": "54e6091b7465f4cf9376e3f0bef0fcb429fbbcded572afb8f60512c0e31fa9c9"
+      "sha256": "a9c60788dad3b3244cb7e369563969a953c457713f0da61e3525f091e320ec61"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/artifact_surface.py",
+      "sha256": "3bd38dfdaaa6f1095913ff34e794473d87e6d96a7b1c3660d38525f567c2b93c"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/asset_representation_foundation.py",
-      "sha256": "a659a3509c45ceaa07e41779a6658d42ad058b122fd0e14bb0d3c32a13257192"
+      "sha256": "51f9716c933b28790421449a4006ef8fe13468946eaf40bbdb60f1bacd1d0146"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/assurance_limitations.py",
-      "sha256": "376ddb5d52e4f62e2ff29a1b4a21658096b13c5842adb91bf5804330a27f3708"
+      "sha256": "d803badb40bd3a586444991664648fa57eda2281193afa6a36bd2f0057bb26d1"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/attention_repair_shards.py",
-      "sha256": "fac4c01a4e7f9d3dd0da62dc5aa9f35aefab1b03e5fd91f033336c0c0ec6ec84"
+      "sha256": "d595cc18357ea6ac5113e9f0254e5fef81a5b2f4987d979500aabc0c5ca4ffe4"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/audit_completion_receipt.py",
+      "sha256": "55ad31f4cb0f984ebb5e7568078cb9ee4c1fe61f9496f8118891f440cf776e83"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/audit_snapshot.py",
-      "sha256": "8e5688c8affc403c00f9659eccf1c6f447ea334a3b35af2ae6d454661230f851"
+      "sha256": "b81ead2df0012b454352623bed33df2d8736a8318e02baa41aab13ce4731ccb1"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/authentication_role_authority.py",
-      "sha256": "ac7b8cd3f14b8ce73d860376a46270367cee39877ce8923f8b775acd716bd310"
+      "sha256": "a643f4e98a1afddd689bf75a9ff39ff0679ffca64b32dffdbe0fefe4f51775bc"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -610,19 +682,25 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/axis_canonical_prior.py",
-      "sha256": "7963fb47ab8fb733c800a92d94a2c4dc0e7ad0cebecd85fbd9d6098a219b4f99"
+      "sha256": "76919b77d16fb43b4d4aa5a2b9877801f86744271078639bc6b7a715a4b92659"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/axis_disposition.py",
-      "sha256": "97699413e70c609f3ffce11c7fd0a8508575f4fa4bdc069128b30c92d95b9350"
+      "sha256": "0a609ae2e39ceeccdcb626910fde81560c6ebeb9a41c40464152d0e5642dc270"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/axis_promotion_lineage.py",
       "sha256": "aead06229cfb6392476a0d68194276258b8b3f432ba4d18f6c9cc6853a90adce"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/backend_acquisition.py",
+      "sha256": "b2461668be0f54bc95587b547f6911fa15c06b0a53e1621f28b675beb2a9d962"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -634,13 +712,13 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/banner.py",
-      "sha256": "33f9b53dfbb4ed854342526ee05d9e0f1cfd3d58f5856dcf264fc062816e66f4"
+      "sha256": "4445e43898eb034ee3e9b24f51bd36c1af0fd7068d86a175bdc3bcf6803053a3"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/banner_rich.py",
-      "sha256": "a7823ba6a2292dc78e626a1f78f83925f3fa902586f32769a1026ae82f5525d0"
+      "sha256": "eccb99c2d595c2cc19b3086f517a5d966165d30425280a4e5e449252644791ae"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -669,26 +747,44 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/build_posix_native_supervisor.py",
+      "sha256": "58ac0e14aa65784e2af4ddd288c095fcf3edcdf8e3a497c39932ef9af1fb6473"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/candidate_negative_authority.py",
-      "sha256": "0c2fd865598d33e0191b1ea16108afdfd9d6300dad600733a59164113eb8595b"
+      "sha256": "bd6883c7fe508ae3784bf84174aea9ea98146ed246c36f245d334a845d0cf1de"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/candidate_negative_driver_adapter.py",
+      "sha256": "e79f180754202f5eb4483ab7371225b38bfb3c5ebe8d3c57755234a30cc10c18"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/canonical_report_model_lineage.py",
+      "sha256": "41b5df1484ae60aac36568120ef99d2028ac77f38a82bc8e861abf23fe983678"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/chain_candidate_inventory_union.py",
-      "sha256": "4ba283b6753c634987d8670eb988cabb6561083dcf5fe3abfd211374d9fd70d0"
+      "sha256": "bcc0d5667b336466f72daef4482ec8df7afdc12faac228eeda7f209034127d3c"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/chain_grouping_assurance.py",
-      "sha256": "18884f3965e9c38c38ff4b1305ae67a32dc64b99679cf9458586e569724997f1"
+      "sha256": "94261101afe559a87662b149903126cf8252289f47fe2b8efa8a02d33ff7c17e"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/chain_grouping_authority.py",
-      "sha256": "f07fc669ec11f7dc9aff99818a91637bc336a98c1e3f8cb8e0c2797207a87498"
+      "sha256": "45d52cef299d9ae5f5c265a8b71105e752e5fbef9751566c25597dd2a6f45246"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -706,7 +802,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/chain_tail_authority.py",
-      "sha256": "6078b0922e2f68482b81655fa7cc1ff2239172f520b6763287f3ad70bdf29e7f"
+      "sha256": "08a7e145482c91f33750689da731adc2588fedc1376204e150f121f994a032e8"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -718,43 +814,43 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/claude_attempt_profile.py",
-      "sha256": "7b6d55dd5f34b693faf8c4f75c6fa27903766edf3224c4dd75caacad2856f59e"
+      "sha256": "eea41e1bd77fabb19cecd94be4d5d10f0f37e7a42c87ed027a10b2588f4d69bf"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/claude_auth_route.py",
-      "sha256": "bf061e8ce8bf23b8a48715130bec9d6969a85ac9521154bbedbc60ec0994c956"
+      "sha256": "7597a7d3b0a594feebd98dc3c5631879868d9323ba5006297f44a439403aa84b"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/claude_child_environment.py",
-      "sha256": "4a901f5efca1ced47b5ddce822b89d824da443e080d3b14a96413a979f7b32b2"
+      "sha256": "6427c6cdd8855bf46d74c9614c3f65c08fe2c52b94e5b8a9fd0f5c07467d7ffe"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/claude_executable_observation.py",
-      "sha256": "26f8ecb49a439afa1ef2a92de0538a693dcc65924b6287aa4a0401febf022357"
+      "sha256": "0e23992947d19edb820d0229365823e8309826d8243a3038e8251add66d250dd"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/claude_headless_profile.py",
-      "sha256": "d084c0430518d4c0443a5fefe0bfd28c0e262757c938593e5448828352466254"
+      "sha256": "6c0436d7636c4b69c0be9591324c91e1a6995786890b682b278e1b2b71faefa6"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/claude_launch_security.py",
-      "sha256": "6138587987a44794945411bb284f2c234811532a4f0df67397d2552d2aba09ea"
+      "sha256": "1e575266349c32f569c0b16dcdfc87ae54bc38912e021a66debecc3237ccedeb"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/claude_phase_tool_policy.py",
-      "sha256": "8c8916550043021b0a336cebd808e67c8c0412f0b8b0d2b693a395e2a811093a"
+      "sha256": "c74a248698e23b47d4a3010447ba88a53f8747345fa1b53da7a21b067fb3ad8e"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -766,31 +862,37 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/claude_provider_preparation.py",
-      "sha256": "58a9f1622e22ec81789f03d9e67eab0044307d44058d653707d5f586f69ee3f9"
+      "sha256": "296b1562c82414bbd969f3b61d8b98123b3725a5ac7e4f7afdc94207d74fc5b8"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/claude_runtime_materialization.py",
-      "sha256": "72c69860e23e398dc1d168a4eb19a683430b3b85f626f4a094e7bbb80d690dde"
+      "sha256": "1e1f10718387dc2ade89ec9ae41e978201e769552915d9d1f70861915bde3066"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/claude_stored_subscription_source.py",
-      "sha256": "9c53fd21bd475f8edb22ab9c0a8da0d8e4a06bd399291b0a0103e757e416fe39"
+      "sha256": "2b6351203e5a24cd2d8f2d9c802b3a8b929bca8bcf7cdcb4e6271488753f53df"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/claude_stream_json_evidence.py",
-      "sha256": "117142ca7479a9cbb1af2d1912e64d45e80293dd2e9391461a9873cd9d484d63"
+      "sha256": "9a4a8664c039c95963395940d5d6d4448d1e5e54727789d2c926383ef4a138c6"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/claude_transport_messages.py",
+      "sha256": "5403a94205017b79946b46da0351af2c008c2b36fd47d10efe891900af8be3e6"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/claude_worker_prompt_consistency.py",
-      "sha256": "699b21424dd2d057a731eae254ee329a964f6486025bb774bb510e17725edeb5"
+      "sha256": "216aa120a72d1742a1fb5382c8fc893a128f8b719c20e7c57e03b1ed1358d0bb"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -802,13 +904,19 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/codex_adapter.py",
-      "sha256": "3d4423c534c9b99ec6794b088172e593dea374fee71b7f54d393dbf28712ecf8"
+      "sha256": "b204e03a2ad2efcd6380c79ccd3f12961aee7a317f4a52a1b1f8cee69f06ea05"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/codex_dependency_research.py",
-      "sha256": "ef6bf9aad0b55810cee333d049b2a893a33291398bcc3464ef0916670c5bf302"
+      "sha256": "688e4a20fa43cc2f5fc71aab5f7ac186401d6a225123070e187714d46030fbbb"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/codex_stored_auth_source.py",
+      "sha256": "9b34716ea006d05ab0820d287c0051a4f916b9794f4f94cef55c9ad165974beb"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -826,19 +934,31 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/confidence_consensus_authority.py",
-      "sha256": "aec2280f991a2f02e9381b8e138414a8cbcab9214eef2e6d3a90fe495cdde49c"
+      "sha256": "a7636ff357b7b6732001a2a85a8d29ce1ad9a25f6f00f39ad4339625fdde8410"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/conftest.py",
-      "sha256": "f3c77b33912336bfedc43d0ebe5a4ca6fa2ba73ff0c4e2c54b9ba37714758f39"
+      "sha256": "3354d5f250539abc9f8c3c6fb3c3bd6c9ff7b490937091edf0e53d0073ee31ee"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/coverage_shortfalls.py",
-      "sha256": "bcb3fc4074cae23e7ac2365fe58929cb50aeb7b90703fe501d209e093464eefa"
+      "sha256": "394ad2e0ed1c337029e10eaa0bd9070959d9ab23de7877da2642efb4d2c43c04"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "scripts/darwin_cas_helper.c",
+      "sha256": "16b6aad28b876d4f726b7fa82a929b52f4d4dc09d9be90416c9791bec9c5316e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/darwin_sandbox_exec.py",
+      "sha256": "d39b57a80f3d8e8c3bcf726f7c7a9977091cfd92c252724d9221f119c722a968"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -849,8 +969,44 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/depth_dispatch_delta_authority.py",
+      "sha256": "bcaa334f715838ffb11b365522c644b273e03ee0ddedcba1cc317820f67bdb62"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/depth_handoff.py",
-      "sha256": "24700e266622b97cd0a455fc9537e0c4b7dc761cb336f62dae2b4e6c70eccb17"
+      "sha256": "2eaf0d4d4b66c3377936b790a7b6b8ce9c80b4d854feb9a3a1a5da73fe8e1370"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/depth_self_exclusion_publication.py",
+      "sha256": "37fcc00a625bf0a48663b03b0486269045b839c04420de8b4242800565a60ebf"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/deterministic_oci_layout.py",
+      "sha256": "9a4416890a89797e82a899a46023a5b27aee2715b0d6a6dfdec746d3393bc64e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/driver_successor_io.py",
+      "sha256": "5a8160155900899aade52c459fb87c1e453dfe08c68caaa5ed80e8fe64127416"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/e2e_acceptance_verifier.py",
+      "sha256": "edcfcab40958a1b65d40bae45180b210255610fa9750677cd4e8df1804638531"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/elf_loader_closure.py",
+      "sha256": "11de1dd594c6676b577f1573bcadcf9539ed95124fa6a18ac97aab19bcac9907"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -862,7 +1018,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/enumeration_gate.py",
-      "sha256": "32e4bd51de46957b994235186407888b3b498e806210468871f365ca14aa345c"
+      "sha256": "00a5706390c9c4f5abe19b6fd8d1fb5d36299e5f7f3c40ce3de8f1be283a5989"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -874,7 +1030,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/enumgap_disposition.py",
-      "sha256": "568aef3866976d00cc117f923ca82f2f5dec69ef64ec9eb1a01a9a55d314772a"
+      "sha256": "da9b3f4b868c237a65f3314d699f58e621aae89f94300c6a5e394285867e1dc6"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -891,14 +1047,32 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/evm_analysis_workspace_authority.py",
+      "sha256": "ddbb720792ed6cfdd7724759385bbeef4d814cd1dd8d6d00328ac84f5adbc073"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/execution_scope_runtime.py",
-      "sha256": "11097a833df660a0c61edb4986899cc56de583a2765d6dc1f79cddb83caf01ac"
+      "sha256": "29854a8c16d8fd04803160b84b74b5ea2e0de5f3a492fb7b2301c0242779ac5e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/execution_scope_runtime_witness.py",
+      "sha256": "59fae4d0f9c5e01f2dcf7e7d467669dcf0ecc416a5d86f3eef09baa72cb150aa"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/exploration_authority_bundle.py",
+      "sha256": "bb5301bda20dde3fadc24bac78ed5146005b1b07f3babe1ba204aaa0efbefa26"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/exploration_clear_lifecycle.py",
-      "sha256": "85de0dba9fcfad45a821338468642bc8181c634c4530bae508b2f4806627c606"
+      "sha256": "19914cec074593196980b3a9c86ffe325675353026febead32e5cc9ed9a41f0b"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -910,7 +1084,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/fast_lane_skip_governance_r10_contract.py",
-      "sha256": "1456d8bf9fe34cf36b80945446c5da76bd22ec1594f409a139f645eefa78dff9"
+      "sha256": "ea1fe47cbab35ef3db78b8556d8fcbb52dfac7b56f39a2f07cdb2e6207736504"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -922,19 +1096,49 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/finding_producer_registry.py",
-      "sha256": "62d2a2e8f92d2ff5f27a41897faffcdda572737612dc3d7aca0d1a9fd9223a42"
+      "sha256": "434b91a95dcbd603d5bb4133b9dfb85f94e7660d150d3aa208e55fbebe85073d"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/fuzz_compat_execution.py",
+      "sha256": "32366282c1e1c57954d3949107d53bcfe623e9215cae7035f54a079de12315ff"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/fuzz_harness_bundle.py",
+      "sha256": "72f82a5e4ec0412943847ad138688b0fc1a843456c3823ba86a082e180b62e6b"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/fuzz_workspace_authority.py",
-      "sha256": "4e4b259e044415a6a69cbf7114f3b3777af97f7a857ed7265c8b8ba7509eb1a1"
+      "sha256": "02b0e7809b6bd1909e220a0d499f4ef34c24cdcaade08a2e457d4e482c9f0f18"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/gate_p_successor.py",
+      "sha256": "4d84ff198543de192c2a8193a67d9aed98718a9c2825e043fae619281f1b015a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/graph_application_authority.py",
+      "sha256": "fe2c35eead22efa8f96f16c72c3f5e9f2781b3cde08300aa527466e758cd65a2"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/headless_phase_identity.py",
+      "sha256": "1cc5c9d5a87cf9d643bf77bcc93830c5c3dbb73589e55e1aa7bcedc58dfc2d3b"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/headless_worker_runtime.py",
-      "sha256": "8a59b22247911e2f9ea47e450ba727bc5305a9cf8cd7ccd5b37b3abeb448860b"
+      "sha256": "8089ef484d861a51f3fb143c2d4784b0dc75d4d787483d41824ffb2e25ecee79"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -946,7 +1150,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/inventory_aggregate_authority.py",
-      "sha256": "05348fdd40cb4eff99630cda6f05435176b11c3d6fceee612fb3822ed92db46a"
+      "sha256": "eecb4ddb272a4fd04e5b82961652dadee5ea2585973e969780e9bbabda5c3feb"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -958,19 +1162,49 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/inventory_reconciliation.py",
-      "sha256": "7ac7adcb3943dfdbd1efef571c12aae0d89b33d6d5d40f49c052c70e40b5f070"
+      "sha256": "a368004afb3041a7be9e210a5067f1141ca1c43c96f011eb27ccad98447dd70b"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/inventory_reemit_authority.py",
-      "sha256": "2773b49b03f0befb1513be6c42fcc363e859332a89d50fc99c8fab99c07daa80"
+      "sha256": "8c634b3397a71f4b27cb60956e6d4d9191df23585cab7a93e0e3fb4a2937992b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/inventory_source_action_authority.py",
+      "sha256": "a95a990996e93b83d556c0ad619b26f80ad5f5823d0cf3e627c01827befc1f07"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/isolated_execution_host.py",
-      "sha256": "0aa1006f986fc040b6368525a32d8d59a68ce648961aa1e27a1f6499465a5701"
+      "sha256": "24d54f70696cebc64f321afbaf56ae17b3be21193e17fd1f95a95f5b27d2c20c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/js_dependency_materializer_authority.py",
+      "sha256": "ded7eb6bc45c25779f9d4fe00a44b75544299d6ef4b9caede1aef0af82c18e12"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/js_dependency_materializer_runtime.py",
+      "sha256": "9ee6b9665970ab9501c578a5b7c08366c0561e464f7d6c4f85eaa58f63d3e27f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/js_lock_authority.py",
+      "sha256": "b81e06b4d1d7158ae122a5d849c83cd1d74601b1f65113ca55e2c1e5576e9433"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/js_toolchain_authority.py",
+      "sha256": "207396698ec725d80f078be834f5a36a736161b0d01d2e56bdec048b0b0f3941"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -982,13 +1216,13 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/l1_composition_queue_runtime.py",
-      "sha256": "20165674827c08411a03dbfb623f03068a384c211943064d414687b1c4b0b3a9"
+      "sha256": "dfeca07d9d63f391c98ab98931de3eb7e0d0ee2521a1b4da904efbfcdcf52eaa"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/l1_composition_runtime.py",
-      "sha256": "7340eaf5c01c922b047c97012e361905d8b9ad4321566070bbd5c3559c92e2ed"
+      "sha256": "b93ed85f84e0721316b30ed1014f43480ddccb0509ab116681b9deae1f4c5e5c"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1017,32 +1251,44 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/linux_guest_scope.py",
+      "sha256": "01a988078f886f4eb4375a0affad23f7d7e494f41f36e7a51ff2c3a470ebd610"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/linux_native_install_authority.py",
+      "sha256": "a88f37296f0f16ff5ab6f20bc3b708eb6b4fdf7d88318e753da331d9533d3604"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/live_verify_queue_driver_adapter.py",
-      "sha256": "45e144c180bb825feb53c16206bcdf7ff73ab72d5e1fd981a419a78146b1189b"
+      "sha256": "cd6229c7e9a3ef8132603a004e3aa2501c101956789c7313df0348c304754991"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/live_verify_queue_executor.py",
-      "sha256": "a5ac88a0cf4459e360450399f8f86b3bf4009dd94f6446a0f84057f84ac25243"
+      "sha256": "57d96f0ff82e6e6a4c8f0e545d1df12e1dba93ff242786123a5dbe286bd0f53e"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/live_verify_queue_methodology_projection.py",
-      "sha256": "32dd87f56b42024405630c988db0935a5fe3cdd06a2f21f75be57f9fe5b3e0ff"
+      "sha256": "26f16af6f4905d3d000f0d29f027cc9d0f460300ed7399f29f1530c5f8e6cd32"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/live_verify_queue_prearm_inputs.py",
-      "sha256": "40f91d18a60782ec03b6f6dc5cfd42bd7e7d665de865d11a271989eb57d30dfc"
+      "sha256": "c329e2cf07448aa61de87b4823e3983442514e6fa3ec3e61c10948d47102c768"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/live_verify_queue_semantics.py",
-      "sha256": "040c4b76dac668c26b51d8b9c6d6ffffefbe97f07e97a2dfb091fd936b84cdd8"
+      "sha256": "d58f714017163e886a8d8e19989d4a263f548ca4d5e344066eab96134799bd4f"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1053,8 +1299,14 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/managed_evm_python_toolchain.py",
+      "sha256": "e50037b00c51f57a5fa5af404d6b5af2c3b3dc125df96a763a8b2d1c43e59570"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/mandatory_reverification.py",
-      "sha256": "716b105cfbb3826bf550e20867ae621898b22e23b1c2971408472e76b147fee3"
+      "sha256": "9fd58fc2f09cd5d2f324cbba9ca6790109e458d2d4640fc20233b6cc5906b09a"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1089,6 +1341,24 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/mechanical_poc_source.py",
+      "sha256": "e78fd91f72bfb98ecef85a50cbc021ed3a6fb25701a0cd6e7ef3192082e5f220"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/mechanical_precommit_coverage.py",
+      "sha256": "e7e8b0837b95dc986aa697e439069c4cedc926cc324026d9297b6e75cdd6d4e7"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/mechanical_prewarm.py",
+      "sha256": "68dca9b49339684230f7ad7af5a70060bf52d1d8fb21c89312538397082a7f5d"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/mechanical_successor_receipts.py",
       "sha256": "6549f36aa5567221d9d215301221614af89f7274fe1c0582470c0292da68278f"
     },
@@ -1096,7 +1366,13 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/mechanical_verify.py",
-      "sha256": "78df031d760bc59009cd659e93c16547db648629cedcf5bf7738bb8db6a3a042"
+      "sha256": "03a9f01acbbeb17a7af4bea4ddc19060ce21d4a89666b51aba19bdee824ef4b3"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/medusa_release_policy.py",
+      "sha256": "7a38fb6e94cbbcdb49b75d4bdae31f520296a01b94b9e4c4f49a6e15f3c22004"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1114,13 +1390,13 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/method_card_runtime_authority.py",
-      "sha256": "37c1569f90883a8ec406fcd56f85564bed0af609010f433f5287a1039b011f41"
+      "sha256": "5ef95274f03b9585ae1a00d36f5d233d446f4db3ae04539d1470bdd9b69809d3"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/methodology_application.py",
-      "sha256": "c8d351e6e6a401757e6171c83c997d75aee5fc67877516cff774800cdc2e891f"
+      "sha256": "a7f3fe89e3c6584784d69b6529d617d3300872578bd2ca6dd5a49470a0409e0e"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1143,6 +1419,60 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/native_backend_acquisition.py",
+      "sha256": "da71359bb4ca0a1782ff3ab560515fb85d2e32e683e1c27bd09cb889d245beb3"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/native_evm_static_acquisition_assets.py",
+      "sha256": "e3546d195b515c7d6a0efaf30e1c32f0949ad521bda8be7c4a84b0bd0e999df0"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/native_fixed_role_acquisition.py",
+      "sha256": "902e397a893f9c13b26c7d5e0db06b8f267f2ad4de034d44eabba290d7028ccf"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/native_managed_evm_driver_preflight.py",
+      "sha256": "a10eee7d5a62f700e2e3f031d7aadb4a386771e5f3a0ecc07e2979b73b1dc504"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/native_managed_evm_setup_effects.py",
+      "sha256": "5f6303dbe6ecea491b13946a20efcf681e9077a7e7778e8e7efca8149f7ca5ea"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/native_operation4_acquisition_validation.py",
+      "sha256": "86f740444ef1c71e4a2b276e30ab6bd8455664df1564d92705f0facc2193cd1c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/native_runtime_bindings.py",
+      "sha256": "ea9a9b806603e0e7ba1828b6307a1f5727d0aeeb7e4f9b2e5ea39e8106ad245b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/native_runtime_grouped_transform.py",
+      "sha256": "4de34df0c194ad0ea7ca5585d4ab8a0cd35fdaeffd0fa088d6fab9c171c60429"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/native_static_acquisition_policies.py",
+      "sha256": "af4de445ee6a9cfe526d342677a49a4e2aa5fbd78ebd675d16371da7ad1b9e6b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/negative_closure_evidence_authority.py",
       "sha256": "e4fe95997334e2ec5447165ba08ea0d84cf6d0daadfce6980234f0b581629df9"
     },
@@ -1161,6 +1491,54 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/oci_context_consumer.py",
+      "sha256": "a76ba65136c940f29537a23906255e73afd81705c00eea555ce4b7adff55a243"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/oci_guest_admission.py",
+      "sha256": "60586b4cfb0658c911b4402672e750723f55bcad09ea308c0e896c12790ee520"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/oci_image_lock.py",
+      "sha256": "7d0994d8be44c770576edad9c10f9a4cf22958dc86f7d6deea9a5de5b926c844"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/oci_release_authority.py",
+      "sha256": "80850f131f872c6a14520a8b5ccfff3673c5e6c1bedba8ba9877e4fd4d280cd2"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/oci_retained_archive_transform.py",
+      "sha256": "02528f087c09c3ae20597a0b88ab8494dcf9c7ffb32fec572859821ecd140734"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/opengrep_observational_authority.py",
+      "sha256": "85bb9b7931e32efcf8639b6d0e2da5e5bc964f9796a4c6eddbcb3adb0e9e20cb"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/opengrep_release_policy.py",
+      "sha256": "9a69ea6a5732219f9504ed9639d62e5a88ef5bddff9bbdfeb8f36df804c84057"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/opengrep_rule_authority.py",
+      "sha256": "de28546d9101a5f045737ed06e41fb3fb7c135a6cc81c671c29d8a12e3dba41b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/operational_markdown.py",
       "sha256": "800663c5c5d306221215b56c67d89b9085852fbb8a6603a9fa46f76b9c901214"
     },
@@ -1174,13 +1552,13 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/owned_process_runner.py",
-      "sha256": "ded2c16880bd44a3f1537bde34863455ebba839b9397df5036ceba8d0a74e01c"
+      "sha256": "ec7b57ae6c11b5960b673c0c72707f4ab161af731c2420f5e21e10f8121d79fa"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/owned_process_scope.py",
-      "sha256": "049ebf8240c8ee7de26d3bc696bff8289af76abbddb669155bd3271ba799858d"
+      "sha256": "6f2259741ae849dc50f93b2b116a26f30c23d28e6da70b5c9d84063407b35c69"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1197,6 +1575,12 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/phase_attempt_plan.py",
+      "sha256": "00e4f5fa092111cf8aa5c39c9e3d9627660d46c8be9d5921e20b644fa198004e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/phase_contract_compiler.py",
       "sha256": "a646734690a960aa8b4b975db7ba403721e6aacfd06a030d42dd9ec34fc134a0"
     },
@@ -1204,7 +1588,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/phase_io_contracts.py",
-      "sha256": "a0dc19c33773e589b9b17829e8c1358fdfcbc882046d28d5f0b636fe5a9119da"
+      "sha256": "68dd63794dc8af38597ec554123c31f77be41aefb073e6dfd84bdbf631aa5c70"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1216,85 +1600,229 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_display.py",
-      "sha256": "d5a744e9b3fa1c2bdac7a4e759a68dc849afb585c4d19dfae766591c55f20c8b"
+      "sha256": "a5f7b4bee089f6444e2761f539cb64f7768f501e46d399b23d6b0f699b355465"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_driver.py",
-      "sha256": "81e3c15ea5dcc2cb30c1bc0b4ce443e7d274f4bd20630b5042eb5afb7f39785b"
+      "sha256": "b363dfee5de9ec793dce7f7b34fd3de5c430c03586f9999093592f02f5051609"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/plamen_managed_evm_provisioner.py",
+      "sha256": "23271880e0f902cf24d97d4c07f0fb216f3a28bbd5dffd06e3a666f47dea7f3d"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_markdown.py",
-      "sha256": "593da8eabe9d96923be7245e854195daea7bf02481c1c67d0f32dd5bee35e544"
+      "sha256": "3582b7715a2da943e3e161e42434c69e2cf47d67f4df4737b14ec6312883e5b5"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_mcp_runtime.py",
-      "sha256": "9141ef0b9695399e36c75308c135b5753b3bc2c51cc8b7a5caf60f72a50328d9"
+      "sha256": "f20ecf172f0f30d50516265410b048563da323569aa995481b1ded563927c634"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_mechanical.py",
-      "sha256": "7226ff5f394e33c9bb02e86dddc65ab029dddcf65ef0066403b235f74d416bc0"
+      "sha256": "0564ef12a70f8d6de0cbc2b5960c5975ad2c8a64d64f67db05bfcc19635f89ef"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/plamen_oci_build_transform.py",
+      "sha256": "ab8e61cd5e3fc3614de67c68df4c39133daa05da7683ad3d7889f80eefc945a0"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/plamen_oci_context_transform.py",
+      "sha256": "5b4c936f8cc92362566775163f14d38957e99e8d5f505ae50bca95f1530d3f3a"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_parsers.py",
-      "sha256": "1cbb8e0810bd4737677867bcfc6aa91329b8598f5d0a7c0193cda3e3a49d04f3"
+      "sha256": "cf025a36ee012101c1759f9061ac0965558bf42de722f89ffe37d9f96b308121"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_prompt.py",
-      "sha256": "cb27f1d20bd4b27adf165972fe744f80c090b0cc6a8a50b17121d9439a02338b"
+      "sha256": "665b0704de233d3a89d93191f3e456123ad98912328ec80b64eef15be3e6c21c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/plamen_transform_bundle.py",
+      "sha256": "a5e18b8b0f5b389c8442ef3a1545a4b0c58c2f1159ef1d6edf1a15166ed2029b"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_types.py",
-      "sha256": "20b73557a4badace10ce2bac78122d7c0d5f67730a18d3eccd6405702078c80a"
+      "sha256": "13a8c66dab8138ce6a8d61a088907afdadbcc26b8032a3bd2a9d232b335573cb"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_validators.py",
-      "sha256": "860b2d137f7ea7e3b6532d0370886ec521a5d12516ff6ac5d5936e3a4246a949"
+      "sha256": "afb91680ecaba4599d0c39a4a3e6ad79ca345e430efa7c992009cdb60622c89a"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/poc_demotion_scope.py",
-      "sha256": "9adeae9f6830dcc71272b132bed6fb3a90d3243ddb550e90bd20b2ba247f81df"
+      "sha256": "0e84507979d7817b24432ff07e2363ff6eea28180c654711dad1a009d2ce207f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/podman_linux_provider.py",
+      "sha256": "10036704441dbef6f0ca00a630c843eafff7106ba9097912eae526eb8f9a839b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/podman_supervisor_adapter.py",
+      "sha256": "2ee6b397be9d088f33fbacde88afdd1f2162dc161ff006b32844360ca69bf918"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/portable_path_contract.py",
+      "sha256": "d87deb744e7d17ff164716d13a68f3c29accd0ea7e2c10927c838cbd9bc098c4"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_audit_entrypoint.py",
+      "sha256": "fe0679abccf580bafc8af8420152c2200a03ec6fd0db1a9e4a6014a7fd173c1b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_audit_supervisor.py",
+      "sha256": "5fd6ccecc25695d8ca5a190712468fb12dc5afe27982231c4eaa64dec2cf897e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_backend_execution.py",
+      "sha256": "a9bfa00a44acdcfc69499e2b2eb1e9dcf66857340161cb1bfb210238b32eaa39"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_backend_launch_policy.py",
+      "sha256": "e95164cff8748c5448eea95c9f636f29afa43b7e9a2bc46561ae9ff923d54d97"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_compat_model_incorporation.py",
+      "sha256": "e1182b986803fd866d1bc28fcd8347aaaf5e3e7c00ef5680a2163953f141c033"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_managed_evm_setup_transaction.py",
+      "sha256": "72f0d88eb4a9eec22a3632d8eb352fb21086346019a823a74d622d984f9f29dd"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_native_authority_adapter.py",
+      "sha256": "a2bd0c9e473b5b05a812d64c7ff83865e3f4eb47fd544e536670eb98f616924b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_native_front_dispatch.py",
+      "sha256": "42f24034ad1b6dc624638fbd7d6bb51e16b0b68899398f37c46a3bcf6aafcc0e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_native_install_dispatch.py",
+      "sha256": "806efd2a0dc9868e6d18f4f77bf38553d465b8a824b49bb8ce8f66a0e36b40d8"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_native_install_effects.py",
+      "sha256": "ad2b488464066d67a168d9caa35c58f4d6966731631e091adcb5d2bca19a7db9"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_native_install_publication.py",
+      "sha256": "24869e573517f470398db9ccb77625866909e3febe5f7a09a3ff264128873677"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_native_install_transaction.py",
+      "sha256": "013d8537aadc484b0d7b8bd60b06ba535c7ca833d897ccfb9e1f8e68a90a44d1"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_specialized_tool_worker.py",
+      "sha256": "ed47a3939e9f0bf63ae559addcffae94b8ac941f342b0d11bf118f6a597999be"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_v2_compat_claude.py",
+      "sha256": "207753524f0ce411881141513cf300ad74356c3823a4e0473c05bcd983a3b631"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_v2_compat_exec_helper.py",
+      "sha256": "4a23a4cc571adda5e8f45439a69a1f1afe28238ef1fa161a4d24d9a0bf95bc83"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_v2_compat_install.py",
+      "sha256": "016fe7ea652c1e9eda3907560a72e94df32b604fa0ec3e60dc373d7e7013ed61"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/posix_v2_compat_runtime.py",
+      "sha256": "622e4351c4ffc3c9d865d24f0355ffc7c3efc9f11b150d6f65e46ca57ff3518c"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/post_verify_candidate_delta.py",
-      "sha256": "da4ff1872aedf529ffea74ec8837a31ede31bc5108a768a88d4677bb02a785d6"
+      "sha256": "dfaa47c2e31d858cbd3b9cc528d931300b402fabe8d328bebce01f213be4a42c"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/post_verify_lifecycle.py",
-      "sha256": "fbc67412f5ca9a54c5d775bf2d4d2fb2db75985e5e1248e34e27827b7996142f"
+      "sha256": "da00dc3f76f5198474a469993c12e8368d2ebada634a37ad8b2164e93ff805e9"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/precedent_evidence_authority.py",
-      "sha256": "b1870b85cfe26953e90adef5dcea2351b69ad7ceccdaa25846f7ce272380adde"
+      "sha256": "f15fc44bfc09e7d9a0edb93b50343f1a2e1e48a5fa268458a3bcb43866bd8f2d"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/precedent_finding_fact_provider.py",
-      "sha256": "f31df7516d24662eceaaf08d8485289dfc61359a90f352176f8dc1f50a160fcd"
+      "sha256": "5a100448e4a71fbc5e39ff705dedb15093194529a9e5179462cf37d3bd12e871"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1306,25 +1834,25 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/preverify_chain_pair_projection.py",
-      "sha256": "fca2d38acb98760d41910f9990741fb492183c979c440cdf71f37898cb69b229"
+      "sha256": "38d157632e3991d09a64b43c343a764234cc205e554abc0fe767c1fe313b16ea"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/preverify_frozen_projection.py",
-      "sha256": "c29438613dd38284269e4d4e2e685709a1b3b12b8563970a9b2e7f4985a27eac"
+      "sha256": "2ae54a2afbd3a4632e304217c47c3087bd3e243c71f4a84e6226b3c87de53278"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/preverify_inventory_successor.py",
-      "sha256": "b2455e8209d4653648b79dd2d57fbfd08f71caeb67cde5db3213c41b475158c6"
+      "sha256": "581afc32512c54a0493de2213a2c375a0a0cf08a15e9ef88b081f18459554c34"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/preverify_projection_authority.py",
-      "sha256": "1f397221839cb785f03db7fa215d5df6ffb6d889d87118829fef16e7f8b64e0e"
+      "sha256": "db44497ebc560fc9c4c18029305d4cd2478c1eed931a63f33709040b6d5aae84"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1348,7 +1876,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/program_facts_driver_integration.py",
-      "sha256": "8dfb0cd093468078c363b1406981af740678e55bb9659a67f5ade4ec00bfbb31"
+      "sha256": "4337f45ecdd1347949550034241ce44f775087394d2439cb2148411c81490ea8"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1396,13 +1924,13 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/program_facts_methodology_authority.py",
-      "sha256": "08881b4892a362610ae8e359c4335ed5aa48cfbc3a61574d0c58926842bb766c"
+      "sha256": "4243e42f4deed6c6f9b8135ac6d78f2862fde8605b8cb70cd1e4012ef67f2a5c"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/program_facts_positive_composer.py",
-      "sha256": "726aa3e4ccf23adf983f8a40c9ee1a68498ef8dc75d3f1cb3b9d4df50adc0276"
+      "sha256": "a01b3fe66844eaeaaaac3f3d2fcc2a6ff56921ce1c9883d723bd3f30f11d440d"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1444,13 +1972,19 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/program_facts_types.py",
-      "sha256": "bf12bd163004eabc45c3e3d685c2c3d018a26c6e7c91be863f30fc7d4f31d685"
+      "sha256": "90997e708bc275703edf70abd0ec5cc4ce91300f56461ac51e625fdfb00314c8"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/program_facts_v2_contracts.py",
       "sha256": "b97207075ed9aceae1e254b8d2070450e6bcca8b7567035f962ec85aedb9f51c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_v2_driver_integration.py",
+      "sha256": "c21b3207c1c08023502b9228551060fc655fbdd463dd852c832d26cfee80cdf6"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1467,8 +2001,20 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/program_facts_workspace_v2.py",
+      "sha256": "304e936bc22b6f1b0bd18a3e51003d4d26c873f6d1a9a920e1aef9840509edc7"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/provider_command_authority.py",
       "sha256": "6e7a2ce154ad279a5bf9b3717f09ad41e50f28ee69cae4c44612494d26c778c8"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/provider_semantic_completion.py",
+      "sha256": "3d5a95b95b48435a74bebbb592ef0f41c7a5170fee4e4b84066b2bd687e3821e"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1486,7 +2032,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/pty_exec.py",
-      "sha256": "5bfcd0206ac97035a07efc9211839c81f5291b6987e42eed9b3775376129e783"
+      "sha256": "0ab63e4fc529b4b2b398cefa8a8a89d39c28618262cd283d9abe81ca282976a7"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1522,13 +2068,13 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/recon_prepass.py",
-      "sha256": "4919edc83e7cfff111d5e616956a5461b28215a18d1e404d5549f1c2f2fac8bf"
+      "sha256": "529265a389eafcb97f6974b52fee26e934e4e6fcf7da62c06d87249880ec5fae"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/recovery_execution_authority.py",
-      "sha256": "57988ef4d0d7cdcd139a6512b3ff6c671512aca029c790e23b7d1d23aac246b6"
+      "sha256": "e6bcbe9adaab1119f75a5e97fc1e147d08890e9c81733362d194c6b31c7a9569"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1557,6 +2103,12 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/render_js_toolchain_bootstrap.py",
+      "sha256": "ca3eba623789056a1f0509e2d21e1e12738234f02ad60723668c8381c018d1eb"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/replay_model_routing_research.py",
       "sha256": "8881f03bae6bb3488d3f53a02660f34ee96e43b8607a239bf3df18992600e15c"
     },
@@ -1564,13 +2116,37 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/report_assembly_capture.py",
-      "sha256": "f6453ba40cda5464224f6c007618859a237ecd20c6fce5eb6dc2e1f40ae3a89e"
+      "sha256": "22348ca30cf3438206e064621fa85de26e02f9585d54caa9bcd76093431df4b6"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_body_attempt_authority.py",
+      "sha256": "d787605a2d4d36b407d1c27f6b53fc866743bd79c1a27426b49d3558377bff9f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_body_driver_bridge.py",
+      "sha256": "b60d31b979db868c5ef5f90997f37126cc3c30bb6fb39fb046635a2c6433274f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_body_evidence_projection.py",
+      "sha256": "7daa9365589259fef70ea259efff89a8359960015f434b9672a486fe6f3e19d2"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/report_capture_phaseio_authority.py",
-      "sha256": "42bc233ecfcb216f861aa79f8c494b3edab0ef336c39b814a5054131389bb504"
+      "sha256": "b30819273fc7e994cd63f6ca031dbe36433b8ee6e18581c27adc4cf2288d4eeb"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_capture_transactions.py",
+      "sha256": "0b749b6d44a4b6e54df8e72f00aa127a6ff64b9d6e9623712ddd8d95c82afc0c"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1582,31 +2158,91 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/report_disposition_authority.py",
-      "sha256": "46624f1f5f131d0e293c4421c4e3cebc14ccd486a671716ee4997f5052e6fbc2"
+      "sha256": "0d523b7a98c3dedfc3c252e5e8c9331ab55546f44230d2381acedc705c395be4"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_empty_tier.py",
+      "sha256": "a932948ce6a6d401832907caf9fb9d320d2dd758e7d9e28e955d44b57a999040"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/report_evidence_authority.py",
-      "sha256": "732383349059c95e37b0d417c8153ab26fcdd9dbd30a9da2c5e50d477a1704ad"
+      "sha256": "73a432d27eee35158883c7cd5100e1c61f0bf7162266c7093e166bc540625889"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_evidence_runtime_witness.py",
+      "sha256": "dd3351b17a81a378143554573e61adfd6cf316af71d00cce74bef5b2d174d8ca"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_heading_presentation.py",
+      "sha256": "f612f5bf5b8c42afccde6b0e8485b586e568b4df2db8d11dd0f3cc248d3124f7"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/report_index_canonical_validator.py",
-      "sha256": "0fb7223c3d9f6358b98e7a4a36a76bf66f127300513102de5939267e7e02f60f"
+      "sha256": "fb5c8880845ee8576b62c100f2e0f4ee8e988a13180c5fcde3770a8f53c5962f"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/report_index_machinery.py",
-      "sha256": "9adb74277cd22bd2886d0b0aa83199547ea42363a868f7834e28f12220de16b5"
+      "sha256": "b75c4d056ca8635d01ec53b6ca52e28659b05ffa58ab71b6566790192c446247"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_index_summary_authority.py",
+      "sha256": "615b2f51b73e9c010ab3b22ee23e74fcf6bb44ea9630d8a9b1610dfd58661aaa"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_model_lineage.py",
+      "sha256": "025af4aa2b48201400623337e12b38d3e43a3b4973f217944d44108147cbc707"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_model_preimages.py",
+      "sha256": "29b33f1ba853f9be249da19ad706c54ec39dc390f502f0f74a1d41aec69e68f6"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/report_mutation_transaction.py",
-      "sha256": "92eef979e61498e823ecc462490f366ad0bc041a0c716bdefaadb5f96bcd4ec1"
+      "sha256": "81db3e862481df270bccfa4e74495bca7f31a093f139dc61c5160222c4aea2f7"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_output_routing.py",
+      "sha256": "6b9b2abf70769f1babe123b5e21c6b949943524ff1fac5783c3319ea389c6c31"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_r10_startup.py",
+      "sha256": "5f73740979da9998dfe0903f596df4c671d34f63bc75d0758054164baf74e4e6"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_summary_recovery.py",
+      "sha256": "d76d5b7c952b16cc663279f0eb270650d9b7740379e2ca8588ffd29591a46389"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/requirements_ledger_reconciliation.py",
+      "sha256": "13115a4cb4bdaad03eb51121c4fe57f189dfd2b87bb85a52de56b6943b2c636b"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1624,7 +2260,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/rooted_path_io.py",
-      "sha256": "dd317b169d4750fa43cf2fb0b24d4df4c74df5f8f34517e76aa5dac9aaa7c0ca"
+      "sha256": "f2d2a386e8bbb4346df1bc79acb6b36917016dc2f4f7fc3ea95b9c73be8c0fe9"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1660,7 +2296,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/runbundle_privacy.py",
-      "sha256": "8962f43fb361029be4cd7332cbcc37b302a766d43e82fd25bd603b5a91e9b2e2"
+      "sha256": "794dee8a9a0dd17be19b0ee1672771765c077cb606ae6819c8a6451a2ea662ab"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1671,14 +2307,56 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/runtime_image_materializer.py",
+      "sha256": "68bf3bdc8d59f46a523f40447e92fd1ceaba5a8146cb8e1e0386b2b9f98c607a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/runtime_policy_artifacts.py",
+      "sha256": "3b3640e6970a70c123cb0449de0ec4a85f44643e1458bb12f2fdaf2500360eb8"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/runtime_role10_acquisition.py",
+      "sha256": "856a59109299906b4d88e451713405e3281fc4838ac4acb83c1ee5a2be7e67ea"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/runtime_source_manifest_renderer.py",
+      "sha256": "78477a9015e3327187283dbb5300de781fe93b8821b87cbb63cadee15d7c6a06"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/runtime_source_projection.py",
+      "sha256": "e2cdbd67f49ac99ee575b048005d9b5462823b9cc1000cd4693bb4e776b32b16"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/sc_semantic_dedup_noop.py",
+      "sha256": "dc6331f1ccd28c3b513c11021163e5f9eda039f8ff42f36ae605577c706f9fa9"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/security_obligation_authority.py",
-      "sha256": "df76c4ba7bb883f51b0ec8274ea760a4eeb8e1ae6728ab2b4c5944efd9b746db"
+      "sha256": "bf951c0befa517275e0f16543663f4c49e6b5c5e8d5b05d9c26d527c268723c9"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/security_obligation_lifecycle.py",
-      "sha256": "83b974013a5dbb37b385ecb6f4e99bdb3bda789008f7cbdfa219130ad08f479d"
+      "sha256": "0e0b9d8621f7ac4b2e3c25d69c63b87fe387f972b05cd73c758c6d4f830afbcd"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/security_obligation_phaseio_authority.py",
+      "sha256": "0d91626d434b50311e822dab2b2f77557e23841d50ba0f859fab4bc540e61eda"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1690,13 +2368,13 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/semantic_dedup_transaction.py",
-      "sha256": "c032e4874548ae329b5e918eaf30aba77feec7fd6eccb7820cfe51fbbf29a171"
+      "sha256": "ef1e4fe7837bbd3d8669e417afd0172ef0247961a085652fcfe6e02fd4f8dd08"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/semantic_invariant_authority.py",
-      "sha256": "68cb1183c2a44a4408cd3b4f49f5866b2c0f2e63c43d3c8d19d004497cf2d48f"
+      "sha256": "cfcf4bcad8202c7b22d3b1aa6ade2c607184109dbe61c28551b43bfa16164dca"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1714,31 +2392,115 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/severity_adjudication_work.py",
-      "sha256": "a225154c98dae870a96acc70c611f785f550b2704881bf65403ca70a55d214ca"
+      "sha256": "1a16223c432ebb7cc7550994a164ff693f937378a8e03b329ee7d03dfb6bb4ec"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_bind_postimage_cas.py",
+      "sha256": "cc73b19e4a127f862b192c75c8f1a0e7b8a6950b743a65fdf9351e566f7cd5bb"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_bind_postimages.py",
+      "sha256": "3c4fea9a05e8d7045cb1cb5a2592645f24dd08144b8ef71c87849802853257a4"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_bind_transaction.py",
+      "sha256": "8dcde3daddce101ebd55a21be2f80ead724e2502e2b730ca99a6f4788adee0ab"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_compat_authority.py",
+      "sha256": "ab86558309b0732ed3322bdfccf0186a71f3883b6ac4b281e2931083cab90580"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_compat_runtime.py",
+      "sha256": "414f41a54473af1fa1314c1ef18a21e78dcfa42b303f792976429a72a154dd75"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/severity_decision_ledger.py",
-      "sha256": "8a2c98132dc6b0823ba5e3701c5bd6236f9786d8e290886adecec30f9bb28952"
+      "sha256": "e7af50c1ac826fc47e2eab330928759120bbd975216e2eb8b0d6e674ced272ca"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_empty_source.py",
+      "sha256": "056acea0fd41232c583b1a999b737c71d0efba600a053db251261c0eee92622e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_final_reconciliation.py",
+      "sha256": "f4810692f371a6aaa45a958b1d4f962f5257e3687e6a59b6e4197ae6404b0064"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_initial_source.py",
+      "sha256": "b7fe026c94d63b5b0e3bc4789c844744316820b9431a54d10b98301da23ecdff"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_planning.py",
+      "sha256": "5bfb4e6618e607d3bb52418f3ad322fbfb7f2ec5afe35eae228761cc8299c078"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_planning_inputs.py",
+      "sha256": "970da41c513ef653e47c57c5fb93d601d4b313c1f6ec6ab33534759fd990f862"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/severity_runtime.py",
-      "sha256": "9f2c7c3338baa6a763afa63e79089641f3aa8cad5ed8b45ba5ff0a6bf2423716"
+      "sha256": "b949d90af075e6581af71d24b7a54a47bc8d91acad002c67b0a49dd08fe77cf9"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_shadow_transaction.py",
+      "sha256": "7f54f97bab9a2e76b08dcb3352fb8f00e516b9754480962a6d32544405fbcbbd"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_source_aggregate.py",
+      "sha256": "5ce6cecbfaea7e078f20e0eac103ce7b8ac79f10ae9b7f1eec73ccaf5449d1ec"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_source_selector.py",
+      "sha256": "247f48db3c3e50964256fdbd371df44233cca1fa18e0cc232297b5daba704062"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_zero_reconciliation.py",
+      "sha256": "59a6cf1b7a847ab98abfcd28f085d8de3c0f05b21dda13955d328a1107800937"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/skeptic_assessment_transport.py",
-      "sha256": "296298b3718ccbbee1afecb035364bd554166f94e83241926cebde3dcca4117b"
+      "sha256": "c7467b9c5968a86d05b5fc710097e2a0bd1494e1f0cf57a41504426c68b8af23"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/skeptic_execution_work.py",
-      "sha256": "a5d2558eaffda92edfb97fce6c06907604a45e9b37f912b6692d0977f475f5ad"
+      "sha256": "a055125a9097fdf22b99a193bbd5679063ea01a6c0df205b8ee1576e6372ae1a"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1749,8 +2511,14 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/snapshot_bound_tool_authority.py",
+      "sha256": "cd67b9593bcfbb1081813d340a62e8692455ad9ac1a4bd13140ee4ace286039a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/spike_mechanical_poc.py",
-      "sha256": "ba119d1ec5707e42932e8edb260da4bbd9ebf92201d7a9c2244a8b05d5afaca1"
+      "sha256": "3fe9434d2a18c70f19f891bc36663113d21dc3fbcfc4da481c4759af0c550106"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1761,8 +2529,14 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/static_analysis_compat_execution.py",
+      "sha256": "e2ed205de06b490cf5bf3d415dc600f7cffcae66b4d4f0bf2cf553c4127c58e1"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/supply_chain_gate.py",
-      "sha256": "ca6ed062769175f6edb0ab62e07e19f6faa1cc35df02cbdbdfd25aef547302e2"
+      "sha256": "f663e77abb645093d7870353532403c9858d71e26be789be116afa48fc9ded75"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1774,19 +2548,19 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/tool_coverage_ledger.py",
-      "sha256": "c2ee4ba2ca0b33576f3cdcf66534ce7c5fa44dabb0ab6292315bdee1e3a1ddcc"
+      "sha256": "8110a8c426869f7e33ed130472665eadeea5a46fafe67fbf82a5d7f8026a2fa3"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/toolchain_control_authority.py",
-      "sha256": "4985ece57c84172dda161ae2381b0af93a1c2b6a4dc69a7630be017ec6bd35a9"
+      "sha256": "42ab5f0846071fafc28d5e611cdbe18612b906f68f41a463f66b86772f4baf62"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/trust_evidence_authority.py",
-      "sha256": "2d3f11a169ae74ea30ba975ca99a1bb297cd9236ba909629560aa77e9f850441"
+      "sha256": "700f46a3fbfbea2c342456c3a0bc6f94f7c71d6cc7e6db4c40081706e456f260"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1810,7 +2584,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/verification_method_compiler.py",
-      "sha256": "c3476dfb84d8110bb3319d21c58cf5bae742289ad9b837c541e1b34cda0f372d"
+      "sha256": "d61d2e1839c38148aacd6b161634f08249cc805099327de46437144cd554c280"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1823,6 +2597,18 @@
       "kind": "python-source",
       "path": "scripts/verification_recovery_contract.py",
       "sha256": "f60b7b4f59e11d9afe0cca484b79213e8c924a8cb0ea5cbe594e1f9da1202682"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/verified_backend_egress.py",
+      "sha256": "ece426b31a72eeddd06036958b0452796761541505474961b864e35954cd6d33"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/verifier_model_execution_authority.py",
+      "sha256": "4d19980a9fa5d6ecb7370559d9474e5bb5300b5cb0bca24402ec857e1fde5f64"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1840,19 +2626,25 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/verify_queue_phaseio_authority.py",
-      "sha256": "a967469f9936414510e639f6ae908af125ccd57e4424ed9172f6baedd49d9668"
+      "sha256": "a5747f34a7adb9009032dfed33502f5ea8af524027de56be5199e42e989b2ac4"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/verify_queue_transaction.py",
-      "sha256": "db73789846a55cf6e6a8632dfb89232121839451fbd9f8732b9a9b7040c48854"
+      "sha256": "46dfd88f62be8ee45591345c1cecc0de0cea7e6a901ecee6892b10683d10af15"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/windows_hyperv_provider_sandbox.py",
+      "sha256": "3c1e160b8506597cc3ba99e0121107bb52840821fcee500927ace4c868bb8bf4"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/windows_low_integrity_lease.py",
-      "sha256": "aa4592a118555ec86d2eb7da99685b45056bf64fe1494426332150c1420cac92"
+      "sha256": "48247836b23da391bdee28e2d0bfa1d3db47198666ced19db5e075c79cacd4ad"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1870,13 +2662,19 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/worker_execution_receipts.py",
-      "sha256": "4200e17cfa4d0964344f544d8a8c8dd559e7669581e992097857a13ba3f91ac7"
+      "sha256": "c547ad5aaf13c56c0a87d48bfbf830df402078ec850baecaba09290ba1833565"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/worker_transaction.py",
-      "sha256": "736cbc0b024d2586aa6513db1404ff76fa507b5b574dcd7ded7217b400d8b610"
+      "sha256": "7d314b3540c7d7927b93a7d5c09276426981d395b254ae50d60d1c21dee232da"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/apple_container_runtime_image_generation.v1.json",
+      "sha256": "91cfd69a7ed61aaf04ca0c44c7136ba0a683f5ff72ec9e5b9e851e05699a94b3"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -2109,6 +2907,36 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
+      "path": "verification_policy/js_toolchain_authority.v1.json",
+      "sha256": "6a55afca0c639ed452c3108f25aadcfec50b4c47334d914e22dc83a61822b553"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/js_toolchain_bootstrap.v1.json",
+      "sha256": "20dcb25530d73e14ad8e1a8bb9d827b8395b5fa17c29d2b5513582d63f11ec97"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/managed_evm_python_toolchain.v1.json",
+      "sha256": "c4091eeadb398b17bd36dbfd88358d06a6bb2b7976ad20f75a37183a9e2e93b5"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/opengrep_acquisition.v1.json",
+      "sha256": "2d545763d0d298797f1d16899fe60cf3a4cd644b01f3bb285aecd0f581886dd2"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/opengrep_runtime_source_manifest.v1.json",
+      "sha256": "891b0834c56160163ea91b93c6e1ae1d4366426d1c9bd3f7d500c7ce352ff2f6"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
       "path": "verification_policy/protobuf_reviewed_content.v1.json",
       "sha256": "24606d4cc5f8d856e2debee56d483c4b3d89c8ac1472520e1f978d65c78b8885"
     },
@@ -2116,7 +2944,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
       "path": "verification_policy/toolchain_governance.v1.json",
-      "sha256": "fe0204210c7dd3a5dbc2eae5f6a6b7080e42d707b958e42a0ae4951c4b73bf95"
+      "sha256": "db74b1cb720ebc2e4a02914e6de293a8c928c890522ffcfd49b5dbd097485c65"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -2133,6 +2961,8 @@
     "scripts/artifact_ledger.py",
     "scripts/ci_dependency_authority.py",
     "scripts/phase_io_contracts.py",
+    "scripts/js_toolchain_authority.py",
+    "scripts/runtime_image_materializer.py",
     "scripts/plamen_mcp_runtime.py",
     "scripts/program_facts_bake.py",
     "scripts/program_facts_evm_provider.py",
@@ -2231,6 +3061,13 @@
     "rules/schemas/program_facts_evm_tool_manifest.v1.schema.json",
     "rules/schemas/program_facts_provider_registry.v1.schema.json",
     "rules/schemas/program_facts_slice.v1.schema.json",
+    "runtime/toolchains/js/node/node-v24.20.0-darwin-arm64.tar.gz",
+    "runtime/toolchains/js/node/node-v24.20.0-darwin-x64.tar.gz",
+    "runtime/toolchains/js/node/node-v24.20.0-linux-arm64.tar.xz",
+    "runtime/toolchains/js/node/node-v24.20.0-linux-x64.tar.xz",
+    "runtime/toolchains/js/node/node-v24.20.0-win-arm64.zip",
+    "runtime/toolchains/js/node/node-v24.20.0-win-x64.zip",
+    "runtime/toolchains/js/yarn/yarn-v1.22.22.tar.gz",
     "scripts/adaptive_attention_authority.py",
     "scripts/adaptive_attention_controller.py",
     "scripts/adaptive_attention_evaluator.py",
@@ -2238,12 +3075,17 @@
     "scripts/adaptive_attention_runtime.py",
     "scripts/adaptive_attention_sources.py",
     "scripts/adaptive_attention_types.py",
+    "scripts/apple_container_provider.py",
+    "scripts/apple_egress_network.py",
+    "scripts/apple_supervisor_adapter.py",
     "scripts/application_skeptic.py",
     "scripts/application_skeptic_workflow_discriminator_r12_contract.py",
     "scripts/artifact_ledger.py",
+    "scripts/artifact_surface.py",
     "scripts/asset_representation_foundation.py",
     "scripts/assurance_limitations.py",
     "scripts/attention_repair_shards.py",
+    "scripts/audit_completion_receipt.py",
     "scripts/audit_snapshot.py",
     "scripts/authentication_role_authority.py",
     "scripts/auxiliary_writable_root_lease.py",
@@ -2251,6 +3093,7 @@
     "scripts/axis_canonical_prior.py",
     "scripts/axis_disposition.py",
     "scripts/axis_promotion_lineage.py",
+    "scripts/backend_acquisition.py",
     "scripts/backend_capability_registry.py",
     "scripts/banner.py",
     "scripts/banner_rich.py",
@@ -2258,7 +3101,10 @@
     "scripts/bb_verification_policy.py",
     "scripts/bb_wrapper_provider_adapter.py",
     "scripts/bounded_artifact_io.py",
+    "scripts/build_posix_native_supervisor.py",
     "scripts/candidate_negative_authority.py",
+    "scripts/candidate_negative_driver_adapter.py",
+    "scripts/canonical_report_model_lineage.py",
     "scripts/chain_candidate_inventory_union.py",
     "scripts/chain_grouping_assurance.py",
     "scripts/chain_grouping_authority.py",
@@ -2278,37 +3124,60 @@
     "scripts/claude_runtime_materialization.py",
     "scripts/claude_stored_subscription_source.py",
     "scripts/claude_stream_json_evidence.py",
+    "scripts/claude_transport_messages.py",
     "scripts/claude_worker_prompt_consistency.py",
     "scripts/closure_broker_v2.py",
     "scripts/codex_adapter.py",
     "scripts/codex_dependency_research.py",
+    "scripts/codex_stored_auth_source.py",
     "scripts/compound_plan_adapter.py",
     "scripts/compound_verification.py",
     "scripts/confidence_consensus_authority.py",
     "scripts/conftest.py",
     "scripts/coverage_shortfalls.py",
+    "scripts/darwin_cas_helper.c",
+    "scripts/darwin_sandbox_exec.py",
     "scripts/dependency_obligations.py",
+    "scripts/depth_dispatch_delta_authority.py",
     "scripts/depth_handoff.py",
+    "scripts/depth_self_exclusion_publication.py",
+    "scripts/deterministic_oci_layout.py",
+    "scripts/driver_successor_io.py",
+    "scripts/e2e_acceptance_verifier.py",
+    "scripts/elf_loader_closure.py",
     "scripts/enumeration_anchor_facts.py",
     "scripts/enumeration_gate.py",
     "scripts/enumeration_type_ir.py",
     "scripts/enumgap_disposition.py",
     "scripts/enumgap_markdown.py",
     "scripts/evidence_capabilities.py",
+    "scripts/evm_analysis_workspace_authority.py",
     "scripts/execution_scope_runtime.py",
+    "scripts/execution_scope_runtime_witness.py",
+    "scripts/exploration_authority_bundle.py",
     "scripts/exploration_clear_lifecycle.py",
     "scripts/external_preimage_authority.py",
     "scripts/fast_lane_skip_governance_r10_contract.py",
     "scripts/finding_lifecycle_authority.py",
     "scripts/finding_producer_registry.py",
+    "scripts/fuzz_compat_execution.py",
+    "scripts/fuzz_harness_bundle.py",
     "scripts/fuzz_workspace_authority.py",
+    "scripts/gate_p_successor.py",
+    "scripts/graph_application_authority.py",
+    "scripts/headless_phase_identity.py",
     "scripts/headless_worker_runtime.py",
     "scripts/internal_identity_privacy.py",
     "scripts/inventory_aggregate_authority.py",
     "scripts/inventory_id_ledger_merge.py",
     "scripts/inventory_reconciliation.py",
     "scripts/inventory_reemit_authority.py",
+    "scripts/inventory_source_action_authority.py",
     "scripts/isolated_execution_host.py",
+    "scripts/js_dependency_materializer_authority.py",
+    "scripts/js_dependency_materializer_runtime.py",
+    "scripts/js_lock_authority.py",
+    "scripts/js_toolchain_authority.py",
     "scripts/l1_composition_authority.py",
     "scripts/l1_composition_queue_runtime.py",
     "scripts/l1_composition_runtime.py",
@@ -2316,20 +3185,27 @@
     "scripts/late_committed_invariant_authority.py",
     "scripts/late_delivery_authority.py",
     "scripts/linux_cgroup_exec.py",
+    "scripts/linux_guest_scope.py",
+    "scripts/linux_native_install_authority.py",
     "scripts/live_verify_queue_driver_adapter.py",
     "scripts/live_verify_queue_executor.py",
     "scripts/live_verify_queue_methodology_projection.py",
     "scripts/live_verify_queue_prearm_inputs.py",
     "scripts/live_verify_queue_semantics.py",
     "scripts/locked_executable_guard.py",
+    "scripts/managed_evm_python_toolchain.py",
     "scripts/mandatory_reverification.py",
     "scripts/mechanical_gate_execution_receipts.py",
     "scripts/mechanical_gate_inventory.py",
     "scripts/mechanical_gate_migration_manifest.py",
     "scripts/mechanical_gate_registry.py",
     "scripts/mechanical_gate_runtime.py",
+    "scripts/mechanical_poc_source.py",
+    "scripts/mechanical_precommit_coverage.py",
+    "scripts/mechanical_prewarm.py",
     "scripts/mechanical_successor_receipts.py",
     "scripts/mechanical_verify.py",
+    "scripts/medusa_release_policy.py",
     "scripts/method_card_application_authority.py",
     "scripts/method_card_catalog.py",
     "scripts/method_card_runtime_authority.py",
@@ -2337,28 +3213,70 @@
     "scripts/methodology_application_states.py",
     "scripts/methodology_citation.py",
     "scripts/modularize.py",
+    "scripts/native_backend_acquisition.py",
+    "scripts/native_evm_static_acquisition_assets.py",
+    "scripts/native_fixed_role_acquisition.py",
+    "scripts/native_managed_evm_driver_preflight.py",
+    "scripts/native_managed_evm_setup_effects.py",
+    "scripts/native_operation4_acquisition_validation.py",
+    "scripts/native_runtime_bindings.py",
+    "scripts/native_runtime_grouped_transform.py",
+    "scripts/native_static_acquisition_policies.py",
     "scripts/negative_closure_evidence_authority.py",
     "scripts/negative_closure_policy.py",
     "scripts/niche_lifecycle_authority.py",
+    "scripts/oci_context_consumer.py",
+    "scripts/oci_guest_admission.py",
+    "scripts/oci_image_lock.py",
+    "scripts/oci_release_authority.py",
+    "scripts/oci_retained_archive_transform.py",
+    "scripts/opengrep_observational_authority.py",
+    "scripts/opengrep_release_policy.py",
+    "scripts/opengrep_rule_authority.py",
     "scripts/operational_markdown.py",
     "scripts/owned_directory_guard.py",
     "scripts/owned_process_runner.py",
     "scripts/owned_process_scope.py",
     "scripts/p0af_v2_queue_adapter.py",
     "scripts/p0af_v2_queue_runtime.py",
+    "scripts/phase_attempt_plan.py",
     "scripts/phase_contract_compiler.py",
     "scripts/phase_io_contracts.py",
     "scripts/plamen_contracts.py",
     "scripts/plamen_display.py",
     "scripts/plamen_driver.py",
+    "scripts/plamen_managed_evm_provisioner.py",
     "scripts/plamen_markdown.py",
     "scripts/plamen_mcp_runtime.py",
     "scripts/plamen_mechanical.py",
+    "scripts/plamen_oci_build_transform.py",
+    "scripts/plamen_oci_context_transform.py",
     "scripts/plamen_parsers.py",
     "scripts/plamen_prompt.py",
+    "scripts/plamen_transform_bundle.py",
     "scripts/plamen_types.py",
     "scripts/plamen_validators.py",
     "scripts/poc_demotion_scope.py",
+    "scripts/podman_linux_provider.py",
+    "scripts/podman_supervisor_adapter.py",
+    "scripts/portable_path_contract.py",
+    "scripts/posix_audit_entrypoint.py",
+    "scripts/posix_audit_supervisor.py",
+    "scripts/posix_backend_execution.py",
+    "scripts/posix_backend_launch_policy.py",
+    "scripts/posix_compat_model_incorporation.py",
+    "scripts/posix_managed_evm_setup_transaction.py",
+    "scripts/posix_native_authority_adapter.py",
+    "scripts/posix_native_front_dispatch.py",
+    "scripts/posix_native_install_dispatch.py",
+    "scripts/posix_native_install_effects.py",
+    "scripts/posix_native_install_publication.py",
+    "scripts/posix_native_install_transaction.py",
+    "scripts/posix_specialized_tool_worker.py",
+    "scripts/posix_v2_compat_claude.py",
+    "scripts/posix_v2_compat_exec_helper.py",
+    "scripts/posix_v2_compat_install.py",
+    "scripts/posix_v2_compat_runtime.py",
     "scripts/post_verify_candidate_delta.py",
     "scripts/post_verify_lifecycle.py",
     "scripts/precedent_evidence_authority.py",
@@ -2389,9 +3307,12 @@
     "scripts/program_facts_source_manifest.py",
     "scripts/program_facts_types.py",
     "scripts/program_facts_v2_contracts.py",
+    "scripts/program_facts_v2_driver_integration.py",
     "scripts/program_facts_windows_native_launcher_r3_12.py",
     "scripts/program_facts_windows_native_launcher_r3_13.py",
+    "scripts/program_facts_workspace_v2.py",
     "scripts/provider_command_authority.py",
+    "scripts/provider_semantic_completion.py",
     "scripts/pty_completion_codec.py",
     "scripts/pty_completion_observer.py",
     "scripts/pty_exec.py",
@@ -2406,15 +3327,30 @@
     "scripts/release_fast_lane_fixture_collector.py",
     "scripts/release_fast_lane_fixture_governance_gate.py",
     "scripts/release_fast_lane_fixture_governance_manifest.json",
+    "scripts/render_js_toolchain_bootstrap.py",
     "scripts/replay_model_routing_research.py",
     "scripts/report_assembly_capture.py",
+    "scripts/report_body_attempt_authority.py",
+    "scripts/report_body_driver_bridge.py",
+    "scripts/report_body_evidence_projection.py",
     "scripts/report_capture_phaseio_authority.py",
+    "scripts/report_capture_transactions.py",
     "scripts/report_dedup_authority.py",
     "scripts/report_disposition_authority.py",
+    "scripts/report_empty_tier.py",
     "scripts/report_evidence_authority.py",
+    "scripts/report_evidence_runtime_witness.py",
+    "scripts/report_heading_presentation.py",
     "scripts/report_index_canonical_validator.py",
     "scripts/report_index_machinery.py",
+    "scripts/report_index_summary_authority.py",
+    "scripts/report_model_lineage.py",
+    "scripts/report_model_preimages.py",
     "scripts/report_mutation_transaction.py",
+    "scripts/report_output_routing.py",
+    "scripts/report_r10_startup.py",
+    "scripts/report_summary_recovery.py",
+    "scripts/requirements_ledger_reconciliation.py",
     "scripts/resource_grant.py",
     "scripts/resource_policy_authority.py",
     "scripts/rooted_path_io.py",
@@ -2425,21 +3361,44 @@
     "scripts/runbundle_phase_map.py",
     "scripts/runbundle_privacy.py",
     "scripts/runbundle_sources.py",
+    "scripts/runtime_image_materializer.py",
+    "scripts/runtime_policy_artifacts.py",
+    "scripts/runtime_role10_acquisition.py",
+    "scripts/runtime_source_manifest_renderer.py",
+    "scripts/runtime_source_projection.py",
+    "scripts/sc_semantic_dedup_noop.py",
     "scripts/security_obligation_authority.py",
     "scripts/security_obligation_lifecycle.py",
+    "scripts/security_obligation_phaseio_authority.py",
     "scripts/semantic_dedup_authority.py",
     "scripts/semantic_dedup_transaction.py",
     "scripts/semantic_invariant_authority.py",
     "scripts/semantic_prompt_snapshot.py",
     "scripts/semantic_work_plan.py",
     "scripts/severity_adjudication_work.py",
+    "scripts/severity_bind_postimage_cas.py",
+    "scripts/severity_bind_postimages.py",
+    "scripts/severity_bind_transaction.py",
+    "scripts/severity_compat_authority.py",
+    "scripts/severity_compat_runtime.py",
     "scripts/severity_decision_ledger.py",
+    "scripts/severity_empty_source.py",
+    "scripts/severity_final_reconciliation.py",
+    "scripts/severity_initial_source.py",
+    "scripts/severity_planning.py",
+    "scripts/severity_planning_inputs.py",
     "scripts/severity_runtime.py",
+    "scripts/severity_shadow_transaction.py",
+    "scripts/severity_source_aggregate.py",
+    "scripts/severity_source_selector.py",
+    "scripts/severity_zero_reconciliation.py",
     "scripts/skeptic_assessment_transport.py",
     "scripts/skeptic_execution_work.py",
     "scripts/skill_selection_authority.py",
+    "scripts/snapshot_bound_tool_authority.py",
     "scripts/spike_mechanical_poc.py",
     "scripts/state_symbol_authority.py",
+    "scripts/static_analysis_compat_execution.py",
     "scripts/supply_chain_gate.py",
     "scripts/terminal_audit_launch.py",
     "scripts/tool_coverage_ledger.py",
@@ -2451,15 +3410,19 @@
     "scripts/verification_method_compiler.py",
     "scripts/verification_operator_consumers.py",
     "scripts/verification_recovery_contract.py",
+    "scripts/verified_backend_egress.py",
+    "scripts/verifier_model_execution_authority.py",
     "scripts/verifier_work_roster.py",
     "scripts/verify_queue_context_authority.py",
     "scripts/verify_queue_phaseio_authority.py",
     "scripts/verify_queue_transaction.py",
+    "scripts/windows_hyperv_provider_sandbox.py",
     "scripts/windows_low_integrity_lease.py",
     "scripts/windows_private_execution_root.py",
     "scripts/work_unit_capabilities.py",
     "scripts/worker_execution_receipts.py",
     "scripts/worker_transaction.py",
+    "verification_policy/apple_container_runtime_image_generation.v1.json",
     "verification_policy/ci_advisory_evidence.v1.json",
     "verification_policy/ci_advisory_responses/request.json",
     "verification_policy/ci_advisory_responses/response.json",
@@ -2498,6 +3461,11 @@
     "verification_policy/ci_release_responses/typing-extensions-4.16.0.json",
     "verification_policy/ci_release_responses/typing-inspection-0.4.2.json",
     "verification_policy/ci_release_responses/wcwidth-0.8.2.json",
+    "verification_policy/js_toolchain_authority.v1.json",
+    "verification_policy/js_toolchain_bootstrap.v1.json",
+    "verification_policy/managed_evm_python_toolchain.v1.json",
+    "verification_policy/opengrep_acquisition.v1.json",
+    "verification_policy/opengrep_runtime_source_manifest.v1.json",
     "verification_policy/protobuf_reviewed_content.v1.json",
     "verification_policy/toolchain_governance.v1.json",
     "verification_policy/toolchain_runtime_closure.v1.json",

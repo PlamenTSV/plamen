@@ -95,6 +95,15 @@ def _receipt_digest(core: dict[str, object]) -> str:
 
 def _force_host(monkeypatch: pytest.MonkeyPatch, host: str) -> None:
     monkeypatch.setattr(S, "_detect_host_platform", lambda: host)
+    if host == S.HOST_WINDOWS_NATIVE and os.name != "nt":
+        # Cross-host functional fixtures cannot inspect a real Windows DACL.
+        # The dedicated DACL tests below either run only on Windows or inject
+        # an exact synthetic ACL snapshot themselves.
+        monkeypatch.setattr(
+            S,
+            "_verify_windows_source_security",
+            lambda _path: None,
+        )
     if host in {S.HOST_LINUX_NATIVE, S.HOST_WSL_NATIVE} and os.name == "nt":
         monkeypatch.setattr(
             S,
@@ -252,25 +261,46 @@ def test_unconfigured_file_source_is_honestly_unavailable(
     assert evidence["source_identity"] == "file-linux-path-unconfigured"
 
 
-def test_macos_keychain_is_explicitly_unimplemented_and_never_fake_available(
+def test_macos_keychain_observation_is_injected_and_never_uses_a_live_query(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _force_host(monkeypatch, S.HOST_MACOS)
-    evidence = S.observe_stored_subscription_source(source_path=None)
+    calls = []
+
+    def unavailable_runner(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return S._SecurityCommandResult(
+            returncode=44,
+            stdout=bytearray(),
+            stderr=bytearray(b"redacted fixture"),
+        )
+
+    monkeypatch.setattr(
+        S,
+        "_macos_security_tool_identity",
+        lambda: {"fixture": "signed-security-tool"},
+    )
+    evidence = S._observe_macos_keychain(
+        runner=unavailable_runner,
+        account="fixture-account",
+    )
     assert evidence["store_class"] == "OS_KEYCHAIN"
-    assert evidence["source_identity"] == "macos-keychain-unimplemented"
+    assert evidence["source_identity"].startswith(
+        "keychain-macos-unavailable-"
+    )
     assert evidence["available"] is False
     assert evidence["source_size"] == 0
     assert A.replay_stored_subscription_source_evidence(evidence) == evidence
+    assert len(calls) == 1
+    assert calls[0][0][-1] == "fixture-account"
+    assert "-w" not in calls[0][0]
 
     fake_file = tmp_path / ".credentials.json"
     _write_credentials(fake_file)
-    with pytest.raises(
-        S.ClaudeStoredSubscriptionSourceError,
-        match="keychain.*unimplemented",
-    ):
+    with pytest.raises(S.ClaudeStoredSubscriptionSourceError) as caught:
         S.observe_stored_subscription_source(source_path=fake_file)
+    assert caught.value.reason_code == "KEYCHAIN_FILE_SOURCE_REJECTED"
 
 
 def test_unsupported_host_fails_closed_without_inventing_store_evidence(

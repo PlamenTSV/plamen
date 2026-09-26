@@ -137,6 +137,160 @@ def test_fuzz_policy_is_separate_and_thorough_medium_plus_only():
 
 
 @pytest.mark.parametrize(
+    ("locally_testable", "harness_available", "expected_debts"),
+    (
+        (True, True, ()),
+        (True, False, ()),
+        (False, True, ()),
+        (False, False, ()),
+        (None, True, ("LOCAL_TESTABILITY_UNASSESSED",)),
+        (True, None, ("HARNESS_AVAILABILITY_UNASSESSED",)),
+        (
+            None,
+            None,
+            (
+                "LOCAL_TESTABILITY_UNASSESSED",
+                "HARNESS_AVAILABILITY_UNASSESSED",
+            ),
+        ),
+    ),
+)
+def test_known_and_unknown_execution_assessments_preserve_attempt_policy(
+    locally_testable, harness_available, expected_debts
+):
+    resolved = policy()
+    work = item(
+        locally_testable=locally_testable,
+        harness_available=harness_available,
+    )
+    obligation = evaluate_obligation(resolved, work)
+    assert obligation.decision is Decision.ATTEMPT_REQUIRED
+    assert obligation.fuzz_required
+    assert obligation.debts == expected_debts
+
+
+@pytest.mark.parametrize("field", ("locally_testable", "harness_available"))
+@pytest.mark.parametrize("invalid", (0, 1, "unknown", (), object()))
+def test_execution_assessment_fields_reject_non_boolean_non_none(field, invalid):
+    values = {"locally_testable": True, "harness_available": True}
+    values[field] = invalid
+    with pytest.raises(TypeError, match=rf"{field} must be bool or None"):
+        item(**values)
+
+
+def test_optional_mode_preserves_unknown_assessment_debts_in_nonexecution_receipt():
+    resolved = policy(mode=AuditMode.CORE)
+    work = item(
+        severity=Severity.LOW,
+        locally_testable=None,
+        harness_available=None,
+    )
+    obligation = evaluate_obligation(resolved, work)
+    assert obligation.decision is Decision.OPTIONAL_BY_MODE
+    assert obligation.debts == (
+        "LOCAL_TESTABILITY_UNASSESSED",
+        "HARNESS_AVAILABILITY_UNASSESSED",
+    )
+    receipt = make_nonexecution_receipt(resolved, work, obligation)
+    assert receipt.debts == obligation.debts
+    reconciliation = reconcile_receipts(resolved, (work,), (receipt,))
+    assert reconciliation.coverage_complete
+    assert set(obligation.debts).issubset(reconciliation.debts)
+
+
+@pytest.mark.parametrize(
+    ("claim_class", "locally_testable", "harness_available", "code", "debt"),
+    (
+        (
+            ClaimClass.STRUCTURAL,
+            None,
+            False,
+            BlockerCode.STRUCTURAL_NO_EXECUTABLE_HARM_ASSERTION,
+            "LOCAL_TESTABILITY_UNASSESSED",
+        ),
+        (
+            ClaimClass.SPEC,
+            False,
+            None,
+            BlockerCode.PURE_SPEC_OR_DOCS_ONLY,
+            "HARNESS_AVAILABILITY_UNASSESSED",
+        ),
+        (
+            ClaimClass.INTEGRATION,
+            None,
+            None,
+            BlockerCode.NO_BUILD_ENVIRONMENT,
+            "LOCAL_TESTABILITY_UNASSESSED",
+        ),
+    ),
+)
+def test_unknown_assessment_cannot_authorize_any_nonexecution_blocker(
+    claim_class, locally_testable, harness_available, code, debt
+):
+    resolved = policy()
+    work = item(
+        claim_class=claim_class,
+        locally_testable=locally_testable,
+        harness_available=harness_available,
+    )
+    obligation = evaluate_obligation(resolved, work, blocker(code))
+    assert obligation.decision is Decision.ATTEMPT_REQUIRED
+    assert obligation.blocker is None
+    assert debt in obligation.debts
+    assert "INVALID_BLOCKER" in obligation.debts
+    with pytest.raises(ValueError, match="required attempt"):
+        make_nonexecution_receipt(resolved, work, obligation)
+
+
+def test_optional_mode_does_not_convert_unknown_blocker_into_waiver():
+    resolved = policy(mode=AuditMode.CORE)
+    work = item(
+        severity=Severity.LOW,
+        claim_class=ClaimClass.STRUCTURAL,
+        locally_testable=None,
+        harness_available=False,
+    )
+    obligation = evaluate_obligation(
+        resolved,
+        work,
+        blocker(BlockerCode.STRUCTURAL_NO_EXECUTABLE_HARM_ASSERTION),
+    )
+    assert obligation.decision is Decision.OPTIONAL_BY_MODE
+    assert obligation.blocker is None
+    assert "LOCAL_TESTABILITY_UNASSESSED" in obligation.debts
+    assert "INVALID_BLOCKER" in obligation.debts
+
+
+def test_unknown_assessment_debts_survive_execution_retry_and_reconciliation():
+    resolved = policy()
+    work = item(locally_testable=None, harness_available=None)
+    obligation = evaluate_obligation(resolved, work)
+    receipt = make_execution_receipt(
+        resolved,
+        work,
+        obligation,
+        attempt_number=1,
+        command_argv=("forge", "test"),
+        runner_id="bound-process-runner",
+        result=AttemptResult.EXECUTED_UNPROVEN,
+        proof_scope=ProofScope.UNPROVEN,
+        output_digest="8" * 64,
+    )
+    assert set(receipt.debts) == {
+        "LOCAL_TESTABILITY_UNASSESSED",
+        "HARNESS_AVAILABILITY_UNASSESSED",
+        "SEMANTIC_RESULT_UNASSESSED",
+    }
+    retry = plan_retry(resolved, work, (receipt,))
+    assert retry.should_attempt
+    assert retry.next_attempt_number == 2
+    assert retry.reuse_receipt_digest == ""
+    reconciliation = reconcile_receipts(resolved, (work,), (receipt,))
+    assert reconciliation.coverage_complete
+    assert set(receipt.debts).issubset(reconciliation.debts)
+
+
+@pytest.mark.parametrize(
     ("claim_class", "code"),
     (
         (ClaimClass.STRUCTURAL, BlockerCode.STRUCTURAL_NO_EXECUTABLE_HARM_ASSERTION),
@@ -278,6 +432,82 @@ def test_harm_scoped_success_requires_an_executed_harm_oracle():
             proof_scope=ProofScope.HARM,
             output_digest="d" * 64,
         )
+
+
+def test_executed_unproven_retains_debt_without_semantic_success_reuse():
+    resolved = policy()
+    work = item()
+    obligation = evaluate_obligation(resolved, work)
+    kwargs = dict(
+        attempt_number=1, command_argv=("forge", "test"),
+        runner_id="bound-process-runner", result=AttemptResult.EXECUTED_UNPROVEN,
+        proof_scope=ProofScope.UNPROVEN, output_digest="a" * 64,
+    )
+    receipt = make_execution_receipt(resolved, work, obligation, **kwargs)
+    assert receipt == make_execution_receipt(resolved, work, obligation, **kwargs)
+    assert receipt.attempted and receipt.proof_scope is ProofScope.UNPROVEN
+    assert "SEMANTIC_RESULT_UNASSESSED" in receipt.debts
+    retry = plan_retry(resolved, work, (receipt,))
+    assert retry.should_attempt and retry.next_attempt_number == 2
+    assert retry.reuse_receipt_digest == ""
+    reconciliation = reconcile_receipts(resolved, (work,), (receipt,))
+    assert reconciliation.coverage_complete  # Attempt coverage, not proof of harm.
+    assert "SEMANTIC_RESULT_UNASSESSED" in reconciliation.debts
+
+
+def test_unadjudicated_execution_consumes_retry_budget_without_becoming_proof():
+    resolved = policy()
+    work = item()
+    obligation = evaluate_obligation(resolved, work)
+    receipts = tuple(
+        make_execution_receipt(
+            resolved, work, obligation, attempt_number=number,
+            command_argv=("forge", "test"), runner_id="bound-process-runner",
+            result=AttemptResult.EXECUTED_UNPROVEN, proof_scope=ProofScope.UNPROVEN,
+            output_digest="a" * 64,
+        )
+        for number in range(1, resolved.max_attempts_per_row + 1)
+    )
+    retry = plan_retry(resolved, work, receipts)
+    assert retry.budget_exhausted and not retry.should_attempt
+    assert retry.reuse_receipt_digest == ""
+    assert all(row.proof_scope is ProofScope.UNPROVEN for row in receipts)
+
+
+@pytest.mark.parametrize("scope", (ProofScope.MECHANISM, ProofScope.HARM))
+def test_executed_unproven_cannot_claim_semantic_scope(scope):
+    resolved = policy()
+    work = item()
+    with pytest.raises(ValueError, match="UNPROVEN scope"):
+        make_execution_receipt(
+            resolved, work, evaluate_obligation(resolved, work), attempt_number=1,
+            command_argv=("forge", "test"), runner_id="bound-process-runner",
+            result=AttemptResult.EXECUTED_UNPROVEN, proof_scope=scope,
+            output_digest="a" * 64,
+        )
+
+
+def test_executed_unproven_cannot_drop_attempt_or_assessment_debt():
+    from dataclasses import asdict
+    import verification_policy as policy_module
+
+    resolved = policy()
+    work = item()
+    receipt = make_execution_receipt(
+        resolved, work, evaluate_obligation(resolved, work), attempt_number=1,
+        command_argv=("forge", "test"), runner_id="bound-process-runner",
+        result=AttemptResult.EXECUTED_UNPROVEN, proof_scope=ProofScope.UNPROVEN,
+        output_digest="a" * 64,
+    )
+    payload = asdict(receipt)
+    payload.pop("receipt_digest")
+    with pytest.raises(ValueError, match="assessment debt"):
+        policy_module._build_receipt({**payload, "debts": ()})
+    with pytest.raises(ValueError, match="requires an attempt"):
+        policy_module._build_receipt({
+            **payload, "attempted": False, "attempt_number": None,
+            "command_argv": (), "runner_id": "", "output_digest": "",
+        })
 
 
 def test_grouped_rows_preserve_mixed_constituent_testability_and_exact_parity():

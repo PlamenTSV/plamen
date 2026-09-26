@@ -714,19 +714,12 @@ def test_frozen_preverify_pair_and_evidence_are_staged_under_logical_names(
         ).read_bytes()
         for logical in mandatory_logical_bytes
     } == mandatory_logical_bytes
-    assert "inventory_evidence_validation.md" not in (
-        frozen_projection["logical_to_physical"]
-    )
-    assert all(
-        "inventory_evidence_validation.md" not in str(relative)
-        for relative in frozen_projection["required_paths"]
-    )
-    assert frozen_projection["debt"] == [{
-        "artifact": "inventory_evidence_validation.md",
-        "reason_code": "EVIDENCE_PROJECTION_UNAUTHORIZED",
-        "authority": "ADVISORY_REPAIR_ONLY",
-        "candidate_disposition": "PRESERVE_ALL_FOR_VERIFICATION",
-    }]
+    evidence_physical = frozen_projection["logical_to_physical"][
+        "inventory_evidence_validation.md"
+    ]
+    assert (root / evidence_physical).read_bytes() == evidence_raw
+    assert evidence_physical in frozen_projection["required_paths"]
+    assert frozen_projection["debt"] == []
     assert (
         root / "inventory_evidence_validation.md"
     ).read_bytes() == evidence_raw
@@ -743,7 +736,9 @@ def test_frozen_preverify_pair_and_evidence_are_staged_under_logical_names(
     bundle = _t0_bundle(root)
     assert _bundle_bytes(bundle, "findings_inventory.md") == inventory_raw
     assert _bundle_bytes(bundle, "finding_records.json") == records_raw
-    assert "inventory_evidence_validation.md" not in bundle["files"]
+    assert _bundle_bytes(
+        bundle, "inventory_evidence_validation.md"
+    ) == evidence_raw
     assert {
         logical: (
             root / frozen_projection["logical_to_physical"][logical]

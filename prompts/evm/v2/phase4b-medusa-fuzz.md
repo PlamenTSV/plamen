@@ -98,6 +98,10 @@ in-scope contracts:
    - Adds **lifecycle action wrappers** — public functions that medusa can call
      to drive multi-step sequences (deposit→withdraw, open→close, lock→unlock),
      each forwarding to the target with bounded inputs.
+   - Obeys Solidity's payable-conversion rule when binding deployed proxies or
+     collaborators: if the target contract has a payable receive/fallback,
+     convert through `payable(address(instance))` rather than casting a plain
+     non-payable `address` directly to that contract type.
    > **External-dependency mock tier.** The deploy bullet above assumes each
    > in-scope contract deploys with a minimal local stand-in. When the
    > highest-value fuzzable surface — the in-scope accounting/escrow/state-machine
@@ -125,21 +129,59 @@ in-scope contracts:
    > can judge fidelity, e.g.
    > `Mock fidelity: mocked <Dependency> methods [<method1>, <method2>] with <faithful behavior>`
    > OR `Mock fidelity: <Dependency> NOT mocked (faithful minimal mock infeasible: <reason>) — code-trace fallback`.
-4. **Derive `fuzz_`-prefixed boolean property functions** (NO CAP — medusa
+4. **Derive `property_`-prefixed boolean property functions** (NO CAP — medusa
    execution is zero token cost, test ALL meaningful invariants) from:
    `design_context.md` (economic properties), `findings_inventory.md` (bug
    targets), `semantic_invariants.md` (structural properties),
-   `constraint_variables.md` (bounds/value ranges).
+   `constraint_variables.md` (bounds/value ranges). Each property MUST have no
+   arguments, be `public` or `external`, be `view` or `pure`, and return exactly
+   one `bool`. A `fuzz_* returns (bool)` function is forbidden: Medusa's
+   assertion-test provider does not interpret its boolean return value.
 5. **Generate `medusa.json`** with:
    - Compilation settings matching the resolved build root (the same compiler
      and remappings the build root uses, so the harness compiles).
+   - For a Foundry/Hardhat project, exactly
+     `"compilation":{"platform":"crytic-compile","platformConfig":{"target":"."}}`.
+     The target is the project root, NEVER the generated harness file. Medusa's
+     `crytic-compile` integration resolves framework dependencies/remappings
+     from the root; a nested file target is not an equivalent compilation.
+   - A non-empty `"targetContracts"` array in the `fuzzing` block naming the
+     generated contract(s) that expose the `property_` properties.
+   - A `"testing"` object inside the `fuzzing` block containing exactly
+     `"propertyTesting":{"enabled":true,"testPrefixes":["property_"]}` for
+     property classification. Keep
+     `"assertionTesting":{"enabled":true}`, `"testViewMethods":true`,
+     `"stopOnNoTests":true`, and `"stopOnFailedTest":false` inside that same
+     `fuzzing.testing` object. These fields do NOT belong directly in
+     `fuzzing`. The driver projects these oracle controls again and rejects any
+     bundle whose actual Solidity declarations do not match.
    - `"timeout": 600` in the `fuzzing` block.
    - A corpus directory under `.medusa-tests/corpus/`.
    - `"stopOnFailedTest": false` (see note below).
 
 Use realistic value bounds from `constraint_variables.md`.
 
-> **`stopOnFailedTest` note**: without `"stopOnFailedTest": false` Medusa halts
+### STEP 1.75: Compile the Exact Generated Harness (bounded repair)
+
+Before launching Medusa, pass `forge build --build-info .medusa-tests` through
+the recorded runner from the copied build root. This is the same generated-test
+compilation path that Medusa's `crytic-compile` adapter invokes, so compiling
+the production root before STEP 1 is not a substitute.
+
+If this generated-harness compile fails, read the bound compiler output, make
+one targeted harness-only correction (imports, types/payability, remappings,
+constructor wiring, or mock interface conformance), and compile again. Allow at
+most **3 total generated-harness compile attempts**. Do not delete a property,
+weaken its oracle, change the production source snapshot, install dependencies,
+or switch build systems merely to obtain a green compile. Every attempt goes
+through the recorded runner; never invoke `forge` directly.
+
+Only the final successfully compiled harness/config bytes may enter the secure
+Medusa launch bundle. If all three attempts fail, report
+`COMPILATION_FAILED` with the final bound error tail and do not launch Medusa.
+
+> **`stopOnFailedTest` note**: without
+> `"fuzzing":{"testing":{"stopOnFailedTest":false}}` Medusa halts
 > at the first invariant violation (default behavior) and never explores
 > deep-state sequences for the remaining invariants. Documented at
 > secure-contracts.com (Crytic), confirmed default is `true`. Production audits
@@ -147,7 +189,7 @@ Use realistic value bounds from `constraint_variables.md`.
 
 ### STEP 1.5: Negative-Case Reachability (SOFT CHECK)
 
-Before writing the harness, walk every `fuzz_` property and ask: *"What
+Before writing the harness, walk every `property_` property and ask: *"What
 concrete call sequence would cause this property to RETURN FALSE?"*
 
 If the answer is "I can't construct one because the harness setup makes
@@ -171,7 +213,7 @@ common failure modes:
    the property to test the branch the harness DOES reach.
 
 **Output requirement** (in your `MedusaFuzzV*.sol` harness comments):
-for each `fuzz_` function, leave a one-line comment:
+for each `property_` function, leave a one-line comment:
 `// negative case: <call sequence that would falsify this>` OR
 `// negative case: UNREACHABLE because <reason> — REWRITTEN as <new approach>`
 
@@ -192,7 +234,10 @@ Parse output for:
 - Coverage metrics
 - Crash/error details
 
-If medusa errors or fails to compile the harness: document the error and exit gracefully. Do NOT retry past the first compilation failure — report the error and proceed to STEP 3 with empty violations.
+If Medusa still reports a compilation error after the exact generated-harness
+preflight succeeded, document the adapter/compiler differential and exit
+gracefully. Do not loop the 600-second campaign: the bounded repair loop belongs
+to STEP 1.75, before fuzzing. Proceed to STEP 3 with empty violations.
 
 ---
 
@@ -201,7 +246,7 @@ If medusa errors or fails to compile the harness: document the error and exit gr
 ### STEP 3a: Deduplicate violations BEFORE writing findings
 
 With `stopOnFailedTest: false` the campaign typically surfaces the same
-root cause from multiple call sequences (e.g. `fuzz_feePercentBounded`
+root cause from multiple call sequences (e.g. `property_feePercentBounded`
 violated at `feePercent=1010`, `4037`, `186226859814786`, ... — same bug,
 many witnesses). Each is a distinct Medusa output entry but they should
 collapse to ONE `[MEDUSA-N]` finding.

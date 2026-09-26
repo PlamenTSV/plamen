@@ -24,6 +24,8 @@ import re
 import tempfile
 from typing import Any, Mapping, Sequence
 
+import artifact_surface as AS
+
 from closure_broker_v2 import (
     AUTHORIZED,
     CENTRAL_BUNDLE_DIR,
@@ -53,6 +55,9 @@ from security_obligation_authority import (
     validate_security_obligation_authority,
 )
 from verifier_work_roster import VerifierWorkRoster
+from verifier_model_execution_authority import (
+    replay_verifier_gate_model_execution_authority,
+)
 
 
 SCHEMA_VERSION = "plamen.security_obligation_lifecycle.v1"
@@ -489,6 +494,57 @@ def _verifier_authority_paths_safe(
     return variants <= allowed and all(_safe_current_file(root, path) for path in paths)
 
 
+_VERIFIER_VERDICT_TOKENS = (
+    "CONFIRMED", "CONTESTED", "APPENDIX_ONLY", "DROP_FALSE_POSITIVE",
+    "DROP_NON_SECURITY", "DROP_DESIGN_CONFIRMATION",
+    "DROP_UNACTIONABLE_SPECULATION", "FALSE_POSITIVE", "REFUTED",
+    "INFEASIBLE", "SCHEMA_INVALID", "LOCATION_INVALID", "DUPLICATE",
+    "CONSOLIDATED",
+)
+
+
+def _verifier_verdict(raw: object) -> str | None:
+    r"""The verdict a verifier ASSERTS, read by meaning. None when unresolved.
+
+    Disposition is a FAIL_CLOSED family, so this stays conservative -- but
+    conservative about the DECISION, not about punctuation.  The regex this
+    replaces anchored on ``Verdict\s*\*?\*?\s*:`` and then scanned the WHOLE
+    document token by token, which made it wrong in both directions:
+
+    * ``**Verdict** - CONFIRMED``, ``| Verdict | CONFIRMED |``,
+      ``**Verdict**: `CONFIRMED` `` and ``**Verdict**: **CONFIRMED**`` were all
+      unreadable, so a completed verification silently degraded to debt;
+    * a FENCED template listing the allowed verdicts made every artifact read
+      ``CONFIRMED``, because the loop ran over tokens rather than over the
+      document -- a quoted menu outranked the real answer.
+
+    Now the field is located by MEANING, quotations are excluded, the value is
+    normalized before the token table is consulted, and two conflicting
+    ASSERTED verdicts resolve to ``None`` rather than to whichever token the
+    loop happened to try first.
+    """
+
+    surf = AS.surface(raw)
+    found: list[str] = []
+    for field in AS.read_fields(surf, "verdict"):
+        if field.line is not None and field.line.in_fence:
+            continue
+        normalized = AS.normalize_enum(field.value)
+        if not normalized:
+            continue
+        for token in _VERIFIER_VERDICT_TOKENS:
+            if normalized == token or normalized.startswith(token + "_"):
+                found.append(token)
+                break
+        else:
+            # An unknown enum is not silently coerced into a known one.
+            found.append("")
+    asserted = [token for token in found if token]
+    if not asserted or len(set(asserted)) != 1 or len(asserted) != len(found):
+        return None
+    return asserted[0]
+
+
 def _current_verifier_bytes(
     root: Path,
     item: QueueWorkItem,
@@ -530,18 +586,7 @@ def _current_verifier_bytes(
             launch_digest=receipt.launch_digest,
             verifier_backend=receipt.verifier_backend,
         )
-        text = original.decode("utf-8", errors="strict")
-        verdict = None
-        for token in (
-            "CONFIRMED", "CONTESTED", "APPENDIX_ONLY", "DROP_FALSE_POSITIVE",
-            "DROP_NON_SECURITY", "DROP_DESIGN_CONFIRMATION",
-            "DROP_UNACTIONABLE_SPECULATION", "FALSE_POSITIVE", "REFUTED",
-            "INFEASIBLE", "SCHEMA_INVALID", "LOCATION_INVALID", "DUPLICATE",
-            "CONSOLIDATED",
-        ):
-            if re.search(rf"\bVerdict\s*\*?\*?\s*:\s*{re.escape(token)}\b", text, re.I):
-                verdict = token
-                break
+        verdict = _verifier_verdict(original)
         if verdict is None:
             return None, None, None, None
         return verdict, receipt, original, current
@@ -577,7 +622,8 @@ def _verifier_gate_receipt_issues(
         "schema_version", "state", "work_unit_id", "work_unit_resume_digest",
         "roster_digest", "launch_spec_digest", "method_dispatch_id",
         "method_dispatch_sha256", "ordered_work_item_ids",
-        "operator_receipt_digests", "output_sha256",
+        "operator_receipt_digests", "model_execution_authority_digest",
+        "output_sha256",
     }
     try:
         from verifier_work_roster import VerifierLaunchSpec, VerifierUnitReceipt
@@ -590,12 +636,18 @@ def _verifier_gate_receipt_issues(
         unit_receipt = VerifierUnitReceipt.from_json(
             unit_receipt_path.read_text(encoding="utf-8", errors="strict")
         )
+        if gate.get("schema_version") == (
+            "plamen.verifier_unit_gate_receipt.v1"
+        ):
+            raise SecurityObligationLifecycleError(
+                "legacy unit gate is unbound from MODEL execution authority"
+            )
         if set(gate) != exact_fields:
             raise SecurityObligationLifecycleError(
                 "unit gate receipt fields are not exact"
             )
         if (
-            gate.get("schema_version") != "plamen.verifier_unit_gate_receipt.v1"
+            gate.get("schema_version") != "plamen.verifier_unit_gate_receipt.v2"
             or gate.get("state") != "CLEAN"
             or gate.get("work_unit_id") != unit.work_unit_id
             or gate.get("work_unit_resume_digest") != unit.resume_digest
@@ -611,6 +663,15 @@ def _verifier_gate_receipt_issues(
             raise SecurityObligationLifecycleError(
                 "unit gate receipt binding mismatch"
             )
+        output_identity = f"scratchpad:verify_{work_item_id}.md"
+        replay_verifier_gate_model_execution_authority(
+            root,
+            gate,
+            selected_output_identity=output_identity,
+            expected_owner_suffix=(
+                f"/method_model.{unit.work_unit_id}"
+            ),
+        )
         expected_outputs = {}
         for name in unit.expected_output_files:
             expected_sha = _sha256((root / name).read_bytes())
@@ -908,9 +969,14 @@ def _central_authorizes(
     )
 
 
-def _source_rows(
-    root: Path, source: Mapping[str, Any], issues: list[str]
-) -> tuple[list[dict[str, Any]], bool]:
+def _source_authority_replay_issues(
+    root: Path,
+    source: Mapping[str, Any],
+    *,
+    run_context_authority: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Return exact source-header/replay issues before following descendants."""
+
     if (
         source.get("schema_version") != OBLIGATION_SCHEMA
         or source.get("stage") != POST_DEPTH_STAGE
@@ -924,10 +990,25 @@ def _source_rows(
         )
         or not isinstance(source.get("obligations"), list)
     ):
-        issues.append("security_authority: schema, stage, digest, or rows invalid")
-        return [], False
-    replay_issues = validate_security_obligation_authority(
-        root, stage=POST_DEPTH_STAGE
+        return ["schema, stage, digest, or rows invalid"]
+    return list(validate_security_obligation_authority(
+        root,
+        stage=POST_DEPTH_STAGE,
+        run_context_authority=run_context_authority,
+    ))
+
+
+def _source_rows(
+    root: Path,
+    source: Mapping[str, Any],
+    issues: list[str],
+    *,
+    run_context_authority: Mapping[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    replay_issues = _source_authority_replay_issues(
+        root,
+        source,
+        run_context_authority=run_context_authority,
     )
     if replay_issues:
         issues.extend(f"security_authority: {issue}" for issue in replay_issues)
@@ -1032,6 +1113,8 @@ def _load_typed_verifier_context(
 
 def security_obligation_lifecycle_input_artifacts(
     scratchpad: str | Path,
+    *,
+    run_context_authority: Mapping[str, Any] | None = None,
 ) -> tuple[str, ...]:
     """Enumerate every current scratchpad file consumed by lifecycle replay.
 
@@ -1080,15 +1163,28 @@ def security_obligation_lifecycle_input_artifacts(
 
     for name in _ARTIFACT_ROLES.values():
         add(name)
-    try:
-        for name in security_obligation_input_artifacts(
-            root, stage=POST_DEPTH_STAGE
-        ):
-            add(name)
-    except Exception:
-        # The source authority replay records the corresponding debt.  The
-        # enumerator cannot safely guess children after a malformed parent.
-        pass
+    source_path = root / SOURCE_AUTHORITY_FILE
+    if _safe_current_file(root, source_path):
+        try:
+            source, _source_raw = _strict_json(source_path)
+            source_issues = _source_authority_replay_issues(
+                root,
+                source,
+                run_context_authority=run_context_authority,
+            )
+            if not source_issues:
+                for name in security_obligation_input_artifacts(
+                    root,
+                    stage=POST_DEPTH_STAGE,
+                    run_context_authority=run_context_authority,
+                ):
+                    add(name)
+        except Exception:
+            # The source authority itself remains in the fixed denominator.
+            # Descendants are followed only after the same strict header and
+            # full replay accepted by _source_rows; malformed or stale source
+            # bytes cannot make an ambient checkpoint/graph an input.
+            pass
 
     assignment = load_object(MANDATORY_ASSIGNMENT_FILE)
     roster_payload = load_object(VERIFIER_ROSTER_FILE)
@@ -1258,6 +1354,8 @@ def build_security_obligation_lifecycle(
     *,
     artifact_names: Mapping[str, str] | None = None,
     expected_input_sha256: Mapping[str, str] | None = None,
+    expected_run_id: str | None = None,
+    run_context_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Reconcile one exact lifecycle row per current post-depth alias.
 
@@ -1265,9 +1363,34 @@ def build_security_obligation_lifecycle(
     without weakening identity: only the closed role set and safe basenames
     are accepted.  ``expected_input_sha256`` may bind either role names or
     those basenames.  A mismatch is debt, never a reason to trust current
-    bytes.
+    bytes. ``expected_run_id`` is the caller's already-authenticated execution
+    run; it permits a missing source to retain explicit run-bound debt, but
+    never replaces a blank or mismatched run in a present source authority.
     """
 
+    context = None
+    if run_context_authority is not None:
+        from security_obligation_authority import (
+            validate_security_obligation_run_context_authority,
+        )
+
+        context = validate_security_obligation_run_context_authority(
+            run_context_authority
+        )
+        if expected_run_id is None:
+            expected_run_id = context["run_id"]
+        elif expected_run_id != context["run_id"]:
+            raise SecurityObligationLifecycleError(
+                "expected_run_id differs from security-obligation run context"
+            )
+    if expected_run_id is not None and (
+        not isinstance(expected_run_id, str)
+        or not expected_run_id
+        or expected_run_id != expected_run_id.strip()
+    ):
+        raise SecurityObligationLifecycleError(
+            "expected_run_id must be one nonblank trimmed string"
+        )
     root = Path(scratchpad)
     issues: list[str] = []
     try:
@@ -1288,7 +1411,9 @@ def build_security_obligation_lifecycle(
         payloads[role] = value
     fixed_paths = set(names.values())
     try:
-        dynamic_inputs = security_obligation_lifecycle_input_artifacts(root)
+        dynamic_inputs = security_obligation_lifecycle_input_artifacts(
+            root, run_context_authority=context
+        )
     except Exception as exc:
         dynamic_inputs = ()
         issues.append(
@@ -1309,7 +1434,7 @@ def build_security_obligation_lifecycle(
 
     source = payloads["security_authority"]
     source_digest = None
-    run_id = ""
+    run_id = expected_run_id or ""
     source_stage = POST_DEPTH_STAGE
     rows: list[dict[str, Any]] = []
     denominator_complete = False
@@ -1319,9 +1444,22 @@ def build_security_obligation_lifecycle(
         source_digest = str(source.get("authority_digest") or "") or None
         source_stage = str(source.get("stage") or "")
         run_binding = source.get("run_binding")
-        if isinstance(run_binding, Mapping):
-            run_id = str(run_binding.get("run_id") or "")
-        rows, denominator_complete = _source_rows(root, source, issues)
+        source_run_id = (
+            str(run_binding.get("run_id") or "")
+            if isinstance(run_binding, Mapping)
+            else ""
+        )
+        if expected_run_id is not None and source_run_id != expected_run_id:
+            raise SecurityObligationLifecycleError(
+                "security authority run_id differs from expected driver run"
+            )
+        run_id = source_run_id
+        rows, denominator_complete = _source_rows(
+            root,
+            source,
+            issues,
+            run_context_authority=context,
+        )
 
     # Missing non-source inputs are added only when at least one alias could be
     # enumerated.  A missing mandatory denominator is an open repair boundary;
@@ -2168,6 +2306,8 @@ def write_security_obligation_lifecycle(
     *,
     artifact_names: Mapping[str, str] | None = None,
     expected_input_sha256: Mapping[str, str] | None = None,
+    expected_run_id: str | None = None,
+    run_context_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Atomically publish JSON authority followed by its exact projection."""
 
@@ -2176,6 +2316,8 @@ def write_security_obligation_lifecycle(
         root,
         artifact_names=artifact_names,
         expected_input_sha256=expected_input_sha256,
+        expected_run_id=expected_run_id,
+        run_context_authority=run_context_authority,
     )
     _validate_payload(authority)
     _atomic_text(
@@ -2198,6 +2340,8 @@ def validate_security_obligation_lifecycle(
     *,
     artifact_names: Mapping[str, str] | None = None,
     expected_input_sha256: Mapping[str, str] | None = None,
+    expected_run_id: str | None = None,
+    run_context_authority: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Replay current inputs and compare both persisted lifecycle artifacts."""
 
@@ -2208,6 +2352,8 @@ def validate_security_obligation_lifecycle(
             root,
             artifact_names=artifact_names,
             expected_input_sha256=expected_input_sha256,
+            expected_run_id=expected_run_id,
+            run_context_authority=run_context_authority,
         )
         _validate_payload(expected)
     except Exception as exc:

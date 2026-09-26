@@ -159,7 +159,24 @@ def _record_pre_authority(root: Path) -> None:
         exact_inputs=("_mechanical_graph.json",),
     )
     launch = _launch(contract, model="driver", exec_mode="python")
+    # Callers derive the expected PRE bytes first so they can select exact
+    # aliases for their receipt fixture.  Replay production ordering here:
+    # bind the DRIVER work unit while its outputs are absent, then materialize
+    # those already-derived bytes and commit them.  Treating pre-existing
+    # unowned bytes as an admissible prestate would weaken the PhaseIO gate.
+    output_bytes = {
+        name: (root / name).read_bytes()
+        for name in (
+            A.FEATURE_FACT_FILE,
+            A.AUTHORITY_FILE,
+            A.PROJECTION_FILE,
+        )
+    }
+    for name in output_bytes:
+        (root / name).unlink()
     record_work_unit_inputs(root, root.parent, contract, launch, run_id=RUN_ID)
+    for name, raw in output_bytes.items():
+        (root / name).write_bytes(raw)
     record_work_unit_artifacts(
         root,
         root.parent,
@@ -185,7 +202,19 @@ def _record_post_authority(root: Path) -> None:
         ),
     )
     launch = _launch(contract, model="driver", exec_mode="python")
+    output_bytes = {
+        name: (root / name).read_bytes()
+        for name in (
+            A.FEATURE_FACT_FILE,
+            A.AUTHORITY_FILE,
+            A.PROJECTION_FILE,
+        )
+    }
+    for name in output_bytes:
+        (root / name).unlink()
     record_work_unit_inputs(root, root.parent, contract, launch, run_id=RUN_ID)
+    for name, raw in output_bytes.items():
+        (root / name).write_bytes(raw)
     record_work_unit_artifacts(
         root,
         root.parent,
@@ -259,6 +288,19 @@ def _real_bound_depth_receipt(
         work_unit_id="worker.depth-state-trace",
         exact_outputs=(output,),
     )
+    # The production depth denominator is closed and all registered recon /
+    # inventory inputs exist by this point.  Materialize inert fixture bytes
+    # for every remaining registered input instead of letting the ledger bind
+    # MISSING rows that correctly cannot authorize MODEL output commitment.
+    for identity in contract.immutable_inputs:
+        root_name, relative = identity.split(":", 1)
+        assert root_name == "scratchpad"
+        input_path = root / relative
+        if not input_path.exists():
+            input_path.parent.mkdir(parents=True, exist_ok=True)
+            input_path.write_text(
+                f"# bound fixture input: {relative}\n", encoding="utf-8"
+            )
     launch = _launch(contract, model="opus", exec_mode="pty")
     record_work_unit_inputs(root, root.parent, contract, launch, run_id=RUN_ID)
     if finding_id and finding_evidence is None:
@@ -475,6 +517,8 @@ def test_ordinary_uppercase_word_never_mints_wrapper_authority(tmp_path: Path) -
         ("native_w_object_approve", "wobject"),
         ("nativeWCoinApprove", "WCoin"),
         ("nativeWASSETApprove", "WASSET"),
+        ("native_WETH_approve", "WETH"),
+        ("native_WZETA_approve", "WZETA"),
     ),
 )
 def test_wrapper_classification_debt_handles_common_identifier_spellings(
@@ -504,7 +548,18 @@ def test_wrapper_classification_debt_handles_common_identifier_spellings(
 
 @pytest.mark.parametrize(
     "word",
-    ("withdraw", "writable", "WRITE", "when", "with", "while", "wallet"),
+    (
+        "withdraw",
+        "withdrawAndCall",
+        "withdrawGasFee",
+        "withdrawToNativeChain",
+        "writable",
+        "WRITE",
+        "when",
+        "with",
+        "while",
+        "wallet",
+    ),
 )
 def test_owned_or_structural_w_words_are_not_wrapper_classification_debt(
     tmp_path: Path,
@@ -1196,6 +1251,11 @@ def test_real_depth_worker_prompt_carries_exact_binding_contract(
     assert "original case" in prompt.casefold()
     assert "normalized prose" in prompt.casefold()
     assert "cannot bind" in prompt.casefold()
+    normalized_prompt = " ".join(prompt.casefold().split())
+    assert "exactly one h2/h3/h4" in normalized_prompt
+    assert "table-only id" in normalized_prompt
+    assert "upstream id mentioned only in prose" in normalized_prompt
+    assert "if no local finding section is emitted" in normalized_prompt
     if pipeline == "l1":
         methodology = (
             Path(__file__).resolve().parents[1]
@@ -1700,6 +1760,100 @@ def test_documentation_only_keywords_do_not_create_obligations(tmp_path: Path) -
     assert payload["status"] == "COMPLETE"
     assert payload["obligations"] == []
     assert A.read_queueable_security_obligations(tmp_path) == []
+
+
+def test_caller_map_fallback_does_not_project_caller_cells_onto_callee_locus(
+    tmp_path: Path,
+) -> None:
+    _checkpoint(tmp_path)
+    _graph(tmp_path)
+    (tmp_path / "caller_map.md").write_text(
+        "| Function | Location | Callers |\n"
+        "|---|---|---|\n"
+        "| add | src/SafeMath.sol:L6 | decodeMessage, withdrawToNativeChain |\n"
+        "| refundTransferRecipient | src/Vault.sol:L7 | decodeMessage |\n",
+        encoding="utf-8",
+    )
+
+    _build(tmp_path)
+    feature_payload = json.loads(
+        (tmp_path / A.FEATURE_FACT_FILE).read_text(encoding="utf-8")
+    )
+    fallback_subjects = {
+        row["subject_id"]
+        for row in feature_payload["facts"]
+        if any(
+            source["artifact"] == "caller_map.md"
+            for source in row.get("sources", [])
+        )
+    }
+
+    assert "locus:src/SafeMath.sol:L6" not in fallback_subjects
+    assert "locus:src/Vault.sol:L7" in fallback_subjects
+
+
+def test_so006_requires_effectful_external_callee_not_decoder_local_names(
+    tmp_path: Path,
+) -> None:
+    _checkpoint(tmp_path)
+    _graph(
+        tmp_path,
+        functions={
+            "Decoder.decodeMessage": {
+                "bare": "decodeMessage",
+                "loc": "src/Decoder.sol:L10",
+                "callers": [],
+                "callees": ["calldataload", "bytesToAddress"],
+            },
+            "Gateway.onCall": {
+                "bare": "onCall",
+                "loc": "src/Gateway.sol:L20",
+                "callers": [],
+                "callees": ["token.transfer (src/Token.sol:L4)"],
+            },
+            "Gateway.withdrawAndCall": {
+                "bare": "withdrawAndCall",
+                "loc": "src/Gateway.sol:L30",
+                "callers": [],
+                "callees": ["CallOptions", "RevertOptions", "concat"],
+            },
+        },
+        var_refs={
+            "Decoder.receiver": {
+                "bare": "receiver",
+                "refs": ["Decoder.decodeMessage"],
+            },
+            "Decoder.externalId": {
+                "bare": "externalId",
+                "refs": ["Decoder.decodeMessage"],
+            },
+            "Gateway.receiver": {
+                "bare": "receiver",
+                "refs": ["Gateway.onCall", "Gateway.withdrawAndCall"],
+            },
+        },
+    )
+
+    obligation = _by_rule(_build(tmp_path), "security.external_call_surface.v1")
+
+    assert obligation is not None
+    assert {row["subject_id"] for row in obligation["trigger_aliases"]} == {
+        "fn:Gateway.onCall",
+        "fn:Gateway.withdrawAndCall",
+    }
+    selected_facts = json.loads(
+        (tmp_path / A.FEATURE_FACT_FILE).read_text(encoding="utf-8")
+    )["facts"]
+    assert any(
+        row["subject_id"] == "fn:Gateway.onCall"
+        and row["concept"] == "external_call_evidence"
+        for row in selected_facts
+    )
+    assert not any(
+        row["subject_id"] == "fn:Decoder.decodeMessage"
+        and row["concept"] == "external_call_evidence"
+        for row in selected_facts
+    )
 
 
 def test_code_derived_graph_facts_fire_with_exact_provenance(tmp_path: Path) -> None:

@@ -102,7 +102,8 @@ _CONTEXT_THRASH_LOOP_S = float(
 
 # Ship 8.10: the subprocess-isolation overlay payload. SINGLE source of
 # truth shared by plamen_driver (production) and preflight_pty_transports
-# (probe). Empty enabledPlugins/hooks/mcpServers disables those subsystems
+# (probe). Empty hooks/mcpServers and an explicit builtin-disable
+# enabledPlugins map (see CLAUDE_SETTINGS_ENABLED_PLUGINS) disable those subsystems
 # (plugin / hook / MCP cold-start hangs) without touching the user's real
 # settings.json -- so OAuth keychain auth keeps working.
 #
@@ -117,10 +118,50 @@ _CONTEXT_THRASH_LOOP_S = float(
 # keystroke simulation is needed. `--settings` overlays this onto the base
 # config; the driver ALSO writes it to the global ~/.claude/settings.json for
 # MCP phases that do not pass `--settings`.
+# Claude Code >= 2.1.278 ships a BUILTIN plugin, `agents-md@builtin`, whose
+# own description is "AGENTS.md as project instructions: by default loaded
+# where the project has no CLAUDE.md". An EMPTY `enabledPlugins` does NOT
+# switch a builtin off: measured on 2.1.278, `{}` loaded it 6/6 launches and
+# `{"agents-md@builtin": false}` loaded it 0/6, with hooks still firing and
+# tools still granted on both 2.1.273 and 2.1.278. DODO run44 (2026-09-19)
+# halted at `instantiate` on exactly this: the CLI auto-updated 2.1.273 ->
+# 2.1.278 between run43 and run44, the init event reported the plugin, and the
+# fail-closed init-applicability gate (`expected plugins == []`) rejected the
+# worker twice. The gate is correct -- an audited repository's AGENTS.md is an
+# instruction-injection surface the driver never armed -- so the fix is to
+# DISABLE the builtin deterministically here, not to admit it there. This is
+# the ONE owner of the value; every settings writer and validator imports it.
+CLAUDE_SETTINGS_ENABLED_PLUGINS: dict[str, bool] = {"agents-md@builtin": False}
+
 SUBPROCESS_ISOLATION_PAYLOAD = (
-    '{"enabledPlugins":{},"hooks":{},"mcpServers":{},'
+    '{"enabledPlugins":{"agents-md@builtin":false},"hooks":{},"mcpServers":{},'
     '"skipDangerousModePermissionPrompt":true}'
 )
+assert (
+    json.loads(SUBPROCESS_ISOLATION_PAYLOAD)["enabledPlugins"]
+    == CLAUDE_SETTINGS_ENABLED_PLUGINS
+), "SUBPROCESS_ISOLATION_PAYLOAD drifted from CLAUDE_SETTINGS_ENABLED_PLUGINS"
+
+
+def settings_enabled_plugins_grant_nothing(value: Any) -> bool:
+    """The PROPERTY every settings validator gates on: no plugin is granted.
+
+    An `enabledPlugins` map grants a plugin only through a `true` value, so a
+    map whose every value is exactly `false` (including the empty map and the
+    builtin-disable map above) grants nothing.  Validators check this property
+    rather than one spelling because the writers' spelling changed once
+    already (empty map -> builtin disable) and an exact-spelling gate would
+    have failed every governance-pinned fixture that still writes `{}`.
+    Whether a plugin actually LOADED is a separate, fail-closed question
+    answered by the init-applicability gate (`expected plugins == []`).
+    """
+
+    if not isinstance(value, dict):
+        return False
+    return all(
+        isinstance(name, str) and name and enabled is False
+        for name, enabled in value.items()
+    )
 
 
 # Ship 8.13: auto-compaction fingerprint. When Claude Code auto-compacts a

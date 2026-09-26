@@ -107,6 +107,9 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
          - Each property function tests one invariant
       2. Generate a `medusa.json` config file with:
          - Target compilation settings matching the project
+         - For Foundry/Hardhat, crytic-compile target `.` (the project root),
+           never the generated harness file, and a non-empty
+           `fuzzing.targetContracts` naming the generated fuzz contract(s)
          - `"timeout": 600` (10 minutes) in the fuzzing block
          - Corpus directory in `.medusa-tests/corpus/`
          - `"stopOnFailedTest": false` in the fuzzing block — without this,
@@ -115,6 +118,18 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
            set this `false` for comprehensive coverage.
 
       ### STEP 2: Run Medusa
+      First compile the exact generated harness by passing
+      `forge build --build-info .medusa-tests` through the recorded runner.
+      On compiler failure, make one targeted harness-only correction and retry,
+      for at most 3 total generated-harness compile attempts. Do not delete or
+      weaken a property, edit production sources, install dependencies, or
+      switch build systems to make the compile pass. Contracts with a payable
+      receive/fallback must be cast through `payable(address(instance))`.
+      Only the final successfully compiled harness/config bytes may enter the
+      secure Medusa launch bundle. If all three attempts fail, report
+      COMPILATION_FAILED with the final bound error tail and do not launch
+      Medusa.
+
       Execute: `medusa fuzz --config .medusa-tests/medusa.json --timeout 600`
       Parse output for:
       - Property violations (counterexamples found)
@@ -125,7 +140,7 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
 
       ### STEP 3a: Dedup BEFORE writing findings
       With stopOnFailedTest: false, Medusa surfaces the same root cause
-      from many counterexamples (e.g. fuzz_feePercentBounded violated at
+      from many counterexamples (e.g. property_feePercentBounded violated at
       1010, 4037, 186226859814786 — same bug, many witnesses). Group by
       (target_contract, property_function, violated_assertion). Emit one
       [MEDUSA-N] per group; list the smallest counterexample first and
@@ -147,7 +162,9 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
       | Boundary | {n} | constraint_variables.md | YES/NO |
 
       If no violations: report coverage summary only.
-      If medusa errors or fails to compile harness: document error and exit gracefully.
+      If Medusa still reports a compilation error after the generated-harness
+      preflight succeeded, document the adapter/compiler differential and exit
+      gracefully; do not loop the 600-second campaign.
 
       ## Output
       Write to {SCRATCHPAD}/medusa_fuzz_findings.md

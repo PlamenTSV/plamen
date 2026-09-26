@@ -621,9 +621,17 @@ def test_fast_backend_admission_rejects_pending_policy_receipt_and_case_alias(
         launch()
     receipt.write_bytes(raw)
     if os.name != "nt":
-        (signed.payload_path / "NODE_MODULES").mkdir()
-        with pytest.raises(RUNTIME.MCPRuntimeSecurityError, match="case alias"):
-            launch()
+        alias = signed.payload_path / "NODE_MODULES"
+        try:
+            alias.mkdir()
+        except FileExistsError:
+            # A case-insensitive POSIX volume prevents the alias from being
+            # materialized at all, which already supplies the required
+            # fail-closed namespace property.
+            assert alias.samefile(signed.payload_path / "node_modules")
+        else:
+            with pytest.raises(RUNTIME.MCPRuntimeSecurityError, match="case alias"):
+                launch()
 
 
 @pytest.mark.parametrize(
@@ -1550,6 +1558,7 @@ def test_receipt_rejects_bool_int_npm_policy_confusion_even_when_resigned(
 )
 def test_generation_request_rejects_malformed_finalizer_policy(
     mutation: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     policy = dict(FINALIZER_POLICY)
     if mutation == "wrong-schema":
@@ -1569,6 +1578,8 @@ def test_generation_request_rejects_malformed_finalizer_policy(
         for key, value in _install_authority().items()
         if key != "generation_request"
     }
+    if mutation == "reserved":
+        _patch_module_os_name(monkeypatch, RUNTIME, "nt")
     with pytest.raises(RUNTIME.MCPRuntimeSecurityError, match="finalizer|relative|ambiguous"):
         RUNTIME.derive_generation_request(
             **authority,

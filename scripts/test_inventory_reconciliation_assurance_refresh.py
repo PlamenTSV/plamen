@@ -518,3 +518,59 @@ def test_final_refresh_fails_closed_when_mutation_authority_is_corrupt(
         or "producer_authority_mismatch" in issue.lower()
         for issue in issues
     )
+
+
+def test_inventory_evidence_validation_is_read_only_by_default(
+    tmp_path: Path,
+) -> None:
+    scratch = tmp_path / ".scratchpad"
+    scratch.mkdir()
+    source = tmp_path / "src" / "Fixture.sol"
+    source.parent.mkdir()
+    source.write_text("contract Fixture {}\n", encoding="utf-8")
+    inventory = scratch / "findings_inventory.md"
+    inventory.write_text(
+        "# Findings Inventory\n\n"
+        + _finding("INV-001", "basename location").replace(
+            "src/Fixture.sol:L1", "Fixture.sol:L1"
+        ),
+        encoding="utf-8",
+    )
+    before = inventory.read_bytes()
+
+    records = D._validate_inventory_evidence(scratch, str(tmp_path))
+
+    assert records["INV-001"]["location_status"] == "RECOVERED_BASENAME"
+    assert records["INV-001"]["resolved_location"] == "src/Fixture.sol:L1"
+    assert inventory.read_bytes() == before
+
+
+def test_resume_restores_exact_committed_inventory_without_inode_change(
+    tmp_path: Path,
+) -> None:
+    scratch, config, _checkpoint = _fixture(tmp_path)
+    payload = D._load_inventory_aggregate_plan(scratch)
+    ledger = read_artifact_ledger(scratch)
+    key = "sc/light/evm/claude/inventory/canonical_aggregate"
+    unit = ledger["work_units"][key]
+    inventory = scratch / "findings_inventory.md"
+    original = inventory.read_bytes()
+    inode = inventory.stat().st_ino
+
+    inventory.write_text(
+        original.decode("utf-8").replace(
+            "src/Fixture.sol:L1", "Fixture.sol:L1"
+        ),
+        encoding="utf-8",
+    )
+    assert inventory.read_bytes() != original
+    assert inventory.stat().st_ino == inode
+
+    assert D._restore_active_inventory_aggregate_outputs_in_place(
+        scratchpad=scratch,
+        payload=payload,
+        unit=unit,
+        ledger=ledger,
+    ) == []
+    assert inventory.read_bytes() == original
+    assert inventory.stat().st_ino == inode

@@ -23,8 +23,13 @@ import uuid
 from bounded_artifact_io import read_bounded_regular_bytes
 from exploration_clear_lifecycle import _canonical_alias_projection
 from finding_producer_registry import (
+    EXPLORATION_CLEAR_ARTIFACT,
+    EXPLORATION_CLEAR_OBLIGATION_ARTIFACT,
+    MARKDOWN_FINDING_ARTIFACT,
     ProducerResolutionError,
+    TypedProducerActionError,
     producer_for_artifact,
+    read_registered_enumeration_obligations,
     read_registered_typed_actions,
 )
 
@@ -274,16 +279,31 @@ def _capture_source(
         producer = producer_for_artifact(
             relative, consumer="canonical_identity"
         )
-        if producer is not None and getattr(
-            producer, "artifact_format", "MARKDOWN_FINDINGS"
-        ) != "MARKDOWN_FINDINGS":
-            # The mechanical projection deliberately degrades malformed typed
-            # producers to zero rows. Capture must expose that condition.
+        artifact_format = (
+            producer.artifact_format
+            if producer is not None
+            else MARKDOWN_FINDING_ARTIFACT
+        )
+        if artifact_format == MARKDOWN_FINDING_ARTIFACT:
+            raw.decode("utf-8", errors="strict")
+        elif artifact_format == EXPLORATION_CLEAR_ARTIFACT:
+            # Capture must expose malformed typed producers rather than rely
+            # on the mechanical projector's zero-row result.
             read_registered_typed_actions(
                 path, consumer="canonical_identity"
             )
+        elif artifact_format == EXPLORATION_CLEAR_OBLIGATION_ARTIFACT:
+            # Obligation queues are typed non-findings. Validate their exact
+            # queue/receipt denominator, but do not turn them into finding
+            # aliases in the canonical-prior snapshot.
+            read_registered_enumeration_obligations(
+                path, consumer="canonical_identity"
+            )
         else:
-            raw.decode("utf-8", errors="strict")
+            raise TypedProducerActionError(
+                f"registered producer {producer.key} has unsupported "
+                f"canonical identity format {artifact_format}"
+            )
 
         import plamen_mechanical
 

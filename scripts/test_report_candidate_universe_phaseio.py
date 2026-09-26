@@ -7,6 +7,7 @@ is bound by the artifact ledger.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -278,11 +279,23 @@ def test_candidate_source_drift_propagates_through_index_routing_to_tier_writer(
         exact_outputs=("report_medium.md",),
     )
 
+    def generation(identity: str):
+        payload = f"generation:{identity}\n".encode("utf-8")
+        return {
+            "status": "ACTIVE",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        }
+
     def unit(contract, inputs: tuple[str, ...], outputs: tuple[str, ...]):
         return {
             "run_id": "typed-report-run",
-            "input_bindings": {identity: {} for identity in inputs},
-            "artifacts": {identity: {} for identity in outputs},
+            "input_bindings": {
+                identity: generation(identity) for identity in inputs
+            },
+            "artifacts": {
+                identity: generation(identity) for identity in outputs
+            },
         }
 
     coverage = "scratchpad:report_index_coverage_seed.md"

@@ -293,7 +293,7 @@ def test_settings_overlay_uses_all_tool_exec_hook_and_explicit_denies(
     assert "Edit" not in settings["permissions"]["allow"]
     assert "Write" not in settings["permissions"]["allow"]
     assert settings["mcpServers"] == {}
-    assert settings["enabledPlugins"] == {}
+    assert settings["enabledPlugins"] == {"agents-md@builtin": False}
 
 
 def test_hook_persists_content_free_idempotent_receipt(tmp_path: Path):

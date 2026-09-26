@@ -19,6 +19,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Optional
 
 import rooted_path_io as rooted_io
+from audit_snapshot import (
+    SnapshotInputError,
+    validate_production_source_path_authority,
+)
 
 # The driver is also launched by absolute `scripts/plamen_driver.py` path from
 # an audited project cwd. In that mode Python adds only `scripts/` to sys.path;
@@ -61,6 +65,7 @@ from plamen_parsers import (
     _extract_trust_scope,
     _normalize_manifest_header,
     _split_markdown_table_row,
+    _split_markdown_table_row as _table_cells,
     _manifest_row_from_cells,
     _manifest_row_is_spawned_breadth_agent,
     _poc_kw_present,
@@ -117,6 +122,10 @@ from finding_producer_registry import (
     registry_digest as _finding_producer_registry_digest,
     validated_enumgap_obligation_dispositions as _validated_enumgap_obligation_dispositions,
 )
+from candidate_negative_authority import (
+    CandidateNegativeAuthorityError,
+    validate_candidate_negative_planning_debt,
+)
 from preverify_inventory_successor import (
     DELIVERY_RECEIPT_NAME as PREVERIFY_DELIVERY_SUCCESSOR_NAME,
     FINAL_RECEIPT_NAME as PREVERIFY_INVENTORY_SUCCESSOR_NAME,
@@ -144,19 +153,258 @@ from report_disposition_authority import (
     validate_index_dispositions as _validate_decision_authorized_index_dispositions,
 )
 from inventory_reconciliation import (
+    driver_restorable_preservation_row,
     reconcile_inventory as _reconcile_exact_inventory,
     validate_inventory_reconciliation as _validate_exact_inventory_reconciliation,
     write_inventory_reconciliation as _write_exact_inventory_reconciliation,
+)
+from inventory_source_action_authority import (
+    ambiguous_identity_debt,
+    validate_inventory_chunk_source_actions,
 )
 from artifact_ledger import (
     read_artifact_ledger,
     semantic_input_prebind_producer_authority_issues,
     semantic_input_producer_authority_issues,
 )
-from verifier_work_roster import VerifierUnitReceipt, VerifierWorkRoster
+from verifier_work_roster import (
+    VerifierLaunchSpec,
+    VerifierUnitReceipt,
+    VerifierWorkRoster,
+)
+from verifier_model_execution_authority import (
+    replay_verifier_gate_model_execution_authority,
+)
+
+import artifact_surface as _asurf
+from artifact_surface import (
+    ACCEPTED as _ACCEPTED,
+    CheckResult as _CheckResult,
+    DEBT as _DEBT,
+    Defect as _Defect,
+    FAIL_CLOSED as _FAIL_CLOSED,
+    candidate_identity as _candidate_identity,
+    closure_for_property as _closure_for_property,
+    find_assertions as _find_assertions,
+    find_table as _find_table,
+    is_zero_candidate_placeholder as _is_zero_placeholder,
+    line_asserts as _line_asserts,
+    normalize_cell as _norm_cell,
+    normalize_enum as _norm_enum,
+    normalize_label as _norm_label,
+    read_field as _read_field,
+    read_tables as _read_tables,
+    strip_decoration as _strip_decoration,
+    surface as _surface,
+)
+
+# ---------------------------------------------------------------------------
+# P0-AM: representation-bound gate adapters.
+#
+# Every gate below used to test a REPRESENTATION (exact heading bytes, exact
+# column tuples, whole-line anchoring, decoration, bare-word vocabulary) and
+# then fail CLOSED by discarding a worker artifact. These adapters are the
+# single normalize-once boundary for this module: a gate calls one of them and
+# then applies its check to the NORMALIZED value.
+#
+# Closure is decided MECHANICALLY by `_closure_for_property(name)` — the first
+# dotted segment names the family, and only identity / dedup / severity /
+# disposition may block. Everything else degrades with visible debt carrying a
+# targeted repair hint that names the worker's physical line.
+# ---------------------------------------------------------------------------
+
+_REPRESENTATION_DEBT_LEDGER = "validator_representation_debt.md"
+
+
+def _defect(
+    property_violated: str,
+    *,
+    physical_line: int = 0,
+    observed: str = "",
+    expected: str = "",
+    repair_hint: str = "",
+) -> _Defect:
+    """Build a typed Defect whose closure is derived, never hand-picked."""
+    return _Defect(
+        property_violated=property_violated,
+        physical_line=int(physical_line or 0),
+        observed=str(observed),
+        expected=str(expected),
+        repair_hint=str(repair_hint),
+        closure=_closure_for_property(property_violated),
+    )
+
+
+def record_validator_debt(
+    scratchpad: Optional[Path],
+    issues: Iterable[str],
+    *,
+    gate: str = "",
+) -> list[str]:
+    """Surface non-blocking defects instead of discarding a worker artifact.
+
+    Principle 3 (repair, don't reject): a defect that is not identity / dedup /
+    severity / disposition must never throw away an analysis that already cost
+    money and time. It is logged, appended to a visible ledger beside the
+    artifacts, and returned so a caller can attach it to a row.
+    """
+    rows = [str(issue).strip() for issue in (issues or []) if str(issue).strip()]
+    if not rows:
+        return []
+    for row in rows:
+        log.warning("[validator-debt] %s%s", f"{gate}: " if gate else "", row)
+    if scratchpad is not None:
+        try:
+            path = Path(scratchpad) / _REPRESENTATION_DEBT_LEDGER
+            new = not path.exists()
+            with path.open("a", encoding="utf-8") as fh:
+                if new:
+                    fh.write(
+                        "# Validator representation debt\n\n"
+                        "Non-blocking defects. The artifact was PUBLISHED; the "
+                        "rows below name what a human should repair.\n\n"
+                        "| Gate | Defect |\n|---|---|\n"
+                    )
+                for row in rows:
+                    cell = row.replace("|", "\\|").replace("\n", " ")
+                    fh.write(f"| {gate or '-'} | {cell} |\n")
+        except Exception:  # pragma: no cover - best-effort visibility only
+            pass
+    return rows
+
+
+def _debt_reasons(result: "_CheckResult") -> list[str]:
+    return [d.render() for d in result.debt_defects]
+
+
+def _blocking_reasons(result: "_CheckResult") -> list[str]:
+    return [d.render() for d in result.blocking_defects]
+
+
+def _surface_of(value: object) -> "_asurf.ArtifactSurface":
+    """Normalize ONCE. Accepts a Path, bytes, str, None or an existing view."""
+    if isinstance(value, _asurf.ArtifactSurface):
+        return value
+    if isinstance(value, Path):
+        try:
+            return _surface(value.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            return _surface("")
+    return _surface(value)
+
+
+def _asserts_phrase(value: object, token: str, **kwargs) -> bool:
+    """True when the artifact ASSERTS `token` rather than merely naming it.
+
+    Retires the measured run48 family: a prose sentence that NAMES a marker
+    while explaining where markers were placed is a MENTION - never harvested
+    and never rejected. A negated statement ('No schema violations detected',
+    '0 severity mismatches') is likewise a MENTION.
+    """
+    return bool(_find_assertions(value, token, **kwargs))
+
+
+def _line_declares(line: "_asurf.LogicalLine", token: str, **kwargs) -> bool:
+    """`line_asserts`, plus an HTML-comment body that OPENS with the token.
+
+    `<!-- PLAMEN-STUB: content to follow -->` is a genuine structural marker
+    even though its tail reads as a sentence; a prose line that merely names
+    the sentinel is still a MENTION.
+    """
+    if _line_asserts(line, token, **kwargs):
+        return True
+    if not getattr(line, "in_comment", False):
+        return False
+    body = re.sub(r"^\s*<!--\s*", "", str(getattr(line, "raw", "")))
+    body = re.sub(r"\s*-->\s*$", "", body)
+    return _strip_decoration(body).casefold().startswith(str(token).casefold())
+
+
+def _declares_anywhere(value: object, token: str, **kwargs):
+    """First LogicalLine that DECLARES `token`, else None."""
+    surf = _surface_of(value)
+    for line in surf.lines:
+        if _line_declares(line, token, **kwargs):
+            return line
+    return None
+
+
+def _heading_matches(line: "_asurf.LogicalLine", *needles: str) -> bool:
+    """Depth- and decoration-agnostic heading match on the NORMALIZED text."""
+    if getattr(line, "kind", "") != _asurf.HEADING:
+        return False
+    label = _norm_label(getattr(line, "heading_text", ""))
+    if not label:
+        return False
+    return any(str(n).casefold() in label for n in needles if n)
+
+
+def _section_after_heading(
+    surf: "_asurf.ArtifactSurface", *needles: str
+) -> tuple[Optional["_asurf.LogicalLine"], tuple]:
+    """(heading, body) for the first heading naming any needle, at ANY depth.
+
+    The body ends at the next heading of equal-or-shallower depth. A heading
+    whose text merely differs in depth, decoration, punctuation or a trailing
+    parenthetical no longer hides the section from its own gate.
+    """
+    for head, body in surf.sections():
+        if _heading_matches(head, *needles):
+            return head, body
+    return None, ()
+
+
+def _row_cells_of(line: "_asurf.LogicalLine") -> tuple[str, ...]:
+    """Cells of a row-shaped logical line, tolerating an inline HTML comment."""
+    cells = tuple(getattr(line, "cells", ()) or ())
+    if cells:
+        return cells
+    raw = str(getattr(line, "raw", ""))
+    cleaned = re.sub(r"<!--.*?-->", " ", raw, flags=re.DOTALL).strip()
+    if not cleaned.startswith("|"):
+        return ()
+    parts = [c.strip() for c in cleaned.strip().strip("|").split("|")]
+    if len(parts) < 2:
+        return ()
+    return tuple(_norm_cell(p) for p in parts)
+
+
+def _strip_inline_comments(text: object) -> str:
+    """Drop inline HTML comments so a commented table row keeps its cells."""
+    value, _ = (text, None) if isinstance(text, str) else (str(text or ""), None)
+    return re.sub(r"<!--.*?-->", " ", value, flags=re.DOTALL)
+
+
+def _canonical_finding_key(value: object) -> str:
+    """One stable join key for a finding id in ANY spelling.
+
+    `verify_INV-001.md`, `verify_F-INV-001.md`, `INV001`, `INV-1`, `[inv_001]`
+    and `**INV-001**` all reduce to the same key. Zero padding, separators,
+    brackets, decoration and case are presentation; the letters and the numeric
+    value are the identity.
+    """
+    raw = _strip_decoration(value).strip().strip("[](){}<>").strip()
+    if not raw:
+        return ""
+    parts = [p for p in re.split(r"[^A-Za-z0-9]+", raw) if p]
+    out: list[str] = []
+    for part in parts:
+        for chunk in re.findall(r"[A-Za-z]+|\d+", part):
+            out.append(str(int(chunk)) if chunk.isdigit() else chunk.upper())
+    return "-".join(out)
+
 
 __all__ = [
+    "record_validator_debt",
     "verify_poc_contract_only_failed_ids",
+    "registered_finding_delivery_projection",
+    "_build_registered_finding_delivery_receipt_payload",
+    "_refresh_registered_finding_delivery_receipt",
+    "_validate_current_registered_finding_delivery",
+    "_evaluate_report_coverage_semantic_contract",
+    "_read_skill_authority_artifact",
+    "_scan_registered_finding_delivery_sources",
+    "_validate_exact_scope_coverage_delivery",
     "_canonical_output_case_issue",
     "_verification_runtime_debt_coverage",
     "_generate_verify_targeted_repair_hint",
@@ -186,6 +434,7 @@ __all__ = [
     "_validate_report_dedup_exact_pair_coverage",
     "_repair_dedup_missing_dispositions",
     "_generate_dedup_decision_retry_hint",
+    "_function_summary_obligation_sets",
     "_check_function_summary_obligation",
     "_check_pde_section_present",
     "_check_perturbation_block_per_finding",
@@ -213,6 +462,7 @@ __all__ = [
     "_collect_report_index_seed_ids",
     "_collect_report_promoted_ids",
     "_collect_scip_indexed_paths",
+    "_validated_recon_source_path_authority",
     "_collect_verify_hypothesis_ids",
     "_collect_verify_promotion_receipts",
     "_compute_assemble_count_delta",
@@ -282,6 +532,7 @@ __all__ = [
     "_quarantine_canonical_report_fail_closed",
     "_quarantine_report_without_completed_assemble",
     "_quarantine_stale_on_retry",
+    "_has_active_output_committed_artifact",
     "_pattern_implicated_by_missing",
     "_parse_rescan_manifest_files",
     "_rescan_manifest_exact_missing",
@@ -343,6 +594,7 @@ __all__ = [
     "_validate_depth_exit",
     "_validate_depth_iterations",
     "_validate_semantic_gap_niche",
+    "_validate_niche_findings_preacceptance",
     "_validate_niche_manifest_consistency",
     "_required_niche_manifest_union",
     "_niche_tokens_from_required_table",
@@ -1594,6 +1846,126 @@ def _classify_artifact_row(
     return _BREADTH_STATUS_COMPLETE, []
 
 
+def _tolerant_artifact_markers(path: Path) -> tuple[dict[str, str], list[str]]:
+    """Read PLAMEN ownership markers by MEANING, not by fence position.
+
+    P0-AM. The measured defect: wrapping a worker's REAL marker header block in
+    a ``` fence - a purely presentational choice - erased ownership and turned
+    an accepted run48 artifact into three `structural_fail` reasons. That is
+    the run48 "worker wrapped each receipt in BACKTICKS" rejection verbatim.
+
+    Resolution order preserves the original anti-poisoning intent: an UNFENCED
+    marker always wins, so a fenced exemplar can still never mask a real one.
+    A fenced marker is consulted ONLY when no unfenced marker exists for that
+    key, and doing so is recorded as DEBT rather than silently trusted.
+
+    Returns ``(markers, debt)`` where keys are uppercase and stripped of the
+    ``PLAMEN_`` prefix (``ARTIFACT``, ``PHASE``, ``OWNER``, ``EXPECTED_OUTPUT``,
+    ``AGENT_ROW``, ...).
+    """
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return {}, []
+    surf = _surface_of(raw)
+    plain: dict[str, str] = {}
+    fenced: dict[str, str] = {}
+    pattern = re.compile(r"<!--\s*([A-Za-z][A-Za-z0-9_]*)\s*:\s*(.*?)\s*-->")
+    for line in surf.lines:
+        for match in pattern.finditer(str(getattr(line, "raw", ""))):
+            key = match.group(1).strip().upper()
+            if key.startswith("PLAMEN_"):
+                key = key[len("PLAMEN_"):]
+            value = _norm_cell(match.group(2))
+            target = fenced if getattr(line, "in_fence", False) else plain
+            target[key] = value
+    debt: list[str] = []
+    recovered: list[str] = []
+    for key, value in fenced.items():
+        if key not in plain:
+            plain[key] = value
+            recovered.append(key)
+    if recovered:
+        debt.append(
+            "marker(s) "
+            + ", ".join(sorted(recovered))
+            + " were read from inside a code fence; move them out of the fence "
+            "so they are unambiguously the artifact's own markers"
+        )
+    return plain, debt
+
+
+def _artifact_ownership_result(
+    path: Path,
+    *,
+    phase: str,
+    expected_output: str,
+    expected_owner: str | None,
+    row_label: str,
+) -> "_CheckResult":
+    """Shared marker-ownership check for breadth and depth rows.
+
+    STEP 7 split. The CLOSED conjunct is identity: a marker that is PRESENT and
+    names a DIFFERENT artifact/phase/owner is a genuine cross-write and still
+    blocks - but it is compared on the NORMALIZED value, so decoration, a code
+    fence, ``&nbsp;`` and CRLF can no longer manufacture a mismatch. A marker
+    that is simply ABSENT or unreadable is a presentational/completeness gap
+    and degrades with visible debt.
+    """
+    markers, marker_debt = _tolerant_artifact_markers(path)
+    defects: list[_Defect] = []
+    for reason in marker_debt:
+        defects.append(
+            _defect(
+                "ownership.marker_placement",
+                observed=reason,
+                expected="marker outside any code fence",
+                repair_hint="Emit the PLAMEN marker comments as plain lines.",
+            )
+        )
+
+    def _same(value: object, expected: object) -> bool:
+        return _norm_cell(value).casefold() == _norm_cell(expected).casefold()
+
+    checks: list[tuple[str, str, str]] = [
+        ("ARTIFACT", expected_output, f"PLAMEN_ARTIFACT / {expected_output}"),
+        ("PHASE", phase, f"PLAMEN_PHASE / {phase}"),
+        ("EXPECTED_OUTPUT", expected_output, f"EXPECTED_OUTPUT / {expected_output}"),
+    ]
+    if expected_owner:
+        checks.append(("OWNER", expected_owner, f"PLAMEN_OWNER / {row_label}"))
+        checks.append(("AGENT_ROW", expected_owner, f"AGENT_ROW / {row_label}"))
+    for key, expected, label in checks:
+        observed = markers.get(key)
+        if observed is None or not str(observed).strip():
+            defects.append(
+                _defect(
+                    "ownership.marker_presence",
+                    observed=f"marker {key} absent",
+                    expected=label,
+                    repair_hint=(
+                        f"Write `<!-- PLAMEN_{key}: {expected} -->` once in the "
+                        "artifact body."
+                    ),
+                )
+            )
+            continue
+        if not _same(observed, expected):
+            defects.append(
+                _defect(
+                    "identity.artifact_ownership",
+                    observed=f"marker {key} = {observed!r}",
+                    expected=f"{expected!r}",
+                    repair_hint=(
+                        "This artifact names a different owner/output than the "
+                        "row it was staged for. A pooled worker wrote the wrong "
+                        "file; re-run the row rather than publishing it."
+                    ),
+                )
+            )
+    return _CheckResult(tuple(defects))
+
+
 def validate_breadth_artifact_ownership(
     path: Path,
     *,
@@ -1605,51 +1977,19 @@ def validate_breadth_artifact_ownership(
     The breadth worker pool launches one top-level Claude PTY per manifest
     row. A row is only complete when the file's markers prove that the
     assigned worker wrote the assigned output, not just any manifest output.
+
+    P0-AM: ``ok`` is False ONLY for a blocking identity defect (a marker that
+    names a different artifact/phase/owner). Debt reasons are still returned so
+    the caller can surface them, but they never discard the artifact.
     """
-    markers = _extract_artifact_status(path)
-    try:
-        raw = path.read_text(encoding="utf-8", errors="replace")
-        raw = _strip_fenced_code_blocks(raw)
-    except Exception:
-        raw = ""
-
-    def _plain_marker(name: str) -> str:
-        match = re.search(
-            rf"<!--\s*{re.escape(name)}\s*:\s*(.*?)\s*-->",
-            raw,
-        )
-        return match.group(1).strip() if match else ""
-
-    reasons: list[str] = []
-    if markers.get("ARTIFACT") != expected_output:
-        reasons.append(
-            "marker PLAMEN_ARTIFACT does not match expected output "
-            f"{expected_output}"
-        )
-    if markers.get("PHASE") != "breadth":
-        reasons.append("marker PLAMEN_PHASE is not breadth")
-
-    expected_marker = _plain_marker("EXPECTED_OUTPUT")
-    if expected_marker != expected_output:
-        reasons.append(
-            "marker EXPECTED_OUTPUT does not match expected output "
-            f"{expected_output}"
-        )
-
-    if expected_owner:
-        owner = markers.get("OWNER")
-        agent_row = _plain_marker("AGENT_ROW")
-        if owner != expected_owner:
-            reasons.append(
-                "marker PLAMEN_OWNER does not match manifest row "
-                f"{expected_owner}"
-            )
-        if agent_row != expected_owner:
-            reasons.append(
-                "marker AGENT_ROW does not match manifest row "
-                f"{expected_owner}"
-            )
-    return not reasons, reasons
+    result = _artifact_ownership_result(
+        path,
+        phase="breadth",
+        expected_output=expected_output,
+        expected_owner=expected_owner,
+        row_label=str(expected_owner or ""),
+    )
+    return (not result.should_discard), list(result.render())
 
 
 def validate_depth_artifact_ownership(
@@ -1658,51 +1998,19 @@ def validate_depth_artifact_ownership(
     expected_output: str,
     expected_owner: str | None = None,
 ) -> tuple[bool, list[str]]:
-    """Validate marker-level ownership for a fresh depth worker artifact."""
-    markers = _extract_artifact_status(path)
-    try:
-        raw = path.read_text(encoding="utf-8", errors="replace")
-        raw = _strip_fenced_code_blocks(raw)
-    except Exception:
-        raw = ""
+    """Validate marker-level ownership for a fresh depth worker artifact.
 
-    def _plain_marker(name: str) -> str:
-        match = re.search(
-            rf"<!--\s*{re.escape(name)}\s*:\s*(.*?)\s*-->",
-            raw,
-        )
-        return match.group(1).strip() if match else ""
-
-    reasons: list[str] = []
-    if markers.get("ARTIFACT") != expected_output:
-        reasons.append(
-            "marker PLAMEN_ARTIFACT does not match expected output "
-            f"{expected_output}"
-        )
-    if markers.get("PHASE") != "depth":
-        reasons.append("marker PLAMEN_PHASE is not depth")
-
-    expected_marker = _plain_marker("EXPECTED_OUTPUT")
-    if expected_marker != expected_output:
-        reasons.append(
-            "marker EXPECTED_OUTPUT does not match expected output "
-            f"{expected_output}"
-        )
-
-    if expected_owner:
-        owner = markers.get("OWNER")
-        agent_row = _plain_marker("AGENT_ROW")
-        if owner != expected_owner:
-            reasons.append(
-                "marker PLAMEN_OWNER does not match depth row "
-                f"{expected_owner}"
-            )
-        if agent_row != expected_owner:
-            reasons.append(
-                "marker AGENT_ROW does not match depth row "
-                f"{expected_owner}"
-            )
-    return not reasons, reasons
+    P0-AM: identity mismatch blocks (on the NORMALIZED marker value); marker
+    absence or fence placement degrades with visible debt.
+    """
+    result = _artifact_ownership_result(
+        path,
+        phase="depth",
+        expected_output=expected_output,
+        expected_owner=expected_owner,
+        row_label=str(expected_owner or ""),
+    )
+    return (not result.should_discard), list(result.render())
 
 
 def _read_breadth_worker_pool_contract(scratchpad: Path) -> dict[str, Any]:
@@ -1733,6 +2041,50 @@ def _read_depth_worker_pool_contract(scratchpad: Path) -> dict[str, Any]:
 
 def _depth_worker_pool_contract_active(scratchpad: Path) -> bool:
     return bool(_read_depth_worker_pool_contract(scratchpad))
+
+
+def _breadth_execution_lineage_issues(
+    scratchpad: Path, name: str, ledger: Mapping[str, Any],
+) -> list[str]:
+    """Replay typed MODEL lineage without adopting or rewriting its output."""
+    from artifact_ledger import active_committed_work_unit_authority_issues
+    from verifier_model_execution_authority import (
+        validated_verifier_model_execution_read_set,
+    )
+
+    identity = f"scratchpad:{name}"
+    binding = ledger.get("artifact_bindings", {}).get(identity)
+    units = ledger.get("work_units", {})
+    if not isinstance(binding, Mapping):
+        if any(identity in unit.get("artifacts", {}) for unit in units.values()):
+            return [f"{identity}: typed output binding is absent"]
+        return []  # Genuinely untyped legacy output, not a receipt fallback.
+    owner = str(binding.get("owner_key") or "")
+    unit = units.get(owner)
+    if not isinstance(unit, Mapping):
+        return [f"{identity}: typed output owner is absent"]
+    if binding.get("writer") != "MODEL":
+        return []
+    issues = list(active_committed_work_unit_authority_issues(
+        ledger, work_unit_key=owner, run_id=str(unit.get("run_id") or ""),
+        expected_artifact_identities=(identity,),
+    ))
+    if issues:
+        return issues
+    commit = unit.get("commit_authority", {})
+    if (
+        "execution_authority" not in unit
+        and "execution_authority" not in commit
+        and commit.get("output_authority_source") in (None, "LEGACY_DESCRIPTOR_CAPTURE")
+    ):
+        return []  # Preserve the explicitly derivable historical commit kind.
+    try:
+        validated_verifier_model_execution_read_set(
+            scratchpad, owner_key=owner, unit=unit,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return [f"{identity}: typed execution lineage does not replay: {exc}"]
+    return []
 
 
 def compute_breadth_row_statuses(
@@ -1827,6 +2179,14 @@ def compute_breadth_row_statuses(
             if output and owner:
                 expected_owner_by_output[output] = owner
 
+    execution_ledger: Mapping[str, Any] = {}
+    execution_ledger_issues: list[str] = []
+    if (scratchpad / "_artifact_state.json").exists():
+        from artifact_ledger import read_artifact_ledger
+        try:
+            execution_ledger = read_artifact_ledger(scratchpad)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            execution_ledger_issues = [f"breadth execution ledger is invalid: {exc}"]
     statuses: list[dict[str, Any]] = []
     for name in expected_outputs:
         status, reasons = _classify_artifact_row(
@@ -1848,6 +2208,17 @@ def compute_breadth_row_statuses(
             if not ok:
                 status = _BREADTH_STATUS_STRUCTURAL_FAIL
                 reasons = list(reasons) + marker_reasons
+            elif marker_reasons:
+                reasons = list(reasons) + record_validator_debt(
+                    scratchpad, marker_reasons, gate="ownership.markers"
+                )
+        if status in (_BREADTH_STATUS_COMPLETE, _BREADTH_STATUS_LEGACY_UNMARKED):
+            lineage_issues = execution_ledger_issues or _breadth_execution_lineage_issues(
+                scratchpad, name, execution_ledger,
+            )
+            if lineage_issues:
+                status = _BREADTH_STATUS_STRUCTURAL_FAIL
+                reasons = list(reasons) + lineage_issues
         statuses.append({"name": name, "status": status, "reasons": reasons})
     return statuses
 
@@ -1942,6 +2313,10 @@ def compute_depth_row_statuses(
             if not ok:
                 status = _BREADTH_STATUS_STRUCTURAL_FAIL
                 reasons = list(reasons) + marker_reasons
+            elif marker_reasons:
+                reasons = list(reasons) + record_validator_debt(
+                    scratchpad, marker_reasons, gate="ownership.markers"
+                )
         if (
             status == _BREADTH_STATUS_COMPLETE
             and fresh_audit
@@ -1958,11 +2333,23 @@ def compute_depth_row_statuses(
                 text = ""
             missing_perturbation = _missing_perturbation_block_ids(text)
             if missing_perturbation:
-                status = _BREADTH_STATUS_STRUCTURAL_FAIL
-                reasons = list(reasons) + [
-                    "missing perturbation block(s) for Medium+ CONFIRMED "
-                    f"finding(s): {', '.join(missing_perturbation[:5])}"
-                ]
+                # P0-AM: DEBT, not DISCARD. `perturbation.block_presence` is
+                # not identity/dedup/severity/disposition, so it degrades with
+                # a targeted repair hint instead of throwing away a completed
+                # depth analysis (measured run48 damage: a 143,899-byte
+                # artifact with 11 findings discarded on heading decoration).
+                reasons = list(reasons) + record_validator_debt(
+                    scratchpad,
+                    [
+                        f"{name}: missing perturbation block(s) for Medium+ "
+                        "CONFIRMED finding(s): "
+                        f"{', '.join(missing_perturbation[:5])}. Add an "
+                        "'Adversarial Perturbation' block inside each listed "
+                        "finding's own section (any heading depth or bold "
+                        "label is accepted)."
+                    ],
+                    gate="perturbation.block_presence",
+                )
         statuses.append({"name": name, "status": status, "reasons": reasons})
     return statuses
 
@@ -2302,6 +2689,22 @@ def gate_passes(scratchpad: Path, project_root: str, phase: Phase) -> tuple:
                 "analysis_rescan_*.md / analysis_percontract_*.md files"
             ]
     for pattern in phase.expected_artifacts:
+        if (
+            phase.name == "application_skeptic"
+            and pattern == "candidate_negative_skeptic_work_plan.json"
+        ):
+            # The normal fail-closed planning path publishes a typed planning
+            # debt artifact instead of a work plan.  Those states are mutually
+            # exclusive by design; requiring the success artifact as well
+            # manufactures a second, unactionable gate failure.
+            debt = scratchpad / "candidate_negative_planning_debt.json"
+            if debt.is_file():
+                try:
+                    validate_candidate_negative_planning_debt(debt.read_bytes())
+                except (OSError, CandidateNegativeAuthorityError):
+                    pass
+                else:
+                    continue
         if pattern == "AUDIT_REPORT.md":
             p = Path(project_root) / "AUDIT_REPORT.md"
             if not p.exists() or p.stat().st_size < phase.min_artifact_bytes:
@@ -6188,7 +6591,13 @@ def _live_foreign_pattern_is_benign(phase_name: str, pattern: str) -> bool:
 
 _ARTIFACT_STATE_NAME = "_artifact_state.json"
 _BREADTH_WORKER_POOL_CONTRACT_NAME = "_breadth_worker_pool_contract.json"
-_ARTIFACT_STATE_MAX_BYTES = 32 * 1024 * 1024
+# Thorough audits can legitimately own tens of thousands of artifact
+# generations.  The ownership ledger is pretty-printed JSON and exceeded the
+# old 32 MiB cap during DODO verification (before report production).  Keep a
+# finite read/write bound, but size it for a complete run rather than a single
+# phase.  Both paths must share the same bound or a successful write becomes
+# unreadable at the next gate.
+_ARTIFACT_STATE_MAX_BYTES = 128 * 1024 * 1024
 
 
 def _artifact_state_path(scratchpad: Path) -> Path:
@@ -7770,6 +8179,9 @@ def _inventory_structural_source_referents(text: str) -> dict[str, set[str]]:
 
 def _inventory_structural_source_action_referents(
     text: str,
+    *,
+    include_source_actions: bool = True,
+    include_hashed_legacy: bool = True,
 ) -> dict[tuple[str, str], set[str]]:
     """Map exact ``(producer artifact, local ID)`` actions to inventory rows.
 
@@ -7783,31 +8195,88 @@ def _inventory_structural_source_action_referents(
     for index, heading in enumerate(headings):
         end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
         block = text[heading.start():end]
+        owner = heading.group(1).strip().upper()
+        if include_source_actions:
+            for action_match in re.finditer(
+                r"(?im)^\s*[-*]?\s*(?:\*\*)?Source\s+Actions?"
+                r"(?:\*\*)?\s*:\s*(.+?)\s*$",
+                block,
+            ):
+                for token in re.finditer(
+                    r"(?<![A-Za-z0-9_.-])"
+                    r"(?P<artifact>[A-Za-z0-9][A-Za-z0-9_.-]{0,191})"
+                    r":(?P<action>[A-Za-z][A-Za-z0-9_-]{0,79})"
+                    r"(?:@sha256:[0-9a-f]{64})?"
+                    r"(?=$|[^A-Za-z0-9_.:@/\\-])",
+                    action_match.group(1),
+                    re.IGNORECASE | re.ASCII,
+                ):
+                    artifact_name = token.group("artifact")
+                    producer = _registered_producer_for_artifact(
+                        artifact_name, consumer="canonical_identity"
+                    )
+                    action_id = token.group("action").upper()
+                    if (
+                        producer is not None
+                        and _registered_producer_accepts_local_id(
+                            producer, action_id
+                        )
+                    ):
+                        referents.setdefault(
+                            (artifact_name, action_id), set()
+                        ).add(owner)
         artifact = _field_from_markdown(
             block, ("Primary Artifact", "Source Artifact", "Artifact")
         )
         if not artifact:
             continue
-        source_value = _field_from_markdown(block, ("Source IDs", "Source ID"))
-        if not source_value:
+        if (
+            not include_hashed_legacy
+            and _field_from_markdown(block, ("Source Artifact Hash",))
+        ):
+            # Once a legacy row asserts a source hash, only the hash-bound
+            # referent parser may authorize it. Falling back to the pair would
+            # turn an explicit stale/malformed hash into a delivery success.
             continue
-        owner = heading.group(1).strip().upper()
-        artifact_name = Path(artifact).name
+        source_values: list[str] = []
+        first_source = _field_from_markdown(block, ("Source IDs", "Source ID"))
+        if first_source:
+            source_values.append(first_source)
+        for source_match in re.finditer(
+            r"(?im)^\s*[-*]?\s*(?:\*\*)?Source\s+IDs?(?:\*\*)?\s*:\s*(.+?)\s*$",
+            block,
+        ):
+            value = source_match.group(1).strip()
+            if value and value not in source_values:
+                source_values.append(value)
+        if not source_values:
+            continue
+        artifact_path = PurePosixPath(artifact)
+        if (
+            "\\" in artifact
+            or artifact_path.is_absolute()
+            or len(artifact_path.parts) != 1
+            or artifact_path.name != artifact
+            or artifact in {".", ".."}
+        ):
+            continue
+        artifact_name = artifact
         producer = _registered_producer_for_artifact(
-            artifact_name, consumer="pre_dedup_promotion"
+            artifact_name, consumer="canonical_identity"
         )
         source_pattern = (
             _registered_producer_read_id_pattern(producer)
             if producer is not None
             else _PROMOTABLE_FEEDER_ID_PATTERN
         )
-        for match in re.finditer(
-            r"\b" + source_pattern + r"\b",
-            source_value,
-            re.IGNORECASE,
-        ):
-            key = (artifact_name, match.group(0).upper())
-            referents.setdefault(key, set()).add(owner)
+        for source_value in source_values:
+            for match in re.finditer(
+                r"\b" + source_pattern + r"\b",
+                source_value,
+                re.IGNORECASE,
+            ):
+                key = (artifact_name, match.group(0).upper())
+                referents.setdefault(key, set()).add(owner)
     return referents
 
 
@@ -7821,36 +8290,99 @@ def _inventory_structural_source_hash_action_referents(
     for index, heading in enumerate(headings):
         end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
         block = text[heading.start():end]
+        owner = heading.group(1).strip().upper()
+        for action_match in re.finditer(
+            r"(?im)^\s*[-*]?\s*(?:\*\*)?Source\s+Actions?"
+            r"(?:\*\*)?\s*:\s*(.+?)\s*$",
+            block,
+        ):
+            for token in re.finditer(
+                r"(?<![A-Za-z0-9_.-])"
+                r"(?P<artifact>[A-Za-z0-9][A-Za-z0-9_.-]{0,191})"
+                r":(?P<action>[A-Za-z][A-Za-z0-9_-]{0,79})"
+                r"@(?P<hash>sha256:[0-9a-f]{64})"
+                r"(?=$|[^A-Za-z0-9_.:@/\\-])",
+                action_match.group(1),
+                re.IGNORECASE | re.ASCII,
+            ):
+                artifact_name = token.group("artifact")
+                producer = _registered_producer_for_artifact(
+                    artifact_name, consumer="canonical_identity"
+                )
+                action_id = token.group("action").upper()
+                if (
+                    producer is not None
+                    and _registered_producer_accepts_local_id(
+                        producer, action_id
+                    )
+                ):
+                    referents.setdefault(
+                        (
+                            artifact_name,
+                            action_id,
+                            token.group("hash").lower(),
+                        ),
+                        set(),
+                    ).add(owner)
         artifact = _field_from_markdown(
             block, ("Primary Artifact", "Source Artifact", "Artifact")
         )
         source_hash = _field_from_markdown(
             block, ("Source Artifact Hash",)
         ).strip().lower()
-        source_value = _field_from_markdown(block, ("Source IDs", "Source ID"))
-        if not artifact or not source_value:
+        source_values: list[str] = []
+        first_source = _field_from_markdown(block, ("Source IDs", "Source ID"))
+        if first_source:
+            source_values.append(first_source)
+        for source_match in re.finditer(
+            r"(?im)^\s*[-*]?\s*(?:\*\*)?Source\s+IDs?(?:\*\*)?\s*:\s*(.+?)\s*$",
+            block,
+        ):
+            value = source_match.group(1).strip()
+            if value and value not in source_values:
+                source_values.append(value)
+        if not artifact or not source_values:
             continue
         if re.fullmatch(r"[0-9a-f]{64}", source_hash):
             source_hash = "sha256:" + source_hash
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", source_hash):
             continue
-        owner = heading.group(1).strip().upper()
-        artifact_name = Path(artifact).name
+        if not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}", artifact,
+            re.ASCII,
+        ):
+            # `_field_from_markdown` also supports colonless legacy fields.
+            # Consequently the broad `Artifact` alias can see the suffix of a
+            # `Source Artifact Hash` label.  Require the same exact basename
+            # grammar used by the authenticated Source Actions parser so that
+            # label text can never become a provenance referent.
+            continue
+        artifact_path = PurePosixPath(artifact)
+        if (
+            "\\" in artifact
+            or artifact_path.is_absolute()
+            or len(artifact_path.parts) != 1
+            or artifact_path.name != artifact
+            or artifact in {".", ".."}
+        ):
+            continue
+        artifact_name = artifact
         producer = _registered_producer_for_artifact(
-            artifact_name, consumer="pre_dedup_promotion"
+            artifact_name, consumer="canonical_identity"
         )
         source_pattern = (
             _registered_producer_read_id_pattern(producer)
             if producer is not None
             else _PROMOTABLE_FEEDER_ID_PATTERN
         )
-        for match in re.finditer(
-            r"\b" + source_pattern + r"\b",
-            source_value,
-            re.IGNORECASE,
-        ):
-            key = (artifact_name, match.group(0).upper(), source_hash)
-            referents.setdefault(key, set()).add(owner)
+        for source_value in source_values:
+            for match in re.finditer(
+                r"\b" + source_pattern + r"\b",
+                source_value,
+                re.IGNORECASE,
+            ):
+                key = (artifact_name, match.group(0).upper(), source_hash)
+                referents.setdefault(key, set()).add(owner)
     return referents
 
 
@@ -7863,16 +8395,29 @@ def _registered_id_matches(producer: object, finding_id: str) -> bool:
     return _registered_producer_accepts_local_id(producer, finding_id)
 
 
-def _registered_source_blocks(text: str) -> dict[str, str]:
-    """Return standard/review blocks keyed by their exact source action ID."""
+def _registered_source_block_index(
+    text: str,
+) -> tuple[dict[str, str], set[str]]:
+    """Return source blocks plus case-insensitive local-ID collisions."""
     heading_re = re.compile(
         r"(?im)^#{2,3}\s+(?:Finding|Review\s+Disposition)\s+\[([^\]\n]+)\]"
     )
     matches = list(heading_re.finditer(text or ""))
     blocks: dict[str, str] = {}
+    duplicates: set[str] = set()
     for idx, match in enumerate(matches):
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
-        blocks[match.group(1).strip().upper()] = text[match.start():end].strip()
+        finding_id = match.group(1).strip().upper()
+        if finding_id in blocks:
+            duplicates.add(finding_id)
+            continue
+        blocks[finding_id] = text[match.start():end].strip()
+    return blocks, duplicates
+
+
+def _registered_source_blocks(text: str) -> dict[str, str]:
+    """Compatibility view of uniquely keyed standard/review source blocks."""
+    blocks, _duplicates = _registered_source_block_index(text)
     return blocks
 
 
@@ -7981,21 +8526,47 @@ def _scan_registered_finding_delivery_sources(scratchpad: Path) -> dict[str, obj
                 f"{path.name}: producer artifact unreadable ({type(exc).__name__})"
             )
             continue
-        blocks = _registered_source_blocks(text)
+        blocks, duplicate_ids = _registered_source_block_index(text)
         parsed = _parse_depth_finding_blocks(path)
-        parsed_by_id = {
-            str(row.get("id") or "").upper(): row
-            for row in parsed
-            if row.get("id")
-        }
+        parsed_by_id: dict[str, dict[str, object]] = {}
+        parsed_id_counts: dict[str, int] = {}
+        for row in parsed:
+            finding_id = str(row.get("id") or "").strip().upper()
+            if not finding_id:
+                continue
+            parsed_id_counts[finding_id] = parsed_id_counts.get(finding_id, 0) + 1
+            parsed_by_id.setdefault(finding_id, row)
+        duplicate_ids.update(
+            finding_id
+            for finding_id, count in parsed_id_counts.items()
+            if count > 1
+        )
+        for finding_id in sorted(duplicate_ids):
+            residual.append(
+                f"{path.name}:{finding_id}: duplicate same-artifact local ID "
+                "has no unique registered source action identity"
+            )
+            blocks.pop(finding_id, None)
+            parsed_by_id.pop(finding_id, None)
         # Every finding/review heading in a registered producer is part of the
         # source denominator.  A local ID outside the declared grammar is
         # parser/producer drift and must become residual debt, not disappear
         # before reconciliation.
         source_ids = set(blocks)
         # Row-only fuzz violations and legacy exploration headings have no
-        # standard source heading but are still typed parser outputs.
-        source_ids.update(parsed_by_id)
+        # standard source heading but are still typed parser outputs.  Admit
+        # those aliases only when they are valid in this artifact's producer
+        # namespace.  The shared parser also recognizes context-free
+        # methodology headings such as ``### RS-5``; in a methodology-repair
+        # or per-contract artifact those are executed-step labels, not finding
+        # actions.  Explicit ``Finding [...]``/``[...]`` headings remain in
+        # ``blocks`` and therefore still fail closed when their ID is invalid.
+        source_ids.update(
+            finding_id
+            for finding_id, item in parsed_by_id.items()
+            if _registered_id_matches(producer, finding_id)
+            or str(item.get("_explicit_heading") or "").lower() == "true"
+        )
         artifact_count = 0
         for finding_id in sorted(source_ids):
             key = (path.name, finding_id)
@@ -8250,8 +8821,10 @@ def _build_registered_finding_delivery_receipt_payload(
             "source artifact"
         )
 
-    action_referents = _inventory_structural_source_action_referents(
-        exact_inventory_text
+    legacy_action_referents = _inventory_structural_source_action_referents(
+        exact_inventory_text,
+        include_source_actions=False,
+        include_hashed_legacy=False,
     )
     source_hash_action_referents = (
         _inventory_structural_source_hash_action_referents(
@@ -8264,37 +8837,57 @@ def _build_registered_finding_delivery_receipt_payload(
         key=lambda row: (str(row.get("source_file")), str(row.get("action_id"))),
     )
     actions: list[dict[str, object]] = []
+    resolved_residual_prefixes: set[str] = set()
     for raw in source_actions:
         row = dict(raw)
         finding_id = str(row.get("action_id") or "").upper()
         disposition = str(row.get("disposition") or "PENDING")
-        if disposition == "PENDING":
-            action_key = (str(row.get("source_file") or ""), finding_id)
-            source_hash = str(row.get("source_artifact_hash") or "").lower()
-            if re.fullmatch(r"[0-9a-f]{64}", source_hash):
-                source_hash = "sha256:" + source_hash
-            if row.get("producer_key") == "niche":
-                exact_delivery = (
-                    action_key + (source_hash,)
+        action_key = (str(row.get("source_file") or ""), finding_id)
+        source_hash = str(row.get("source_artifact_hash") or "").lower()
+        if re.fullmatch(r"[0-9a-f]{64}", source_hash):
+            source_hash = "sha256:" + source_hash
+        exact_delivery = (
+            action_key + (source_hash,) in source_hash_action_referents
+            or action_key in legacy_action_referents
+        )
+        if row.get("producer_key") == "exploration_clear_additive":
+            bound_projection = str(row.get("bound_markdown_projection") or "")
+            lineage_source = str(row.get("lineage_source_file") or "")
+            lineage_hash = str(
+                row.get("lineage_artifact_sha256") or ""
+            ).lower()
+            if re.fullmatch(r"[0-9a-f]{64}", lineage_hash):
+                lineage_hash = "sha256:" + lineage_hash
+            exact_delivery = exact_delivery or (
+                bool(bound_projection)
+                and (
+                    (bound_projection, finding_id, lineage_hash)
                     in source_hash_action_referents
+                    or (bound_projection, finding_id)
+                    in legacy_action_referents
                 )
-            else:
-                exact_delivery = action_key in action_referents
-            if row.get("producer_key") == "exploration_clear_additive":
-                bound_projection = str(row.get("bound_markdown_projection") or "")
-                lineage_source = str(row.get("lineage_source_file") or "")
-                exact_delivery = exact_delivery or (
-                    bool(bound_projection)
-                    and (bound_projection, finding_id) in action_referents
-                ) or (
-                    bool(lineage_source)
-                    and (lineage_source, finding_id) in action_referents
+            ) or (
+                bool(lineage_source)
+                and (
+                    (lineage_source, finding_id, lineage_hash)
+                    in source_hash_action_referents
+                    or (lineage_source, finding_id)
+                    in legacy_action_referents
                 )
+            )
+        if disposition in {"PENDING", "RESIDUAL_DEBT"}:
             if exact_delivery:
                 disposition = (
                     "PROMOTED_AMENDMENT"
                     if row.get("action_kind") in {"UPGRADE", "RE-OPEN"}
                     else "PROMOTED_FINDING"
+                )
+                # Parsing/namespace debt cannot make an exact, hash-bound
+                # inventory delivery become unaccounted.  Clear only debt rows
+                # belonging to this exact source action; unrelated scanner or
+                # artifact debt remains visible and gating.
+                resolved_residual_prefixes.add(
+                    f"{action_key[0]}:{finding_id}:"
                 )
             elif str(row.get("origin_assessment") or "") and not _is_reportable_verdict(
                 str(row.get("origin_assessment") or "")
@@ -8354,7 +8947,14 @@ def _build_registered_finding_delivery_receipt_payload(
         }
         artifacts.append(artifact)
     inventory_sha256 = "sha256:" + hashlib.sha256(inventory_raw).hexdigest()
-    residual_rows = sorted(dict.fromkeys(str(row) for row in residual))
+    residual_rows = sorted(dict.fromkeys(
+        str(item)
+        for item in residual
+        if not any(
+            str(item).startswith(prefix)
+            for prefix in resolved_residual_prefixes
+        )
+    ))
     unsigned_payload: dict[str, object] = {
         "schema_version": _FINDING_DELIVERY_SCHEMA,
         "registry_digest": _finding_producer_registry_digest(),
@@ -8430,6 +9030,75 @@ def _write_registered_finding_delivery_receipt(
     elif debt_path.exists():
         debt_path.unlink()
     return payload
+
+
+def registered_finding_delivery_projection(
+    scratchpad: Path,
+    *,
+    inventory_source_artifact: str = "findings_inventory.md",
+) -> dict[str, object]:
+    """Return the exact current registered-action delivery projection.
+
+    This is the shared producer/consumer boundary for late promotion and the
+    verification queue.  Gate P must decide what remains to be delivered from
+    the same registry-derived denominator that the queue later enforces; a
+    heuristic Markdown candidate set is not a sound substitute for that
+    denominator.
+
+    The receipt builder reopens and authenticates ``inventory_source_artifact``
+    itself.  Supplying the decoded text here only satisfies its explicit
+    representation-consistency check and cannot substitute different bytes.
+    """
+
+    root = Path(scratchpad)
+    source_name = str(inventory_source_artifact or "")
+    source_path = PurePosixPath(source_name)
+    if (
+        not source_name
+        or "\\" in source_name
+        or source_path.is_absolute()
+        or source_name != source_path.as_posix()
+        or any(part in {"", ".", ".."} for part in source_path.parts)
+    ):
+        raise ValueError(
+            "registered delivery inventory source must be a canonical "
+            "relative POSIX path"
+        )
+    inventory_text = root.joinpath(*source_path.parts).read_bytes().decode(
+        "utf-8", errors="strict"
+    )
+    scan = _scan_registered_finding_delivery_sources(root)
+    return _build_registered_finding_delivery_receipt_payload(
+        root,
+        scan,
+        inventory_text,
+        inventory_source_artifact=source_name,
+    )
+
+
+def _refresh_registered_finding_delivery_receipt(
+    scratchpad: Path,
+) -> dict[str, object]:
+    """Reconcile current producer actions against current inventory bytes.
+
+    This is intentionally separate from depth promotion.  Delivery is an
+    observation over exact registered source bytes and structural inventory
+    referents; it must remain available when a canonical-inventory mutation is
+    correctly refused before its first write.  The refresh never adds an
+    inventory row or invents a terminal disposition -- the shared builder
+    derives every disposition from the current artifacts.
+    """
+
+    root = Path(scratchpad)
+    inventory = root / "findings_inventory.md"
+    inventory_raw = inventory.read_bytes()
+    inventory_text = inventory_raw.decode("utf-8", errors="strict")
+    scan = _scan_registered_finding_delivery_sources(root)
+    return _write_registered_finding_delivery_receipt(
+        root,
+        scan,
+        inventory_text,
+    )
 
 
 _DEPTH_IDENTITY_PRESERVATION_SCHEMA = (
@@ -8757,6 +9426,17 @@ def _depth_identity_preservation_rows(
     seen: set[tuple[str, str]] = set()
     for pattern in _DEPTH_PROMOTION_FILES:
         for source_path in sorted(root.glob(pattern)):
+            producer = _registered_producer_for_artifact(
+                source_path.name, consumer="pre_dedup_promotion"
+            )
+            if producer is None or producer.owner_phase != "depth":
+                # This authority is derived exclusively from the depth
+                # dispatch/worker-pool denominator.  If it is degraded, its
+                # conservative preservation fallback must stay inside that
+                # domain.  Expanding the debt to breadth/rescan producers
+                # gave a stale depth receipt veto power over independently
+                # registered source actions and stranded them before dedup.
+                continue
             for item in _parse_depth_finding_blocks(source_path):
                 key = (source_path.name, str(item.get("id") or "").upper())
                 if not key[1] or key in seen:
@@ -8845,9 +9525,14 @@ def _depth_identity_preservation_payload(
 def _write_depth_identity_preservation_debt(
     scratchpad: Path,
     state: Mapping[str, Any],
-) -> dict[str, Any] | None:
-    if state.get("status") == "ABSENT":
-        return None
+) -> dict[str, Any]:
+    """Materialize the total preservation view for one exact source state.
+
+    ABSENT is a real source state, not permission to omit the projection.  A
+    total output keeps producer and consumer denominators identical and makes
+    clean/legacy runs replayable without an existence-dependent branch.
+    """
+
     payload = _depth_identity_preservation_payload(scratchpad, state)
     _atomic_validator_bytes(
         Path(scratchpad) / _DEPTH_IDENTITY_PRESERVATION_FILE,
@@ -8856,29 +9541,63 @@ def _write_depth_identity_preservation_debt(
     return payload
 
 
+def _depth_identity_preservation_projection_bytes(
+    scratchpad: Path,
+) -> bytes:
+    """Derive canonical bytes from the current semantic authorities.
+
+    This is the single source used by the live pre-verification PhaseIO
+    producer and by validation.  The JSON sidecar is only a materialized view;
+    it never grants negative, identity, or proof authority.
+    """
+
+    state = _confidence_identity_preservation_state(Path(scratchpad))
+    return _canonical_validator_json_bytes(
+        _depth_identity_preservation_payload(Path(scratchpad), state)
+    )
+
+
+def _depth_identity_preservation_projection_inputs(
+    scratchpad: Path,
+) -> tuple[str, ...]:
+    """Return the exact bounded input closure of the current projection."""
+
+    root = Path(scratchpad)
+    names: set[str] = set()
+    for name in ("findings_inventory.md", "confidence_consensus_authority.json"):
+        path = root / name
+        if path.is_file() and not path.is_symlink():
+            names.add(name)
+    # A missing or degraded confidence authority conservatively derives
+    # preservation rows from every registered depth producer.  Bind that same
+    # finite denominator even when the current authority is healthy so an
+    # exact retry cannot silently change derivation modes.
+    for pattern in _DEPTH_PROMOTION_FILES:
+        for path in root.glob(pattern):
+            if not path.is_file() or path.is_symlink() or path.parent != root:
+                continue
+            producer = _registered_producer_for_artifact(
+                path.name, consumer="pre_dedup_promotion"
+            )
+            if producer is not None and producer.owner_phase == "depth":
+                names.add(path.name)
+    return tuple(sorted(names))
+
+
 def _validate_depth_identity_preservation_debt(
     scratchpad: Path,
     state: Mapping[str, Any],
 ) -> tuple[set[tuple[str, str]], list[str]]:
-    if state.get("status") == "ABSENT":
-        return set(), []
+    """Resolve preservation keys from source truth, never from the cache.
+
+    The JSON file is a human-readable materialized view. Requiring that view
+    to exist (or to match a later inventory generation) made an otherwise
+    valid semantic boundary depend on an incidental isolated-stage copy.
+    Current authority and source bytes derive every effective key, so a
+    missing or stale cache can neither grant/drop authority nor halt the run.
+    """
+
     expected = _depth_identity_preservation_payload(scratchpad, state)
-    path = Path(scratchpad) / _DEPTH_IDENTITY_PRESERVATION_FILE
-    try:
-        raw = path.read_bytes()
-        observed = json.loads(raw.decode("utf-8", errors="strict"))
-    except (OSError, UnicodeError, ValueError, TypeError) as exc:
-        return set(), [
-            "depth identity preservation debt is missing/unreadable: "
-            f"{type(exc).__name__}: {exc}"
-        ]
-    if (
-        observed != expected
-        or raw != _canonical_validator_json_bytes(expected)
-    ):
-        return set(), [
-            "depth identity preservation debt is stale, tampered, or non-canonical"
-        ]
     keys = {
         (
             str(row["candidate_ref"]["source_artifact"]),
@@ -8886,17 +9605,36 @@ def _validate_depth_identity_preservation_debt(
         )
         for row in expected["rows"]
     }
+    path = Path(scratchpad) / _DEPTH_IDENTITY_PRESERVATION_FILE
+    try:
+        raw = path.read_bytes()
+        observed = json.loads(raw.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return keys, []
+    if (
+        observed != expected
+        or raw != _canonical_validator_json_bytes(expected)
+    ):
+        # Even a forged FULL-proof row is inert: effective keys came only from
+        # the current re-derived expected payload above.
+        return keys, []
     return keys, []
 
 
 def _promote_depth_findings_to_inventory(scratchpad: Path, min_confidence: float = 0.70) -> list[str]:
-    """Append high-confidence depth-only findings to findings_inventory.md.
+    """Append every registered, substantive depth action to the inventory.
 
     L1 inventory runs before depth. Without this bridge, DCI/DEC/DX/DN findings
     can be real, scored, and then invisible to verify_queue/report_index. This
-    function is deterministic plumbing: it preserves depth IDs as Source IDs
-    and only appends IDs not already acknowledged by inventory.
+    function is deterministic plumbing, not a precision gate: confidence and
+    consensus are routing telemetry for later verification and can never erase
+    a discovered producer action.  It preserves depth IDs as Source IDs and
+    binds delivery to the exact source artifact hash. A bare local ID is not
+    delivery authority because IDs are producer-local and can collide across
+    artifacts.
     """
+    # Compatibility only. Admission is intentionally independent of score.
+    _ = min_confidence
     inv = scratchpad / "findings_inventory.md"
     if not inv.exists():
         return []
@@ -8922,7 +9660,68 @@ def _promote_depth_findings_to_inventory(scratchpad: Path, min_confidence: float
         for row in delivery_scan.get("actions") or []
         if row.get("producer_key") == "exploration_clear_additive"
     }
+    registered_actions = {
+        (
+            str(row.get("source_file") or ""),
+            str(row.get("action_id") or "").upper(),
+        ): dict(row)
+        for row in delivery_scan.get("actions") or []
+        if row.get("local_id_valid") is True
+        and row.get("content_bearing") is True
+        and str(row.get("disposition") or "") == "PENDING"
+        and (
+            not str(row.get("origin_assessment") or "")
+            or _is_reportable_verdict(
+                str(row.get("origin_assessment") or "")
+            )
+        )
+        and (
+            str(row.get("action_kind") or "NEW").upper() == "NEW"
+            or (
+                str(row.get("action_kind") or "").upper()
+                in {"UPGRADE", "RE-OPEN"}
+                and bool(str(row.get("target_id") or "").strip())
+            )
+        )
+    }
     deferred_ids: set[str] = set()
+    # Exploration-clear JSON rows are the authenticated lifecycle authority,
+    # but the substantive candidate body remains in the exact Markdown source
+    # bound by each row's lineage digest.  A single finding may satisfy several
+    # coverage obligations, so several typed rows can deliberately carry the
+    # same local action ID.  Project that group back to ONE source-action key
+    # for additive promotion without adding a second delivery-denominator row.
+    # The inventory referent written below binds the lineage source + digest;
+    # the delivery validator can therefore account for every exact typed row
+    # in the group while the candidate itself is promoted only once.
+    for row in delivery_scan.get("actions") or []:
+        if row.get("producer_key") != "exploration_clear_additive":
+            continue
+        lineage_source = str(row.get("lineage_source_file") or "")
+        action_id = str(row.get("action_id") or "").upper()
+        lineage_digest = str(row.get("lineage_artifact_sha256") or "").lower()
+        if (
+            not lineage_source
+            or not action_id
+            or re.fullmatch(r"[0-9a-f]{64}", lineage_digest) is None
+        ):
+            continue
+        alias_key = (lineage_source, action_id)
+        alias = dict(row)
+        alias["source_file"] = lineage_source
+        alias["source_artifact_hash"] = "sha256:" + lineage_digest
+        prior_alias = registered_actions.get(alias_key)
+        if prior_alias is None:
+            registered_actions[alias_key] = alias
+            continue
+        if (
+            str(prior_alias.get("source_artifact_hash") or "").lower()
+            != alias["source_artifact_hash"]
+        ):
+            # Conflicting lifecycle lineages must remain delivery debt; never
+            # pick one source body by iteration order.
+            registered_actions.pop(alias_key, None)
+            deferred_ids.add(action_id)
     # Promotion is invoked at more than one downstream boundary. Preserve the
     # cumulative receipt of promotions that are still visibly present in the
     # inventory; otherwise a later duplicate-only invocation rewrites
@@ -8981,40 +9780,20 @@ def _promote_depth_findings_to_inventory(scratchpad: Path, min_confidence: float
                 own_id = source_ids[0].upper()
                 if own_id not in prior_promoted_ids:
                     prior_promoted_ids.append(own_id)
-    structural_referents = _inventory_structural_source_referents(inv_text)
     structural_action_referents = _inventory_structural_source_action_referents(
         inv_text
     )
-    existing_ids = set(structural_referents)
-    source_local_id_counts: dict[str, int] = {}
-    for source_action in delivery_scan.get("actions") or []:
-        source_id = str(source_action.get("action_id") or "").upper()
-        source_local_id_counts[source_id] = (
-            source_local_id_counts.get(source_id, 0) + 1
-        )
     seen_action_keys: set[tuple[str, str]] = set()
     next_n = max(
         (int(x) for x in re.findall(r"###\s+Finding\s+\[INV-(\d+)\]", inv_text)),
         default=0,
     ) + 1
     scores = _parse_depth_confidence_scores(scratchpad)
-    identity_preservation_state = _confidence_identity_preservation_state(
-        scratchpad
-    )
-    identity_preservation_payload = _write_depth_identity_preservation_debt(
-        scratchpad, identity_preservation_state
-    )
-    identity_preservation_keys = {
-        (
-            str(row["candidate_ref"]["source_artifact"]),
-            str(row["candidate_ref"]["finding_id"]).upper(),
-        )
-        for row in (
-            identity_preservation_payload.get("rows", [])
-            if isinstance(identity_preservation_payload, Mapping)
-            else []
-        )
-    }
+    # Identity-binding debt remains explicit routing telemetry. It must never
+    # erase a registered producer action from the publication denominator.
+    # Seal it only after the additive inventory write below: its authenticated
+    # anchor projection includes the inventory digest and would otherwise be
+    # stale by construction immediately after a successful promotion.
 
     # UPGRADE is an amendment candidate, never an instruction for this bridge
     # to mutate the target.  Its provisional severity is floored at the target
@@ -9061,10 +9840,18 @@ def _promote_depth_findings_to_inventory(scratchpad: Path, min_confidence: float
             for item in _parse_depth_finding_blocks(p):
                 fid = item["id"]
                 action_key = (p.name, fid.upper())
-                if action_key in identity_preservation_keys:
-                    # Identity-unbound observations remain visible as typed
-                    # reconciliation debt. They bypass confidence/drop filters,
-                    # but are never appended as a fabricated canonical finding.
+                registered_action = registered_actions.get(action_key)
+                if registered_action is None:
+                    # Invalid, malformed, content-less, or target-less actions
+                    # remain in the registered delivery denominator as typed
+                    # debt. They are never converted into canonical findings.
+                    deferred_ids.add(fid.upper())
+                    seen_action_keys.add(action_key)
+                    continue
+                source_hash = str(
+                    registered_action.get("source_artifact_hash") or ""
+                ).lower()
+                if source_hash != _registered_artifact_sha256(p).lower():
                     deferred_ids.add(fid.upper())
                     seen_action_keys.add(action_key)
                     continue
@@ -9077,26 +9864,7 @@ def _promote_depth_findings_to_inventory(scratchpad: Path, min_confidence: float
                     continue
                 if action_key in seen_action_keys or action_key in structural_action_referents:
                     continue
-                if (
-                    fid in existing_ids
-                    and source_local_id_counts.get(fid.upper(), 0) <= 1
-                ):
-                    continue
                 score = scores.get(fid)
-                status = _verifier_status_from_text(f"**Verdict**: {item.get('verdict', '')}") if item.get("verdict") else ""
-                if status and not _is_reportable_verdict(status):
-                    continue
-                if status != "CONFIRMED" and score is not None and score < min_confidence:
-                    producer = _REGISTERED_PRODUCERS_BY_KEY.get(
-                        str(item.get("_producer_key") or "")
-                    )
-                    # Typed exploration/fuzz/recovery producers promise
-                    # verification delivery independent of an optional depth
-                    # confidence score.  Legacy plain FINDING channels retain
-                    # their established threshold and become visible debt.
-                    if producer is None or producer.action_contract == "FINDING":
-                        deferred_ids.add(fid.upper())
-                        continue
                 if item.get("_content_bearing") == "false":
                     deferred_ids.add(fid.upper())
                     continue
@@ -9142,6 +9910,9 @@ def _promote_depth_findings_to_inventory(scratchpad: Path, min_confidence: float
     # receipt says zero.  Fall through so the receipt self-heals on an
     # otherwise idempotent rerun.
     if not candidates and not similarity_tagged and not prior_promoted_ids:
+        _write_depth_identity_preservation_debt(
+            scratchpad, _confidence_identity_preservation_state(scratchpad)
+        )
         _write_registered_finding_delivery_receipt(
             scratchpad, delivery_scan, inv_text, deferred_ids=deferred_ids
         )
@@ -9181,6 +9952,9 @@ def _promote_depth_findings_to_inventory(scratchpad: Path, min_confidence: float
                 f"**Preferred Tag**: {item['preferred_tag']}",
                 f"**Confidence**: {item['confidence']}",
                 f"**Primary Artifact**: {item['source_file']}",
+                "**Source Actions**: "
+                f"{item['source_file']}:{item['id']}@"
+                f"{str(registered_actions[(item['source_file'], item['id'].upper())]['source_artifact_hash']).lower()}",
             ])
             if dup_line:
                 additions.append(dup_line.rstrip())
@@ -9228,6 +10002,9 @@ def _promote_depth_findings_to_inventory(scratchpad: Path, min_confidence: float
             )
     (scratchpad / "depth_promotion_receipt.md").write_text(
         "\n".join(receipt_lines), encoding="utf-8",
+    )
+    _write_depth_identity_preservation_debt(
+        scratchpad, _confidence_identity_preservation_state(scratchpad)
     )
     _write_registered_finding_delivery_receipt(
         scratchpad,
@@ -9348,6 +10125,43 @@ _SEMANTIC_GAP_COUNTER_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+_SEMANTIC_GAP_NEGATED_TOKEN_RE = re.compile(
+    r"(?i)(?:\bno\b|\bnone\b|\bzero\b|\bwithout\b|\bnot\s+an?\b)"
+    r"(?:[\s`*_:\-=()\[\],.;]{0,48})$"
+)
+
+
+def _semantic_gap_has_affirmative_token(text: str, pattern: str) -> bool:
+    """Detect a fallback FLAG TOKEN without treating local negation as a hit.
+
+    P0-AM. The property is 'Phase 4a.5 emitted the flag token', not 'the
+    English word appears somewhere'. The measured defect matched the pattern
+    case-INSENSITIVELY, so the ordinary descriptive sentence
+    ``The write at L120 is conditional on `msg.sender == owner`.`` armed a HARD
+    depth-phase requirement, which then chained into the niche field gate.
+
+    Flag tokens are SHOUTED by construction (``SYNC_GAP``,
+    ``ACCUMULATION_EXPOSURE``, ``CONDITIONAL_WRITE``, ``CLUSTER_GAP``), so the
+    match is case-SENSITIVE; an occurrence quoted inside a fenced example is a
+    quotation and does not arm the trigger either.
+    """
+
+    try:
+        surf = _surface_of(text)
+        body = "\n".join(
+            line.raw for line in surf.lines if not getattr(line, "in_fence", False)
+        )
+    except Exception:  # pragma: no cover - totality guard
+        body = str(text or "")
+    for match in re.finditer(pattern, body):
+        prefix = body[max(0, match.start() - 64):match.start()]
+        # Restrict negation to the current line/clause.  A prior affirmative
+        # paragraph must not suppress a later token and vice versa.
+        prefix = re.split(r"[\r\n|]", prefix)[-1]
+        if not _SEMANTIC_GAP_NEGATED_TOKEN_RE.search(prefix):
+            return True
+    return False
+
 
 def _semantic_gap_trigger_counts(scratchpad: Path) -> dict[str, int]:
     """Return Phase 4a.5 semantic-gap trigger counts from semantic_invariants.md.
@@ -9394,7 +10208,10 @@ def _semantic_gap_trigger_counts(scratchpad: Path) -> dict[str, int]:
         "cluster_gaps": r"\b(?:CLUSTER_GAP|LIFECYCLE_GAP)\b",
     }
     for key, pat in fallback_flags.items():
-        if counts.get(key, 0) == 0 and re.search(pat, text, re.IGNORECASE):
+        if (
+            counts.get(key, 0) == 0
+            and _semantic_gap_has_affirmative_token(text, pat)
+        ):
             counts[key] = 1
     return counts
 
@@ -9409,6 +10226,159 @@ def _semantic_gap_required(scratchpad: Path) -> bool:
     ))
 
 
+# P0-AM: a required field is a MEANING, not a literal label. The measured
+# defect required the single literal label "Investigation Result" and produced
+# 11 hard issues on a 98,728-byte artifact carrying 11 fully-formed findings,
+# because the worker expressed the same content as `Producer Disposition` /
+# `Gap Type`. Synonym sets are closed and MOST SPECIFIC FIRST.
+_NICHE_FIELD_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "investigation result": (
+        "Investigation Result", "Investigation Outcome", "Investigation Finding",
+        "Investigation Conclusion", "Producer Disposition", "Gap Type",
+        "Gap Classification", "Gap Disposition", "Resolution", "Conclusion",
+    ),
+    "material harm": (
+        "Material Harm", "Harm", "Concrete Harm", "Consequence",
+    ),
+    "preferred tag": (
+        "Preferred Tag", "Evidence Tag", "Evidence Tags", "Preferred Evidence",
+    ),
+    "step execution": (
+        "Step Execution", "Steps Executed", "Step Trace", "Steps",
+    ),
+    "rules applied": ("Rules Applied", "Rules"),
+    "verdict": ("Verdict", "Final Verdict", "Determination", "Status"),
+    "severity": ("Severity", "Final Severity", "Risk Level", "Tier"),
+    "location": ("Location", "Source Location", "Code Location", "Locus"),
+    "description": ("Description", "Summary", "Mechanism", "Root Cause"),
+    "impact": ("Impact", "Security Impact", "Risk"),
+    "evidence": ("Evidence", "Evidence Snippet", "Proof"),
+}
+
+
+def _niche_field_aliases(field: str) -> tuple[str, ...]:
+    """Closed synonym group for one required niche field label."""
+    key = _norm_label(field)
+    aliases = _NICHE_FIELD_SYNONYMS.get(key, ())
+    out = [field, *aliases]
+    return tuple(dict.fromkeys(out))
+
+
+_NICHE_FINDING_SCHEMA_REQUIRED_FIELDS = (
+    "Verdict",
+    "Step Execution",
+    "Rules Applied",
+    "Preferred Tag",
+    "Severity",
+    "Location",
+    "Description",
+    "Impact",
+    "Material Harm",
+    "Evidence",
+)
+
+
+def _validate_niche_candidate_schema(
+    path: Path,
+    *,
+    additional_required_fields: Iterable[str] = (),
+) -> list[str]:
+    """Validate every canonical finding block in one niche artifact.
+
+    Niche outputs enter the same promotion path as every other finding
+    producer, so their candidate blocks must preserve the standard finding
+    envelope before the phase accepts them.  Use the shared canonical block
+    denominator and tolerant field extractor; phase-specific fields are
+    additive and never aliases for a standard field.
+
+    An artifact with no candidate block is left to its existing completion /
+    zero-result contract.  This helper only closes the schema hole where a
+    large file containing malformed candidates passed the former size gate.
+    """
+
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return [f"niche finding schema: {path.name} unreadable: {exc}"]
+
+    required_fields = tuple(dict.fromkeys(
+        (*_NICHE_FINDING_SCHEMA_REQUIRED_FIELDS, *additional_required_fields)
+    ))
+    issues: list[str] = []
+    for candidate in _canonical_finding_blocks(text):
+        block = str(candidate.get("block") or "")
+        finding_id = str(candidate.get("raw_id") or "UNKNOWN").strip().upper()
+        investigation_result = _field_anywhere(
+            block,
+            _niche_field_aliases("Investigation Result"),
+            table_ok=True,
+        )[0].strip()
+        verdict = _field_anywhere(
+            block, _niche_field_aliases("Verdict"), table_ok=True
+        )[0].strip()
+        # A semantic-gap REFUTATION_PROPOSAL is a typed negative proposal, not
+        # a promotable positive finding. Its required Investigation Result is
+        # the mechanism/reasoned description. Requiring a second literal
+        # Description field for the same meaning recreates the presentation-
+        # over-semantics failure this tolerant reader exists to avoid. Keep
+        # Description mandatory for CANDIDATE and UNRESOLVED blocks, and keep
+        # every harm/evidence field mandatory for all dispositions.
+        refutation_has_description_semantics = (
+            path.name == "niche_semantic_gap_findings.md"
+            and bool(investigation_result)
+            and "REFUTATION_PROPOSAL" in (
+                investigation_result + " " + verdict
+            ).upper()
+        )
+        missing = [
+            field
+            for field in required_fields
+            if not (
+                field == "Description"
+                and refutation_has_description_semantics
+            )
+            if not _field_anywhere(
+                block, _niche_field_aliases(field), table_ok=True
+            )[0].strip()
+            and _read_field(
+                block,
+                _norm_label(field).replace(" ", "_"),
+                roles={
+                    _norm_label(field).replace(" ", "_"): _niche_field_aliases(field)
+                },
+            )
+            is None
+        ]
+        if missing:
+            issues.append(
+                f"niche finding schema: {path.name} Finding [{finding_id}] "
+                f"missing required field(s): {', '.join(missing)}"
+            )
+    return issues
+
+
+def _validate_niche_findings_schema(scratchpad: Path) -> list[str]:
+    """Validate all content-bearing niche finding artifacts in name order.
+
+    A canonical finding block is the content-bearing signal.  Files containing
+    only a substantive zero-result/completion rationale have no candidate
+    schema to validate and remain accepted by their existing phase contract.
+    """
+
+    issues: list[str] = []
+    for path in sorted(Path(scratchpad).glob("niche_*_findings.md")):
+        additional_fields = (
+            ("Investigation Result",)
+            if path.name == "niche_semantic_gap_findings.md"
+            else ()
+        )
+        issues.extend(_validate_niche_candidate_schema(
+            path,
+            additional_required_fields=additional_fields,
+        ))
+    return issues
+
+
 def _validate_semantic_gap_niche(scratchpad: Path, mode: str) -> list[str]:
     """Require semantic-gap niche output when Phase 4a.5 produced gap triggers."""
     if mode not in ("core", "thorough"):
@@ -9417,7 +10387,10 @@ def _validate_semantic_gap_niche(scratchpad: Path, mode: str) -> list[str]:
         return []
     out = scratchpad / "niche_semantic_gap_findings.md"
     if out.exists() and out.stat().st_size >= 500:
-        return []
+        return _validate_niche_candidate_schema(
+            out,
+            additional_required_fields=("Investigation Result",),
+        )
     counts = _semantic_gap_trigger_counts(scratchpad)
     counter_text = ", ".join(
         f"{k}={v}" for k, v in counts.items() if v > 0
@@ -9427,6 +10400,28 @@ def _validate_semantic_gap_niche(scratchpad: Path, mode: str) -> list[str]:
         f"SEMANTIC_GAP_INVESTIGATOR ({counter_text}); expected "
         "niche_semantic_gap_findings.md"
     ]
+
+
+def _validate_niche_findings_preacceptance(
+    scratchpad: Path,
+    mode: str,
+) -> list[str]:
+    """Combined SC depth gate for semantic-gap presence and all niche schemas.
+
+    P0-AM: DEBT-class. `schema.niche_finding_fields` and
+    `coverage.semantic_gap_artifact` are neither identity, dedup, severity nor
+    disposition, so a defect here is surfaced with a targeted repair hint and
+    the depth phase still publishes. The measured defect halted a run on a
+    98,728-byte artifact holding 11 complete findings because one field label
+    was spelled differently.
+    """
+
+    issues = list(dict.fromkeys((
+        *_validate_semantic_gap_niche(scratchpad, mode),
+        *_validate_niche_findings_schema(scratchpad),
+    )))
+    record_validator_debt(scratchpad, issues, gate="schema.niche_finding_fields")
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -10070,6 +11065,42 @@ def _promote_injectable_rows(scratchpad: Path, language: str = "") -> int:
     return changed
 
 
+def _candidate_negative_delivered_ids(
+    scratchpad: Path, source_artifact: str
+) -> set[str]:
+    """Exact candidate IDs this artifact already delivered to the negative ledger.
+
+    A content-bearing candidate is delivered when SOME registered ledger
+    records its exact identity -- the inventory source action is only one of
+    the ways that happens.  Read-only and fail-open: an unreadable ledger
+    yields no deliveries, so the caller keeps its existing checks.
+    """
+
+    delivered: set[str] = set()
+    for path in sorted(Path(scratchpad).glob("candidate_negative_proposals_*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            continue
+        rows = payload.get("events") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            rows = payload.get("rows") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("source_artifact") or "") not in {"", source_artifact}:
+                continue
+            for field in ("source_item_id", "methodology_obligation_id"):
+                value = str(row.get(field) or "")
+                if value.upper().startswith("CANDIDATE:"):
+                    delivered.add(value.split(":", 1)[1].strip().upper())
+                elif value:
+                    delivered.add(value.strip().upper())
+    return delivered
+
+
 def _validate_depth_promotion_receipt(scratchpad: Path, min_confidence: float = 0.70) -> list[str]:
     inv = scratchpad / "findings_inventory.md"
     if not inv.exists():
@@ -10105,8 +11136,28 @@ def _validate_depth_promotion_receipt(scratchpad: Path, min_confidence: float = 
     missing: list[str] = []
     for pat in _DEPTH_PROMOTION_FILES:
         for p in sorted(scratchpad.glob(pat)):
+            producer = _registered_producer_for_artifact(
+                p.name, consumer="pre_dedup_promotion"
+            )
+            if producer is None or producer.owner_phase != "depth":
+                # This receipt is derived from the DEPTH dispatch denominator
+                # and has authority only over depth-owned producers.  The same
+                # globs also match breadth/rescan artifacts, whose negative
+                # proposals are delivered through the candidate-negative
+                # ledger rather than an inventory source action -- flagging
+                # them as "missing from findings_inventory.md" halted the run
+                # on correctly delivered work (the identical filter already
+                # guards the preservation scan above).
+                continue
+            delivered_proposals = _candidate_negative_delivered_ids(
+                scratchpad, p.name
+            )
             for item in _parse_depth_finding_blocks(p):
                 fid = item["id"]
+                if fid.upper() in delivered_proposals:
+                    # An exact-identity delivery exists in the registered
+                    # candidate-negative ledger for this source artifact.
+                    continue
                 if (p.name, fid.upper()) in preserved_identity_keys:
                     # Typed reconciliation debt is the completeness sink. It
                     # grants neither inventory identity nor proof.
@@ -10696,6 +11747,42 @@ def _validate_registered_finding_delivery_receipt(
     return issues
 
 
+def _validate_current_registered_finding_delivery(
+    scratchpad: Path,
+) -> list[str]:
+    """Validate current delivery semantics without trusting a stale view.
+
+    A coupled canonical successor can legitimately make the preceding
+    human/JSON delivery projection historical.  Phase-local admission needs
+    to prove the current registered-action denominator, not compare current
+    bytes with that superseded projection.  The final preverify transaction
+    later captures and commits a new exact receipt for downstream consumers.
+    """
+
+    root = Path(scratchpad)
+    try:
+        inventory = (root / "findings_inventory.md").read_text(
+            encoding="utf-8", errors="strict"
+        )
+        payload = _build_registered_finding_delivery_receipt_payload(
+            root,
+            _scan_registered_finding_delivery_sources(root),
+            inventory,
+        )
+    except (OSError, UnicodeError, TypeError, ValueError) as exc:
+        return [
+            "current registered finding delivery recomputation failed: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+    residual = [str(row) for row in payload.get("residual_debt", ())]
+    if payload.get("status") == "DEGRADED" or residual:
+        return [
+            "current registered finding delivery has residual parser/delivery "
+            "debt: " + "; ".join(residual[:6])
+        ]
+    return []
+
+
 def _validate_depth_promotion_dedup(scratchpad: Path) -> list[str]:
     """Advisory validator: flags suspiciously high promotion inflation.
 
@@ -10853,41 +11940,15 @@ _NEVER_CUT_FILENAME_ALIASES = (
 
 
 def _normalize_never_cut_filenames(scratchpad: Path) -> list[str]:
-    """Rename `depth_`-prefixed never-cut aliases to canonical names.
+    """Legacy no-op retained for callers that expect normalization telemetry.
 
-    v2.3.4 — gate tolerance was insufficient: the orchestrator's choice of
-    `depth_perturbation_findings.md` over `perturbation_findings.md` halted
-    the L1 audit at the never-cut gate. Even with alternation accepted at
-    the gate, downstream consumers (~33 files reference the canonical name)
-    would still miss the artifact. Auto-rename canonicalizes once at gate
-    time so the rest of the pipeline sees the methodology-documented name.
-
-    No-op if canonical already exists OR alias doesn't exist. Same approach
-    as v2.1.2 A.5's `findings_breadth_*` -> `analysis_*` shim.
+    Validators must be observational and may not rename or rewrite MODEL
+    artifacts. Never-cut gates and downstream depth enumeration accept both
+    documented canonical names and the historical `depth_` aliases. A future
+    canonical view, if required, must be a separately armed DRIVER projection.
     """
-    renamed: list[str] = []
-    for canonical, alias in _NEVER_CUT_FILENAME_ALIASES:
-        canon_p = scratchpad / canonical
-        alias_p = scratchpad / alias
-        if canon_p.exists() or not alias_p.exists():
-            continue
-        try:
-            alias_p.rename(canon_p)
-            renamed.append(f"{alias} -> {canonical}")
-        except Exception:
-            # Don't break the gate on rename failure; the alternation in
-            # NEVER_CUT_GROUPS still accepts the alias form as a fallback.
-            pass
-    if renamed:
-        try:
-            vp = scratchpad / "violations.md"
-            with vp.open("a", encoding="utf-8") as f:
-                f.write("\n## Never-cut filename normalization (v2.3.4)\n")
-                for r in renamed:
-                    f.write(f"- {r}\n")
-        except Exception:
-            pass
-    return renamed
+    _ = scratchpad
+    return []
 
 
 def _assert_never_cut_artifacts(
@@ -10899,10 +11960,9 @@ def _assert_never_cut_artifacts(
     When `groups` is None, defaults to L1_NEVER_CUT_ARTIFACT_GROUPS for
     backwards compatibility. SC callers pass sc_never_cut_groups(mode).
 
-    v2.3.4: canonicalizes `depth_`-prefixed aliases first so downstream
-    consumers see the methodology-documented filename.
+    Historical `depth_` aliases are accepted directly. Validation never
+    mutates their path or contents.
     """
-    _normalize_never_cut_filenames(scratchpad)
     if groups is None:
         groups = L1_NEVER_CUT_ARTIFACT_GROUPS
     missing = []
@@ -10930,9 +11990,16 @@ def _depth_artifact_is_stub(path: Path) -> Optional[str]:
     except Exception:
         text = ""
     low = text.lower()
+    # P0-AM: normalize ONCE, then ask whether the artifact ASSERTS the stub
+    # marker rather than whether the marker's characters appear anywhere.
+    # Measured: appending the sentence "Note: the reservation header said
+    # `Writing in progress` until this final overwrite." declared a 143KB
+    # artifact with 11 findings a stub - the run48 "prose sentence names the
+    # marker token" failure mode, verbatim.
+    surf = _surface_of(text)
 
     # WRITE-THEN-VERIFY header reservation that was never populated.
-    if "writing in progress" in low:
+    if _declares_anywhere(surf, "writing in progress") is not None:
         return f"{name} (stub — WRITE-THEN-VERIFY reservation not populated)"
 
     # v2.0.5 (B2): the PLAMEN-STUB sentinel comment is an unambiguous
@@ -10941,7 +12008,7 @@ def _depth_artifact_is_stub(path: Path) -> Optional[str]:
     # sentinel is a stub regardless of size — newer audits opt into
     # this contract; legacy audits without it fall back to existing
     # size/shape heuristics below.
-    if "plamen-stub:" in low:
+    if _declares_anywhere(surf, "plamen-stub:") is not None:
         return f"{name} (stub — PLAMEN-STUB sentinel present, content to follow)"
 
     if name in ("perturbation_findings.md", "depth_perturbation_findings.md"):
@@ -11095,7 +12162,10 @@ def _match_label_status(text: str, label: str):
     false-positive gate failure on a semantically-correct artifact. Returns
     (status, rest_of_line) or None.
     """
-    _NC_STATUSES = r"SPAWNED|SKIPPED|COMPLETED|DONE|RAN|YES"
+    # NOT_PRODUCED distinguishes "scheduled, produced nothing" from the
+    # not-applicable SKIPPED decision.  It must parse, or the honest status
+    # would render as a bogus "missing entry" instead of the real obligation.
+    _NC_STATUSES = r"SPAWNED|SKIPPED|NOT_PRODUCED|COMPLETED|DONE|RAN|YES"
     bullet = re.search(
         rf"(?im)^\s*[-*]?\s*{re.escape(label)}\s*:\s*({_NC_STATUSES})\b\s*(.*)$",
         text,
@@ -11154,6 +12224,12 @@ def _assert_never_cut_checkpoint(
             issues.append(f"{label}: missing entry")
             continue
         status, rest = result
+        if status == "NOT_PRODUCED":
+            issues.append(
+                f"{label}: scheduled but produced no substantive output "
+                f"({rest.strip() or 'no reason recorded'})"
+            )
+            continue
         if status == "SKIPPED":
             reason_match = re.search(r"\b([A-Z_]+)\b", rest)
             reason = reason_match.group(1) if reason_match else ""
@@ -11197,18 +12273,46 @@ def _validate_depth_iterations(scratchpad: Path, mode: str) -> list[str]:
     # Total iterations — accept "iterations: 3", "Total iterations: 3",
     # "| iterations | 3 |", "Iteration count: 3", or fall back to counting
     # distinct "## Iteration N" / "### Iteration N" headers.
+    # P0-AM: the label is a MEANING. The measured defect recognized exactly
+    # three spellings, so `**Iterations**: 1` or `Iterations completed: 1`
+    # DISABLED the gate entirely (returned []) and a real Thorough-mode
+    # workflow violation shipped undetected. Fails open -> now reads the field.
+    # P0-AM: the legacy line patterns are kept, but they now also see the
+    # DECORATION-STRIPPED view, so `**Iterations**: 1` and
+    # `**Iter 1 uncertain Medium+**: 3` are read exactly like their plain forms.
+    _norm_text = "\n".join(
+        line.text for line in _surface_of(text).lines
+        if not getattr(line, "in_fence", False)
+    )
     iter_count = None
-    for pattern in (
-        r"(?im)^\s*[-*]?\s*(?:total\s+)?iterations?\s*(?:count)?\s*:\s*(\d+)\b",
-        r"(?im)^\s*\|\s*(?:total\s+)?iterations?\s*(?:count)?\s*\|\s*(\d+)\b",
-        r"(?im)^\s*iteration\s+count\s*:\s*(\d+)\b",
-    ):
-        m = re.search(pattern, text)
-        if m:
-            iter_count = int(m.group(1))
-            break
+    _iter_field = _read_field(
+        text,
+        "iterations",
+        roles={
+            "iterations": (
+                "total iterations", "iterations completed", "iteration count",
+                "iterations run", "iterations", "iteration",
+            )
+        },
+    )
+    if _iter_field is not None:
+        _m_iter = re.search(r"\d+", _iter_field.value)
+        if _m_iter:
+            iter_count = int(_m_iter.group(0))
     if iter_count is None:
-        headers = re.findall(r"(?im)^\s*#{2,4}\s*iteration\s+(\d+)\b", text)
+        for pattern in (
+            r"(?im)^\s*[-*]?\s*(?:total\s+)?iterations?\s*(?:count)?\s*:\s*(\d+)\b",
+            r"(?im)^\s*\|\s*(?:total\s+)?iterations?\s*(?:count)?\s*\|\s*(\d+)\b",
+            r"(?im)^\s*iteration\s+count\s*:\s*(\d+)\b",
+        ):
+            m = re.search(pattern, text) or re.search(pattern, _norm_text)
+            if m:
+                iter_count = int(m.group(1))
+                break
+    if iter_count is None:
+        headers = re.findall(
+            r"(?im)^\s*#{2,4}\s*iteration\s+(\d+)\b", text
+        ) or re.findall(r"(?im)^\s*iteration\s+(\d+)\b", _norm_text)
         if headers:
             iter_count = max(int(h) for h in headers)
     if iter_count is None:
@@ -11219,13 +12323,28 @@ def _validate_depth_iterations(scratchpad: Path, mode: str) -> list[str]:
 
     # Iter 1 uncertain Medium+ count. Accept several phrasings.
     uncertain_medium_plus = None
-    for pattern in (
+    _unc_field = _read_field(
+        text,
+        "uncertain",
+        roles={
+            "uncertain": (
+                "iter1_uncertain_medium_plus", "iter 1 uncertain medium+",
+                "iter1 uncertain medium+", "uncertain medium+",
+                "uncertain medium plus", "uncertain medium",
+            )
+        },
+    )
+    if _unc_field is not None:
+        _m_unc = re.search(r"\d+", _unc_field.value)
+        if _m_unc:
+            uncertain_medium_plus = int(_m_unc.group(0))
+    for pattern in () if uncertain_medium_plus is not None else (
         r"(?im)iter(?:ation)?\s*1[^\n]*?uncertain\s+medium\+?\s*:?\s*(\d+)\b",
         r"(?im)uncertain\s+medium\+?\s+after\s+iter(?:ation)?\s*1\s*:?\s*(\d+)\b",
         r"(?im)^\s*[-*]?\s*iter1_uncertain_medium_plus\s*:\s*(\d+)\b",
         r"(?im)^\s*\|\s*iter1_uncertain_medium_plus\s*\|\s*(\d+)\b",
     ):
-        m = re.search(pattern, text)
+        m = re.search(pattern, text) or re.search(pattern, _norm_text)
         if m:
             uncertain_medium_plus = int(m.group(1))
             break
@@ -11611,17 +12730,35 @@ def _norm_referent_location(loc: str) -> str:
 # recall hazard where a self-excluded UNIQUE bug re-emits as an unverifiable
 # Medium body stub. Recall-safe: content-less stubs are KEPT (appendix), never
 # dropped; content-bearing ones flow through normal dedup/resolution.
+# P0-AM. The measured defect anchored EVERY stem with a trailing ``\b``, so
+# the SINGULAR ``share`` matched but the plural ``funds``/``drains`` did not:
+# "Refund path drains user funds", "Owner can seize the vault without consent"
+# and "Message replays on the destination chain" all read as content-LESS and
+# were pinned to Informational + `[CONTENT-LESS: APPENDIX_ONLY]` — a real
+# candidate removed from the client body on English pluralization. Stems are
+# now PREFIX-matched (a trailing inflection is presentation) and the vocabulary
+# is generic, never protocol-specific.
 _PERCONTRACT_HARM_RE = re.compile(
     r"\b(?:"
-    r"loss|lose|lost|steal|stol|drain|lock(?:ed|s|ing)?|frozen|freeze|"
-    r"overflow|underflow|insolven|brick|dos|denial|revert|griefing|"
-    r"mint|inflat|deflat|manipulat|bypass|escalat|unauthor|"
+    r"loss|lose|lost|los(?:es|ing)|steal|stol|drain|lock|frozen|freez|"
+    r"overflow|underflow|insolven|brick|dos|denial|deny|deni|revert|grief|"
+    r"mint|inflat|deflat|manipulat|bypass|escalat|unauthor|seiz|"
     r"reentran|front[-\s]*run|sandwich|double[-\s]*(?:spend|count)|"
-    r"corrupt|mismatch|stale|incorrect|wrong|drift|desync|"
-    r"fund|asset|collateral|debt|reward|fee|share|balance|"
-    r"attacker|exploit|profit|extract|skim"
-    r")\b",
+    r"corrupt|mismatch|stale|incorrect|wrong|drift|desync|diverg|replay|"
+    r"fund|asset|collateral|debt|reward|fee|share|balance|withdraw|"
+    r"attacker|exploit|profit|extract|skim|consent|permanent|forever|"
+    r"unavailable|unrecoverable|misroute|mis-route|halt|stall|censor"
+    r")",
     re.IGNORECASE,
+)
+
+#: Dedup boilerplate that carries no content of its own. A candidate whose
+#: text reduces to these phrases plus an ID is the content-LESS stub the gate
+#: exists to catch.
+_PERCONTRACT_STUB_BOILERPLATE_RE = re.compile(
+    r"(?i)\b(?:already\s+known|not\s+duplicated|duplicate(?:s|d)?\s+of|"
+    r"dup(?:licate)?\s+of|dup\s+of|excluded|exclusion|see\s+above|as\s+noted|"
+    r"covered\s+by|same\s+as)\b"
 )
 
 
@@ -11646,14 +12783,27 @@ def _percontract_candidate_is_content_bearing(
     Recall-safe: this only DOWNGRADES a content-less stub's body-promotion; it
     never removes the candidate from the re-emit set.
     """
-    haystack = " ".join((title or "", line_text or ""))
+    haystack = _strip_decoration(" ".join((title or "", line_text or "")))
     # Concrete location: a real file:line token (the validator already extracts
     # ``location`` from _TABLE_LOCATION_RE, so a non-empty location is concrete).
     has_location = bool((location or "").strip()) or bool(
         _TABLE_LOCATION_RE.search(haystack)
     )
     has_harm = bool(_PERCONTRACT_HARM_RE.search(haystack))
-    return has_location and has_harm
+    if has_location and has_harm:
+        return True
+    if not has_location:
+        return False
+    # Recall-safe residual: a candidate carrying a concrete location AND real
+    # descriptive substance is content-BEARING even when it words its harm
+    # outside the vocabulary. Only text that reduces to dedup boilerplate plus
+    # an ID is the content-LESS stub this gate exists to catch.
+    residual = _PERCONTRACT_STUB_BOILERPLATE_RE.sub(" ", haystack)
+    residual = _TABLE_LOCATION_RE.sub(" ", residual)
+    residual = re.sub(r"\[[^\]]{0,40}\]", " ", residual)
+    residual = re.sub(r"\b[A-Z]{1,8}-\d+[A-Z\d-]*\b", " ", residual)
+    words = [w for w in re.findall(r"[A-Za-z][A-Za-z'-]{2,}", residual)]
+    return len(words) >= 4
 
 
 _SELF_EXCLUSION_CONTEXT_HEADING_RE = re.compile(
@@ -12130,17 +13280,97 @@ def _validate_depth_self_exclusion(
     return warnings, recovered
 
 
-def _collect_scip_indexed_paths(scratchpad: Path) -> set[str]:
-    """Return the set of source paths the SCIP prebake recorded.
+_RECON_PREPASS_PUBLICATION_SCHEMA = "plamen.recon_prepass_publication.v2"
+_RECON_PREPASS_PUBLICATION_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _validated_recon_source_path_authority(
+    scratchpad: Path,
+) -> tuple[set[str], list[str]]:
+    """Read the DRIVER-bound production-path roster from recon publication.
+
+    Recon Markdown is narrative output.  It may contain useful short aliases
+    (for example ``libraries/A.sol`` beside ``contracts/libraries/A.sol``),
+    but those aliases are not denominator authority.  The nested snapshot
+    roster is canonical, portable, self-bound, and survives across OSes.
+    """
+
+    path = Path(scratchpad) / "recon_prepass_publication_receipt.json"
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return set(), [
+            "validated recon production source-path authority is unavailable"
+        ]
+    if not raw or len(raw) > _RECON_PREPASS_PUBLICATION_MAX_BYTES:
+        return set(), [
+            "validated recon production source-path authority receipt is invalid"
+        ]
+    try:
+        receipt = json.loads(raw.decode("utf-8", errors="strict"))
+    except (UnicodeError, ValueError):
+        return set(), [
+            "validated recon production source-path authority receipt is invalid"
+        ]
+    if (
+        not isinstance(receipt, Mapping)
+        or receipt.get("schema") != _RECON_PREPASS_PUBLICATION_SCHEMA
+    ):
+        return set(), [
+            "validated recon production source-path authority receipt is invalid"
+        ]
+    unsigned_receipt = dict(receipt)
+    supplied_receipt_digest = unsigned_receipt.pop("artifact_sha256", None)
+    expected_receipt_digest = hashlib.sha256(
+        json.dumps(
+            unsigned_receipt,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest().upper()
+    if supplied_receipt_digest != expected_receipt_digest:
+        return set(), [
+            "validated recon production source-path authority receipt digest differs"
+        ]
+    capture = receipt.get("authority_capture")
+    authority = (
+        capture.get("source_path_authority")
+        if isinstance(capture, Mapping)
+        else None
+    )
+    try:
+        normalized = validate_production_source_path_authority(authority)
+    except (SnapshotInputError, TypeError, ValueError):
+        return set(), [
+            "validated recon production source-path authority roster is invalid"
+        ]
+    if (
+        not isinstance(capture, Mapping)
+        or capture.get("snapshot_digest") != normalized["snapshot_digest"]
+        or capture.get("source_scope_digest")
+        != normalized["source_scope_digest"]
+        or capture.get("source_capture_digest")
+        != normalized["authority_digest"]
+        or capture.get("production_source_capture_digest")
+        != normalized["authority_digest"]
+    ):
+        return set(), [
+            "validated recon production source-path authority capture binding differs"
+        ]
+    return set(normalized["source_paths"]), []
+
+
+def _collect_scip_repo_paths(
+    scratchpad: Path,
+    *,
+    include_legacy_narrative: bool = False,
+) -> set[str]:
+    """Return source paths explicitly recorded by a SCIP repo-map artifact.
 
     Reads `scratchpad/scip/repo_map.md` (or `repo_map_full.md` if present
     and larger) — the prebake's deterministic per-file inventory. Each
     `## <relative_path>` H2 header is a real indexed file.
-
-    If no SCIP prebake artifact exists, falls back to SC recon/inventory
-    artifacts (`contract_inventory.md`, `function_list.md`, `file_coverage.md`,
-    `file_coverage_ledger.md`). This gives SC the same coverage/attention
-    accounting as L1 without requiring a separate graph bake.
     """
     paths: set[str] = set()
     scip_dir = scratchpad / "scip"
@@ -12152,14 +13382,17 @@ def _collect_scip_indexed_paths(scratchpad: Path) -> set[str]:
             candidates.append(full)
         if short.exists():
             candidates.append(short)
-    fallback_candidates = (
-        scratchpad / "contract_inventory.md",
-        scratchpad / "function_list.md",
-        scratchpad / "file_coverage.md",
-        scratchpad / "file_coverage_ledger.md",
-    )
-    if not candidates:
-        candidates.extend(p for p in fallback_candidates if p.exists())
+    if include_legacy_narrative and not candidates:
+        candidates.extend(
+            path
+            for path in (
+                scratchpad / "contract_inventory.md",
+                scratchpad / "function_list.md",
+                scratchpad / "file_coverage.md",
+                scratchpad / "file_coverage_ledger.md",
+            )
+            if path.exists()
+        )
     for f in candidates:
         try:
             text = f.read_text(encoding="utf-8", errors="replace")
@@ -12236,6 +13469,44 @@ def _collect_scip_indexed_paths(scratchpad: Path) -> set[str]:
                         continue
                     paths.add(p)
     return paths
+
+
+def _indexed_path_authority(
+    scratchpad: Path,
+) -> tuple[set[str], str, list[str]]:
+    """Resolve the portable coverage denominator and any authority debt.
+
+    The recon snapshot roster is the primary source-path authority.  SCIP is
+    retained only as a degraded evidence fallback so an old/missing receipt
+    does not erase useful work; it can never turn missing recon authority into
+    a clean completeness claim.
+    """
+
+    authority_paths, authority_issues = (
+        _validated_recon_source_path_authority(scratchpad)
+    )
+    if authority_paths and not authority_issues:
+        return authority_paths, "recon-source-path-authority", []
+    scip_paths = _collect_scip_repo_paths(scratchpad)
+    if scip_paths:
+        return scip_paths, "scip-degraded-fallback", authority_issues
+    return set(), "unavailable", authority_issues
+
+
+def _collect_scip_indexed_paths(scratchpad: Path) -> set[str]:
+    """Compatibility projection of the validated indexed-path denominator."""
+
+    paths, _source, _issues = _indexed_path_authority(scratchpad)
+    if paths:
+        return paths
+    # Read-only legacy callers still use this helper for best-effort path
+    # orientation. Completeness/attention code calls `_indexed_path_authority`
+    # directly and therefore never promotes these narrative aliases into its
+    # denominator or a clean coverage claim.
+    return _collect_scip_repo_paths(
+        scratchpad,
+        include_legacy_narrative=True,
+    )
 
 
 def _validated_attention_application_receipt(
@@ -12465,7 +13736,9 @@ def _compute_scip_coverage_sets(
     language: str = "",
 ) -> dict[str, object]:
     mode = normalize_scope_match_mode(scope_match_mode)
-    indexed = _collect_scip_indexed_paths(scratchpad)
+    indexed, indexed_authority_source, indexed_authority_debt = (
+        _indexed_path_authority(scratchpad)
+    )
     cited = _collect_cited_paths(scratchpad)
     cited_basenames = _basenames(cited)
 
@@ -12486,6 +13759,10 @@ def _compute_scip_coverage_sets(
     if mode == "exact":
         cited = _collect_exact_scope_citations(scratchpad, scope_names)
         cited_basenames = _basenames(cited)
+        # The validated exact-scope list is itself the user-authorized source
+        # denominator. It does not inherit legacy recon/SCIP authority debt.
+        indexed_authority_source = "exact-scope-authority"
+        indexed_authority_debt = []
     scope_unindexed: set[str] = set()
     if mode == "exact":
         # In exact mode the user-authorized source list is the denominator.
@@ -12542,6 +13819,8 @@ def _compute_scip_coverage_sets(
         "scope_names": scope_names,
         "scope_unindexed": scope_unindexed,
         "scope_match_mode": mode,
+        "indexed_authority_source": indexed_authority_source,
+        "indexed_authority_debt": indexed_authority_debt,
     }
 
 
@@ -12651,15 +13930,6 @@ def _compute_subsystem_coverage_gap(
         _write_skip(f"mode={mode!r} (gate runs in thorough only)")
         return []
 
-    indexed = _collect_scip_indexed_paths(scratchpad)
-    if not indexed and normalize_scope_match_mode(scope_match_mode) != "exact":
-        _write_skip(
-            "no SCIP repo_map.md found in scratchpad/scip/ — bake phase "
-            "may have skipped (SC mode, or rust-analyzer/scip-go missing). "
-            "Coverage gap analysis requires the SCIP prebake."
-        )
-        return []
-
     cov = _compute_scip_coverage_sets(
         scratchpad,
         scope_file=scope_file,
@@ -12667,6 +13937,27 @@ def _compute_subsystem_coverage_gap(
         pipeline=pipeline,
         language=language,
     )
+    indexed = cov["indexed"]
+    indexed_authority_debt = list(cov.get("indexed_authority_debt", []))
+    if not indexed and normalize_scope_match_mode(scope_match_mode) != "exact":
+        reason = (
+            indexed_authority_debt[0]
+            if indexed_authority_debt
+            else "production source-path denominator is unavailable"
+        )
+        try:
+            gap_path.write_text(
+                "# Subsystem Coverage Gap\n\n"
+                "**Status**: INCOMPLETE — source-path authority debt\n\n"
+                f"- {reason}\n\n"
+                "Coverage cannot be reported clean until the DRIVER-bound "
+                "recon production source-path roster validates.\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        return [f"subsystem coverage authority debt: {reason}"]
+
     prod_indexed = cov["prod_indexed"]
     uncited = cov["uncited"]
     coverage_pct = cov["coverage_pct"]
@@ -12711,20 +14002,36 @@ def _compute_subsystem_coverage_gap(
                 )
                 for path in scope_unindexed:
                     handle.write(f"- `{path}`\n")
+        if indexed_authority_debt:
+            with gap_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    "\n## Source-path authority debt\n\n"
+                    "The SCIP evidence fallback did not establish the "
+                    "DRIVER-bound recon source-path denominator. Coverage "
+                    "therefore remains incomplete even if every fallback "
+                    "path was cited.\n\n"
+                )
+                for issue in indexed_authority_debt:
+                    handle.write(f"- {issue}\n")
     except Exception:
         pass
 
     # SOFT: report informational only. Hard-gating decision deferred to
     # v2.3.1 post-measurement.
+    issues: list[str] = []
     if uncited:
         sample = ", ".join(uncited[:3])
         more = f" (+{len(uncited)-3} more)" if len(uncited) > 3 else ""
-        return [
+        issues.append(
             f"subsystem coverage: {len(uncited)} indexed prod file(s) "
             f"uncited ({coverage_pct:.0f}% coverage). Sample: "
             f"{sample}{more}. See subsystem_coverage_gap.md."
-        ]
-    return []
+        )
+    issues.extend(
+        f"subsystem coverage authority debt: {issue}"
+        for issue in indexed_authority_debt
+    )
+    return issues
 
 
 def _parse_subsystem_coverage_gap(scratchpad: Path) -> dict[str, float]:
@@ -12766,11 +14073,6 @@ def _write_final_subsystem_coverage_summary(
     source_snapshot_digest: str = "",
 ) -> None:
     """Write final strict citation coverage after all phase outputs exist."""
-    if (
-        not _collect_scip_indexed_paths(scratchpad)
-        and normalize_scope_match_mode(scope_match_mode) != "exact"
-    ):
-        return
     cov = _compute_scip_coverage_sets(
         scratchpad,
         scope_file=scope_file,
@@ -12783,6 +14085,7 @@ def _write_final_subsystem_coverage_summary(
     covered = cov["covered"]
     uncited = cov["uncited"]
     coverage_pct = cov["coverage_pct"]
+    indexed_authority_debt = list(cov.get("indexed_authority_debt", []))
     coverage_fill_files = [
         p for p in sorted(scratchpad.glob("coverage_fill_*.md"))
         if p.stat().st_size >= 100
@@ -12803,6 +14106,14 @@ def _write_final_subsystem_coverage_summary(
         "the same as `file_coverage_ledger.md`, which may count acknowledged "
         "or heuristic coverage.",
     ]
+    if indexed_authority_debt:
+        lines.extend([
+            "",
+            "**Status**: INCOMPLETE — source-path authority debt",
+            "",
+            "A clean source-coverage claim is unavailable:",
+        ])
+        lines.extend(f"- {issue}" for issue in indexed_authority_debt)
     scope_unindexed = sorted(cov.get("scope_unindexed", set()))
     if scope_unindexed:
         lines.extend([
@@ -12905,12 +14216,10 @@ def _write_final_subsystem_coverage_summary(
             ensure_ascii=False,
         ).encode("utf-8")
     ).hexdigest()
-    temporary = exact_authority.with_suffix(".json.tmp")
-    temporary.write_text(
+    _atomic_validator_text(
+        exact_authority,
         json.dumps(authority_payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
-    os.replace(temporary, exact_authority)
 
 
 def _project_exact_scope_coverage_limitations(
@@ -13866,39 +15175,64 @@ def _late_committed_invariant_replay_issues(scratchpad: Path) -> list[str]:
                 )
             )
         ledger_path = scratchpad / LATE_CI_LEDGER_NAME
-        if not ledger_path.is_file():
-            if expected:
+        if ledger_path.is_file():
+            payload = json.loads(
+                ledger_path.read_text(encoding="utf-8", errors="strict")
+            )
+            observed = replay_late_committed_invariant_ledger(payload)
+            expected_sorted = tuple(sorted(
+                expected,
+                key=lambda row: (
+                    row.source_artifact,
+                    row.committed_invariant_id,
+                    row.committed_invariant_sha256,
+                ),
+            ))
+            if observed != expected_sorted:
                 return [
-                    "late committed-invariant PERSISTENCE/LEDGER_MISSING: "
-                    "verifier-emitted CI has no HUMAN_REVIEW_NEXT_RUN ledger"
+                    "late committed-invariant PERSISTENCE/LEDGER_REPLAY_MISMATCH: "
+                    "next-run authority differs from verifier CI denominator"
                 ]
+        if not expected_keys:
             return []
-        payload = json.loads(ledger_path.read_text(encoding="utf-8", errors="strict"))
-        observed = replay_late_committed_invariant_ledger(payload)
-        expected_sorted = tuple(sorted(
-            expected,
-            key=lambda row: (
-                row.source_artifact,
-                row.committed_invariant_id,
-                row.committed_invariant_sha256,
-            ),
-        ))
-        if observed != expected_sorted:
-            return [
-                "late committed-invariant PERSISTENCE/LEDGER_REPLAY_MISMATCH: "
-                "next-run authority differs from verifier CI denominator"
-            ]
         inventory_keys = _inventory_candidate_keys(scratchpad)
-        receipt_keys = _receipt_candidate_keys(scratchpad)
-        if (
-            not expected_keys.issubset(inventory_keys)
-            or not expected_keys.issubset(receipt_keys)
-            or inventory_keys != receipt_keys
-        ):
+        if not expected_keys.issubset(inventory_keys):
             return [
                 "late committed-invariant EMISSION/CANDIDATE_PERSISTENCE_UNPROVEN: "
-                "inventory and emission receipt do not replay exactly"
+                "canonical inventory omits a verifier CI candidate"
             ]
+        inventory_text = (scratchpad / "findings_inventory.md").read_text(
+            encoding="utf-8", errors="strict"
+        )
+        records_text = (scratchpad / "finding_records.json").read_text(
+            encoding="utf-8", errors="strict"
+        )
+        id_ledger_text = (scratchpad / "_id_ledger.json").read_text(
+            encoding="utf-8", errors="strict"
+        )
+        for key in expected_keys:
+            blocks = re.findall(
+                r"(?ms)^### Finding \[(INV-\d+)\]:.*?"
+                + re.escape(f"<!-- ENUMGAP-KEY: {key} -->")
+                + r".*?(?=^### Finding \[|\Z)",
+                inventory_text,
+            )
+            if len(blocks) != 1:
+                return [
+                    "late committed-invariant three-way projection is ambiguous: "
+                    + key
+                ]
+            fid = blocks[0]
+            if (
+                re.search(rf'"inventory_id"\s*:\s*"{re.escape(fid)}"', records_text)
+                is None
+                or re.search(rf'"id"\s*:\s*"{re.escape(fid)}"', id_ledger_text)
+                is None
+            ):
+                return [
+                    "late committed-invariant three-way ID parity failed: "
+                    + fid
+                ]
         return []
     except LateCommittedInvariantError as exc:
         return [
@@ -13912,14 +15246,14 @@ def _late_committed_invariant_replay_issues(scratchpad: Path) -> list[str]:
 
 
 def _validate_invariant_commitment(
-    scratchpad: Path, mode: str, *, recover: bool = True
+    scratchpad: Path, mode: str, *, recover: bool = False
 ) -> list[str]:
-    """Validate typed M1 commitment authority and recover valid candidates.
+    """Validate typed M1 commitment authority without mutating artifacts.
 
     The typed exploration receipt is authoritative: commitment debt is returned
-    as a phase issue. Legacy Markdown-only gaps and internal validation/recovery
-    failures are also returned, never silently swallowed. ``recover=False`` is
-    the side-effect-free resume/content-gate path.
+    as a phase issue. This validator is byte-pure even when a legacy caller
+    supplies ``recover=True``; recovery belongs exclusively to the driver's
+    armed coupled successor transaction.
     """
     if mode != "thorough":
         return []
@@ -13972,127 +15306,18 @@ def _validate_invariant_commitment(
         ci_blocks += len(_CI_BLOCK_PRESENCE_RE.findall(body))
         ci_blocks_any += len(_CI_BLOCK_ANY_RE.findall(body))
 
-    # Detection without recovery merely documents loss. The enumeration gate
-    # ran before these skeptic artifacts existed, so recover them at the
-    # validator boundary into the same append-only, receipt-backed inventory
-    # funnel. Exploration-skeptic candidates continue into verification;
-    # post-verify skeptic candidates remain explicit NEEDS_VERIFICATION review
-    # items rather than disappearing.
-    recovery_failed = False
-    if recover:
-        try:
-            from enumeration_gate import recover_invariant_assertion_candidates
-
-            recover_invariant_assertion_candidates(scratchpad)
-            (scratchpad / "invariant_commitment.ci_recovery_gap").unlink(
-                missing_ok=True
-            )
-        except LateCommittedInvariantError as exc:
-            recovery_failed = True
-            issues.append(
-                f"late committed-invariant {exc.stage}/{exc.code}: {exc.detail}"
-            )
-            try:
-                (scratchpad / "invariant_commitment.ci_recovery_gap").write_text(
-                    "[INVARIANT_COMMITMENT_RECOVERY_GAP] Late committed-invariant "
-                    f"{exc.stage}/{exc.code}: {exc.detail}\n",
-                    encoding="utf-8",
-                )
-            except OSError:
-                pass
-        except Exception as exc:
-            recovery_failed = True
-            issues.append(
-                "committed-invariant candidate recovery failed: "
-                f"{type(exc).__name__}: {exc}"
-            )
-            try:
-                (scratchpad / "invariant_commitment.ci_recovery_gap").write_text(
-                    "[INVARIANT_COMMITMENT_RECOVERY_GAP] Committed-invariant "
-                    "candidate recovery failed; the source artifact remains but "
-                    f"normal verify routing is not proven ({type(exc).__name__}).\n",
-                    encoding="utf-8",
-                )
-            except OSError:
-                pass
-    if not recover:
-        if ci_blocks_any > ci_blocks:
-            issues.append(
-                "committed-invariant ID-format drift: "
-                f"{ci_blocks_any - ci_blocks} block(s) are not harvestable"
-            )
-        issues.extend(_late_committed_invariant_replay_issues(scratchpad))
-        return list(dict.fromkeys(issues))
-    if not recovery_failed:
-        issues.extend(_late_committed_invariant_replay_issues(scratchpad))
-    # Harvest-vs-emit reconciliation (durable guard against ID-format drift):
-    # committed-invariant blocks the harvester regex can't parse are silently
-    # dropped — the CI-A1-vs-`CI-\d+` class that dark-dropped 12 skeptic
-    # invariants pre-fix. If the artifacts carry more CI headers than the
-    # harvestable pattern matches, surface it LOUDLY (sentinel + warning) rather
-    # than letting the deriver harvest 0 with no signal. Never raises.
+    del recover
     if ci_blocks_any > ci_blocks:
         issues.append(
             "committed-invariant ID-format drift: "
             f"{ci_blocks_any - ci_blocks} block(s) are not harvestable"
         )
-        import logging as _logging
-        _logging.getLogger("plamen.validators").warning(
-            "[invariant_commitment] CI ID-FORMAT DRIFT: %d committed-invariant "
-            "block(s) present but only %d match the harvestable pattern — %d "
-            "would be silently dropped by the deriver. Investigate _CI_BLOCK_RE "
-            "/ _CI_BLOCK_PRESENCE_RE ID shape.",
-            ci_blocks_any, ci_blocks, ci_blocks_any - ci_blocks,
-        )
-        try:
-            (scratchpad / "invariant_commitment.ci_format_gap").write_text(
-                f"[INVARIANT_COMMITMENT_CI_FORMAT_GAP] {ci_blocks_any} "
-                f"committed-invariant block(s) present but only {ci_blocks} are "
-                f"harvestable ({ci_blocks_any - ci_blocks} dropped by ID-format "
-                "mismatch). The deriver's _CI_BLOCK_RE cannot parse these IDs; "
-                "broaden it to match the emitted ID shape.\n",
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
-    elif not recovery_failed:
-        try:
-            (scratchpad / "invariant_commitment.ci_format_gap").unlink(
-                missing_ok=True
-            )
-        except OSError:
-            pass
     if clears > 0 and ci_blocks == 0:
         issues.append(
             "committed-invariant coverage gap: "
             f"{clears} value-bearing clear(s), 0 harvestable CI blocks"
         )
-        import logging as _logging
-        _logging.getLogger("plamen.validators").warning(
-            "[invariant_commitment] %d NO-GAP/DOWNGRADE clear(s) recorded across "
-            "skeptic artifacts but 0 committed-invariant [CI-n] blocks emitted — "
-            "each value-bearing clear should commit its tacit local guard as a "
-            "falsifiable assertion. Typed debt retained for the owning phase.",
-            clears,
-        )
-        try:
-            (scratchpad / "invariant_commitment.ci_gap").write_text(
-                "[INVARIANT_COMMITMENT_CI_GAP] The skeptic artifacts recorded "
-                f"{clears} value-bearing clear(s) (NO-GAP/DOWNGRADE) but emitted "
-                "0 committed-invariant [CI-n] block(s). Per M1, each value-bearing "
-                "clear should commit its tacit local guard as a falsifiable "
-                "assertion for the falsifier. Typed debt is retained; nothing "
-                "is dropped or downgraded, and the missing assertions must be "
-                "surfaced as committed invariants.\n",
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
-    elif not recovery_failed:
-        try:
-            (scratchpad / "invariant_commitment.ci_gap").unlink(missing_ok=True)
-        except OSError:
-            pass
+    issues.extend(_late_committed_invariant_replay_issues(scratchpad))
     return list(dict.fromkeys(issues))
 
 
@@ -15972,6 +17197,94 @@ def _parse_inventory_finding_meta_tolerant(
     return _parse_inventory_finding_meta_blocks(text, prefix_min=1)
 
 
+_CHAIN_JUSTIFIED_ROLES: dict[str, tuple[str, ...]] = {
+    "upgrade_justified": (
+        "severity-upgrade-justified", "severity upgrade justified",
+        "severity_upgrade_justified", "upgrade justified",
+        "severity upgrade", "justified",
+    ),
+    "combined_impact": (
+        "combined-impact", "combined impact", "combined_impact",
+        "combined harm", "compound impact",
+    ),
+}
+
+
+def _chain_upgrade_justified_tolerant(section: str) -> bool:
+    """Is this chain's severity upgrade justified? Read by MEANING.
+
+    SEVERITY is FAIL_CLOSED, but fail-closed is not representation-bound. The
+    measured defect required ONE single-line literal with fixed field ORDER and
+    UNDECORATED labels, so bolding the labels, reordering the two fields,
+    rendering the same three fields as a markdown table, or backticking the
+    value each flipped a GENUINE compound finding to "self-restatement" and
+    force-collapsed it to the lower constituent tier - a presentation-driven
+    severity downgrade.
+
+    Recall-safe direction: this ORs with the strict parser. It can only
+    PRESERVE a compound finding at its upgraded tier, never create one: an
+    explicit `NO` / `Combined-Impact: NONE` still returns False.
+    """
+    try:
+        from plamen_parsers import _chain_severity_upgrade_justified
+        if _chain_severity_upgrade_justified(section):
+            return True
+    except Exception:
+        pass
+    text = str(section or "")
+    # A single machine line may carry both fields separated by `|`.
+    probe = "\n".join(
+        part.strip()
+        for line in text.splitlines()
+        for part in (line.split("|") if "Justified" in line or "Impact" in line else [line])
+    )
+    justified = _read_field(
+        probe, "upgrade_justified", roles=_CHAIN_JUSTIFIED_ROLES
+    )
+    impact = _read_field(
+        probe, "combined_impact", roles=_CHAIN_JUSTIFIED_ROLES
+    )
+    if justified is None or impact is None:
+        return False
+    if _norm_enum(justified.value) not in {"YES", "TRUE", "JUSTIFIED"}:
+        return False
+    impact_value = _norm_cell(impact.value)
+    if not impact_value or _is_zero_placeholder(impact_value):
+        return False
+    if _norm_enum(impact_value) in {"NONE", "NA", "N_A", "NOT_APPLICABLE"}:
+        return False
+    return True
+
+
+def _attention_queue_binding_value(text: object) -> str:
+    """The QUEUE_BINDING_SHA256 hex, read by MEANING.
+
+    P0-AM. The binding is an IDENTITY (FAIL_CLOSED), but fail-closed is not
+    representation-bound: a trailing period, surrounding backticks, a bold
+    label or a table rendering do not change which queue the summary is bound
+    to. A genuinely DIFFERENT sha still mismatches.
+    """
+    field = _read_field(
+        text,
+        "queue_binding",
+        roles={
+            "queue_binding": (
+                "queue_binding_sha256", "queue binding sha256",
+                "queue binding", "queue_binding",
+            )
+        },
+    )
+    probe = _norm_cell(field.value) if field is not None else ""
+    match = re.search(r"\b([a-f0-9]{64})\b", probe, re.IGNORECASE)
+    if match:
+        return match.group(1).lower()
+    match = re.search(
+        r"(?im)QUEUE_BINDING_SHA256[^a-f0-9]{0,8}([a-f0-9]{64})\b",
+        _strip_decoration(text),
+    )
+    return match.group(1).lower() if match else ""
+
+
 def _validate_chain_self_restatement(scratchpad: Path, mode: str) -> list[str]:
     """HARD-with-retry gate against UNDER-merging (chain self-restatement).
 
@@ -16037,7 +17350,7 @@ def _validate_chain_self_restatement(scratchpad: Path, mode: str) -> list[str]:
     issues: list[str] = []
     for chain_id, section in sections.items():
         # Skip genuine compound findings (justified + concrete impact).
-        if _chain_severity_upgrade_justified(section):
+        if _chain_upgrade_justified_tolerant(section):
             continue
 
         # Resolve constituent IDs from this chain's anchors/machine line.
@@ -16195,9 +17508,19 @@ def _validate_invariants_pass2(scratchpad: Path, mode: str) -> list[str]:
 
 
 def _validate_attention_repair(
-    scratchpad: Path, mode: str,
+    scratchpad: Path,
+    mode: str,
+    *,
+    expected_receipt: list[bytes] | None = None,
+    require_application_receipt: bool = True,
 ) -> tuple[list[str], list[str]]:
-    """Returns ``(hard, soft)`` — hard issues block; soft are warnings."""
+    """Purely validate attention repair and derive its canonical receipt.
+
+    ``expected_receipt`` is an optional one-element result sink used by the
+    driver's already-armed publication transaction.  Validation never creates,
+    removes, or replaces the receipt; replay paths compare the exact canonical
+    bytes already on disk.
+    """
     if mode != "thorough":
         return [], []
     queue = scratchpad / "attention_repair_queue.md"
@@ -16210,13 +17533,11 @@ def _validate_attention_repair(
     application_receipt = (
         scratchpad / "attention_repair_application_receipt.json"
     )
-    # A model-authored or stale receipt is never authority.
-    application_receipt.unlink(missing_ok=True)
-    binding_match = re.search(
-        r"(?im)^\s*QUEUE_BINDING_SHA256:\s*([a-f0-9]{64})\s*$",
-        qtext,
-    )
-    queue_binding = binding_match.group(1) if binding_match else ""
+    # P0-AM: the sha is the IDENTITY; a trailing period or backticks around it
+    # are presentation. The measured defect anchored the value to END-OF-LINE,
+    # so `QUEUE_BINDING_SHA256: <sha>.` and `` `<sha>` `` each reported a stale
+    # binding on a correctly bound pair.
+    queue_binding = _attention_queue_binding_value(qtext)
     queued_rows = [ln for ln in qtext.splitlines() if re.match(r"^\|\s*\d+\s*\|", ln)]
     if not queued_rows:
         return [], []
@@ -16277,6 +17598,9 @@ def _validate_attention_repair(
         cells.append(current_cell)
         return cells
 
+    def _attention_cell(raw: object) -> str:
+        return _norm_cell(raw)
+
     def _parse_attention_row_no(raw: str) -> int | None:
         m = re.search(r"\b(?:queue\s*)?(?:row\s*)?#?\s*(\d+)\b", str(raw or ""), re.IGNORECASE)
         if not m:
@@ -16289,6 +17613,7 @@ def _validate_attention_repair(
     summary_receipts: set[int] = set()
     receipt_context: dict[int, str] = {}
     structured_receipts: dict[int, list[str]] = {}
+    structured_receipt_counts: dict[int, int] = {}
     for line in summary_blob.splitlines():
         s = line.strip()
         # Table row: | N | VERDICT | ... |, also accepts | Row 1 | / | #1 |.
@@ -16298,6 +17623,9 @@ def _validate_attention_repair(
             if row_no is not None and len(cells) >= 2 and any(allowed_verdict_re.search(c) for c in cells[1:]):
                 summary_receipts.add(row_no)
                 receipt_context[row_no] = " | ".join(cells[3:] if len(cells) >= 4 else cells[1:])
+                structured_receipt_counts[row_no] = (
+                    structured_receipt_counts.get(row_no, 0) + 1
+                )
                 structured_receipts[row_no] = cells
             continue
         # Bullet fallback: - N: VERDICT ..., * Row N. VERDICT ..., - #N VERDICT ...
@@ -16376,24 +17704,61 @@ def _validate_attention_repair(
         ], soft
 
     if queue_binding:
-        if not re.search(
-            rf"(?im)^\s*QUEUE_BINDING_SHA256:\s*{queue_binding}\s*$",
-            summary_blob,
-        ):
-            return [
-                "attention repair summary is stale or unbound: "
-                "QUEUE_BINDING_SHA256 mismatch"
-            ], soft
+        # The summary is bound to this queue by exact row denominator,
+        # kind/target identity, the typed MODEL/DRIVER transaction, and the
+        # derived application receipt below. A model-copied digest is redundant
+        # authority and caused representation-only halts when a semantically
+        # correct Run71 shard mistyped one character. Legacy digest lines are
+        # tolerated but never trusted; the DRIVER writes the canonical digest
+        # into its application receipt from the queue bytes it actually read.
+        # P0-AM: a closed vocabulary read on the NORMALIZED enum, with the
+        # documented synonyms the sibling SOFT vocabulary in this same
+        # function already accepts. `COVERED` and `NOT_APPLICABLE` are real
+        # dispositions, not malformed receipts.
         strict_verdicts = {
             "SAFE",
             "CONFIRMED",
             "NO_FINDING",
             "NEEDS_HUMAN",
         }
+        _verdict_aliases = {
+            "COVERED": "SAFE",
+            "NO_ISSUE": "NO_FINDING",
+            "NOFINDING": "NO_FINDING",
+            "NOT_APPLICABLE": "NO_FINDING",
+            "NA": "NO_FINDING",
+            "N_A": "NO_FINDING",
+            "NEEDS_HUMAN_REVIEW": "NEEDS_HUMAN",
+            "HUMAN_REVIEW": "NEEDS_HUMAN",
+            "NEEDSHUMAN": "NEEDS_HUMAN",
+            "CONFIRMED_FINDING": "CONFIRMED",
+        }
         accepted_paths: list[str] = []
         unresolved_paths: list[str] = []
         receipt_rows: list[dict[str, object]] = []
         strict_issues: list[str] = []
+        duplicate_rows = sorted(
+            row_no
+            for row_no, count in structured_receipt_counts.items()
+            if count != 1
+        )
+        if duplicate_rows:
+            strict_issues.append(
+                "duplicate structured receipt row(s): "
+                + ", ".join(str(value) for value in duplicate_rows)
+            )
+        surplus_rows = sorted(set(structured_receipts) - set(queue_numbers))
+        if surplus_rows:
+            strict_issues.append(
+                "surplus structured receipt row(s): "
+                + ", ".join(str(value) for value in surplus_rows)
+            )
+        absent_structured = sorted(set(queue_numbers) - set(structured_receipts))
+        if absent_structured:
+            strict_issues.append(
+                "missing structured receipt row(s): "
+                + ", ".join(str(value) for value in absent_structured)
+            )
         for row_no in queue_numbers:
             queue_record = queue_records.get(row_no, {})
             cells = structured_receipts.get(row_no)
@@ -16404,22 +17769,33 @@ def _validate_attention_repair(
                 continue
             expected_kind = str(queue_record.get("kind") or "")
             expected_target = str(queue_record.get("target") or "")
-            actual_kind = cells[1].strip()
-            actual_target = cells[2].strip()
-            verdict = cells[3].strip().upper().replace(" ", "_")
-            evidence = cells[4].strip()
-            notes = cells[5].strip() if len(cells) >= 6 else ""
-            if actual_kind != expected_kind:
+            actual_kind = _attention_cell(cells[1])
+            actual_target = _attention_cell(cells[2])
+            verdict = _norm_enum(cells[3])
+            verdict = _verdict_aliases.get(verdict, verdict)
+            evidence = _attention_cell(cells[4])
+            notes = _attention_cell(cells[5]) if len(cells) >= 6 else ""
+            if actual_kind.casefold() != _attention_cell(expected_kind).casefold():
                 strict_issues.append(
                     f"row {row_no} kind drifted from {expected_kind!r}"
                 )
-            if actual_target != expected_target:
+            if (
+                actual_target.casefold()
+                != _attention_cell(expected_target).casefold()
+            ):
                 strict_issues.append(
                     f"row {row_no} target drifted from exact queue authority"
                 )
             if verdict not in strict_verdicts:
                 strict_issues.append(
                     f"row {row_no} has unsupported bound verdict {verdict!r}"
+                )
+            authority_debt_target = (
+                expected_kind == "source-path-authority-debt"
+            )
+            if authority_debt_target and verdict != "NEEDS_HUMAN":
+                strict_issues.append(
+                    f"row {row_no} cannot close source-path authority debt"
                 )
             path_target = (
                 Path(expected_target).suffix.lower()
@@ -16437,14 +17813,23 @@ def _validate_attention_repair(
                 path_target
                 and verdict != "NEEDS_HUMAN"
                 and not re.search(
-                    rf"{re.escape(expected_target)}:L?\d+\b",
+                    # P0-AM: `path:L142`, `path:142`, `path line 142`,
+                    # `path#L142` all cite the same line. The separator is
+                    # presentation; the path plus the line number is the claim.
+                    rf"(?<![A-Za-z0-9_@./\\-])"
+                    rf"{re.escape(_attention_cell(expected_target))}"
+                    rf"\s*(?::|#|,|\s)\s*(?:L|line\s*|:)?\s*\d+\b",
                     evidence,
+                    re.IGNORECASE,
                 )
             ):
                 strict_issues.append(
-                    f"row {row_no} lacks exact file:line evidence"
+                    f"row {row_no} lacks verbatim target:Lline evidence"
                 )
-            if path_target and verdict == "NEEDS_HUMAN":
+            if (
+                (path_target or authority_debt_target)
+                and verdict == "NEEDS_HUMAN"
+            ):
                 unresolved_paths.append(expected_target)
             elif (
                 path_target
@@ -16465,10 +17850,33 @@ def _validate_attention_repair(
                     ),
                 }
             )
-        if strict_issues:
+        # P0-AM STEP 7 split. `identity.attention_target` (a receipt bound to a
+        # DIFFERENT queue target or kind) stays FAIL_CLOSED. Row counts,
+        # ordering, verdict vocabulary and evidence spelling are `receipt.*`
+        # and degrade with a targeted repair hint - the measured defect turned
+        # EIGHT independent presentation mutations into eight hard phase
+        # failures on a correctly bound queue+summary pair.
+        _identity_markers = ("drifted from",)
+        _identity_issues = [
+            issue for issue in strict_issues
+            if any(marker in issue for marker in _identity_markers)
+        ]
+        _receipt_debt = [
+            issue for issue in strict_issues if issue not in _identity_issues
+        ]
+        if _receipt_debt:
+            soft = list(soft) + record_validator_debt(
+                scratchpad,
+                [
+                    "attention repair bound receipt: " + issue
+                    for issue in _receipt_debt[:12]
+                ],
+                gate="receipt.attention_repair",
+            )
+        if _identity_issues:
             return [
                 "attention repair bound receipt failed: "
-                + "; ".join(strict_issues[:12])
+                + "; ".join(_identity_issues[:12])
             ], soft
         queue_sha256 = hashlib.sha256(queue.read_bytes()).hexdigest()
         payload = {
@@ -16480,12 +17888,28 @@ def _validate_attention_repair(
             "accepted_paths": sorted(set(accepted_paths)),
             "unresolved_paths": sorted(set(unresolved_paths)),
         }
-        temporary = application_receipt.with_suffix(".json.tmp")
-        temporary.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, application_receipt)
+        canonical_receipt = (
+            json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        if expected_receipt is not None:
+            expected_receipt.append(canonical_receipt)
+        if require_application_receipt:
+            try:
+                actual_receipt = rooted_io.read_bytes(
+                    application_receipt,
+                    label="attention repair application receipt",
+                    require_single_link=True,
+                    max_bytes=max(len(canonical_receipt), 1),
+                )
+            except (OSError, ValueError, rooted_io.RootedPathIOError) as exc:
+                return [
+                    "attention repair application receipt unavailable: "
+                    f"{type(exc).__name__}: {exc}"
+                ], soft
+            if actual_receipt != canonical_receipt:
+                return [
+                    "attention repair application receipt exact-byte mismatch"
+                ], soft
         if unresolved_paths:
             soft.append(
                 "attention repair retained NEEDS_HUMAN path debt: "
@@ -16687,73 +18111,107 @@ _STEP_TRACE_VALIDATION_RE = re.compile(
     r"<!--\s*PLAMEN_STEP_TRACE_VALIDATION:\s*(EXTRACTED|UNKNOWN)\s*-->",
     re.IGNORECASE,
 )
-def _embedded_step_trace_table(text: str) -> tuple[list[str], list[dict[str, str]]] | None:
-    """Return the one embedded trace table, preserving every table line.
+_STEP_TRACE_ROLES: dict[str, tuple[str, ...]] = {
+    "skill": ("skill", "skill name", "skill / agent", "agent"),
+    "step": ("step", "step id", "step number", "step #"),
+    "executed": ("executed", "done", "ran", "performed", "execution"),
+    "evidence": ("evidence", "evidence tag", "proof", "reference"),
+    "result": ("result", "outcome", "finding", "verdict", "conclusion"),
+}
 
-    The exact H2 is part of the output contract.  Refusing fuzzy headings
-    avoids extracting an example, retrospective prose, or a similarly named
-    section.  Returned lines are written verbatim to the derived sidecar.
+
+def _step_trace_table_block(text: str) -> list[str] | None:
+    """The ONE canonical trace table's verbatim lines, located by COLUMN ROLE.
+
+    P0-AM STEP 8. Two extractors previously tested the same property with
+    different tolerances and DISAGREED on identical bytes (quoting an example
+    header inside a fence blinded one while the other still matched). They are
+    now one function.
+
+    Measured flips this retires, each zero-semantic-change: restating the
+    heading once more as a pointer, `## Step Execution Trace (skills)`,
+    `### Step Execution Trace`, renaming `Executed` to `Done`, and appending a
+    `Notes` column. Extra columns are IGNORED; a fenced quotation of the header
+    never counts.
     """
-    lines = text.splitlines()
-    heading_indices = [
-        i for i, line in enumerate(lines) if line.strip() == _STEP_TRACE_HEADING
+    surf = _surface_of(text)
+    raw_lines = str(text or "").splitlines()
+    required = tuple(_STEP_TRACE_ROLES.keys())
+    matches = [
+        table
+        for table in _read_tables(surf, roles=_STEP_TRACE_ROLES)
+        if all(table.has_role(role) for role in required)
+        and table.header is not None
+        and not getattr(table.header, "in_fence", False)
     ]
-    if len(heading_indices) != 1:
+    if len(matches) != 1:
         return None
-    start = heading_indices[0] + 1
-    end = len(lines)
-    for i in range(start, len(lines)):
-        if re.match(r"^#{1,2}\s+", lines[i].strip()):
-            end = i
-            break
-    section = lines[start:end]
-    header_index = None
-    for i, raw in enumerate(section):
-        if not raw.strip().startswith("|"):
-            continue
-        cells = [c.strip().lower() for c in raw.strip().strip("|").split("|")]
-        if cells == ["skill", "step", "executed", "evidence", "result"]:
-            header_index = i
-            break
-    if header_index is None:
+    table = matches[0]
+    block_lines = [
+        line for line in surf.lines
+        if getattr(line, "table_index", -1) == table.index
+    ]
+    if not block_lines:
         return None
-    table_lines = [section[header_index]]
-    for raw in section[header_index + 1:]:
-        if not raw.strip():
-            if len(table_lines) > 1:
-                break
+    start_physical = min(int(l.physical_start) for l in block_lines)
+    end_physical = max(int(l.physical_end) for l in block_lines)
+    out = raw_lines[start_physical - 1:end_physical]
+    if len(out) < 3:
+        return None
+    return out
+
+
+def _step_trace_canonical_rows(text: str) -> list[dict[str, str]]:
+    """Parse trace rows through a role-addressed CANONICAL projection.
+
+    `_parse_step_trace_rows` still expects the documented header spelling, so a
+    renamed (`Done`) or extended (`Notes`) header would otherwise yield zero
+    rows even though every role resolved. The verbatim lines are returned to
+    callers untouched; only this projection is canonicalized.
+    """
+    surf = _surface_of(text)
+    required = tuple(_STEP_TRACE_ROLES.keys())
+    for table in _read_tables(surf, roles=_STEP_TRACE_ROLES):
+        if not all(table.has_role(role) for role in required):
             continue
-        if not raw.strip().startswith("|"):
-            break
-        table_lines.append(raw)
+        if table.header is None or getattr(table.header, "in_fence", False):
+            continue
+        canonical = ["| Skill | Step | Executed | Evidence | Result |",
+                     "|---|---|---|---|---|"]
+        for row in table.rows:
+            canonical.append(
+                "| " + " | ".join(
+                    _norm_cell(row.get(role) or "").replace("|", "\\|")
+                    for role in required
+                ) + " |"
+            )
+        rows = _parse_step_trace_rows("\n".join(canonical))
+        if rows:
+            return rows
+    return []
+
+
+def _embedded_step_trace_table(text: str) -> tuple[list[str], list[dict[str, str]]] | None:
+    """Return the one embedded trace table, preserving every table line."""
+    table_lines = _step_trace_table_block(text)
+    if table_lines is None:
+        return None
     rows = _parse_step_trace_rows("\n".join(table_lines))
-    if len(table_lines) < 3 or not rows:
+    if not rows:
+        rows = _step_trace_canonical_rows(text)
+    if not rows:
         return None
     return table_lines, rows
 
 
 def _step_trace_table_lines_anywhere(text: str) -> list[str] | None:
     """Extract the one canonical trace table without changing its lines."""
-    lines = text.splitlines()
-    starts: list[int] = []
-    for i, raw in enumerate(lines):
-        if not raw.strip().startswith("|"):
-            continue
-        cells = [c.strip().lower() for c in raw.strip().strip("|").split("|")]
-        if cells == ["skill", "step", "executed", "evidence", "result"]:
-            starts.append(i)
-    if len(starts) != 1:
+    table_lines = _step_trace_table_block(text)
+    if table_lines is None:
         return None
-    table_lines = [lines[starts[0]]]
-    for raw in lines[starts[0] + 1:]:
-        if not raw.strip():
-            if len(table_lines) > 1:
-                break
-            continue
-        if not raw.strip().startswith("|"):
-            break
-        table_lines.append(raw)
-    if len(table_lines) < 3 or not _parse_step_trace_rows("\n".join(table_lines)):
+    if not _parse_step_trace_rows("\n".join(table_lines)) and not (
+        _step_trace_canonical_rows(text)
+    ):
         return None
     return table_lines
 
@@ -17318,73 +18776,82 @@ def _parse_opengrep_row_count(scratchpad: Path) -> int:
 #   - numeric first cell required (unrelated tables NOT absorbed)
 #   - empty / "N/A" / "-" addressed_by cells are NOT acknowledgments
 
-_OBLIG_TABLE_HEADING_RE = re.compile(
-    r"(?im)^#{2,4}\s+[^\n]*Obligation\s+Receipts[^\n]*$"
-)
-_OBLIG_NEXT_HEADING_RE = re.compile(r"(?m)^#{1,6}\s+")
-_OBLIG_TABLE_ROW_RE = re.compile(r"^\s*\|\s*(\d+)\s*\|(.+)\|\s*$")
-_OBLIG_TABLE_SEP_RE = re.compile(r"^\s*\|[\s\-:|]+\|\s*$")
-_OBLIG_DISMISS_KEYS = re.compile(
-    r"\b(?:style|gas|stylistic|non[-_ ]security|not\s+security|"
-    r"false\s*positive|FP|by\s*design|informational)\b",
-    re.IGNORECASE,
-)
-_OBLIG_CARRY_KEYS = re.compile(
-    r"\b(?:carry|carried|defer|deferred|later\s+phase|next\s+phase)\b",
-    re.IGNORECASE,
-)
-_OBLIG_NONE_CELLS = frozenset({
-    "", "n/a", "na", "none", "-", "—", "(none)", "(n/a)",
-})
+# P0-AM STEP 8: the heading/row/keyword regexes that fed this gate are
+# deleted. Heading depth, cell decoration, inline comments and negation are
+# resolved once by `artifact_surface`; see `_parse_obligation_table_receipts`.
 
 
 def _parse_obligation_table_receipts(text: str, artifact: str) -> dict[str, str]:
     """F4: parse table-form Obligation Receipts sections targeting `artifact`.
 
-    Section-bounded: only scans tables under a heading whose text mentions
-    `Obligation Receipts` AND the artifact name. Requires a numeric first
-    cell so unrelated finding-summary tables are NOT absorbed as fake
-    receipts. Conservative status inference.
+    P0-AM. The measured defect required `^#{2,4}` (an H1 or H5 heading lost
+    EVERY receipt), a BARE integer in the first cell (`| **1** |` and
+    `| Row 1 |` lost the row), an unbroken `|`-terminated line (a trailing
+    `<!-- ok -->` lost the row) and a negation-BLIND keyword scan (the notes
+    cell "confirmed, not a false positive" silently INVERTED a REPORTED
+    obligation to DISMISSED - a disposition inversion, which is exactly the
+    FAIL_CLOSED family).
+
+    Heading depth, cell decoration and inline comments are presentation. The
+    disposition keyword must now be ASSERTED, not merely mentioned.
     """
     receipts: dict[str, str] = {}
     artifact_lc = artifact.lower()
     # Drop extension when matching against heading prose ("opengrep_findings.md"
-    # vs "opengrep" — the heading typically uses the bare keyword).
+    # vs "opengrep" - the heading typically uses the bare keyword).
     artifact_root = artifact_lc.split(".")[0].split("_")[0]
-    for hm in _OBLIG_TABLE_HEADING_RE.finditer(text):
-        heading_lc = hm.group(0).lower()
-        if artifact_lc not in heading_lc and artifact_root not in heading_lc:
+    surf = _surface_of(_strip_inline_comments(text))
+    for head, body in surf.sections():
+        label = _norm_label(getattr(head, "heading_text", "") or "")
+        if "obligation receipt" not in label:
             continue
-        section_start = hm.end()
-        rest = text[section_start:]
-        nxt = _OBLIG_NEXT_HEADING_RE.search(rest)
-        section = rest[: nxt.start()] if nxt else rest
-        for line in section.splitlines():
-            s = line.rstrip()
-            if not s or _OBLIG_TABLE_SEP_RE.match(s):
+        if artifact_lc not in label and artifact_root not in label:
+            continue
+        for line in body:
+            if getattr(line, "kind", "") == _asurf.TABLE_SEPARATOR:
                 continue
-            m = _OBLIG_TABLE_ROW_RE.match(s)
-            if not m:
+            cells = _row_cells_of(line)
+            if len(cells) < 2:
                 continue
-            row = m.group(1).strip()
-            rest_cells = [c.strip() for c in m.group(2).split("|")]
-            cells_lc = [c.lower() for c in rest_cells]
-            non_empty = [
-                c for c in rest_cells if c.lower() not in _OBLIG_NONE_CELLS
-            ]
+            row_token = _norm_cell(cells[0])
+            row_match = re.search(r"\d+", row_token)
+            if not row_match or not re.fullmatch(
+                r"(?i)(?:row\s*|#\s*)?\d+\.?", row_token.strip()
+            ):
+                continue
+            row = row_match.group(0)
+            rest_cells = [_norm_cell(c) for c in cells[1:]]
+            non_empty = [c for c in rest_cells if not _is_zero_placeholder(c)]
             # Conservative: a row with EVERY non-first cell empty/N/A is
             # not a real acknowledgment (likely a placeholder / template).
             if not non_empty:
                 continue
-            joined = " | ".join(rest_cells)
-            if _OBLIG_DISMISS_KEYS.search(joined):
+            if any(_asserts_dismissal(cell) for cell in rest_cells):
                 status = "DISMISSED"
-            elif _OBLIG_CARRY_KEYS.search(joined):
+            elif any(_asserts_carry(cell) for cell in rest_cells):
                 status = "CARRIED"
             else:
                 status = "REPORTED"
             receipts.setdefault(row, status)
     return receipts
+
+
+def _asserts_dismissal(cell_text: str) -> bool:
+    """Is a dismissal keyword ASSERTED (not negated, not narrated)?"""
+    for token in (
+        "false positive", "by design", "non-security", "not security",
+        "informational", "stylistic", "style", "gas",
+    ):
+        if _asserts_phrase(cell_text, token):
+            return True
+    return False
+
+
+def _asserts_carry(cell_text: str) -> bool:
+    for token in ("carried", "carry", "deferred", "defer", "next phase", "later phase"):
+        if _asserts_phrase(cell_text, token):
+            return True
+    return False
 
 
 def _collect_obligation_receipts(scratchpad: Path, artifact: str,
@@ -17424,7 +18891,7 @@ def _collect_obligation_receipts(scratchpad: Path, artifact: str,
 
 
 def _dedup_decision_coverage_detail(scratchpad: Path) -> dict[str, Any]:
-    """Return structured candidate/disposition coverage for semantic dedup."""
+    """Return model plus driver-sidecar disposition coverage for dedup."""
     pairs_path = scratchpad / "dedup_candidate_pairs.md"
     decisions_path = scratchpad / "dedup_decisions.md"
     empty = {"pair_count": 0, "accounted": 0, "missing_count": 0, "missing_rows": []}
@@ -17457,12 +18924,48 @@ def _dedup_decision_coverage_detail(scratchpad: Path) -> dict[str, Any]:
         s = line.strip()
         if s.startswith("|") and allowed_re.search(s):
             accounted += 1
-    missing_count = max(0, len(pair_rows) - accounted)
+    # Conservative missing rows are a DRIVER projection, never an in-place
+    # edit of the already committed MODEL artifact. Accept the sidecar only
+    # when it binds the exact current pair denominator and model bytes.
+    repair_count = 0
+    repair_path = scratchpad / "dedup_coverage_repair.json"
+    if repair_path.is_file():
+        try:
+            repair = json.loads(repair_path.read_text(encoding="utf-8"))
+            items = repair.get("items")
+            expected_tail = pair_rows[accounted:]
+            if (
+                isinstance(repair, Mapping)
+                and repair.get("schema_version")
+                == "plamen.semantic_dedup_coverage_repair.v1"
+                and repair.get("pair_denominator_sha256")
+                == hashlib.sha256(pairs_path.read_bytes()).hexdigest()
+                and repair.get("model_decisions_sha256")
+                == hashlib.sha256(decisions_path.read_bytes()).hexdigest()
+                and isinstance(items, list)
+                and len(items) == len(expected_tail)
+                and all(
+                    isinstance(item, Mapping)
+                    and item.get("ordinal") == index
+                    and item.get("candidate_pair") == row
+                    and item.get("disposition") == "PASSTHROUGH"
+                    for index, (item, row) in enumerate(
+                        zip(items, expected_tail, strict=True), start=1
+                    )
+                )
+            ):
+                repair_count = len(items)
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError):
+            repair_count = 0
+    total_accounted = min(len(pair_rows), accounted + repair_count)
+    missing_count = max(0, len(pair_rows) - total_accounted)
     return {
         "pair_count": len(pair_rows),
-        "accounted": accounted,
+        "accounted": total_accounted,
+        "model_accounted": accounted,
+        "driver_passthrough": repair_count,
         "missing_count": missing_count,
-        "missing_rows": pair_rows[accounted:],
+        "missing_rows": pair_rows[total_accounted:],
     }
 
 
@@ -17522,18 +19025,32 @@ def _report_dedup_decision_dispositions(
                 return index
         return None
 
+    # P0-AM: the section arm was H2-ONLY (`^##(?!#)`), so a `### Merge
+    # Decisions` H3 or a `## Consolidations` synonym never armed and EVERY
+    # decision row below it was silently discarded, producing a full
+    # missing-disposition set on a valid artifact. `dedup` is FAIL_CLOSED, so
+    # the arm is located on the NORMALIZED heading at ANY depth.
+    _dedup_heads: dict[int, str] = {}
+    for _line in _surface_of(text).lines:
+        if getattr(_line, "kind", "") != _asurf.HEADING:
+            continue
+        _title = _norm_label(getattr(_line, "heading_text", "") or "")
+        _title = re.sub(r"[^a-z0-9]+", " ", _title).strip()
+        if "merge" in _title or "consolidat" in _title or "absorb" in _title:
+            _dedup_heads[int(getattr(_line, "physical_start", 0))] = "MERGE"
+        elif (
+            "kept separate" in _title
+            or "keep separate" in _title
+            or ("reviewed" in _title and "separate" in _title)
+            or "distinct" in _title
+        ):
+            _dedup_heads[int(getattr(_line, "physical_start", 0))] = "KEEP_SEPARATE"
+        else:
+            _dedup_heads[int(getattr(_line, "physical_start", 0))] = ""
+
     for line_number, line in enumerate(text.splitlines(), start=1):
-        h2 = re.match(r"^\s*##(?!#)\s+(.+?)\s*$", line)
-        if h2:
-            title = re.sub(r"[^a-z0-9]+", " ", h2.group(1).lower()).strip()
-            if "merge" in title:
-                section = "MERGE"
-            elif "kept separate" in title or (
-                "reviewed" in title and "separate" in title
-            ):
-                section = "KEEP_SEPARATE"
-            else:
-                section = ""
+        if line_number in _dedup_heads:
+            section = _dedup_heads[line_number]
             headers = []
             continue
         if not section:
@@ -17726,44 +19243,12 @@ def _check_dedup_decision_coverage(scratchpad: Path) -> list[str]:
     (PASSTHROUGH not overwritten); this gate adds telemetry on the
     LLM's compliance with the explicit-disposition contract.
     """
-    pairs_path = scratchpad / "dedup_candidate_pairs.md"
-    decisions_path = scratchpad / "dedup_decisions.md"
-    if not pairs_path.exists() or not decisions_path.exists():
-        return []
-    try:
-        pairs_text = pairs_path.read_text(encoding="utf-8", errors="replace")
-        decisions_text = decisions_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-    # Count live candidate pair rows (skip headers/separators)
-    import re as _re
-    pair_count = 0
-    for line in pairs_text.splitlines():
-        s = line.strip()
-        if not s.startswith("|"):
-            continue
-        cells = [c.strip() for c in s.split("|") if c.strip()]
-        if len(cells) < 2:
-            continue
-        if cells[0].startswith("-") or cells[0].lower() in ("finding a", "pair", "id"):
-            continue
-        pair_count += 1
+    detail = _dedup_decision_coverage_detail(scratchpad)
+    pair_count = int(detail.get("pair_count") or 0)
     if pair_count == 0:
         return []
-    # Count disposition rows in decisions: any row whose disposition cell
-    # matches the allowed set is "accounted".
-    accounted = 0
-    allowed_re = _re.compile(
-        r"\b(MERGE|GROUP|KEEP[\s_-]?SEPARATE|N[/\s]?A|PASSTHROUGH)\b",
-        _re.IGNORECASE,
-    )
-    for line in decisions_text.splitlines():
-        s = line.strip()
-        if not s.startswith("|"):
-            continue
-        if allowed_re.search(s):
-            accounted += 1
-    if accounted >= pair_count:
+    accounted = int(detail.get("accounted") or 0)
+    if int(detail.get("missing_count") or 0) == 0:
         return []
     return [
         f"dedup decision coverage: {accounted}/{pair_count} candidate pair(s) "
@@ -17775,44 +19260,50 @@ def _check_dedup_decision_coverage(scratchpad: Path) -> list[str]:
 def _repair_dedup_missing_dispositions(
     scratchpad: Path, phase_name: str
 ) -> int:
-    """Append deterministic PASSTHROUGH rows for missing dedup dispositions."""
+    """Publish deterministic PASSTHROUGH rows without editing model bytes."""
     detail = _dedup_decision_coverage_detail(scratchpad)
     missing_rows = [str(x) for x in (detail.get("missing_rows") or [])]
     if not missing_rows:
         return 0
-    path = scratchpad / "dedup_decisions.md"
+    pairs_path = scratchpad / "dedup_candidate_pairs.md"
+    decisions_path = scratchpad / "dedup_decisions.md"
     try:
-        existing = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
-    except OSError:
-        existing = ""
-
-    def _cell(value: str) -> str:
-        return re.sub(r"\s+", " ", value.replace("|", "/")).strip()
-
-    lines: list[str] = []
-    if existing and not existing.endswith("\n"):
-        lines.append("")
-    lines.extend([
-        "",
-        "## Mechanical Missing Disposition Repair",
-        "",
-        f"**Phase**: `{phase_name}`",
-        "",
-        "Rows below were candidate pairs that lacked explicit semantic-dedup "
-        "dispositions. They are marked PASSTHROUGH to preserve upstream "
-        "findings rather than silently dropping or merging them.",
-        "",
-        "| Repair Row | Candidate Pair | Disposition | Reason |",
-        "|---|---|---|---|",
-    ])
-    for idx, row in enumerate(missing_rows, start=1):
-        lines.append(
-            f"| {idx} | {_cell(row)} | PASSTHROUGH | missing explicit LLM disposition |"
-        )
-    try:
-        path.write_text(existing + "\n".join(lines) + "\n", encoding="utf-8")
+        pair_sha = hashlib.sha256(pairs_path.read_bytes()).hexdigest()
+        decision_sha = hashlib.sha256(decisions_path.read_bytes()).hexdigest()
     except OSError:
         return 0
+    payload = {
+        "schema_version": "plamen.semantic_dedup_coverage_repair.v1",
+        "phase": str(phase_name),
+        "pair_denominator_sha256": pair_sha,
+        "model_decisions_sha256": decision_sha,
+        "items": [
+            {
+                "ordinal": index,
+                "candidate_pair": row,
+                "disposition": "PASSTHROUGH",
+                "reason": "missing explicit model disposition",
+            }
+            for index, row in enumerate(missing_rows, start=1)
+        ],
+    }
+    raw = (
+        json.dumps(
+            payload, ensure_ascii=False, allow_nan=False,
+            sort_keys=True, separators=(",", ":"),
+        ) + "\n"
+    ).encode("utf-8")
+    path = scratchpad / "dedup_coverage_repair.json"
+    temp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        if path.is_file() and path.read_bytes() == raw:
+            return len(missing_rows)
+        temp.write_bytes(raw)
+        os.replace(temp, path)
+    except OSError:
+        return 0
+    finally:
+        temp.unlink(missing_ok=True)
     return len(missing_rows)
 
 
@@ -17963,15 +19454,36 @@ def _parse_function_summary_rows(scratchpad: Path) -> list[dict[str, str]]:
     current_contract = ""
     in_table = False
     header_cols: list[str] = []
-    for line in text.splitlines():
-        m = re.match(r"^##\s+(\S+\.(sol|rs|move|go))\s*$", line)
-        if m:
-            current_contract = m.group(1)
+    # P0-AM: the contract heading is an IDENTITY, not a byte shape. The
+    # measured defect demanded a whole-line-anchored, UNDECORATED, H2-only
+    # heading, so ``## `Vault.sol` ``, ``## Vault.sol - core vault`` and
+    # ``### Vault.sol`` each dropped the contract, turning every qualified
+    # receipt id (`Vault.deposit`) into a bare `deposit` and reporting every
+    # depth receipt missing.
+    _heading_contract: dict[int, str] = {}
+    for _line in _surface_of(text).lines:
+        if getattr(_line, "kind", "") != _asurf.HEADING:
+            continue
+        _probe = _strip_decoration(getattr(_line, "heading_text", "") or "")
+        _m = re.match(
+            r"^\s*([A-Za-z0-9_./\\-]+\.(?:sol|rs|move|go))\b", _probe, re.IGNORECASE
+        )
+        if _m:
+            _heading_contract[int(getattr(_line, "physical_start", 0))] = _m.group(1)
+
+    for _physical, line in enumerate(text.splitlines(), start=1):
+        if _physical in _heading_contract:
+            current_contract = _heading_contract[_physical]
             in_table = False
             header_cols = []
             continue
-        if line.strip().startswith("| Function") or line.strip().startswith("|Function"):
-            header_cols = [c.strip().lower() for c in line.split("|")[1:-1]]
+        candidate_cols = [
+            _norm_label(c) for c in line.split("|")[1:-1]
+        ]
+        if candidate_cols and candidate_cols[0] in (
+            "function", "function / choice", "entry point", "method"
+        ):
+            header_cols = candidate_cols
             in_table = True
             continue
         if in_table and re.match(r"^\|[\s\-:]+\|", line):
@@ -17984,6 +19496,11 @@ def _parse_function_summary_rows(scratchpad: Path) -> list[dict[str, str]]:
             for i, col in enumerate(header_cols):
                 if i < len(cells):
                     row[col.replace(" ", "_")] = cells[i]
+            # The current recon/depth-handoff schema is a single flat table.
+            # In that shape the contract identity is carried by Location/File,
+            # not by a preceding ``## Contract.sol`` heading.
+            if not row["contract"]:
+                row["contract"] = _function_summary_contract_stem(row)
             # Normalize
             row["function"] = row.get("function", "")
             row["state_writes"] = row.get("state_writes", "")
@@ -17992,6 +19509,63 @@ def _parse_function_summary_rows(scratchpad: Path) -> list[dict[str, str]]:
         elif in_table and not line.strip():
             in_table = False
     return rows
+
+
+_FUNCTION_SUMMARY_NON_EVIDENCE = frozenset({
+    "", "-", "—", "–", "N/A", "NA", "UNKNOWN", "UNAVAILABLE", "NONE",
+})
+
+
+def _function_summary_contract_stem(row: Mapping[str, str]) -> str:
+    """Return the source basename stem that owns one function-summary row."""
+
+    raw = str(
+        row.get("contract") or row.get("location") or row.get("file") or ""
+    ).strip().strip("`*_~")
+    # Drop a conventional source line/column suffix before taking the basename.
+    raw = re.sub(r"(?::L?\d+)(?::\d+)?\s*$", "", raw, flags=re.IGNORECASE)
+    name = PurePosixPath(raw.replace("\\", "/")).name
+    return Path(name).stem if name else ""
+
+
+def _function_summary_cell_is_evidence(cell: str) -> bool:
+    """False for absence/uncertainty polarity, including decorated variants."""
+
+    value = str(cell or "").strip().strip("`*_~").strip()
+    while len(value) >= 2 and value.startswith("(") and value.endswith(")"):
+        value = value[1:-1].strip().strip("`*_~").strip()
+    normalized = re.sub(r"\s+", " ", value).upper()
+    if normalized in _FUNCTION_SUMMARY_NON_EVIDENCE:
+        return False
+    # Provider explanations such as ``UNAVAILABLE: no state facts`` and
+    # ``UNKNOWN — requires direct source`` remain explicit non-evidence.
+    if re.match(r"^(?:UNKNOWN|UNAVAILABLE|NONE)(?:\s*[:—–-]\s*.*)?$", normalized):
+        return False
+    return True
+
+
+def _function_summary_obligation_sets(
+    scratchpad: Path,
+) -> tuple[set[str], set[str]]:
+    """Derive exact state-trace and token-flow row identifiers."""
+
+    required_state: set[str] = set()
+    required_extcall: set[str] = set()
+    for row in _parse_function_summary_rows(scratchpad):
+        contract_short = _function_summary_contract_stem(row)
+        func = (row.get("function", "") or "").strip().strip("`")
+        if not func:
+            continue
+        row_id = (
+            func
+            if contract_short and func.startswith(f"{contract_short}.")
+            else f"{contract_short}.{func}" if contract_short else func
+        )
+        if _function_summary_cell_is_evidence(row.get("state_writes", "")):
+            required_state.add(row_id)
+        if _function_summary_cell_is_evidence(row.get("external_calls", "")):
+            required_extcall.add(row_id)
+    return required_state, required_extcall
 
 
 def _check_function_summary_obligation(
@@ -18007,26 +19581,12 @@ def _check_function_summary_obligation(
 
     Vacuous-pass when function_summary.md is absent (no obligation set).
     """
-    rows = _parse_function_summary_rows(scratchpad)
-    if not rows:
+    if not _parse_function_summary_rows(scratchpad):
         return []
 
-    def _is_meaningful(cell: str) -> bool:
-        return bool(cell) and cell.strip() not in ("-", "—", "N/A", "(none)", "")
-
-    # Build per-row id `<contract>.<function>` and required-role lookup.
-    required_state: set[str] = set()
-    required_extcall: set[str] = set()
-    for row in rows:
-        contract_short = (row.get("contract", "") or "").split(".")[0]
-        func = (row.get("function", "") or "").strip("`")
-        if not func:
-            continue
-        row_id = f"{contract_short}.{func}" if contract_short else func
-        if _is_meaningful(row.get("state_writes", "")):
-            required_state.add(row_id)
-        if _is_meaningful(row.get("external_calls", "")):
-            required_extcall.add(row_id)
+    required_state, required_extcall = _function_summary_obligation_sets(
+        scratchpad
+    )
 
     if not required_state and not required_extcall:
         return []
@@ -18043,13 +19603,21 @@ def _check_function_summary_obligation(
          "depth_da_token_flow_findings.md",
          "depth_da3_token_flow_findings.md"),
     )
-    all_receipts = set(state_receipts.keys()) | set(tokenflow_receipts.keys())
+    # Normalize: receipts may quote backticks — strip them, but never expand a
+    # wildcard. The prompt contract requires one exact denominator identity.
+    state_receipts_norm = {r.strip("`") for r in state_receipts}
+    tokenflow_receipts_norm = {r.strip("`") for r in tokenflow_receipts}
+    all_receipts_norm = state_receipts_norm | tokenflow_receipts_norm
+    both = required_state & required_extcall
+    state_only = required_state - both
+    extcall_only = required_extcall - both
 
-    # Normalize: receipts may quote backticks, full path, etc. — strip backticks.
-    all_receipts_norm = {r.strip("`") for r in all_receipts}
-
-    missing_state = sorted(required_state - all_receipts_norm)
-    missing_extcall = sorted(required_extcall - all_receipts_norm)
+    missing_state = sorted(
+        (state_only - state_receipts_norm) | (both - all_receipts_norm)
+    )
+    missing_extcall = sorted(
+        (extcall_only - tokenflow_receipts_norm) | (both - all_receipts_norm)
+    )
 
     issues: list[str] = []
     if missing_state:
@@ -18101,8 +19669,10 @@ def _check_pde_section_present(scratchpad: Path) -> list[str]:
         text = path.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return []
-    if not re.search(r"^##\s+Pre-Commit\s+Dimension\s+Enumeration",
-                     text, re.IGNORECASE | re.MULTILINE):
+    # P0-AM: heading depth, hyphenation and word order are presentation.
+    # `### Pre-Commit ...`, `Pre Commit`, `PreCommit` and
+    # `## Dimension Enumeration (Pre-Commit)` all name the same section.
+    if _section_after_heading(_surface_of(text), "dimension enumeration")[0] is None:
         return [
             "PDE missing: niche_semantic_consistency_findings.md has no "
             "`## Pre-Commit Dimension Enumeration` section. The niche agent "
@@ -18116,40 +19686,72 @@ def _check_pde_section_present(scratchpad: Path) -> list[str]:
     return []
 
 
-_PERTURBATION_BLOCK_RE = re.compile(
-    r"""
-    ^\s*(?:
-        \#{2,6}\s+
-        (?:adversarial\s+)?perturbation
-        (?:\s+(?:block|matrix|analysis|checks?))?
-        \b
-      |
-        [*_]{1,3}\s*
-        (?:adversarial\s+)?perturbation
-        (?:\s+(?:block|matrix|analysis|checks?))?
-        \s*[*_]{1,3}\s*:?\s*$
-      |
-        (?:adversarial\s+)?perturbation
-        (?:\s+(?:block|matrix|analysis|checks?))?
-        \s*:?\s*$
-    )
-    """,
-    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
-)
+def _perturbation_block_present(
+    surf: "_asurf.ArtifactSurface", identity_key: str
+) -> bool:
+    """Does the finding's own section DECLARE a perturbation analysis?
+
+    P0-AM: the property is 'this finding carries an adversarial perturbation
+    analysis', NOT 'a line matches one of three hard-coded spellings of the
+    heading'. The measured defect flipped `### Perturbation Block - DT-1` to
+    `**Perturbation Block - DT-`, `- ### Perturbation Block - DT-`,
+    `# Perturbation Block - DT-`, `> ### Perturbation Block - DT-` or
+    `**Perturbation Block**: DT-` and turned an accepted 143,899-byte artifact
+    into `structural_fail` five times over, with byte-identical content.
+
+    Scoping is IDENTITY-based, not depth-based: a sibling heading that names
+    the same finding extends its section instead of terminating it. A prose
+    sentence that merely NAMES perturbation ('we considered a perturbation of
+    the fee parameter but found nothing') is a MENTION and does not satisfy
+    the obligation.
+    """
+    for line in surf.section_containing(identity_key):
+        if _line_declares(line, "perturbation"):
+            return True
+    return False
+
+
+def _finding_heading_lines(
+    surf: "_asurf.ArtifactSurface",
+) -> list[tuple["_asurf.LogicalLine", "_asurf.Identity"]]:
+    """Identity-bearing finding headings at ANY depth, in ANY spelling."""
+    out: list[tuple["_asurf.LogicalLine", "_asurf.Identity"]] = []
+    for line in surf.headings():
+        heading_text = getattr(line, "heading_text", "") or ""
+        identity = _candidate_identity(heading_text)
+        if identity is None:
+            continue
+        label = _norm_label(heading_text)
+        if not label.startswith(("finding", "candidate", "issue", "hypothesis")):
+            if identity.form != "BRACKETED":
+                continue
+        out.append((line, identity))
+    return out
 
 
 def _missing_perturbation_block_ids(text: str) -> list[str]:
-    """Return Medium+ CONFIRMED finding IDs missing an inline perturbation block."""
-    findings: list[tuple[int, str]] = []
-    for m in re.finditer(
-        r"#{2,6}\s+Finding\s+\[(?P<id>[A-Z]{1,8}-\d+[A-Z\d-]*)\]",
-        text,
-    ):
-        findings.append((m.start(), m.group("id")))
+    """Return Medium+ CONFIRMED finding IDs missing an inline perturbation block.
+
+    P0-AM: DEBT-class. A missing perturbation block is a completeness gap in a
+    supporting record, never grounds to discard a worker's analysis.
+    """
+    surf = _surface_of(text)
+    raw_lines = str(text or "").splitlines()
+    heads = _finding_heading_lines(surf)
+    findings: list[tuple[int, str, str]] = []
+    for position, (line, identity) in enumerate(heads):
+        start = max(0, int(getattr(line, "physical_start", 1)) - 1)
+        if position + 1 < len(heads):
+            end = max(
+                start,
+                int(getattr(heads[position + 1][0], "physical_start", 1)) - 1,
+            )
+        else:
+            end = len(raw_lines)
+        findings.append((start, end, identity.key))
     missing_blocks: list[str] = []
-    for i, (start, fid) in enumerate(findings):
-        end = findings[i + 1][0] if i + 1 < len(findings) else len(text)
-        block = text[start:end]
+    for start, end, fid in findings:
+        block = "\n".join(raw_lines[start:end])
         # Verdict / Severity via the shared tolerant extractor so the bullet,
         # plain-colon, `**label:**`, and table-cell renderings are seen — the
         # literal `**Verdict**:` / `**Severity**:` regexes UNDER-warned (they
@@ -18170,7 +19772,7 @@ def _missing_perturbation_block_ids(text: str) -> list[str]:
             continue
         if sev_word.group(1).capitalize() not in ("Critical", "High", "Medium"):
             continue
-        if not _PERTURBATION_BLOCK_RE.search(block):
+        if not _perturbation_block_present(surf, fid):
             missing_blocks.append(fid)
     return missing_blocks
 
@@ -19178,6 +20780,50 @@ def _collect_verify_hypothesis_ids(scratchpad: Path) -> set[str]:
     return ids
 
 
+#: Report-index column roles. `internal` is deliberately SEPARATE from
+#: `report_id`: the measured defect used a LAST-REGEX-MATCH-PER-ROW heuristic,
+#: so appending ONE extra correct `Notes` column containing "see INV-002"
+#: invented a duplicate binding AND a dropout in the same row.
+_REPORT_INDEX_ROLES: dict[str, tuple[str, ...]] = {
+    "report_id": ("report id", "report identifier", "report", "id"),
+    "internal": (
+        "internal hypothesis", "internal hypothesis id", "internal id",
+        "internal finding id", "hypothesis id", "internal", "hypothesis",
+        "source hypothesis", "finding id",
+    ),
+    "severity": ("severity", "risk level", "risk", "tier"),
+    "verification": ("verification", "verification status", "status"),
+    "trust_adj": ("trust adj.", "trust adj", "trust adjustment", "trust"),
+    "title": ("title", "name", "summary"),
+}
+
+_MASTER_INDEX_HEADING_NEEDLES = (
+    "master finding index",
+    "promoted findings",
+    "finding index",
+)
+
+
+def _master_index_table(value: object):
+    """The Master Finding Index table, addressed by COLUMN ROLE.
+
+    Heading depth, decoration and a synonym title ("Finding Index") no longer
+    hide the section from its own gate: the table is located by its ROLES.
+    """
+    surf = _surface_of(value)
+    head, body = _section_after_heading(surf, *_MASTER_INDEX_HEADING_NEEDLES)
+    scope = body if head is not None else surf.lines
+    indices = {
+        line.table_index for line in scope if getattr(line, "table_index", -1) >= 0
+    }
+    for table in _read_tables(surf, roles=_REPORT_INDEX_ROLES):
+        if head is not None and table.index not in indices:
+            continue
+        if table.has_role("report_id") or table.has_role("internal"):
+            return table
+    return None
+
+
 def _collect_index_acknowledged_ids(
     scratchpad: Path,
 ) -> tuple[set[str], set[str], list[str]]:
@@ -19219,6 +20865,28 @@ def _collect_index_acknowledged_ids(
     master_sec = _sections(r"(?:Master\s+Finding\s+Index|Promoted\s+Findings)")
     excluded_sec = _sections(r"Excluded\s+Findings")
 
+    # P0-AM: heading depth and title wording are presentation. The measured
+    # defect required an exact `^## Master Finding Index` H2, so `### Master
+    # Finding Index` or the synonym `## Finding Index` parsed ZERO IDs and the
+    # completeness gate reported "possible parse failure" on a valid index.
+    _surf_index = _surface_of(text)
+
+    def _surface_section(*needles: str) -> str:
+        head, body = _section_after_heading(_surf_index, *needles)
+        if head is None:
+            return ""
+        raw_lines = text.splitlines()
+        start = max(0, int(getattr(head, "physical_start", 1)) - 1)
+        end = len(raw_lines)
+        if body:
+            end = int(getattr(body[-1], "physical_end", len(raw_lines)))
+        return "\n".join(raw_lines[start:end])
+
+    if not master_sec.strip():
+        master_sec = _surface_section(*_MASTER_INDEX_HEADING_NEEDLES)
+    if not excluded_sec.strip():
+        excluded_sec = _surface_section("excluded findings", "excluded")
+
     # For Master, walk row-by-row so each row contributes ONE internal-ID
     # occurrence even if the row mentions cross-references. This is the
     # uniqueness check substrate.
@@ -19230,7 +20898,19 @@ def _collect_index_acknowledged_ids(
     # Internal Hypothesis ID — they share the `H-NN` shape after v2.2.2
     # widening. Use the LAST match per row, which biases toward the
     # Internal Hypothesis column.
-    for line in master_sec.splitlines():
+    # P0-AM: role-addressed identity. When the Master Finding Index carries a
+    # recognizable `Internal Hypothesis` column we read THAT column; the
+    # last-regex-match column heuristic below survives only as the fallback for
+    # a table with no resolvable role.
+    _role_table = _master_index_table(text)
+    _role_rows: dict[str, str] = {}
+    if _role_table is not None and _role_table.has_role("internal"):
+        for _row in _role_table.rows:
+            _key = _norm_cell(getattr(_row.line, "raw", ""))
+            if _key:
+                _role_rows[_key] = str(_row.get("internal") or "")
+
+    for _line_no, line in enumerate(master_sec.splitlines(), start=1):
         s = line.strip()
         if not s.startswith("|"):
             continue
@@ -19247,15 +20927,26 @@ def _collect_index_acknowledged_ids(
         # the last-match heuristic clean: only CH-3 survives.
         s_clean = re.sub(r"\([^)]*\)", "", s)
         cells = [c.strip() for c in s_clean.strip("|").split("|")]
-        candidate_cells = list(reversed(cells[1:])) if len(cells) > 1 else [s_clean]
         row_ids: list[str] = []
-        for cell in candidate_cells:
+        _role_cell = _role_rows.get(_norm_cell(line))
+        if _role_cell:
             row_ids = [
                 m.group(1).upper()
-                for m in _INTERNAL_FINDING_ID_RE.finditer(cell)
+                for m in _INTERNAL_FINDING_ID_RE.finditer(
+                    re.sub(r"\([^)]*\)", "", str(_role_cell))
+                )
             ]
-            if row_ids:
-                break
+        if not row_ids:
+            candidate_cells = (
+                list(reversed(cells[1:])) if len(cells) > 1 else [s_clean]
+            )
+            for cell in candidate_cells:
+                row_ids = [
+                    m.group(1).upper()
+                    for m in _INTERNAL_FINDING_ID_RE.finditer(cell)
+                ]
+                if row_ids:
+                    break
         if not row_ids:
             continue
         # v2.8.10/v2.8.13: a MULTI-CONSTITUENT row (a chain tagged
@@ -19941,6 +21632,142 @@ _BODY_POC_SECTIONS = (
 )
 
 
+_BODY_STRUCTURAL_EXCLUDE = (
+    "priority remediation",
+    "remediation order",
+    "appendix",
+    "excluded findings",
+    "cross-reference",
+    "cross reference",
+    "consolidation map",
+    "summary",
+    "table of contents",
+)
+
+
+def _body_heading_report_ids(body: str) -> list[str]:
+    """Report IDs that OPEN a body finding section, in document order.
+
+    P0-AM. The measured defect counted `'### [X-NN]'`-shaped heading matches
+    anywhere, so a legitimate Priority Remediation Order entry rendered as
+    `### [H-01] Bound the fee setter - Immediate` became a DUPLICATE binding,
+    while `### H-01 Title` (no brackets) and `#### [H-01]` (one extra `#`)
+    became MISSING. Identity is decoration- and depth-agnostic; ownership is
+    decided by the enclosing structural heading, not by the `#` count.
+    """
+    surf = _surface_of(body)
+    found: list[str] = []
+    owner = ""
+    for line in surf.lines:
+        if getattr(line, "kind", "") != _asurf.HEADING:
+            continue
+        heading_text = str(getattr(line, "heading_text", "") or "")
+        label = _norm_label(heading_text)
+        if int(getattr(line, "heading_level", 0) or 0) <= 2:
+            owner = label
+        if any(token in owner for token in _BODY_STRUCTURAL_EXCLUDE):
+            continue
+        probe = re.sub(
+            r"^\s*\[REPORT-BLOCKED[^\]]*\]\s*", "", _strip_decoration(heading_text)
+        )
+        identity = _candidate_identity(probe)
+        if identity is None:
+            continue
+        match = re.fullmatch(r"([CHMLI])-(\d{1,3})", identity.key)
+        if not match:
+            continue
+        if identity.offset > 4:
+            # The ID must OPEN the heading; a trailing cross-reference does
+            # not create a section.
+            continue
+        found.append(f"{match.group(1)}-{int(match.group(2)):02d}")
+    return found
+
+
+def _body_quality_observation_ids(body: str) -> list[str]:
+    """Report IDs represented as Quality Observations table rows."""
+    surf = _surface_of(body)
+    head, rows = _section_after_heading(surf, "quality observations")
+    if head is None:
+        return []
+    found: list[str] = []
+    for line in rows:
+        cells = _row_cells_of(line)
+        if not cells:
+            continue
+        identity = _candidate_identity(cells[0])
+        if identity is None:
+            continue
+        match = re.fullmatch(r"([LI])-(\d{1,3})", identity.key)
+        if match:
+            found.append(f"{match.group(1)}-{int(match.group(2)):02d}")
+    return found
+
+
+def _tolerant_body_report_ids(body: str) -> list[str]:
+    return _body_heading_report_ids(body) + _body_quality_observation_ids(body)
+
+
+def _tolerant_section_for_report_id(body: str, report_id: str) -> str:
+    """Body slice owned by `report_id`, located on the NORMALIZED heading.
+
+    Accepts every spelling of one identity: `### [H-01]`, `#### [H-01]`,
+    `### H-01`, `### **[H-01]**`, `### [REPORT-BLOCKED: ...] [H-01]`.
+    """
+    want = _canonical_finding_key(report_id)
+    if not want:
+        return ""
+    surf = _surface_of(body)
+    raw_lines = str(body or "").splitlines()
+    heads = [
+        line for line in surf.lines
+        if getattr(line, "kind", "") == _asurf.HEADING
+    ]
+    for position, line in enumerate(heads):
+        probe = re.sub(
+            r"^\s*\[REPORT-BLOCKED[^\]]*\]\s*",
+            "",
+            _strip_decoration(getattr(line, "heading_text", "") or ""),
+        )
+        identity = _candidate_identity(probe)
+        if identity is None or _canonical_finding_key(identity.key) != want:
+            continue
+        if identity.offset > 4:
+            continue
+        start = max(0, int(getattr(line, "physical_start", 1)) - 1)
+        end = len(raw_lines)
+        for nxt in heads[position + 1:]:
+            nxt_probe = re.sub(
+                r"^\s*\[REPORT-BLOCKED[^\]]*\]\s*",
+                "",
+                _strip_decoration(getattr(nxt, "heading_text", "") or ""),
+            )
+            nxt_identity = _candidate_identity(nxt_probe)
+            level = int(getattr(nxt, "heading_level", 0) or 0)
+            label = _norm_label(getattr(nxt, "heading_text", "") or "")
+            structural = level <= 2 and (
+                any(token in label for token in _BODY_STRUCTURAL_EXCLUDE)
+                or label.split(" ")[0] in {
+                    "critical", "high", "medium", "low", "informational",
+                }
+            )
+            if structural or (
+                nxt_identity is not None
+                and re.fullmatch(r"[CHMLI]-\d{1,3}", nxt_identity.key)
+                and nxt_identity.offset <= 4
+            ):
+                end = max(start, int(getattr(nxt, "physical_start", 1)) - 1)
+                break
+        return "\n".join(raw_lines[start:end])
+    # Quality Observations row fallback.
+    _head, rows = _section_after_heading(surf, "quality observations")
+    for line in rows:
+        cells = _row_cells_of(line)
+        if cells and _canonical_finding_key(cells[0]) == want:
+            return str(getattr(line, "raw", ""))
+    return ""
+
+
 def _validate_report_body(body: str, manifest: dict) -> dict:
     """Validate an LLM-written body file against its shard manifest.
 
@@ -19950,7 +21777,7 @@ def _validate_report_body(body: str, manifest: dict) -> dict:
     """
     findings = manifest.get("findings", []) or []
     expected_list = [f["report_id"].upper() for f in findings if f.get("report_id")]
-    body_id_list = _extract_report_ids_from_body(body)
+    body_id_list = _tolerant_body_report_ids(body)
     expected_ids = set(expected_list)
     body_ids = set(body_id_list)
 
@@ -19968,7 +21795,7 @@ def _validate_report_body(body: str, manifest: dict) -> dict:
         rid = f.get("report_id", "").upper()
         if rid in missing:
             continue
-        section = _section_for_report_id(body, rid)
+        section = _tolerant_section_for_report_id(body, rid)
         # Location integrity: the manifest location must appear somewhere in
         # the section (case-insensitive substring match - tolerates LLM
         # rewording around it).
@@ -19982,20 +21809,22 @@ def _validate_report_body(body: str, manifest: dict) -> dict:
             integrity_errors.append(
                 f"{rid}: location {loc!r} not present in body section"
             )
+        # P0-AM: ASSERTION vs MENTION. The measured defect read the prose
+        # NEGATION "This finding is not [REPORT-BLOCKED]; evidence is
+        # complete." as an assertion of the tag and failed the whole body.
+        section_surface = _surface_of(section)
+        blocked_asserted = (
+            _asserts_phrase(section_surface, "[REPORT-BLOCKED")
+            or _asserts_phrase(section_surface, "VERIFICATION NOT EXECUTED")
+            or _asserts_phrase(section_surface, "[UNVERIFIED]")
+        )
         if f.get("report_blocked"):
-            section_upper = section.upper()
             severity = normalize_severity(str(f.get("severity", "") or "Medium"))
-            if (
-                severity in {"Critical", "High", "Medium"}
-                and
-                "[REPORT-BLOCKED" not in section_upper
-                and "VERIFICATION NOT EXECUTED" not in section_upper
-                and "[UNVERIFIED]" not in section_upper
-            ):
+            if severity in {"Critical", "High", "Medium"} and not blocked_asserted:
                 blocked_violations.append(
                     f"{rid}: report_blocked but no [REPORT-BLOCKED tag in body"
                 )
-        elif "[REPORT-BLOCKED" in section.upper():
+        elif _asserts_phrase(section_surface, "[REPORT-BLOCKED"):
             blocked_violations.append(
                 f"{rid}: body has [REPORT-BLOCKED] but manifest has verified evidence"
             )
@@ -20043,10 +21872,12 @@ def _validate_report_body(body: str, manifest: dict) -> dict:
     # in the returned dict under "content" for telemetry; the consumer logs it
     # as a WARNING. Mechanical guarantees (missing/extra/duplicate IDs,
     # location integrity, report-blocked tag) stay hard.
-    ok = not (
-        missing or extras or duplicates or integrity_errors
-        or blocked_violations
-    )
+    # P0-AM STEP 7 split. `identity.report_id_binding` (a manifest finding
+    # absent from the body, or a body section for a finding the manifest does
+    # not have) stays FAIL_CLOSED - losing a finding is the unacceptable error.
+    # `format.duplicate_section` and `format.report_blocked_tag` are
+    # presentational and degrade with visible debt.
+    ok = not (missing or extras or integrity_errors)
     return {
         "ok": ok,
         "missing": missing,
@@ -20055,6 +21886,10 @@ def _validate_report_body(body: str, manifest: dict) -> dict:
         "integrity": integrity_errors,
         "blocked_violations": blocked_violations,
         "content": content_errors,
+        "debt": [
+            *(f"duplicate body section for {rid}" for rid in duplicates),
+            *blocked_violations,
+        ],
     }
 
 
@@ -20227,30 +22062,39 @@ def _expected_tier_assignment_count(scratchpad: Path, shard_key: str) -> int | N
         return None
 
 
-def _empty_tier_sidecar_valid(scratchpad: Path, shard_key: str, body_name: str) -> bool:
-    """Accept an empty-tier body file when the driver-written sidecar OR
-    the body file's own provenance marker confirm authenticity.
+def _empty_tier_sidecar_valid(
+    scratchpad: Path, shard_key: str, body_name: str, *,
+    project_root: Path | None = None,
+    config: Mapping[str, Any] | None = None,
+) -> bool:
+    """Validate typed empty-tier ownership, or narrowly legacy-format bytes.
 
-    Background: `_maybe_skip_empty_body_writer` writes BOTH a body file
-    (containing the `PLAMEN-DRIVER-AUTHENTIC-EMPTY-TIER` marker in its
-    Provenance section) AND a JSON sidecar at
-    `body_manifests/<shard>.empty.json`. If the sidecar write fails (FS
-    error, permission issue, race with a parallel sweep) the body file
-    is still on disk and is still authentic — the marker is the source
-    of truth. Pre-fix, the missing sidecar caused a hard "manifest
-    missing" halt at the legacy tier confirmation handler, even though
-    the body file was unambiguously a driver-authored empty tier.
-    Post-fix, EITHER source of provenance is accepted.
-
-    Caller must still verify the body file has no report IDs (done
-    upstream at line 5624). The expected_count == 0 cross-check
-    prevents impostors: a manifest could be wrong, but if the queue
-    truly has a non-zero count for this tier, we refuse the empty-tier
-    pass.
+    Any caller-supplied typed context or lexical checkpoint/ledger presence
+    requires read-only committed PhaseIO replay. Marker/sidecar compatibility
+    is limited to workspaces with no typed state and conveys no live authority.
     """
     expected_count = _expected_tier_assignment_count(scratchpad, shard_key)
     if expected_count is None or expected_count != 0:
         return False
+    typed_context = (
+        project_root is not None or config is not None
+        or os.path.lexists(scratchpad / "_v2_checkpoint.json")
+        or os.path.lexists(scratchpad / "_artifact_state.json")
+    )
+    if typed_context:
+        if project_root is None or config is None:
+            return False
+        from artifact_ledger import ArtifactLedgerError
+        from report_empty_tier import validate_committed_empty_report_tier
+        phase_name = "report_body_writer_" + shard_key.removeprefix("report_")
+        try:
+            return validate_committed_empty_report_tier(
+                scratchpad=scratchpad, project_root=project_root,
+                config=config, phase_name=phase_name,
+            )
+        except (ArtifactLedgerError, OSError, TypeError, ValueError):
+            return False
+    # Unauthenticated marker/sidecar acceptance is legacy-format-only.
     sidecar = scratchpad / "body_manifests" / f"{shard_key}.empty.json"
     if sidecar.exists():
         try:
@@ -20264,10 +22108,7 @@ def _empty_tier_sidecar_valid(scratchpad: Path, shard_key: str, body_name: str) 
                 return True
         except Exception:
             pass
-    # Sidecar missing / unreadable / mismatched — fall back to the body
-    # file's own provenance marker. The marker is hard-coded by the
-    # driver in `_maybe_skip_empty_body_writer` and cannot be produced
-    # by an LLM agent or third-party tool.
+    # Legacy-format compatibility only. The marker is not authority.
     body_path = scratchpad / body_name
     if not body_path.exists():
         return False
@@ -20351,7 +22192,9 @@ def _generate_body_writer_retry_hint(scratchpad: Path, phase_name: str) -> str:
 
 
 def _validate_tier_body_against_manifest(
-    scratchpad: Path, phase_name: str, collect_content: "list[str] | None" = None
+    scratchpad: Path, phase_name: str, collect_content: "list[str] | None" = None,
+    *, project_root: Path | None = None,
+    config: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Phase E5 wiring: validate the tier file against its body-writer manifest.
 
@@ -20375,18 +22218,36 @@ def _validate_tier_body_against_manifest(
         return []
     body_files = [f"{phase_name}.md"]
     manifest_keys = [phase_name]
+    typed_context = (
+        project_root is not None or config is not None
+        or os.path.lexists(scratchpad / "_v2_checkpoint.json")
+        or os.path.lexists(scratchpad / "_artifact_state.json")
+    )
+    expected_count = _expected_tier_assignment_count(scratchpad, phase_name)
+    if typed_context and expected_count == 0:
+        if phase_name != f"report_{_tier_m.group(1)}":
+            return [f"body validator: typed empty shard unsupported for {phase_name}"]
+        if _empty_tier_sidecar_valid(
+            scratchpad, phase_name, f"{phase_name}.md",
+            project_root=project_root, config=config,
+        ):
+            return []
+        return [f"body validator: typed empty-tier replay invalid for {phase_name}"]
 
     manifests_dir = scratchpad / "body_manifests"
     if not manifests_dir.exists():
         body_path = scratchpad / f"{phase_name}.md"
         if body_path.exists():
             try:
-                existing_body = body_path.read_text(encoding="utf-8", errors="replace")
+                existing_body = body_path.read_bytes().decode("utf-8", errors="strict")
             except Exception:
                 existing_body = ""
             if (
                 not _extract_report_ids_from_body(existing_body)
-                and _empty_tier_sidecar_valid(scratchpad, phase_name, f"{phase_name}.md")
+                and _empty_tier_sidecar_valid(
+                    scratchpad, phase_name, f"{phase_name}.md",
+                    project_root=project_root, config=config,
+                )
             ):
                 return []
             return [f"body validator: body_manifests missing for {phase_name}"]
@@ -20407,12 +22268,17 @@ def _validate_tier_body_against_manifest(
             body_path = scratchpad / body_name
             if body_path.exists():
                 try:
-                    existing_body = body_path.read_text(encoding="utf-8", errors="replace")
+                    existing_body = body_path.read_bytes().decode(
+                        "utf-8", errors="strict"
+                    )
                 except Exception:
                     existing_body = ""
                 if (
                     not _extract_report_ids_from_body(existing_body)
-                    and _empty_tier_sidecar_valid(scratchpad, mkey, body_name)
+                    and _empty_tier_sidecar_valid(
+                        scratchpad, mkey, body_name,
+                        project_root=project_root, config=config,
+                    )
                 ):
                     continue
                 issues.append(f"body validator: manifest {mkey}.json missing for {body_name}")
@@ -20423,7 +22289,9 @@ def _validate_tier_body_against_manifest(
             continue
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            body = body_path.read_text(encoding="utf-8", errors="replace")
+            body_raw = body_path.read_bytes()
+            body = body_raw.decode("utf-8", errors="strict")
+            body_semantic = body.replace("\r\n", "\n")
         except Exception as exc:
             issues.append(f"body validator: {body_name} unreadable ({exc})")
             continue
@@ -20438,15 +22306,23 @@ def _validate_tier_body_against_manifest(
                 evidence_bundle = validate_report_evidence_bundle(
                     json.loads(evidence_bundle_path.read_text(encoding="utf-8"))
                 )
-                projected = project_report_evidence_markdown(body, evidence_bundle)
-                if projected != body:
-                    body_path.write_text(projected.rstrip() + "\n", encoding="utf-8")
-                    body = projected
+                projected = project_report_evidence_markdown(
+                    body_semantic, evidence_bundle
+                )
+                # Normalize CRLF only for semantic parity. The ledger retains
+                # authority over the exact raw on-disk representation.
+                projected_semantic = projected.rstrip() + "\n"
+                if projected_semantic != body_semantic:
+                    issues.append(
+                        "body validator: typed report evidence projection is not "
+                        f"a stable semantic fixed point for {body_name}"
+                    )
             except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
                 detail = (
                     f"typed report evidence projection unavailable for {body_name}: "
                     f"{type(exc).__name__}"
                 )
+                issues.append(detail)
                 log.warning("[body validator %s] %s", body_name, detail)
                 if collect_content is not None:
                     collect_content.append(detail)
@@ -20721,51 +22597,34 @@ def _parse_master_finding_index_rows(scratchpad: Path) -> list[dict[str, str]]:
         text = ri.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return []
-    m = _MFI_HEADER_RE.search(text)
-    if not m:
+    return _master_index_rows_from_text(text)
+
+
+def _master_index_rows_from_text(text: str) -> list[dict[str, str]]:
+    """THE one Master Finding Index row parser (STEP 8: two became one).
+
+    P0-AM. Two parsers previously tested the same property with different
+    tolerances - a header-aware one and a positional `cells[0]` one - so
+    bolding the IDs to `**C-01**` made the header-aware parser return zero
+    rows while the positional one disagreed, and the Summary/Master parity
+    gate silently reported NOT_APPLICABLE against a summary claiming 1/1.
+    Both call sites now read this single role-addressed parser and compare
+    NORMALIZED report IDs.
+    """
+    table = _master_index_table(text)
+    if table is None or not table.has_role("report_id"):
         return []
-    section = text[m.end():]
-    nxt = re.search(r"(?m)^##\s+", section)
-    if nxt:
-        section = section[: nxt.start()]
-
     rows: list[dict[str, str]] = []
-    col_idx: dict[str, int] = {}
-    for line in section.splitlines():
-        s = line.strip()
-        if not s.startswith("|") or _is_separator_row(s):
-            continue
-        cells = [c.strip() for c in s.strip("|").split("|")]
-        cells_lc = [c.lower() for c in cells]
-        if not col_idx:
-            if not any("report" in c and "id" in c for c in cells_lc):
-                continue  # data before a recognizable header — skip
-            for i, c in enumerate(cells_lc):
-                if "report" in c and "id" in c:
-                    col_idx["report_id"] = i
-                elif "severity" in c:
-                    col_idx["severity"] = i
-                elif "verification" in c:
-                    col_idx["verification"] = i
-                elif "trust" in c:
-                    col_idx["trust_adj"] = i
-                elif "internal" in c or "hypothesis" in c:
-                    col_idx["internal"] = i
-            continue
-
-        def _cell(key: str) -> str:
-            i = col_idx.get(key, -1)
-            return cells[i] if 0 <= i < len(cells) else ""
-
-        rid = _cell("report_id")
-        if not re.match(r"^\[?[CHMLI]-\d", rid, re.IGNORECASE):
+    for row in table.rows:
+        rid = _norm_cell(row.get("report_id") or "")
+        if not re.match(r"^\[?[CHMLI]-\d", rid.strip().strip("[]"), re.IGNORECASE):
             continue
         rows.append({
             "report_id": rid,
-            "severity": _cell("severity"),
-            "verification": _cell("verification"),
-            "trust_adj": _cell("trust_adj"),
-            "internal": _cell("internal"),
+            "severity": _norm_cell(row.get("severity") or ""),
+            "verification": _norm_cell(row.get("verification") or ""),
+            "trust_adj": _norm_cell(row.get("trust_adj") or ""),
+            "internal": _norm_cell(row.get("internal") or ""),
         })
     return rows
 
@@ -20871,15 +22730,16 @@ def _summary_counts_from_section(section: str) -> dict[str, int]:
 
 
 def _master_counts_from_section(section: str) -> dict[str, int]:
+    """Per-tier Master Finding Index counts, read through the ONE parser.
+
+    P0-AM: the deleted positional implementation required an UNDECORATED ID in
+    `cells[0]`; `**C-01**`, `` `C-01` `` or a Report ID column in position 2
+    zeroed the counts, which turned the Summary/Master parity gate into a
+    silent NOT_APPLICABLE.
+    """
     ids: set[str] = set()
-    for line in section.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("|") or _is_separator_row(stripped):
-            continue
-        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
-        if not cells:
-            continue
-        raw = cells[0].strip().strip("[]").upper()
+    for row in _master_index_rows_from_text(section):
+        raw = str(row.get("report_id") or "").strip().strip("[]").upper()
         match = re.fullmatch(r"([CHMLI])-0*(\d+)", raw)
         if match is not None:
             ids.add(f"{match.group(1)}-{int(match.group(2))}")
@@ -21383,16 +23243,20 @@ def _registered_legacy_internal_ids(scratchpad: Path) -> set[str]:
 
 
 def _run_report_quality_gate(
-    scratchpad: Path, project_root: str
+    scratchpad: Path, project_root: str, *, config: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Mechanical post-assembly quality gate (A4).
 
     Runs after `report_assemble` completes. Replaces the LLM-written
     quality check that a prior monolithic assembler was supposed to
-    produce but timed out before emitting. Pure Python, sub-second.
+    produce but timed out before emitting. Pure Python.
 
     Writes `{SCRATCHPAD}/report_quality.md` with PASS/FAIL per check and
     returns the list of FAIL messages (empty = all pass).
+
+    Zero finding sections are valid only with explicit run context and
+    successful replay of all three committed, authentically empty tiers.
+    A zero parsed count or an empty-tier marker alone supplies no authority.
 
     v2.1.9 — Summary table self-heal:
     Body section counts are canonical. The `## Summary` tables in both
@@ -21772,10 +23636,34 @@ def _run_report_quality_gate(
     else:
         checks.append(("excluded_verdict_body_leak", "PASS", "none"))
 
-    # Check 3: basic stub-guard
+    # Check 3: a genuinely empty denominator is not an incomplete report.
+    # Supplying explicit context forces typed committed replay in the helper;
+    # its legacy marker/sidecar fallback cannot authorize this exemption.
     if total_sections == 0:
-        checks.append(("stub_guard", "FAIL", "0 finding sections in body"))
-        issues.append("AUDIT_REPORT.md is a stub (0 finding sections)")
+        # The report destination can be the native provider's scratchpad slot;
+        # empty-tier authority is still bound to the original source project.
+        authority_project_root = config.get("project_root") if config is not None else None
+        authentic_empty = (
+            config is not None
+            and isinstance(authority_project_root, str)
+            and bool(authority_project_root.strip())
+            and not assignments
+            and all(
+                _empty_tier_sidecar_valid(
+                    scratchpad, f"report_{tier}", f"report_{tier}.md",
+                    project_root=Path(authority_project_root), config=config,
+                )
+                for tier in ("critical_high", "medium", "low_info")
+            )
+        )
+        if authentic_empty:
+            checks.append((
+                "stub_guard", "PASS",
+                "0 finding sections; all three committed empty tiers replayed",
+            ))
+        else:
+            checks.append(("stub_guard", "FAIL", "0 finding sections in body"))
+            issues.append("AUDIT_REPORT.md is a stub (0 finding sections)")
     else:
         checks.append(("stub_guard", "PASS", f"{total_sections} sections"))
 
@@ -22154,17 +24042,25 @@ def _run_report_quality_gate(
 
     if not p1k_runtime_error and not p1k_not_triggered:
         try:
-            from report_evidence_authority import finalize_report_evidence_delivery
+            from report_evidence_authority import assess_final_report_evidence_delivery
 
-            evidence_receipt = finalize_report_evidence_delivery(
-                scratchpad, report_path=pr
+            # Assembly assesses delivery but does not own the terminal receipt.
+            # Publishing here would create an unowned prestate before the
+            # report-floor quality producer has armed its exact denominator.
+            evidence_receipt = assess_final_report_evidence_delivery(
+                scratchpad, report_path=pr,
+                **({"project_root": Path(config["project_root"]),
+                    "run_id": config.get("_run_id")}
+                   if config is not None and isinstance(config.get("project_root"), str)
+                   and config["project_root"].strip() else {}),
             )
             evidence_state = evidence_receipt["delivery_state"]
             if evidence_state == "SEMANTICALLY_COMPLETE":
                 checks.append((
                     "typed_report_evidence_delivery",
                     "PASS",
-                    "typed record, manifests, Markdown, and final receipt reconcile",
+                    "typed record, manifests, and Markdown reconcile; "
+                    "terminal receipt publication remains separate",
                 ))
             elif evidence_state == "DEGRADED_DELIVERY":
                 checks.append((
@@ -22174,20 +24070,20 @@ def _run_report_quality_gate(
                 ))
             else:
                 # Haltless but loud: preserve the report and every finding. The
-                # receipt remains non-clean, and the visible limitation makes
+                # assessment remains non-clean, and the visible limitation makes
                 # the structural debt reviewable instead of laundering it as
                 # report completion.
                 checks.append((
                     "typed_report_evidence_delivery",
                     "WARN",
-                    "structural typed-evidence parity is incomplete; final receipt "
+                    "structural typed-evidence parity is incomplete; delivery assessment "
                     "and client-visible limitation require human review",
                 ))
         except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
             checks.append((
                 "typed_report_evidence_delivery",
                 "WARN",
-                "final typed delivery receipt unavailable; report retained for "
+                "typed delivery assessment unavailable; report retained for "
                 f"human review ({type(exc).__name__})",
             ))
 
@@ -22545,6 +24441,41 @@ def _generate_recon_retry_hint(missing: list[str]) -> str:
             lines.extend(["", "Additionally fix these coverage gaps:"])
             for item in coverage_items:
                 lines.append(f"- {item}")
+        # STRUCTURAL failures must survive this branch. Previously a run whose
+        # real problem was "modifier application table has malformed row(s):
+        # 96, 125" was told only "some files are empty or too small", naming a
+        # different file entirely -- so the retry could not possibly fix the
+        # actual defect and the phase failed again on the same rows. The
+        # validator already computed the exact line numbers; carry them.
+        structural_items = [
+            item for item in missing
+            if any(
+                token in str(item).lower()
+                for token in (
+                    "malformed", "non-substantive", "noncanonical",
+                    "missing exact", "structure", "table header",
+                    "separator row", "overwrite marker",
+                )
+            )
+        ]
+        if structural_items:
+            lines.extend([
+                "",
+                "STRUCTURAL DEFECTS — these are content/format errors in files "
+                "that DO exist. Fix the named rows in place; do not rewrite "
+                "the whole artifact:",
+            ])
+            for item in structural_items:
+                lines.append(f"- {item}")
+            lines.extend([
+                "",
+                "If a row is reported malformed, the usual cause is an "
+                "UNESCAPED `|` inside a cell (for example a Solidity guard "
+                "`require(a || b)`). GitHub-Flavoured Markdown requires a "
+                "literal pipe inside a table cell to be written `\\|`, so "
+                "write `require(a \\|\\| b)`. An unescaped `|` is parsed as a "
+                "column separator and inflates the row's column count.",
+            ])
         return "\n".join(lines) + "\n"
 
     # --- Class 2: coverage failures only ---
@@ -22625,6 +24556,43 @@ def _generate_breadth_retry_hint(scratchpad: Path, missing: list[str]) -> str:
         lines.append("Gate failure:")
         for item in missing:
             lines.append(f"- {item}")
+    # CARRY THE STATED CAUSE. A staged rejection is the one failure class that
+    # already explains itself ("a real breadth candidate cannot use N/A; use
+    # the exact nonterminal NOT_APPLICABLE_PROPOSAL enum"), and those strings
+    # are sitting in the compatibility receipt. Telling the worker only that
+    # its output "was not substantial" -- when the output was substantial and
+    # was rejected for a specific, fixable contract violation -- makes the
+    # retry re-run blind and repeat the mistake. DODO run31 went 5/7 -> retry
+    # -> still 5/7 exactly this way.
+    try:
+        from plamen_driver import (  # noqa: PLC0415
+            _phase_staged_rejection_reasons,
+        )
+        staged = _phase_staged_rejection_reasons(
+            Path(scratchpad), phase_name="breadth",
+        )
+    except Exception:
+        staged = []
+    if staged:
+        lines.extend([
+            "",
+            "SEMANTIC REJECTIONS — these workers DID produce substantial "
+            "output; the staged validator refused it for the exact reasons "
+            "below. Fix these in the re-spawned worker's output; re-running "
+            "unchanged will fail identically:",
+        ])
+        for reason in staged[:12]:
+            lines.append(f"- {reason}")
+        lines.extend([
+            "",
+            "Reminder (finding-output-format.md, candidate-negative proposal "
+            "contract): a discovery worker PROPOSES negative dispositions and "
+            "never closes a candidate. Every real candidate needs one exact, "
+            "stable ID in a heading or a bare `Finding ID`/`Candidate ID` "
+            "column. Use `REFUTATION_PROPOSAL`, `NOT_APPLICABLE_PROPOSAL`, or "
+            "`UNRESOLVED` — never terminal closure language and never a bare "
+            "`N/A` for a real candidate.",
+        ])
     return "\n".join(lines) + "\n"
 
 
@@ -22885,13 +24853,18 @@ def _validate_crossbatch_quality(scratchpad: Path) -> list[str]:
                 f"crossbatch: {n} findings missing evidence tags — "
                 "verify shards should re-attach"
             )
-    _fail_signal_patterns = (
-        r"overall\b[^:]*:\s*(?:fail|issues)",
-        r"status\b[^:]*:\s*fail",
-        r"schema\s+violations?",
-        r"severity\s+mismatches?",
-        r"missing\s+severity\s+field",
-        r"evidence[- ]?tag\s+mismatches?",
+    # P0-AM: ASSERTION vs MENTION. The measured defect searched the whole
+    # lowercased file context-free, so a worker that correctly reported the
+    # ABSENCE of problems ("No schema violations detected.", "0 severity
+    # mismatches.") hard-failed its own clean report.
+    _fail_signal_tokens = (
+        "schema violations",
+        "schema violation",
+        "severity mismatches",
+        "severity mismatch",
+        "missing severity field",
+        "evidence-tag mismatches",
+        "evidence tag mismatches",
     )
     lowered = text.lower()
     expected_ids = _collect_verify_hypothesis_ids(scratchpad)
@@ -22921,12 +24894,23 @@ def _validate_crossbatch_quality(scratchpad: Path) -> list[str]:
     # The prior redundant coverage check here used a stricter format requirement
     # than the full-coverage gate, causing false failures when haiku wrote
     # honest summaries without literal `Checked: N/M` patterns.
-    if any(re.search(pat, lowered) for pat in _fail_signal_patterns):
+    _crossbatch_surface = _surface_of(text)
+    _fail_signal = any(
+        _asserts_phrase(_crossbatch_surface, token)
+        for token in _fail_signal_tokens
+    ) or bool(
+        re.search(r"overall\b[^:]*:\s*(?:fail|issues)", lowered)
+        or re.search(r"status\b[^:]*:\s*fail", lowered)
+    )
+    if _fail_signal:
         issues.append(
             "crossbatch: consistency/schema issues reported; see "
             "cross_batch_consistency.md"
         )
-    return issues
+    # P0-AM: `quality.crossbatch_signal` is not identity/dedup/severity/
+    # disposition. Surface it as debt; never halt the pipeline on it.
+    record_validator_debt(scratchpad, issues, gate="quality.crossbatch_signal")
+    return []
 
 
 def _crossbatch_verify_file_ids(scratchpad: Path) -> list[tuple[str, str]]:
@@ -23418,6 +25402,49 @@ def _has_active_committed_report_head(
     )
 
 
+def _has_active_output_committed_artifact(
+    scratchpad: Path,
+    filename: str,
+) -> bool:
+    """Prove that the exact live bytes are an ACTIVE committed postimage."""
+
+    root = Path(scratchpad)
+    relative = str(filename).replace("\\", "/").lstrip("./")
+    if not relative or PurePosixPath(relative).is_absolute() or ".." in PurePosixPath(relative).parts:
+        return False
+    identity = f"scratchpad:{relative}"
+    try:
+        raw = rooted_io.read_bytes(
+            root / PurePosixPath(relative),
+            label="active committed retry artifact",
+            require_single_link=True,
+        )
+        ledger = read_artifact_ledger(root)
+    except Exception:
+        return False
+    binding = ledger.get("artifact_bindings", {}).get(identity)
+    if not isinstance(binding, Mapping):
+        return False
+    owner_key = str(binding.get("owner_key") or "")
+    unit = ledger.get("work_units", {}).get(owner_key)
+    artifacts = unit.get("artifacts") if isinstance(unit, Mapping) else None
+    record = artifacts.get(identity) if isinstance(artifacts, Mapping) else None
+    digest = hashlib.sha256(raw).hexdigest()
+    return bool(
+        binding.get("status") == "ACTIVE"
+        and binding.get("sha256") == digest
+        and binding.get("size") == len(raw)
+        and isinstance(unit, Mapping)
+        and unit.get("run_id") == binding.get("run_id")
+        and unit.get("semantic_status") == "ACTIVE"
+        and unit.get("execution_state") == "OUTPUT_COMMITTED"
+        and isinstance(record, Mapping)
+        and record.get("status") == "ACTIVE"
+        and record.get("sha256") == digest
+        and record.get("size") == len(raw)
+    )
+
+
 def _quarantine_stale_on_retry(
     scratchpad: Path,
     phase: Phase,
@@ -23500,6 +25527,17 @@ def _quarantine_stale_on_retry(
 
         for src in matches:
             if src.name in exclude:
+                continue
+            try:
+                relative_name = src.relative_to(scratchpad).as_posix()
+            except ValueError:
+                relative_name = src.name
+            if _has_active_output_committed_artifact(
+                Path(scratchpad), relative_name
+            ):
+                # Generic retry cleanup may never destroy a live committed
+                # predecessor.  Its owning successor transaction decides when
+                # and how those exact bytes are superseded.
                 continue
             if (
                 phase.name == "report_index"
@@ -23795,11 +25833,59 @@ def _restore_quarantined_on_retry_failure(
                 except Exception:
                     pass
             else:
-                # Retry produced its own version; discard backup
-                try:
-                    backup.unlink()
-                except Exception:
-                    pass
+                if not phase.critical:
+                    # A soft phase whose bounded retry exhausted keeps its
+                    # authenticated predecessor live.  Preserve the rejected
+                    # retry bytes as forensic debt instead of silently making
+                    # them the canonical generation or deleting the backup.
+                    try:
+                        relative_name = original.relative_to(
+                            scratchpad
+                        ).as_posix()
+                    except ValueError:
+                        relative_name = original.name
+                    if _has_active_output_committed_artifact(
+                        Path(scratchpad), relative_name
+                    ):
+                        continue
+                    try:
+                        retry_raw = rooted_io.read_bytes(
+                            original,
+                            label="exhausted retry output",
+                            require_single_link=True,
+                        )
+                        backup_raw = rooted_io.read_bytes(
+                            backup,
+                            label="retry predecessor backup",
+                            require_single_link=True,
+                        )
+                        exhausted = (
+                            qdir / "_exhausted" / relative_name
+                        ).with_name(
+                            Path(relative_name).name
+                            + "."
+                            + hashlib.sha256(retry_raw).hexdigest()
+                            + ".attempt"
+                        )
+                        exhausted.parent.mkdir(parents=True, exist_ok=True)
+                        if not exhausted.exists():
+                            rooted_io.durable_write_once_bytes(
+                                exhausted, retry_raw
+                            )
+                        os.replace(backup, original)
+                        if original.read_bytes() != backup_raw:
+                            raise OSError(
+                                "restored retry predecessor changed bytes"
+                            )
+                    except Exception:
+                        pass
+                else:
+                    # A critical phase keeps the retry result for the caller's
+                    # hard-failure path; its stale predecessor is discarded.
+                    try:
+                        backup.unlink()
+                    except Exception:
+                        pass
 
 
 def _cleanup_quarantine_backups(
@@ -24281,6 +26367,10 @@ def _rewind_completed_after_overflow(
         if name in phase_order and phase_order.index(name) >= first_idx
     ]
     if removed:
+        removed_names = set(removed)
+        removed_degraded = [
+            name for name in (checkpoint.degraded or []) if name in removed_names
+        ]
         checkpoint.completed = [
             name for name in completed
             if name not in removed
@@ -24289,6 +26379,14 @@ def _rewind_completed_after_overflow(
             name for name in (checkpoint.degraded or [])
             if name not in removed
         ]
+        checkpoint.phase_commits = {
+            key: commit for key, commit in checkpoint.phase_commits.items()
+            if commit.phase_name not in removed_names
+        }
+        for name in removed_degraded:
+            checkpoint.clear_degraded_sentinel(scratchpad, name)
+        if checkpoint.rate_limited_at in removed_names:
+            checkpoint.rate_limited_at = None
     # Archive consumed overflow dirs so the next resume doesn't re-detect
     # them and rewind again (infinite loop).
     for name in contaminated:
@@ -25662,13 +27760,16 @@ def _identifier_exists_in_project(identifier: str, source_index: dict[str, list]
 def _validate_inventory_evidence(
     scratchpad: Path,
     project_root: str,
-    apply_safe_recovery: bool = True,
+    apply_safe_recovery: bool = False,
 ) -> dict[str, dict[str, str]]:
     """Validate inventory locations/provenance and write a triage ledger.
 
     This is a cheap pre-verification guard. It does not refute findings; it
-    identifies evidence defects and safely rewrites only unique-basename
-    location recoveries.
+    identifies evidence defects and records unique-basename resolutions in the
+    sidecar.  Canonical inventory bytes are read-only by default: validation
+    must not invalidate an already committed producer authority merely because
+    a location has an equivalent normalized spelling.  The opt-in rewrite is
+    retained only for explicitly authorized legacy/pre-commit callers.
     """
     inv = scratchpad / "findings_inventory.md"
     if not inv.exists():
@@ -25909,6 +28010,27 @@ def _filter_verification_queue_by_evidence(scratchpad: Path) -> list[str]:
     _write_verification_queue_evidence_debt(scratchpad, debt_rows)
     return []
 
+def _irreparable_source_facet_ambiguity(row: Mapping[str, Any]) -> bool:
+    """Debt only an upstream producer could clear: all named axes are
+    UNPARSEABLE_*, the driver cannot splice anything, and a one-to-one target
+    block exists."""
+
+    if row.get("disposition") != "HUMAN_REVIEW_DEBT":
+        return False
+    if row.get("reason_code") not in {
+        "REEMIT_UNPARSEABLE_SOURCE_DEBT",
+        "FINAL_SEMANTIC_PRESERVATION_DEBT",
+        "CHUNK_SEMANTIC_PRESERVATION_DEBT",
+    }:
+        return False
+    axes = [str(axis) for axis in (row.get("required_preservation_axes") or ())]
+    if not axes or not all(axis.startswith("UNPARSEABLE_") for axis in axes):
+        return False
+    if driver_restorable_preservation_row(row):
+        return False
+    return bool(row.get("proposed_target_finding_id"))
+
+
 def _validate_inventory_parity(scratchpad: Path) -> list[str]:
     """Require an exact disposition for every assigned discovery identity.
 
@@ -25938,13 +28060,50 @@ def _validate_inventory_parity(scratchpad: Path) -> list[str]:
         "inventory exact reconciliation receipt: " + issue
         for issue in validation_issues
     ]
+    debt_rows = [
+        row for row in receipt.get("candidates", [])
+        if isinstance(row, dict) and row.get("disposition") == "HUMAN_REVIEW_DEBT"
+    ]
+    # A debt row is IRREPARABLE when every axis it names is one the SOURCE
+    # never rendered (UNPARSEABLE_*), the driver cannot splice it, and the
+    # candidate IS delivered one-to-one (a final block bound to it exists).
+    # No retry, splice, or re-emission can invent the missing facet, so
+    # gating on it halts a phase that has no way to satisfy it (DODO run39
+    # RS2-1, run42 INV-014/INV-034, run45 INV-112..115).  It stays
+    # HUMAN_REVIEW_DEBT with mandatory re-verification, stays in
+    # inventory_reconciliation_human_review.md and the receipt, and is logged
+    # here; it simply no longer blocks the canonical aggregate.
+    irreparable = [
+        row for row in debt_rows
+        if _irreparable_source_facet_ambiguity(row)
+    ]
+    blocking = [row for row in debt_rows if row not in irreparable]
     debt_count = int(
         receipt.get("summary", {}).get("HUMAN_REVIEW_DEBT", 0) or 0
     )
-    if debt_count:
+    if debt_count != len(debt_rows):
+        issues.append(
+            "inventory exact reconciliation: summary debt count "
+            f"{debt_count} disagrees with {len(debt_rows)} debt row(s)"
+        )
+    if irreparable:
+        logging.getLogger("plamen.validators").warning(
+            "[inventory] %d/%d raw discovery identity(s) carry an UNPARSEABLE "
+            "source facet no repair can supply (delivered one-to-one, retained "
+            "as NEEDS_INVENTORY_REVIEW with mandatory re-verification, not "
+            "gating): %s",
+            len(irreparable), receipt.get("denominator_count", 0),
+            ", ".join(
+                f"{row.get('source_artifact')}:{row.get('source_finding_id')}"
+                f" -> {row.get('proposed_target_finding_id')}"
+                f" [{', '.join(str(a) for a in (row.get('required_preservation_axes') or []))}]"
+                for row in irreparable[:12]
+            ),
+        )
+    if blocking:
         issues.append(
             "inventory exact reconciliation: "
-            f"{debt_count}/{receipt.get('denominator_count', 0)} raw discovery "
+            f"{len(blocking)}/{receipt.get('denominator_count', 0)} raw discovery "
             "identity(s) remain NEEDS_INVENTORY_REVIEW; exact coverage / "
             "finding-block retention detects truncation at any count; "
             "substantive source blocks are preserved in "
@@ -26032,6 +28191,11 @@ def _validate_inventory_parity(scratchpad: Path) -> list[str]:
 def _validate_inventory_chunk_structure(scratchpad: Path, phase_name: str) -> list[str]:
     """Validate an inventory shard artifact as a chunk, not just a file.
 
+    P0-AM: every issue this returns is `schema.*` / `coverage.*`, so it is
+    routed through `record_validator_debt` at the end instead of halting the
+    inventory phase. Heading depth and bracket punctuation no longer decide
+    whether a per-finding detail block exists.
+
     Inventory chunks are direct synthesis phases. A table-only artifact is not
     enough: the mechanical inventory merge and later report provenance need
     per-finding detail blocks that preserve source IDs, locations, verdicts,
@@ -26057,10 +28221,30 @@ def _validate_inventory_chunk_structure(scratchpad: Path, phase_name: str) -> li
         val, _shape = _field_anywhere(block, group, table_ok=True)
         return bool(val.strip())
 
-    detail_matches = list(re.finditer(
-        r"(?m)^###\s+(?:Finding\s+)?\[(CC-\d+)\]\s*:?\s*(.+?)\s*$",
-        text,
-    ))
+    # P0-AM: heading depth and bracket punctuation are presentation.
+    # `#### Finding [CC-1]:`, `### Finding CC-1:` and ``### Finding `[CC-1]`:``
+    # each produced "0 per-finding detail block(s)" on an artifact that had
+    # them, and this gate is a HARD inventory reason.
+    _raw_lines = text.splitlines()
+    _detail_heads: list[tuple[str, int]] = []
+    for _line, _identity in _finding_heading_lines(_surface_of(text)):
+        if re.fullmatch(r"CC-\d+", _identity.key):
+            _detail_heads.append(
+                (_identity.key, int(getattr(_line, "physical_end", 1)))
+            )
+    # (id, block_start_char, block_end_char) - block excludes the heading line.
+    detail_matches: list[tuple[str, int, int]] = []
+    _offsets = [0]
+    for _raw in _raw_lines:
+        _offsets.append(_offsets[-1] + len(_raw) + 1)
+    for _pos, (_key, _phys_end) in enumerate(_detail_heads):
+        _start = _offsets[min(_phys_end, len(_raw_lines))]
+        if _pos + 1 < len(_detail_heads):
+            _next_phys = _detail_heads[_pos + 1][1]
+            _end = _offsets[max(0, min(_next_phys - 1, len(_raw_lines)))]
+        else:
+            _end = len(text)
+        detail_matches.append((_key, _start, max(_start, _end)))
     parsed_entries = _parse_inventory_chunk(out)
     if parsed_entries and not detail_matches:
         issues.append(
@@ -26073,10 +28257,9 @@ def _validate_inventory_chunk_structure(scratchpad: Path, phase_name: str) -> li
             f"but artifact has {len(detail_matches)} detail heading(s)"
         )
 
-    _has_detail_section = bool(re.search(
-        r"(?im)^##\s+(?:Per[- ]Finding\s+)?Detail",
-        text,
-    ))
+    _has_detail_section = _section_after_heading(
+        _surface_of(text), "detail", "per-finding detail", "per finding detail"
+    )[0] is not None
     if not _has_detail_section and detail_matches:
         issues.append("inventory chunk detail headings exist without `## Per-Finding Detail` section")
     elif parsed_entries and not _has_detail_section:
@@ -26102,9 +28285,7 @@ def _validate_inventory_chunk_structure(scratchpad: Path, phase_name: str) -> li
     # avoid log spam on huge chunks), but always count toward the global
     # tally so we can promote pervasive field drift to a retry-hint.
     field_miss_counts: dict[str, int] = {}
-    for idx, match in enumerate(detail_matches):
-        start = match.end()
-        end = detail_matches[idx + 1].start() if idx + 1 < len(detail_matches) else len(text)
+    for _key, start, end in detail_matches:
         block = text[start:end]
         missing = [
             group[0] for group in required_field_groups
@@ -26168,15 +28349,111 @@ def _validate_inventory_chunk_structure(scratchpad: Path, phase_name: str) -> li
             f"{type(exc).__name__}: {exc}"
         )
     else:
+        debt_rows = [
+            row for row in (reconciliation.get("candidates") or [])
+            if str(row.get("disposition") or "") == "HUMAN_REVIEW_DEBT"
+        ]
         debt_count = int(
             reconciliation.get("summary", {}).get("HUMAN_REVIEW_DEBT", 0)
             or 0
         )
-        if debt_count:
+        # The gate is a RETRY decision, so it may only block on debt the shard
+        # can actually clear. Source-side debt (`UNPARSEABLE_*`: the upstream
+        # artifact never rendered the facet) is retained in the reconciliation
+        # ledger and surfaced below, but re-running the shard against it just
+        # makes it rewrite correct work -- DODO run35 drifted 11/49 -> 19/49
+        # on exactly that and died on a critical phase.
+        # Rows the canonical aggregate will splice verbatim are a RESTORATION
+        # OBLIGATION, not a gate failure. Gating on them forced a retry whose
+        # contract is "rewrite every block", and that retry damaged rows which
+        # had been correct (11->19, 3->8, 2->24 across three observed retries).
+        # Measured cause: preservation failure scales with source facet LENGTH,
+        # not shard quality -- run37 chunk_a 887ch median -> 22% debt,
+        # chunk_b 1,223ch -> 65%. Asking a model for more verbatim bytes buys
+        # more drift, so Python owns the bytes and the gate stops charging the
+        # shard for them. They remain fully visible below and in the aggregate
+        # receipt; `driver_restorable_preservation_row` is shared with the
+        # splice so the exemption can never exceed the repair.
+        restorable = [row for row in debt_rows if row.get("driver_restorable")]
+        gating_rows = [
+            row for row in debt_rows if not row.get("driver_restorable")
+        ]
+        resolvable = [
+            row for row in gating_rows if row.get("shard_retry_resolvable")
+        ]
+        unresolvable = [
+            row for row in gating_rows if not row.get("shard_retry_resolvable")
+        ]
+        denominator = reconciliation.get("denominator_count", 0)
+        if resolvable:
+            named = ", ".join(
+                f"{row.get('source_artifact') or '?'}:"
+                f"{row.get('source_finding_id') or '?'}"
+                f" -> {row.get('proposed_target_finding_id') or 'UNMATCHED'}"
+                f" [{', '.join(str(a) for a in (row.get('required_preservation_axes') or [])) or row.get('reason_code')}]"
+                for row in resolvable[:20]
+            )
             issues.append(
                 "inventory chunk exact reconciliation: "
-                f"{debt_count}/{reconciliation.get('denominator_count', 0)} "
-                "assigned raw identity(s) remain NEEDS_INVENTORY_REVIEW"
+                f"{len(resolvable)}/{denominator} "
+                "assigned raw identity(s) remain NEEDS_INVENTORY_REVIEW. "
+                "Copy the named source facet text verbatim into the matching "
+                f"chunk detail block: {named}"
+            )
+        if restorable:
+            # A row can be partially restorable: real content on one axis plus
+            # an UNPARSEABLE_* axis the SOURCE never rendered. The splice
+            # repairs the former; the latter is upstream debt that no retry can
+            # clear. Report the two separately so a growing upstream gap cannot
+            # hide inside a healthy-looking restoration count.
+            partial = [
+                row for row in restorable
+                if any(
+                    str(axis).startswith("UNPARSEABLE_")
+                    for axis in (row.get("required_preservation_axes") or ())
+                )
+            ]
+            log.info(
+                "[_validate_inventory_chunk_structure] %s: %d/%d assigned "
+                "identity(s) carry facet-preservation debt the canonical "
+                "aggregate restores verbatim (not gating; spliced and counted "
+                "in the aggregate receipt)",
+                phase_name, len(restorable), denominator,
+            )
+            if partial:
+                log.warning(
+                    "[_validate_inventory_chunk_structure] %s: %d of those "
+                    "also carry an UNPARSEABLE_* axis the SOURCE never "
+                    "rendered; that half is upstream artifact debt and no "
+                    "retry or splice can clear it: %s",
+                    phase_name, len(partial),
+                    ", ".join(
+                        f"{row.get('source_artifact')}:"
+                        f"{row.get('source_finding_id')}"
+                        f" [{', '.join(str(a) for a in (row.get('required_preservation_axes') or []))}]"
+                        for row in partial[:12]
+                    ),
+                )
+        if unresolvable:
+            # Visible, never blocking: naming it keeps the debt auditable
+            # without handing the shard a contract it cannot satisfy.
+            log.warning(
+                "[_validate_inventory_chunk_structure] %s: %d/%d source-side "
+                "reconciliation debt row(s) are not shard-resolvable "
+                "(retained as reconciliation debt, not gating): %s",
+                phase_name, len(unresolvable), denominator,
+                ", ".join(
+                    f"{row.get('source_artifact')}:{row.get('source_finding_id')}"
+                    f" [{row.get('reason_code')}]"
+                    for row in unresolvable[:20]
+                ),
+            )
+        if debt_count and not debt_rows:
+            # Summary and rows disagree: fail closed rather than pass silently.
+            issues.append(
+                "inventory chunk exact reconciliation: "
+                f"{debt_count}/{denominator} assigned raw identity(s) remain "
+                "NEEDS_INVENTORY_REVIEW but no candidate row carries the debt"
             )
         artifact_issues = list(reconciliation.get("artifact_issues") or [])
         if artifact_issues:
@@ -26185,7 +28462,44 @@ def _validate_inventory_chunk_structure(scratchpad: Path, phase_name: str) -> li
                 + "; ".join(str(item) for item in artifact_issues[:12])
             )
 
-    return issues
+    manifest = scratchpad / f"{phase_name}.manifest.md"
+    if manifest.is_file():
+        assigned_sources = parse_inventory_shard_manifest(
+            scratchpad, phase_name
+        )
+        action_issues = validate_inventory_chunk_source_actions(
+            scratchpad,
+            chunk_name=out.name,
+            source_names=assigned_sources,
+        )
+        for _ambiguous in ambiguous_identity_debt(scratchpad, out.name):
+            log.warning(
+                "[_validate_inventory_chunk_structure] %s: UPSTREAM producer "
+                "emitted a duplicate finding identity (%s); it authenticates "
+                "nothing and is not attributable to this shard. Not gating -- "
+                "the shard cannot repair another artifact's headings.",
+                phase_name, _ambiguous,
+            )
+        issues.extend(
+            "inventory chunk exact source action: " + issue
+            for issue in action_issues
+        )
+
+    # P0-AM STEP 7 split. The SHAPE issues (per-finding detail blocks, the
+    # `## Per-Finding Detail` section heading, pervasive field drift) are
+    # `schema.detail_block` / `coverage.detail_section` and degrade with a
+    # targeted repair hint. The identity/reconciliation issues in this same
+    # list stay blocking and are returned unchanged.
+    _shape_markers = (
+        "per-finding detail block",
+        "detail heading",
+        "`## Per-Finding Detail` section",
+        "pervasive per-finding field drift",
+    )
+    _shape = [i for i in issues if any(m in i for m in _shape_markers)]
+    _blocking = [i for i in issues if i not in _shape]
+    record_validator_debt(scratchpad, _shape, gate="schema.detail_block")
+    return _blocking
 
 
 # =============================================================================
@@ -26195,6 +28509,41 @@ def _validate_inventory_chunk_structure(scratchpad: Path, phase_name: str) -> li
 # gate runner promotes a non-empty issue list into a hard halt (critical=True
 # for the phase that calls the gate, or via a missing-artifact path).
 # =============================================================================
+_VERIFY_FILE_PREFIX_RE = re.compile(r"(?i)^verify[\s_.-]*")
+_VERIFY_FILE_F_PREFIX_RE = re.compile(r"(?i)^F[\s_.-]+")
+
+
+def _verify_file_identity_keys(stem: str) -> set[str]:
+    """Every identity this verify filename could be naming.
+
+    P0-AM. The measured defect accepted exactly four literal spellings, so
+    `verify_INV001.md`, `verify_INV-1.md` (zero padding this very module
+    normalizes elsewhere), `verify-INV-001.md` and `verify_INV-001_final.md`
+    each made a verifier's ENTIRE work invisible - and the downstream
+    evidence-tag gate then returned clean because it skips unresolvable IDs.
+    Identity is FAIL_CLOSED, so it is resolved on the NORMALIZED key rather
+    than on filename punctuation.
+    """
+    body = _VERIFY_FILE_PREFIX_RE.sub("", str(stem or "").strip())
+    body = body.strip().strip("[]").strip()
+    body = _VERIFY_FILE_F_PREFIX_RE.sub("", body)
+    body = body.strip().strip("[]").strip()
+    keys: set[str] = set()
+    key = _canonical_finding_key(body)
+    if key:
+        keys.add(key)
+    # A trailing qualifier segment (`_final`, `-retry`, `.v2`) is presentation.
+    segments = key.split("-") if key else []
+    while len(segments) > 1:
+        segments = segments[:-1]
+        trimmed = "-".join(segments)
+        if re.search(r"\d", trimmed):
+            keys.add(trimmed)
+        else:
+            break
+    return {k for k in keys if k}
+
+
 def _verify_file_present_for_id(scratchpad: Path, fid: str, *, min_bytes: int = 100) -> bool:
     """Return True when a usable verify file exists for the finding id."""
     candidates = (
@@ -26206,6 +28555,25 @@ def _verify_file_present_for_id(scratchpad: Path, fid: str, *, min_bytes: int = 
     for name in candidates:
         p = scratchpad / name
         if p.exists() and p.stat().st_size >= min_bytes:
+            return True
+    want = _canonical_finding_key(fid)
+    if not want:
+        return False
+    try:
+        entries = list(Path(scratchpad).glob("verify*"))
+    except Exception:
+        return False
+    for path in entries:
+        if not path.is_file() or path.suffix.lower() != ".md":
+            continue
+        if path.name.endswith(_RETRY_HINT_SUFFIX):
+            continue
+        try:
+            if path.stat().st_size < min_bytes:
+                continue
+        except OSError:
+            continue
+        if want in _verify_file_identity_keys(path.stem):
             return True
     return False
 
@@ -26391,6 +28759,45 @@ def _verifier_completion_authority_issues(
             if unit_receipt.gate_receipt_digests != (gate_digest,):
                 return [f"{work_id}: dynamic verifier gate receipt changed"]
 
+            gate = json.loads(
+                gate_path.read_text(encoding="utf-8", errors="strict"),
+                object_pairs_hook=_strict_verifier_receipt_object,
+            )
+            launch_spec = VerifierLaunchSpec.from_json(
+                (unit_root / "launch_spec.json").read_text(
+                    encoding="utf-8", errors="strict"
+                )
+            )
+            if (
+                launch_spec.work_unit_id != runtime_unit.work_unit_id
+                or launch_spec.work_unit_resume_digest != runtime_unit.resume_digest
+                or launch_spec.expected_output_files != runtime_unit.expected_output_files
+                or item.expected_output_file not in launch_spec.expected_output_files
+            ):
+                return [f"{work_id}: current verifier launch spec does not bind work unit"]
+            # The initial receipt replay checks byte/assignment integrity,
+            # but its own launch/backend fields are not independent authority.
+            # Bind them to the dynamic launch that the control gate and MODEL
+            # input/execution chain below replay. A self-consistent receipt for
+            # another launch must not inherit this worker's completion proof.
+            if (
+                receipt.launch_digest != launch_spec.digest
+                or receipt.verifier_backend != launch_spec.backend
+            ):
+                return [f"{work_id}: verifier receipt launch binding is stale"]
+            if (
+                gate.get("state") != "CLEAN"
+                or gate.get("work_unit_id") != runtime_unit.work_unit_id
+                or gate.get("work_unit_resume_digest")
+                != runtime_unit.resume_digest
+                or gate.get("roster_digest") != roster.digest
+                or gate.get("launch_spec_digest") != launch_spec.digest
+                or unit_receipt.launch_spec_digest != launch_spec.digest
+                or gate.get("ordered_work_item_ids")
+                != list(runtime_unit.ordered_work_item_ids)
+            ):
+                return [f"{work_id}: dynamic verifier gate binding is stale"]
+
             ledger = read_artifact_ledger(root)
             control_owner = ""
             for control_path in (gate_path, unit_receipt_path):
@@ -26457,6 +28864,27 @@ def _verifier_completion_authority_issues(
                 or model_unit.get("semantic_status") != "ACTIVE"
             ):
                 return [f"{work_id}: verifier PhaseIO output authority is stale"]
+            replay_verifier_gate_model_execution_authority(
+                root,
+                gate,
+                selected_output_identity=output_identity,
+                expected_run_id=str(binding.get("run_id") or ""),
+                expected_owner_suffix=expected_suffix,
+            )
+            expected_gate_outputs = {
+                name: str(
+                    (
+                        ledger.get("artifact_bindings", {}).get(
+                            f"scratchpad:{name}"
+                        )
+                        or {}
+                    ).get("sha256")
+                    or ""
+                )
+                for name in runtime_unit.expected_output_files
+            }
+            if gate.get("output_sha256") != expected_gate_outputs:
+                return [f"{work_id}: dynamic verifier gate output binding is stale"]
             manifest = model_unit.get("contract_manifest")
             artifacts = model_unit.get("artifacts")
             if not isinstance(manifest, dict) or not isinstance(artifacts, dict):
@@ -26575,15 +29003,31 @@ def _validate_verify_files_for_queue(scratchpad: Path, *, min_bytes: int = 100) 
         if fid:
             expected_ids.append(fid)
     missing = [fid for fid in expected_ids if not _verify_file_present_for_id(scratchpad, fid, min_bytes=min_bytes)]
+    if missing:
+        # A queue row whose verifier could not execute is already retained as
+        # exact additive report debt (CONTESTED / HUMAN_REVIEW).  Counting it
+        # as "missing" here made crossbatch retry a valid artifact and then
+        # degrade it, and could turn an accounted-for row into a hard
+        # report_index post-check failure.  The retention receipt grants no
+        # proof and no negative disposition; it only says the identity is
+        # accounted for.
+        covered, debt_issues = _verification_runtime_debt_coverage(
+            scratchpad, missing
+        )
+        missing = [fid for fid in missing if fid not in covered]
+        if not missing:
+            return list(debt_issues)
+    else:
+        debt_issues = []
     if not missing:
-        return []
+        return list(debt_issues)
     sample = ", ".join(missing[:8])
     msg = (
         f"verify-output parity: queue has {len(expected_ids)} active row(s), "
         f"only {len(expected_ids) - len(missing)} verify file(s) on disk; "
         f"{len(missing)} missing — sample: {sample}"
     )
-    return [msg]
+    return [msg, *debt_issues]
 
 
 # Runtime-debt is proof-free retention, but it still influences the report
@@ -27317,7 +29761,9 @@ def _chain_justified_upgrade_ids(scratchpad: Path) -> set[str]:
         start = hm.end()
         end = headings[i + 1].start() if i + 1 < len(headings) else len(text)
         section = text[start:end]
-        if _chain_severity_upgrade_justified(section):
+        # P0-AM: tolerant OR strict. Recall-safe for SEVERITY: it can only
+        # PRESERVE a genuine compound finding at its upgraded tier.
+        if _chain_upgrade_justified_tolerant(section):
             justified.add(cid)
     return justified
 
@@ -27721,7 +30167,23 @@ def _poc_attempted_and_passed(content: str) -> bool:
         r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?Result(?:\*\*)?\s*:\s*\**\s*(PASS)\b",
         content or "",
     )
-    return bool(m)
+    if m:
+        return True
+    # P0-AM: `**Result**: PASSED` is the same outcome as `Result: PASS`; the
+    # measured `\bPASS\b` anchor read the participle as NOT passing while
+    # `Attempted` still said YES, re-exposing an executed finding to the cap.
+    tolerant = _read_field(
+        content,
+        "poc_result",
+        roles={
+            "poc_result": (
+                "execution result", "poc result", "result", "outcome",
+            )
+        },
+    )
+    if tolerant is None:
+        return False
+    return _norm_enum(tolerant.value) in {"PASS", "PASSED", "PASSING", "SUCCESS"}
 
 
 def _external_assumption_promoted(content: str) -> bool:
@@ -29851,7 +32313,11 @@ def _strict_mechanical_json(path: Path, label: str) -> tuple[dict[str, Any], byt
     return value, raw
 
 
-def _mechanical_successor_authority_view(scratchpad: Path) -> dict[str, Any]:
+def _mechanical_successor_authority_view(
+    scratchpad: Path,
+    *,
+    expected_run_id: str | None = None,
+) -> dict[str, Any]:
     """Return the read-only authority state consumed after mechanical verify.
 
     A finding is ``BOUND`` only when four independent facts reconcile: its
@@ -29863,9 +32329,20 @@ def _mechanical_successor_authority_view(scratchpad: Path) -> dict[str, Any]:
 
     This function deliberately never repairs or rewrites disk state.  The
     mechanical executor owns receipt recovery; downstream code is only a
-    discriminator and debt projector.
+    discriminator and debt projector.  A transaction caller may supply its
+    already authenticated run identity explicitly; legacy callers retain the
+    checkpoint comparison fallback.
     """
 
+    if expected_run_id is not None and (
+        not isinstance(expected_run_id, str)
+        or not expected_run_id.strip()
+        or expected_run_id != expected_run_id.strip()
+    ):
+        raise ValueError(
+            "expected mechanical successor run identity must be a non-empty "
+            "trimmed string"
+        )
     root = Path(scratchpad)
     result_path = root / "mechanical_verify_manifest.json"
     verdict_path = root / "verdict_manifest.json"
@@ -30056,7 +32533,10 @@ def _mechanical_successor_authority_view(scratchpad: Path) -> dict[str, Any]:
         if summary["committed_count"] + summary["rejected_count"] != len(results):
             raise ValueError("successor authority denominator does not reconcile")
         checkpoint_path = root / "_v2_checkpoint.json"
-        if checkpoint_path.is_file():
+        if expected_run_id is not None:
+            if summary["run_identity"] != expected_run_id:
+                raise ValueError("successor authority run identity mismatch")
+        elif checkpoint_path.is_file():
             try:
                 checkpoint, _ = _strict_mechanical_json(checkpoint_path, "checkpoint")
                 checkpoint_run = checkpoint.get("run_id")
@@ -30724,9 +33204,14 @@ def _report_index_consolidation_ids(text: str) -> dict[str, list[str]]:
 def _report_index_status_projection_state(
     scratchpad: Path,
     text: str,
+    *,
+    expected_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Derive one deterministic status projection from current authority."""
-    authority = _mechanical_successor_authority_view(scratchpad)
+    authority = _mechanical_successor_authority_view(
+        scratchpad,
+        expected_run_id=expected_run_id,
+    )
     expected_statuses = _expected_report_index_statuses_with_authority(
         scratchpad, authority
     )
@@ -30908,6 +33393,8 @@ def _canonical_status_projection_bytes(receipt: dict[str, Any]) -> bytes:
 
 
 def _atomic_validator_bytes(path: Path, payload: bytes) -> None:
+    if path.is_file() and path.read_bytes() == payload:
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     try:
@@ -30923,7 +33410,11 @@ def _atomic_validator_bytes(path: Path, payload: bytes) -> None:
             pass
 
 
-def _project_report_index_status_authority(scratchpad: Path) -> dict[str, Any]:
+def _project_report_index_status_authority(
+    scratchpad: Path,
+    *,
+    expected_run_id: str | None = None,
+) -> dict[str, Any]:
     """Project typed successor authority into the derived report index.
 
     Verifier/source Markdown is never touched.  The receipt is a canonical,
@@ -30933,11 +33424,19 @@ def _project_report_index_status_authority(scratchpad: Path) -> dict[str, Any]:
     root = Path(scratchpad)
     index_path = root / "report_index.md"
     text = index_path.read_text(encoding="utf-8", errors="strict")
-    state = _report_index_status_projection_state(root, text)
+    state = _report_index_status_projection_state(
+        root,
+        text,
+        expected_run_id=expected_run_id,
+    )
     projected = state["projected_text"]
     if projected != text:
         _atomic_validator_bytes(index_path, projected.encode("utf-8"))
-        state = _report_index_status_projection_state(root, projected)
+        state = _report_index_status_projection_state(
+            root,
+            projected,
+            expected_run_id=expected_run_id,
+        )
     receipt = _report_index_status_projection_receipt(
         root, projected, state=state
     )
@@ -30948,12 +33447,19 @@ def _project_report_index_status_authority(scratchpad: Path) -> dict[str, Any]:
     return receipt
 
 
-def _validate_report_index_status_authority(scratchpad: Path) -> list[str]:
+def _validate_report_index_status_authority(
+    scratchpad: Path,
+    *,
+    expected_run_id: str | None = None,
+) -> list[str]:
     """Validate exact status projection bytes, identity and denominator."""
     root = Path(scratchpad)
     index_path = root / "report_index.md"
     if not index_path.is_file():
-        authority = _mechanical_successor_authority_view(root)
+        authority = _mechanical_successor_authority_view(
+            root,
+            expected_run_id=expected_run_id,
+        )
         if not authority.get("mechanical_present"):
             return []
         return ["report_index status authority missing report_index.md"]
@@ -30961,7 +33467,11 @@ def _validate_report_index_status_authority(scratchpad: Path) -> list[str]:
         text = index_path.read_text(encoding="utf-8", errors="strict")
     except (OSError, UnicodeError) as exc:
         return [f"report_index status authority unreadable: {exc}"]
-    state = _report_index_status_projection_state(root, text)
+    state = _report_index_status_projection_state(
+        root,
+        text,
+        expected_run_id=expected_run_id,
+    )
     if state["changes"]:
         return [
             "report_index status authority mismatch: "
@@ -30996,9 +33506,16 @@ def _validate_report_index_status_authority(scratchpad: Path) -> list[str]:
     return list(expected.get("projection_issues") or [])
 
 
-def _report_index_status_projection_debt(scratchpad: Path) -> list[str]:
+def _report_index_status_projection_debt(
+    scratchpad: Path,
+    *,
+    expected_run_id: str | None = None,
+) -> list[str]:
     """Return valid projection debt for the phase commit controller."""
-    validation = _validate_report_index_status_authority(scratchpad)
+    validation = _validate_report_index_status_authority(
+        scratchpad,
+        expected_run_id=expected_run_id,
+    )
     if validation:
         return validation
     path = Path(scratchpad) / _REPORT_STATUS_PROJECTION_FILE
@@ -31458,6 +33975,12 @@ def _atomic_report_projection_text(path: Path, text: str) -> None:
     """Atomically replace one report-stage projection with exact text."""
 
     target = Path(path)
+    if target.is_file() and not target.is_symlink():
+        try:
+            if target.read_text(encoding="utf-8", errors="strict") == text:
+                return
+        except (OSError, UnicodeError):
+            pass
     temporary = target.with_name(
         f".{target.name}.{os.getpid()}.{time.time_ns()}.tmp"
     )
@@ -31725,17 +34248,10 @@ def _write_severity_override_ledger(
     # propagated so callers cannot mutate report projections without the
     # corresponding durable provenance record.
     json_path = scratchpad / "_severity_override_ledger.json"
-    tmp = json_path.with_name(
-        f".{json_path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+    _atomic_validator_text(
+        json_path,
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
     )
-    try:
-        tmp.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(tmp, json_path)
-    finally:
-        tmp.unlink(missing_ok=True)
     # Derived markdown view (human-readable)
     try:
         ledger = scratchpad / "severity_overrides.md"
@@ -32174,44 +34690,51 @@ def _validate_report_coverage_accounting(scratchpad: Path) -> list[str]:
     except Exception as exc:
         return [f"report_index: cannot read report_coverage.md: {exc}"]
 
+    # P0-AM. This gate FAILED OPEN, which is the worst outcome in the whole
+    # census: a genuinely dropped candidate became INVISIBLE and shipped
+    # silently. `| **UNACCOUNTED** |`, `` | `UNACCOUNTED` | ``,
+    # `| UNACCOUNTED (pending human review) |`, `## Coverage Audit Ledger`,
+    # `## Raw Candidate Accounting` and `### Raw Candidate Ledger` each made a
+    # real dropped finding disappear. Identity is FAIL_CLOSED, so the read is
+    # now normalized and the ledger is located by column ROLE, with every
+    # disposition-bearing table scanned when no ledger heading is recognizable.
+    _coverage_roles = {
+        "source": ("source file", "source artifact", "source", "artifact", "file"),
+        "candidate": (
+            "candidate id", "candidate / label", "candidate", "finding id",
+            "candidate label", "id", "label",
+        ),
+        "disposition": (
+            "status", "disposition", "coverage status", "accounting status",
+            "determination", "outcome", "result",
+        ),
+    }
+    _surf_cov = _surface_of(text)
+    _head, _body = _section_after_heading(
+        _surf_cov,
+        "candidate ledger",
+        "coverage ledger",
+        "promotion ledger",
+        "coverage audit ledger",
+        "candidate accounting",
+        "coverage accounting",
+        "raw candidate",
+    )
+    _scoped = {
+        line.table_index for line in _body if getattr(line, "table_index", -1) >= 0
+    }
     unaccounted: list[tuple[str, str]] = []
-    in_ledger = False
-    disposition_idx: int | None = None
-    source_idx = 0
-    candidate_idx = 1
-    for line in text.splitlines():
-        stripped = line.strip()
-        if re.match(r"(?i)^##\s+(?:Raw\s+)?(?:Candidate|Coverage|Promotion)\s+Ledger\b", stripped):
-            in_ledger = True
-            disposition_idx = None
+    for _table in _read_tables(_surf_cov, roles=_coverage_roles):
+        if not _table.has_role("disposition"):
             continue
-        if in_ledger and re.match(r"^##\s+", stripped):
-            break
-        if not in_ledger or not line.lstrip().startswith("|"):
+        if _scoped and _table.index not in _scoped:
             continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 3:
-            continue
-        if set(cells[0]) <= {"-"}:
-            continue
-        lower_cells = [c.lower() for c in cells]
-        _disp_idx = next(
-            (i for i, c in enumerate(lower_cells)
-             if "status" in c or "disposition" in c),
-            None,
-        )
-        if _disp_idx is not None:
-            source_idx = 0
-            candidate_idx = 1
-            disposition_idx = _disp_idx
-            continue
-        idx = disposition_idx if disposition_idx is not None else 2
-        if idx >= len(cells):
-            continue
-        if cells[idx].upper() == "UNACCOUNTED":
-            source = cells[source_idx] if source_idx < len(cells) else cells[0]
-            candidate = cells[candidate_idx] if candidate_idx < len(cells) else "n/a"
-            unaccounted.append((candidate, source))
+        for _row in _table.rows:
+            if _norm_enum(_row.get("disposition") or "") != "UNACCOUNTED":
+                continue
+            _candidate = _norm_cell(_row.get("candidate") or "") or "n/a"
+            _source = _norm_cell(_row.get("source") or "") or "n/a"
+            unaccounted.append((_candidate, _source))
 
     if not unaccounted:
         return list(
@@ -33408,6 +35931,153 @@ def _has_live_placeholder_language(text: str) -> str | None:
     return None
 
 
+_CONSTRAINT_VARIABLES_PLACEHOLDER_RE = re.compile(
+    r"(?i)^(?:todo|tbd|stub|placeholder|fill[_ -]?me|unknown|"
+    r"not[_ -]?attempted|not[_ -]?inspectable|unavailable|"
+    r"no additional worker evidence was produced for this section)\.?$"
+)
+
+_PROJECTION_ROLE_SETS: dict[str, dict[str, tuple[str, ...]]] = {
+    # role -> synonyms, MOST SPECIFIC FIRST. An UNKNOWN column is ignored;
+    # a reordered column is addressed by role; an ABSENT role yields None and
+    # is reported as debt, never as a positional fallback.
+    "modifier_map": {
+        "function": ("function", "function / choice", "entry point", "method", "name"),
+        "location": ("source location", "code location", "location", "file", "site", "path"),
+        "modifier": (
+            "modifier / guard", "modifier/guard", "modifier or guard",
+            "guard / modifier", "modifier", "guard", "guards", "access control",
+        ),
+        "status": ("status", "state", "disposition", "result", "verdict"),
+    },
+    "constraint_variables": {
+        "variable": ("variable", "parameter", "constraint variable", "name", "symbol"),
+        "location": ("source location", "code location", "location", "file", "site", "path"),
+        "bound": (
+            "bound / enforcement", "bound/enforcement", "bound or enforcement",
+            "enforcement", "bound", "bounds", "constraint", "limit",
+        ),
+        "setter": ("setter", "setter function", "writer", "mutator"),
+        "status": ("status", "state", "disposition", "result", "verdict"),
+    },
+}
+
+
+def _projection_table_issues(
+    text: str,
+    *,
+    kind: str,
+    label: str,
+    heading_needles: tuple[str, ...],
+) -> list[str]:
+    """Validate a recon projection table by COLUMN ROLE, not by exact bytes.
+
+    P0-AM. The measured defect demanded ``line.strip() == '## Constraint
+    Variables'`` and then an exact 5-tuple of header cells. Renaming
+    ``Source Location`` to ``Location``, appending ONE extra informative
+    column, adding a parenthetical to the heading, or drifting the heading
+    depth each rejected a real recon artifact and halted the FIRST phase of
+    the audit. None of those edits changes what the projection says.
+
+    The property is: a finite, substantive projection exists with the columns
+    the depth roles consume. That is exactly what is tested here, on the
+    normalized view.
+    """
+    roles = _PROJECTION_ROLE_SETS[kind]
+    surf = _surface_of(text)
+    required = tuple(roles.keys())
+    table = _find_table(surf, required_roles=required, roles=roles)
+    if table is None:
+        # Fall back to the best partial match so the repair hint can name the
+        # roles that are actually missing rather than "the header is wrong".
+        best = None
+        best_score = -1
+        for candidate in _read_tables(surf, roles=roles):
+            score = sum(1 for role in required if candidate.has_role(role))
+            if score > best_score:
+                best, best_score = candidate, score
+        head, _body = _section_after_heading(surf, *heading_needles)
+        if best is None or best_score < max(2, len(required) - 1):
+            where = getattr(head, "physical_start", 0) if head is not None else 0
+            missing_all = ", ".join(required)
+            return [
+                f"has no {label} table carrying the required column roles "
+                f"({missing_all}) — observed "
+                f"{'no table at all' if best is None else list(best.headers)}"
+                f"; add one column per role (any header wording from the "
+                f"documented synonym set, any order, extra columns are fine)"
+                + (f" [line {where}]" if where else "")
+            ]
+        missing = [role for role in required if not best.has_role(role)]
+        return [
+            f"{label} table at line "
+            f"{getattr(best.header, 'physical_start', 0)} is missing column "
+            f"role(s): {', '.join(missing)} — observed {list(best.headers)}"
+        ]
+
+    issues: list[str] = [d.render() for d in table.ambiguities]
+    if not table.has_separator:
+        issues.append(
+            f"{label} table at line "
+            f"{getattr(table.header, 'physical_start', 0)} has no separator "
+            "row; add `|---|` under the header"
+        )
+    substantive = 0
+    malformed: list[int] = []
+    for row in table.rows:
+        values = [row.get(role) for role in required]
+        if any(
+            value is None
+            or not str(value).strip()
+            or _CONSTRAINT_VARIABLES_PLACEHOLDER_RE.fullmatch(
+                _norm_cell(value)
+            )
+            for value in values
+        ):
+            malformed.append(row.physical_line)
+        else:
+            substantive += 1
+    if malformed:
+        issues.append(
+            f"{label} table has malformed/non-substantive row(s) at line(s): "
+            + ", ".join(str(number) for number in malformed)
+        )
+    if not substantive:
+        issues.append(
+            f"{label} table has no substantive data row; emit at least one "
+            "real projection row or leave explicit recon debt"
+        )
+    return issues
+
+
+def _modifier_application_map_structure_issues(text: str) -> list[str]:
+    """Require the finite modifier/guard map consumed by validation sweep."""
+
+    return _projection_table_issues(
+        text,
+        kind="modifier_map",
+        label="modifier application",
+        heading_needles=("modifier application map", "modifier map", "modifier"),
+    )
+
+
+def _constraint_variables_structure_issues(text: str) -> list[str]:
+    """Validate the canonical constraint-variable projection schema.
+
+    Depth roles use this projection for parameter-bound and enforcement
+    analysis, so a large generic inventory fallback is not a valid substitute.
+    No canonical zero-row representation exists: the producer must emit at
+    least one substantive row or leave explicit recon debt for retry.
+    """
+
+    return _projection_table_issues(
+        text,
+        kind="constraint_variables",
+        label="constraint-variable",
+        heading_needles=("constraint variables", "constraint variable"),
+    )
+
+
 def _validate_recon_content_structure(
     scratchpad: Path, backend: str = "claude",
 ) -> tuple[list[str], list[str]]:
@@ -33480,6 +36150,8 @@ def _validate_recon_content_structure(
         "design_context.md",
         "attack_surface.md",
         "state_variables.md",
+        "constraint_variables.md",
+        "modifiers.md",
         "function_list.md",
         "contract_inventory.md",
         "template_recommendations.md",
@@ -33494,6 +36166,33 @@ def _validate_recon_content_structure(
                 f"{name} still has pre-pass overwrite marker; recon merge "
                 "did not produce a durable canonical handoff"
             )
+
+    # P0-AM: `schema.projection_table` is not identity/dedup/severity/
+    # disposition, so a shape defect in a recon projection degrades with a
+    # targeted repair hint instead of rejecting the FIRST phase of the audit.
+    constraints = scratchpad / "constraint_variables.md"
+    if constraints.exists():
+        txt, _ = _read_artifact("constraint_variables.md")
+        soft.extend(record_validator_debt(
+            scratchpad,
+            [
+                f"constraint_variables.md {issue}"
+                for issue in _constraint_variables_structure_issues(txt)
+            ],
+            gate="schema.projection_table",
+        ))
+
+    modifiers = scratchpad / "modifiers.md"
+    if modifiers.exists():
+        txt, _ = _read_artifact("modifiers.md")
+        soft.extend(record_validator_debt(
+            scratchpad,
+            [
+                f"modifiers.md {issue}"
+                for issue in _modifier_application_map_structure_issues(txt)
+            ],
+            gate="schema.projection_table",
+        ))
 
     # design_context.md: must contain Operational Implications (Rule 14)
     dc = scratchpad / "design_context.md"
@@ -33792,16 +36491,40 @@ def _has_poc_ledger_sections(content: str) -> tuple[bool, bool]:
 
 
 def _poc_attempted_value(content: str) -> str:
+    """YES / NO / "" for the PoC ledger's Attempted field, read by MEANING.
+
+    P0-AM. `- Attempted: **YES**` and `| Attempted | YES |` both returned ""
+    under the measured line-anchored regex, and this value feeds the
+    external-assumption SEVERITY brake and the PoC-coverage gate. Decoration
+    and table rendering are presentation.
+    """
     field = _field_from_markdown(content, ("Attempted", "PoC Attempted"))
     if field:
-        m = re.match(r"\s*(YES|NO)\b", field, re.IGNORECASE)
+        m = re.match(r"\s*(YES|NO)\b", _norm_cell(field), re.IGNORECASE)
         if m:
             return m.group(1).upper()
     m = re.search(
         r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?Attempted(?:\*\*)?\s*:\s*(YES|NO)\b",
         content,
     )
-    return m.group(1).upper() if m else ""
+    if m:
+        return m.group(1).upper()
+    tolerant = _read_field(
+        content,
+        "poc_attempted",
+        roles={
+            "poc_attempted": (
+                "poc attempted", "attempted", "poc attempt", "attempt",
+            )
+        },
+    )
+    if tolerant is not None:
+        value = _norm_enum(tolerant.value)
+        if value in {"YES", "Y", "TRUE"}:
+            return "YES"
+        if value in {"NO", "N", "FALSE"}:
+            return "NO"
+    return ""
 
 
 def _poc_skip_reason_value(content: str) -> str:
@@ -33828,11 +36551,44 @@ def _poc_skip_reason_value(content: str) -> str:
 
 
 def _poc_skip_code(content: str) -> str:
+    """The closed-taxonomy skip code, wherever in the reason it is stated.
+
+    P0-AM. The measured defect `re.match`-ed the code at the START of the
+    extracted value, so `Because: there is NO_BUILD_ENVIRONMENT in this
+    container` and the label synonym `Reason:` both read as NO CODE AT ALL -
+    the same closed-taxonomy code, stated in a sentence, became invalid. The
+    code is still drawn from the CLOSED taxonomy (adversarial control: a reason
+    naming no taxonomy code still returns ""), and a NEGATED mention does not
+    count.
+    """
     reason = _poc_skip_reason_value(content)
     if not reason:
+        tolerant = _read_field(
+            content,
+            "poc_skip",
+            roles={
+                "poc_skip": (
+                    "poc not attempted because", "not attempted because",
+                    "poc skip reason", "skip reason", "poc not attempted",
+                    "poc skip", "reason",
+                )
+            },
+        )
+        reason = _norm_cell(tolerant.value) if tolerant is not None else ""
+    if not reason:
         return ""
+    reason = _norm_cell(reason)
     m = re.match(r"\s*\**\s*(" + _POC_SKIP_CODES_RE + r")\b", reason, re.IGNORECASE)
-    return m.group(1).upper() if m else ""
+    if m:
+        return m.group(1).upper()
+    for m in re.finditer(
+        r"\b(" + _POC_SKIP_CODES_RE + r")\b", reason, re.IGNORECASE
+    ):
+        head = reason[: m.start()]
+        if re.search(r"(?i)\b(?:not|no|never|isn.t|is\s+not)\s*$", head.strip()):
+            continue
+        return m.group(1).upper()
+    return ""
 
 
 def _valid_poc_skip(
@@ -33903,7 +36659,24 @@ def _valid_poc_skip(
 # blocker excuses it. GENERIC vocabulary only (no protocol/contract names),
 # negation-aware via the shared `_poc_kw_present` guard.
 
+# P0-AM. This list is the FORCE-BY-DEFAULT trigger for an executable PoC, and
+# under-matching wrongly EXCUSES a real finding onto [CODE-TRACE]. Measured:
+# four of six Material Harm statements written in the project's OWN mandated
+# style were invisible - "Depositors receive 25-50% less than their pro-rata
+# share", "The owner can seize every user's collateral without consent",
+# "A user's withdrawal reverts forever after the parameter is zeroed" and
+# "Cross-chain assets are routed to the wrong recipient". Vocabulary stays
+# GENERIC (no protocol/contract/function names, Part 0).
 _MATERIAL_HARM_PATTERNS = (
+    "less than", "receive less", "receives less", "receiving less",
+    "fewer than", "short-changed", "shortchanged", "pro-rata share",
+    "seize", "seizes", "seized", "seizing", "without consent",
+    "reverts forever", "reverts permanently", "revert forever",
+    "permanently revert", "cannot withdraw", "can not withdraw",
+    "unable to withdraw", "withdrawal reverts", "withdraw reverts",
+    "wrong recipient", "wrong address", "wrong destination", "wrong chain",
+    "routed to the wrong", "misrouted", "mis-routed", "misroute", "mis-route",
+    "forever", "irreversib", "cannot recover", "no longer able",
     "drain", "drained", "draining",
     "lock", "locked", "locking", "lockout",
     "freeze", "frozen", "freezing",
@@ -34251,24 +37024,16 @@ def _verification_policy_work_item(
     except ValueError:
         claim_class = PolicyClaimClass.STRUCTURAL
     finding_id = (row.get("finding id") or "").strip()
-    locally_testable = claim_class in {
-        PolicyClaimClass.UNIT,
-        PolicyClaimClass.PROPERTY,
-    }
     return VerificationWorkItem(
         finding_id=finding_id,
         constituent_id=(row.get("constituent id") or "root").strip() or "root",
         severity=severity,
         claim_class=claim_class,
-        locally_testable=locally_testable,
-        # Unknown build state fails recall-safe for a locally-testable row: a
-        # verifier cannot manufacture a prose blocker merely because the
-        # machine-readable build signal is absent. A determinate failed build
-        # may be supplied by the caller so independently adjudicated,
-        # environment-typed blockers remain representable.
-        harness_available=(
-            locally_testable if harness_available is None else harness_available
-        ),
+        # The queue PoC class is a claim classification, not authenticated
+        # evidence that this finding is locally testable.  Preserve both
+        # assessments as unknown until an independent authority supplies one.
+        locally_testable=None,
+        harness_available=harness_available,
     )
 
 
@@ -34302,15 +37067,9 @@ def _poc_contract_required(
     still requires the PoC).
     """
     if execution_policy is not None:
-        build_succeeded = (
-            _build_succeeded(Path(scratchpad)) if scratchpad is not None else None
-        )
         obligation = evaluate_obligation(
             execution_policy,
-            _verification_policy_work_item(
-                row,
-                harness_available=build_succeeded,
-            ),
+            _verification_policy_work_item(row),
             execution_blocker,
         )
         return obligation.decision is PolicyDecision.ATTEMPT_REQUIRED

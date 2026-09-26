@@ -2,11 +2,11 @@
 """Plamen — Web3 Security Auditor CLI wrapper.
 
 Renders the startup UI in the user's real terminal, collects inputs
-via arrow-key selection menus, then hands off to Claude Code.
+via arrow-key selection menus, then hands off to the selected managed backend.
 """
 import sys, os, shutil, glob, subprocess, re, sqlite3, platform, shlex, stat, errno
 import atexit, ast, base64, contextlib, gc, hashlib, hmac, json, secrets, threading, time, uuid
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 _CODEX_INSTALL_RECEIPT = ".plamen-codex-install.json"
@@ -24,9 +24,10 @@ _CODEX_KEEPER_IDLE_SECONDS = 15.0
 _CODEX_KEEPER_ABSOLUTE_SECONDS = 1800.0
 _CODEX_KEEPER_PROGRESS_SECONDS = 1.0
 _CODEX_INSTALL_TERMINAL_STATE = "COMMITTED"
-_CODEX_INSTALL_SOURCE_COUNT = 823
-_CODEX_INSTALL_RUNTIME_COUNT = 792
+_CODEX_INSTALL_SOURCE_COUNT = 1189
+_CODEX_INSTALL_RUNTIME_COUNT = 1158
 _CODEX_INSTALL_ADAPTER_COUNT = 31
+_CODEX_INSTALL_CLOSURE_ASSET_COUNT = 492
 # The unsigned-lock migration predicate authenticates the one historical
 # predecessor package, not the mutable denominator of the package being
 # installed.  Keep these values frozen when the current package grows.
@@ -53,6 +54,7 @@ _CODEX_COMMITTED_RECEIPT_FIELDS = frozenset({
 _CODEX_INSTALL_READER = None
 _CODEX_INSTALL_READER_COMMAND_KIND = None
 _CODEX_INSTALL_ADMISSION = None
+_POSIX_V2_COMPAT_INSTALL_ADMISSION = None
 
 
 def _codex_install_admission_capability_manager():
@@ -99,6 +101,52 @@ def _codex_install_admission_capability_manager():
     _issue_codex_install_admission_capability,
     _replay_codex_install_admission_capability,
 ) = _codex_install_admission_capability_manager()
+
+
+def _posix_v2_compat_install_capability_manager():
+    """Keep verified compatibility-install state process-local and opaque."""
+    issued = None
+
+    class _Capability:
+        __slots__ = ()
+
+        def __copy__(self):
+            raise TypeError("POSIX compatibility admission is not copyable")
+
+        def __deepcopy__(self, _memo):
+            raise TypeError("POSIX compatibility admission is not copyable")
+
+    def issue(*, installed_root, generation_sha256):
+        nonlocal issued
+        if issued is not None:
+            raise RuntimeError("POSIX compatibility admission was already issued")
+        if not re.fullmatch(r"[0-9a-f]{64}", generation_sha256 or ""):
+            raise RuntimeError("POSIX compatibility generation is malformed")
+        capability = _Capability()
+        issued = (
+            capability,
+            Path(installed_root).absolute(),
+            generation_sha256,
+            os.getpid(),
+        )
+        return capability
+
+    def replay(capability):
+        if (
+            issued is None
+            or capability is not issued[0]
+            or issued[3] != os.getpid()
+        ):
+            raise RuntimeError("POSIX compatibility admission is absent")
+        return issued[1], issued[2]
+
+    return issue, replay
+
+
+(
+    _issue_posix_v2_compat_install_capability,
+    _replay_posix_v2_compat_install_capability,
+) = _posix_v2_compat_install_capability_manager()
 _CODEX_INSTALL_CENSUS_SCHEMA = "plamen.codex_install.census_child.v1"
 _CODEX_INSTALL_CENSUS_READY_SCHEMA = "plamen.codex_install.census_ready.v1"
 _CODEX_INSTALL_CENSUS_RESULT_SCHEMA = "plamen.codex_install.census_result.v1"
@@ -327,10 +375,19 @@ def _build_borrowed_reader_identity_api():
 def _borrowed_reader_handle_identity(handle):
     if os.name != "nt":
         value = os.fstat(handle)
+        attributes = 0x10 if stat.S_ISDIR(value.st_mode) else 0
+        if not int(value.st_mode) & (
+            stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+        ):
+            attributes |= 0x1
         return {
             "volume": int(value.st_dev), "file_id": int(value.st_ino),
-            "attributes": int(getattr(value, "st_file_attributes", 0)),
-            "reparse_tag": int(getattr(value, "st_reparse_tag", 0)),
+            # The install receipt uses Windows-compatible classification bits
+            # on every platform.  POSIX ``st_mode`` remains available through
+            # the richer dispatcher descriptor; this compact identity only
+            # needs directory/read-only/reparse classification.
+            "attributes": attributes,
+            "reparse_tag": 0,
             "links": int(value.st_nlink), "size": int(value.st_size),
         }
     ctypes, kernel32, _Info, _Tag = _borrowed_reader_identity_api()
@@ -573,9 +630,11 @@ def _consume_borrowed_install_reader(*, installed, codex_home, command_kinds, st
     # These are initial addresses only.  Native descriptors below, rather than
     # lexical normalization, authenticate the executable and installed module.
     interpreter_path = Path(sys.executable)
+    interpreter_authority_path = _codex_install_active_executable_path()
     script_path = Path(__file__)
     interpreter_descriptor, _interpreter_raw = _codex_install_committed_descriptor(
-        interpreter_path.parent, (interpreter_path.name,), return_raw=True,
+        interpreter_authority_path.parent, (interpreter_authority_path.name,),
+        return_raw=True,
         allow_stable_foreign_links=True,
     )
     script_descriptor, _script_raw = _codex_install_committed_descriptor(
@@ -819,8 +878,16 @@ def _codex_install_posix_committed_read(
                 )
         return tuple(names)
 
-    def open_directory(parent, component):
-        directory_names(parent, exact_component=component)
+    def open_directory(parent, component, *, enforce_component_alias=True):
+        # Ancestors of the retained authority root can be large shared
+        # namespaces (for example macOS's per-user temporary directory).
+        # Their complete roster is not part of the installed package
+        # authority. O_NOFOLLOW + before/after descriptor identity proves the
+        # exact traversal without making install availability depend on the
+        # number of unrelated siblings. Alias-roster enforcement begins at
+        # the caller-selected authority root and remains strict below it.
+        if enforce_component_alias:
+            directory_names(parent, exact_component=component)
         descriptor = os.open(component, directory_flags, dir_fd=parent)
         opened.append(descriptor)
         opened_stat = os.fstat(descriptor)
@@ -834,15 +901,27 @@ def _codex_install_posix_committed_read(
             or int(opened_stat.st_nlink) <= 0
         ):
             raise RuntimeError("POSIX committed parent identity differs")
-        relationships.append((parent, component, descriptor, before))
+        relationships.append((
+            parent,
+            component,
+            descriptor,
+            before,
+            enforce_component_alias,
+        ))
         return descriptor
 
     try:
         retained_root = os.open(os.sep, directory_flags)
         opened.append(retained_root)
         parent = retained_root
-        for component in root_components:
-            parent = open_directory(parent, component)
+        for ordinal, component in enumerate(root_components):
+            parent = open_directory(
+                parent,
+                component,
+                enforce_component_alias=(
+                    ordinal == len(root_components) - 1
+                ),
+            )
         authority_root = parent
         authority_root_stat = os.fstat(authority_root)
         if (
@@ -877,7 +956,9 @@ def _codex_install_posix_committed_read(
                     )
                 ):
                     raise RuntimeError("POSIX committed file identity differs")
-                relationships.append((parent, component, descriptor, before))
+                relationships.append((
+                    parent, component, descriptor, before, True,
+                ))
             observed = os.fstat(descriptor)
             if int(observed.st_dev) != authority_device:
                 raise RuntimeError("committed read crossed volume")
@@ -934,12 +1015,19 @@ def _codex_install_posix_committed_read(
 
         if stable_identity(os.fstat(leaf)) != stable_identity(leaf_before):
             raise RuntimeError("POSIX committed leaf changed during read")
-        for parent, component, descriptor, before in relationships:
+        for (
+            parent,
+            component,
+            descriptor,
+            before,
+            enforce_component_alias,
+        ) in relationships:
             opened_after = os.fstat(descriptor)
             named_after = os.stat(
                 component, dir_fd=parent, follow_symlinks=False,
             )
-            directory_names(parent, exact_component=component)
+            if enforce_component_alias:
+                directory_names(parent, exact_component=component)
             if (
                 stable_identity(opened_after) != before
                 or stable_identity(named_after) != before
@@ -2199,31 +2287,86 @@ def _open_install_admission_anchor(codex_home, *, writer, create=False):
             kernel32.CloseHandle(handle)
 
         return anchor, handle, _close
-    if create:
-        anchor.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            fd = os.open(str(anchor), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            pass
-        else:
-            os.write(fd, b"plamen-install-admission-v1\n")
-            os.fsync(fd)
-            os.close(fd)
-    st = os.lstat(anchor)
-    if not os.path.isfile(anchor) or os.path.islink(anchor) or st.st_nlink != 1:
-        raise RuntimeError("Plamen install admission anchor is not an ordinary single-link file")
     import fcntl
-
-    descriptor = os.open(str(anchor), os.O_RDWR if writer else os.O_RDONLY)
+    root_handle = root_close = None
+    descriptor = -1
     try:
+        root_handle, root_close = _codex_dispatcher_open_root(
+            anchor.parent, full_mutation=True,
+        )
+        names = _codex_native_directory_names(root_handle)
+        aliases = [
+            name for name in names
+            if name.casefold() == _CODEX_INSTALL_ANCHOR.casefold()
+        ]
+        if aliases and aliases != [_CODEX_INSTALL_ANCHOR]:
+            raise RuntimeError("Plamen install admission anchor name differs")
+        flags = (
+            (os.O_RDWR if writer or create else os.O_RDONLY)
+            | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        )
+        if not aliases:
+            if not create:
+                raise FileNotFoundError(anchor)
+            flags |= os.O_CREAT | os.O_EXCL
+        descriptor = os.open(
+            _CODEX_INSTALL_ANCHOR, flags, 0o600, dir_fd=root_handle,
+        )
+        information = _codex_posix_require_named_handle(
+            root_handle, _CODEX_INSTALL_ANCHOR, descriptor,
+        )
+        if (
+            not stat.S_ISREG(information.st_mode)
+            or information.st_uid != os.getuid()
+            or information.st_nlink != 1
+            or information.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            raise RuntimeError(
+                "Plamen install admission anchor is not an ordinary "
+                "single-link file"
+            )
+        if information.st_size == 0 and create:
+            _codex_native_write(
+                descriptor, b"plamen-install-admission-v1\n",
+            )
+            _codex_posix_fsync_directory(root_handle)
+        if _borrowed_reader_handle_bytes(
+            descriptor, maximum=4096,
+        ) not in {
+            b"plamen-install-admission-v1\n",
+            b"plamen-install-admission-v1\r\n",
+        }:
+            raise RuntimeError("Plamen install admission anchor bytes differ")
         fcntl.flock(
             descriptor,
             (fcntl.LOCK_EX if writer else fcntl.LOCK_SH) | fcntl.LOCK_NB,
         )
-    except Exception:
-        os.close(descriptor)
-        raise RuntimeError("Plamen installation is in maintenance")
-    return anchor, descriptor, lambda: os.close(descriptor)
+        validate = getattr(root_close, "_codex_validate", None)
+        if callable(validate):
+            validate()
+    except BaseException as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if root_close is not None:
+            root_close()
+        if isinstance(exc, FileNotFoundError):
+            raise
+        raise RuntimeError("Plamen installation is in maintenance") from exc
+
+    def _close_posix_anchor():
+        error = None
+        try:
+            os.close(descriptor)
+        except OSError as exc:
+            error = exc
+        try:
+            root_close()
+        except OSError as exc:
+            error = error or exc
+        if error is not None:
+            raise error
+
+    return anchor, descriptor, _close_posix_anchor
 
 
 def _borrowed_reader_duplicate_for_child(handle):
@@ -2326,6 +2469,32 @@ def _codex_keeper_message(
         authkey, _borrowed_reader_canonical_bytes(unsigned), hashlib.sha256,
     ).hexdigest()
     return value
+
+
+def _codex_install_keeper_channel(transaction_id):
+    """Create a Windows keeper pipe name; POSIX uses the governed provider."""
+    if not re.fullmatch(r"[0-9a-f]{32}", transaction_id or ""):
+        raise RuntimeError("Codex keeper channel transaction is malformed")
+    if os.name != "nt":
+        raise RuntimeError(
+            "POSIX install keeper is unavailable; use the governed runtime provider"
+        )
+    return rf"\\.\pipe\plamen-install-{transaction_id}-{uuid.uuid4().hex}"
+
+
+def _codex_keeper_pipe_valid(pipe, transaction_id):
+    return (
+        os.name == "nt"
+        and isinstance(pipe, str)
+        and isinstance(transaction_id, str)
+        and pipe.startswith(
+            r"\\.\pipe\plamen-install-" + transaction_id + "-"
+        )
+        and re.fullmatch(
+            r"\\\\\.\\pipe\\plamen-install-[0-9a-f]{32}-[0-9a-f]{32}",
+            pipe,
+        ) is not None
+    )
 
 
 def _validate_codex_keeper_message(
@@ -2458,7 +2627,9 @@ def _validate_codex_keeper_active_v2(value, raw, *, expected=None):
                    "recovery_argv_sha256",
                ))
         or not isinstance(value.get("pipe"), str)
-        or not value["pipe"].startswith(r"\\.\pipe\plamen-install-" + value["transaction_id"] + "-")
+        or not value["pipe"].startswith(
+            r"\\.\pipe\plamen-install-" + value["transaction_id"] + "-"
+        )
         or not re.fullmatch(r"[0-9a-f]{64}", value.get("authkey", ""))
         or not isinstance(value.get("parent_pid"), int)
         or isinstance(value.get("parent_pid"), bool) or value["parent_pid"] <= 0
@@ -2550,22 +2721,24 @@ def _start_codex_install_keeper(
 ):
     """Start the minimal out-of-process holder before COMMITTED publication."""
     if os.name != "nt":
-        raise RuntimeError("Codex install keeper requires Windows handle transfer")
-    inherited = _duplicate_install_writer_for_child(writer_handle)
+        raise RuntimeError(
+            "POSIX install keeper is unavailable; use the governed runtime provider"
+        )
     if (
-        not isinstance(pipe, str)
-        or not pipe.startswith(r"\\.\pipe\plamen-install-" + transaction_id + "-")
+        not _codex_keeper_pipe_valid(pipe, transaction_id)
         or not isinstance(authkey, bytes)
         or len(authkey) != 32
         or not re.fullmatch(r"[0-9a-f]{64}", pipe_instance_nonce or "")
         or not callable(binding_publisher)
     ):
         raise RuntimeError("Codex install keeper channel authority is malformed")
+    inherited = _duplicate_install_writer_for_child(writer_handle)
     environment = {
         "COMSPEC": os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe"),
         "HOME": str(Path(codex_home).parent),
         "USERPROFILE": str(Path(codex_home).parent),
-        "PATH": os.path.dirname(sys.executable) + os.pathsep + os.environ.get("SYSTEMROOT", r"C:\Windows") + r"\System32",
+        "PATH": os.path.dirname(sys.executable) + os.pathsep
+        + os.environ.get("SYSTEMROOT", r"C:\Windows") + r"\System32",
         "PYTHONHASHSEED": "0", "PYTHONNOUSERSITE": "1",
         "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": "",
         "SYSTEMROOT": os.environ.get("SYSTEMROOT", r"C:\Windows"),
@@ -2796,9 +2969,10 @@ def _codex_install_keeper_descriptor(
         "parent_pid": os.getpid(),
         "parent_started_100ns": _borrowed_reader_process_started_100ns(),
         "principal": os.environ.get("USERNAME") or os.environ.get("USER") or "",
-        "interpreter": os.path.abspath(sys.executable),
+        "interpreter": str(_codex_install_active_executable_path()),
         "interpreter_sha256": _codex_install_committed_read(
-            Path(sys.executable).parent, (Path(sys.executable).name,), directory=False,
+            _codex_install_active_executable_path().parent,
+            (_codex_install_active_executable_path().name,), directory=False,
             allow_stable_foreign_links=True,
         )[0]["sha256"],
         "script": os.path.abspath(__file__),
@@ -2806,7 +2980,8 @@ def _codex_install_keeper_descriptor(
             Path(__file__).parent, (Path(__file__).name,), directory=False,
         )[0]["sha256"],
         "recovery_argv": [
-            os.path.abspath(sys.executable), "-B", os.path.abspath(__file__),
+            str(_codex_install_active_executable_path()), "-B",
+            os.path.abspath(__file__),
             "--recover-codex-install", transaction_id,
         ],
     }
@@ -2816,7 +2991,24 @@ def _codex_install_keeper_descriptor(
     return descriptor
 
 
+def _codex_install_active_executable_path():
+    """Return the exact no-follow interpreter leaf used for install evidence."""
+    candidate = Path(sys.executable)
+    if os.name != "nt":
+        # Virtual environments and Homebrew normally expose Python through one
+        # or more symlinks.  Those names are useful launch addresses, but a
+        # symlink is not retained file authority.  Bind install evidence to the
+        # resolved ordinary executable leaf; launch custody separately binds
+        # and attests the actual process image.
+        return candidate.resolve(strict=True)
+    return candidate.absolute()
+
+
 def _run_codex_install_keeper(argv):
+    if os.name != "nt":
+        raise RuntimeError(
+            "POSIX install keeper is unavailable; use the governed runtime provider"
+        )
     if len(argv) != 10 or argv[0] != "--codex-install-keeper":
         raise RuntimeError("Codex install keeper argv is malformed")
     (_flag, transaction_id, handle_raw, pipe, auth_hex, writer_generation,
@@ -3559,6 +3751,22 @@ def _installed_runtime_root():
         module_authority, module_raw = _codex_install_committed_descriptor(
             module_address.parent, (module_address.name,), return_raw=True,
         )
+    except (FileNotFoundError, OSError):
+        return None
+    # A cold HOME commonly arrives through Darwin's lexical `/tmp` or `/var`
+    # symlink.  Do not enter the strict componentwise committed reader merely
+    # to prove that a nonexistent installation is absent.  This check cannot
+    # weaken an executing installed package: if this module claims the same
+    # lexical parent, absence is an authority failure rather than a source-run
+    # miss.  Once `.plamen` exists, the strict no-link reader below remains the
+    # sole admission path and rejects every symlinked ancestor.
+    if not os.path.lexists(installed_address):
+        if os.path.normcase(os.path.realpath(module_address.parent)) == os.path.normcase(
+            os.path.realpath(installed_address)
+        ):
+            raise RuntimeError("installed runtime root disappeared")
+        return None
+    try:
         installed_authority, installed_raw = _codex_install_committed_descriptor(
             installed_address, (module_address.name,), return_raw=True,
         )
@@ -3587,20 +3795,507 @@ def _installed_runtime_root():
     }
 
 
+def _early_exact_posix_v2_compat_front_argv(argv=None):
+    """Recognize only the documented reduced-isolation POSIX front route."""
+
+    arguments = tuple(sys.argv[1:] if argv is None else argv)
+    return (
+        os.name != "nt"
+        and len(arguments) == 3
+        and arguments[0].lower() in {"start-config", "resume"}
+        and isinstance(arguments[1], str)
+        and bool(arguments[1])
+        and not arguments[1].startswith("-")
+        and arguments[2] == "--posix-compat-v2"
+    )
+
+
+def _early_exact_posix_native_install_argv(argv=None):
+    """Recognize only the frozen source-to-native install request."""
+
+    arguments = tuple(sys.argv[1:] if argv is None else argv)
+    return os.name != "nt" and arguments == ("install", "--codex")
+
+
+def _early_exact_posix_native_install_check_argv(argv=None):
+    """Recognize only the existing read-only Codex package checks."""
+
+    arguments = tuple(sys.argv[1:] if argv is None else argv)
+    return os.name != "nt" and arguments in {
+        ("install", "--codex", "--check"),
+        ("install", "--codex", "--check", "--json"),
+    }
+
+
+def _early_exact_posix_native_front_argv(argv=None):
+    """Recognize only a request that the native launcher can admit."""
+
+    arguments = tuple(sys.argv[1:] if argv is None else argv)
+    return (
+        os.name != "nt"
+        and len(arguments) == 2
+        and arguments[0].lower() in {"start-config", "resume"}
+        and isinstance(arguments[1], str)
+        and bool(arguments[1])
+        and not arguments[1].startswith("-")
+    )
+
+
+_POSIX_V2_COMPAT_PROVENANCE = ".plamen-posix-compat-v2-provenance.json"
+_POSIX_V2_COMPAT_PROVENANCE_SCHEMA_V1 = "plamen.posix_compat_v2.install.v1"
+_POSIX_V2_COMPAT_PROVENANCE_SCHEMA = "plamen.posix_compat_v2.install.v2"
+_POSIX_V2_COMPAT_PROVENANCE_FIELDS_V1 = frozenset({
+    "claim", "generation_sha256", "python", "schema",
+    "security_properties", "source_census", "source_entry_count",
+    "source_exclusions", "source_total_bytes",
+})
+_POSIX_V2_COMPAT_PROVENANCE_FIELDS = (
+    _POSIX_V2_COMPAT_PROVENANCE_FIELDS_V1
+    | {"js_package_binding", "runtime_closure_binding"}
+)
+_POSIX_V2_JS_ANCHOR_PATH = "verification_policy/js_toolchain_bootstrap.v1.json"
+_POSIX_V2_JS_BINDING_SCHEMA = "plamen.js-bootstrap-install-provenance.v1"
+_POSIX_V2_JS_TRUST_BOUNDARY = "AUTHENTICATED_INSTALLER_LAUNCHER_BOUNDARY_V1"
+_POSIX_V2_EXPECTED_JS_ANCHOR_SHA256 = (
+    "20dcb25530d73e14ad8e1a8bb9d827b8395b5fa17c29d2b5513582d63f11ec97"
+)
+_POSIX_V2_JS_BINDING_FIELDS = frozenset({
+    "anchor_path", "anchor_sha256", "js_package_binding_sha256", "schema",
+    "source_census_sha256", "trust_boundary",
+})
+_POSIX_V2_AUTHENTIC_PRE_JS_V1_GENERATIONS = frozenset()
+_POSIX_V2_RUNTIME_CLOSURE_PATH = (
+    "verification_policy/toolchain_runtime_closure.v1.json"
+)
+_POSIX_V2_RUNTIME_CLOSURE_BINDING_SCHEMA = (
+    "plamen.toolchain-runtime-closure-install-provenance.v1"
+)
+_POSIX_V2_RUNTIME_CLOSURE_BINDING_FIELDS = frozenset({
+    "assets_sha256", "file_count", "files_sha256", "manifest_path",
+    "manifest_sha256", "runtime_closure_binding_sha256", "schema",
+    "source_census_sha256",
+})
+
+
+def _posix_v2_compat_census_digest(rows):
+    """Re-derive the installer's exact descriptor-census generation ID."""
+
+    if type(rows) is not list or not rows:
+        raise RuntimeError("POSIX compatibility source census is malformed")
+    observed_paths = set()
+    normalized = []
+    for row in rows:
+        if type(row) is not dict or set(row) != {
+            "kind", "mode", "path", "sha256", "size",
+        }:
+            raise RuntimeError("POSIX compatibility source census is malformed")
+        kind = row.get("kind")
+        path = row.get("path")
+        mode = row.get("mode")
+        size = row.get("size")
+        sha256 = row.get("sha256")
+        if (
+            kind not in {"directory", "file"}
+            or type(path) is not str
+            or not path
+            or path.startswith("/")
+            or "\\" in path
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+            or path in observed_paths
+            or type(mode) is not int
+            or isinstance(mode, bool)
+            or mode < 0
+            or mode > 0o7777
+            or type(size) is not int
+            or isinstance(size, bool)
+            or size < 0
+            or type(sha256) is not str
+        ):
+            raise RuntimeError("POSIX compatibility source census is malformed")
+        if kind == "directory":
+            if size != 0 or sha256 != "":
+                raise RuntimeError("POSIX compatibility source census is malformed")
+        elif re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
+            raise RuntimeError("POSIX compatibility source census is malformed")
+        observed_paths.add(path)
+        normalized.append(row)
+    digest = hashlib.sha256()
+    for row in sorted(normalized, key=lambda item: item["path"]):
+        digest.update(
+            (
+                f"{row['kind']}\0{row['path']}\0{row['mode']}\0"
+                f"{row['size']}\0{row['sha256']}\n"
+            ).encode("utf-8")
+        )
+    return digest.hexdigest(), {row["path"]: row for row in normalized}
+
+
+def _posix_v2_compat_js_binding(provenance, census_sha256, census_by_path):
+    binding = provenance.get("js_package_binding")
+    anchor = census_by_path.get(_POSIX_V2_JS_ANCHOR_PATH)
+    if (
+        type(binding) is not dict
+        or set(binding) != _POSIX_V2_JS_BINDING_FIELDS
+        or type(anchor) is not dict
+        or anchor.get("kind") != "file"
+        or type(anchor.get("size")) is not int
+        or anchor["size"] <= 0
+        or not re.fullmatch(r"[0-9a-f]{64}", anchor.get("sha256", ""))
+        or anchor.get("sha256") != _POSIX_V2_EXPECTED_JS_ANCHOR_SHA256
+    ):
+        raise RuntimeError("POSIX compatibility JS binding is malformed")
+    signed = {
+        "anchor_path": _POSIX_V2_JS_ANCHOR_PATH,
+        "anchor_sha256": _POSIX_V2_EXPECTED_JS_ANCHOR_SHA256,
+        "schema": _POSIX_V2_JS_BINDING_SCHEMA,
+        "source_census_sha256": census_sha256,
+        "trust_boundary": _POSIX_V2_JS_TRUST_BOUNDARY,
+    }
+    try:
+        raw = (
+            json.dumps(
+                signed,
+                ensure_ascii=True,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("ascii")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise RuntimeError("POSIX compatibility JS binding is malformed") from exc
+    expected = {
+        **signed,
+        "js_package_binding_sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    if binding != expected:
+        raise RuntimeError("POSIX compatibility JS binding differs")
+
+
+def _posix_v2_compat_runtime_closure_binding(
+    provenance, census_sha256, census_by_path, manifest_raw,
+):
+    binding = provenance.get("runtime_closure_binding")
+    manifest_row = census_by_path.get(_POSIX_V2_RUNTIME_CLOSURE_PATH)
+    try:
+        payload = json.loads(manifest_raw.decode("ascii", "strict"))
+    except (UnicodeError, ValueError, RecursionError) as exc:
+        raise RuntimeError(
+            "POSIX compatibility runtime closure binding is malformed"
+        ) from exc
+    files = payload.get("files") if type(payload) is dict else None
+    assets = payload.get("assets") if type(payload) is dict else None
+    if (
+        type(binding) is not dict
+        or set(binding) != _POSIX_V2_RUNTIME_CLOSURE_BINDING_FIELDS
+        or set(payload) != {
+            "assets", "derivation", "entrypoints", "files",
+            "manifest_control", "schema",
+        }
+        or type(files) is not list
+        or not files
+        or files != sorted(set(files))
+        or type(assets) is not list
+        or len(assets) != len(files) - 1
+        or type(manifest_row) is not dict
+        or manifest_row.get("kind") != "file"
+        or manifest_row.get("size") != len(manifest_raw)
+        or manifest_row.get("sha256")
+        != hashlib.sha256(manifest_raw).hexdigest()
+    ):
+        raise RuntimeError(
+            "POSIX compatibility runtime closure binding is malformed"
+        )
+    asset_paths = set()
+    for asset in assets:
+        if type(asset) is not dict or set(asset) != {
+            "digest_mode", "kind", "path", "sha256",
+        }:
+            raise RuntimeError(
+                "POSIX compatibility runtime closure binding is malformed"
+            )
+        relative = asset.get("path")
+        row = census_by_path.get(relative) if type(relative) is str else None
+        if (
+            type(relative) is not str
+            or relative in asset_paths
+            or asset.get("digest_mode") not in {"raw-v1", "utf8-lf-v1"}
+            or asset.get("kind")
+            not in {"python-source", "runtime-data", "control"}
+            or not re.fullmatch(r"[0-9a-f]{64}", asset.get("sha256", ""))
+            or type(row) is not dict
+            or row.get("kind") != "file"
+            or row.get("sha256") != asset.get("sha256")
+        ):
+            raise RuntimeError(
+                "POSIX compatibility runtime closure binding differs"
+            )
+        asset_paths.add(relative)
+    if set(files) != asset_paths | {_POSIX_V2_RUNTIME_CLOSURE_PATH}:
+        raise RuntimeError(
+            "POSIX compatibility runtime closure binding differs"
+        )
+    canonical = lambda value: (
+        json.dumps(
+            value, ensure_ascii=True, allow_nan=False, sort_keys=True,
+            separators=(",", ":"),
+        ) + "\n"
+    ).encode("ascii")
+    signed = {
+        "assets_sha256": hashlib.sha256(canonical(assets)).hexdigest(),
+        "file_count": len(files),
+        "files_sha256": hashlib.sha256(canonical(files)).hexdigest(),
+        "manifest_path": _POSIX_V2_RUNTIME_CLOSURE_PATH,
+        "manifest_sha256": hashlib.sha256(manifest_raw).hexdigest(),
+        "schema": _POSIX_V2_RUNTIME_CLOSURE_BINDING_SCHEMA,
+        "source_census_sha256": census_sha256,
+    }
+    expected = {
+        **signed,
+        "runtime_closure_binding_sha256": hashlib.sha256(
+            canonical(signed)
+        ).hexdigest(),
+    }
+    if binding != expected:
+        raise RuntimeError(
+            "POSIX compatibility runtime closure binding differs"
+        )
+
+
+def _posix_v2_compat_legacy_has_js(census_by_path):
+    exact = {
+        "scripts/js_dependency_materializer_authority.py",
+        "scripts/js_lock_authority.py",
+        "scripts/js_toolchain_authority.py",
+        "verification_policy/js_toolchain_authority.v1.json",
+        _POSIX_V2_JS_ANCHOR_PATH,
+        "verification_policy/toolchain_runtime_closure.v1.json",
+    }
+    return bool(exact.intersection(census_by_path)) or any(
+        path.startswith("runtime/toolchains/js/") for path in census_by_path
+    )
+
+
+def _verify_installed_posix_v2_compat_runtime(installed):
+    """Verify the complete reduced-isolation closure before classifying it.
+
+    This lane deliberately does not claim native install authority.  Its
+    installer does, however, publish a descriptor-censused complete source
+    closure.  Reuse that exact verifier and re-read the provenance through the
+    retained no-follow reader on both sides so a malformed or drifting
+    compatibility package can never fall through to legacy Codex admission.
+    """
+    _descriptor_before, raw_before = _codex_install_committed_descriptor(
+        installed, (_POSIX_V2_COMPAT_PROVENANCE,), return_raw=True,
+    )
+    provenance = _strict_json_bytes(raw_before)
+    if not isinstance(provenance, dict):
+        raise RuntimeError("POSIX compatibility provenance is malformed")
+    schema = provenance.get("schema")
+    if schema == _POSIX_V2_COMPAT_PROVENANCE_SCHEMA_V1:
+        expected_fields = _POSIX_V2_COMPAT_PROVENANCE_FIELDS_V1
+    elif schema == _POSIX_V2_COMPAT_PROVENANCE_SCHEMA:
+        expected_fields = _POSIX_V2_COMPAT_PROVENANCE_FIELDS
+    else:
+        raise RuntimeError("POSIX compatibility provenance is malformed")
+    census_sha256, census_by_path = _posix_v2_compat_census_digest(
+        provenance.get("source_census")
+    )
+    legacy_security = {
+        "descriptor_admitted_source": True,
+        "native_broker": False,
+        "native_guest_isolation": False,
+        "native_install_receipt": False,
+        "reduced_isolation": True,
+        "site_packages_modified": False,
+    }
+    dependency_repair_security = {
+        "descriptor_admitted_source": True,
+        "native_broker": False,
+        "native_guest_isolation": False,
+        "native_install_receipt": False,
+        "reduced_isolation": True,
+        "site_packages_modified_by_snapshot_publisher": False,
+        "managed_site_packages_repair": (
+            "CONDITIONAL_ISOLATED_HASH_LOCKED_BINARY_ONLY_BEFORE_COMMIT"
+        ),
+        "managed_site_packages_transactional_rollback": False,
+    }
+    if (
+        set(provenance) != expected_fields
+        or provenance.get("claim")
+        != "reduced-isolation POSIX V2 compatibility runtime"
+        or not re.fullmatch(
+            r"[0-9a-f]{64}", provenance.get("generation_sha256", "")
+        )
+        or provenance.get("generation_sha256") != census_sha256
+        or type(provenance.get("source_entry_count")) is not int
+        or provenance["source_entry_count"] <= 0
+        or provenance["source_entry_count"] != len(
+            provenance.get("source_census", ())
+        )
+        or type(provenance.get("source_total_bytes")) is not int
+        or provenance["source_total_bytes"] <= 0
+        or json.dumps(
+            provenance.get("security_properties"), sort_keys=True
+        ) not in {
+            json.dumps(legacy_security, sort_keys=True),
+            json.dumps(dependency_repair_security, sort_keys=True),
+        }
+    ):
+        raise RuntimeError("POSIX compatibility provenance is malformed")
+    if schema == _POSIX_V2_COMPAT_PROVENANCE_SCHEMA_V1:
+        if _posix_v2_compat_legacy_has_js(census_by_path):
+            raise RuntimeError(
+                "POSIX compatibility legacy provenance cannot admit a JS package"
+            )
+        if census_sha256 not in _POSIX_V2_AUTHENTIC_PRE_JS_V1_GENERATIONS:
+            raise RuntimeError(
+                "POSIX compatibility legacy generation is not authenticated"
+            )
+    else:
+        _posix_v2_compat_js_binding(
+            provenance, census_sha256, census_by_path
+        )
+        _closure_descriptor, closure_raw = _codex_install_committed_descriptor(
+            installed,
+            ("verification_policy", "toolchain_runtime_closure.v1.json"),
+            return_raw=True,
+        )
+        _posix_v2_compat_runtime_closure_binding(
+            provenance, census_sha256, census_by_path, closure_raw,
+        )
+
+    import importlib.machinery
+    import importlib.util
+
+    verifier_path = installed / "scripts" / "posix_v2_compat_install.py"
+    verifier_before, _verifier_raw = _codex_install_committed_descriptor(
+        installed, ("scripts", "posix_v2_compat_install.py"), return_raw=True,
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_plamen_installed_posix_v2_compat_verifier", verifier_path,
+    )
+    if (
+        spec is None
+        or type(spec.loader) is not importlib.machinery.SourceFileLoader
+    ):
+        raise RuntimeError("POSIX compatibility verifier is unavailable")
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    verified = verifier.verify_install(installed.parent)
+    verifier_after, _verifier_after_raw = _codex_install_committed_descriptor(
+        installed, ("scripts", "posix_v2_compat_install.py"), return_raw=True,
+    )
+    _descriptor_after, raw_after = _codex_install_committed_descriptor(
+        installed, (_POSIX_V2_COMPAT_PROVENANCE,), return_raw=True,
+    )
+    if (
+        verifier_after != verifier_before
+        or raw_after != raw_before
+        or verified != provenance
+    ):
+        raise RuntimeError("POSIX compatibility provenance changed during admission")
+    return provenance
+
+
+def _posix_v2_compat_install_active():
+    """Return true only for the pre-bootstrap verified installed closure."""
+    return _posix_v2_compat_install_evidence() is not None
+
+
+def _posix_v2_compat_install_evidence():
+    """Return the opaque admission's root/generation binding, if present."""
+    capability = _POSIX_V2_COMPAT_INSTALL_ADMISSION
+    if capability is None:
+        return None
+    installed_root, generation_sha256 = (
+        _replay_posix_v2_compat_install_capability(capability)
+    )
+    return {
+        "installed_root": installed_root,
+        "generation_sha256": generation_sha256,
+    }
+
+
+def _posix_v2_compat_dependency_repair_active():
+    """Admit repair only for a generation that truthfully declares mutation."""
+    evidence = _posix_v2_compat_install_evidence()
+    if evidence is None:
+        return False
+    try:
+        provenance = _verify_installed_posix_v2_compat_runtime(
+            evidence["installed_root"]
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+    security = provenance.get("security_properties")
+    return isinstance(security, dict) and security.get(
+        "managed_site_packages_repair"
+    ) == "CONDITIONAL_ISOLATED_HASH_LOCKED_BINARY_ONLY_BEFORE_COMMIT"
+
+
 def _admit_installed_runtime_before_bootstrap(
     _issue_capability=_issue_codex_install_admission_capability,
+    _issue_compatibility=_issue_posix_v2_compat_install_capability,
 ):
     """Acquire the installed runtime reader before bootstrap/local imports."""
     global _CODEX_INSTALL_READER, _CODEX_INSTALL_READER_COMMAND_KIND
-    global _CODEX_INSTALL_ADMISSION
+    global _CODEX_INSTALL_ADMISSION, _POSIX_V2_COMPAT_INSTALL_ADMISSION
     installed_authority = _installed_runtime_root()
     if installed_authority is None:
         return
     installed = installed_authority["address"]
+    if os.name != "nt":
+        try:
+            _codex_install_committed_descriptor(
+                installed, (_POSIX_V2_COMPAT_PROVENANCE,),
+            )
+        except FileNotFoundError:
+            compatibility_present = False
+        except (OSError, RuntimeError) as exc:
+            sys.stderr.write(
+                "Plamen POSIX compatibility admission denied: "
+                + str(exc).splitlines()[0][:300] + ".\n"
+            )
+            raise SystemExit(75)
+        else:
+            compatibility_present = True
+        if compatibility_present:
+            try:
+                provenance = _verify_installed_posix_v2_compat_runtime(
+                    installed,
+                )
+                _POSIX_V2_COMPAT_INSTALL_ADMISSION = _issue_compatibility(
+                    installed_root=installed,
+                    generation_sha256=provenance["generation_sha256"],
+                )
+            except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                sys.stderr.write(
+                    "Plamen POSIX compatibility admission denied: "
+                    + str(exc).splitlines()[0][:300] + ".\n"
+                )
+                raise SystemExit(75)
+            return
+        if _early_exact_posix_native_front_argv():
+            # The executing module already identity-matched the installed
+            # `.plamen/plamen.py`, and compatibility provenance was absent.
+            # This only reaches the handoff: the launcher must independently
+            # authenticate the current native install/deployment receipt.
+            return
     args = [item.lower() for item in sys.argv[1:]]
     if args and args[0] in {"--codex-install-keeper", "--recover-codex-install"}:
         return
-    if args and args[0] == "install" and "--codex" in args:
+    if (
+        args
+        and args[0] == "install"
+        and "--codex" in args
+        and (
+            os.name == "nt"
+            or _early_exact_posix_native_install_argv()
+            or _early_exact_posix_native_install_check_argv()
+        )
+    ):
         return
     discovery = bool(args) and args[0] in {
         "help", "--help", "-h", "version", "--version"
@@ -3756,10 +4451,36 @@ def _admit_installed_runtime_before_bootstrap(
 
 _admit_installed_runtime_before_bootstrap()
 del _issue_codex_install_admission_capability
+del _issue_posix_v2_compat_install_capability
+
+
+_POSIX_COMPAT_RUNTIME_NOTICE = (
+    "This POSIX compatibility installation supports local audits with reduced "
+    "host-process isolation. It does not provide native containment or native "
+    "audit-completion receipts."
+)
 
 
 def _public_help_text(version: str) -> str:
     """One public help contract for both source and installed entry points."""
+    compatibility = _posix_v2_compat_install_active()
+    maintenance = "" if compatibility else """  plamen install                      Install/repair Plamen + latest CLI generation
+  plamen install --codex              Same install; Codex-only config projection
+  plamen install --codex --check      Validate the local source package; no writes
+  plamen setup                        Interactive toolchain setup (terminal required)
+"""
+    backend_options = (
+        ""
+        if compatibility
+        else (
+            "  --codex | --claude   --allow-model-fallback\n"
+            "  --claude-exec-mode headless       --claude-headless"
+        )
+    )
+    runtime_note = (
+        "\n" + _POSIX_COMPAT_RUNTIME_NOTICE + "\n"
+        if compatibility else ""
+    )
     return f"""plamen {version}
 Usage:
   plamen                              Interactive wizard (terminal required)
@@ -3767,18 +4488,14 @@ Usage:
   plamen light|core|thorough PATH [OPTIONS]
   plamen l1 light|core|thorough PATH [OPTIONS]
   plamen resume [PATH/.scratchpad/config.json]
-  plamen compare REPORT [--docs GROUND_TRUTH]
-  plamen install                      Install/repair Claude integration
-  plamen install --codex              Install/repair the Codex package
-  plamen install --codex --check      Validate the local source package; no writes
-  plamen setup                        Interactive toolchain setup (terminal required)
-  plamen doctor                       Verify installation; zero provider calls
+  plamen start-config CONFIG           Start a pre-created clean audit config
+{maintenance}  plamen doctor                       Verify installation; zero provider calls
 
 Audit options:
   --docs PATH_OR_URL   --scope PATH   --notes TEXT   --network NAME
   --proven-only        --tier T0|T1|T2|T3            --modules a,b,c
-  --codex | --claude   --allow-model-fallback        --yes
-  --claude-exec-mode headless       --claude-headless
+{backend_options}
+  --yes                Confirm an explicit non-interactive launch
 
 Plan options:
   --l1                 --json         --explain-routes
@@ -3787,7 +4504,8 @@ Accessibility:
   NO_COLOR=1 disables ANSI color. PLAMEN_PLAIN_OUTPUT=1 disables rich output.
   PLAMEN_PLAIN_WIZARD=1 uses numbered, line-oriented prompts for screen readers.
 
-Starting or resuming an audit launches external workers and may consume quota.
+{runtime_note}Starting or resuming an audit launches external workers and may consume quota.
+The installed runtime selects its driver transport; no platform flag is required.
 Model fallback is disabled unless --allow-model-fallback is explicitly supplied."""
 
 
@@ -3820,18 +4538,142 @@ def _early_cli_discovery():
 _early_cli_discovery()
 
 
-def _early_refuse_unsupported_posix_production_command():
+_PUBLIC_CLI_SOURCE_DISCOVERY = "SOURCE_DISCOVERY"
+_PUBLIC_CLI_SOURCE_PACKAGE_CHECK = "SOURCE_PACKAGE_CHECK"
+_PUBLIC_CLI_GOVERNED = "GOVERNED"
+
+
+def _public_cli_route_policy(argv=None):
+    """Classify the exact stdlib-only public routes before bootstrapping."""
+    arguments = tuple(sys.argv[1:] if argv is None else argv)
+    if not arguments or any(
+        value in {"help", "--help", "-h"} for value in arguments
+    ):
+        return (
+            _PUBLIC_CLI_SOURCE_DISCOVERY
+            if arguments else _PUBLIC_CLI_GOVERNED
+        )
+    command = arguments[0].lower()
+    if arguments in {("version",), ("--version",), ("doctor",)}:
+        return _PUBLIC_CLI_SOURCE_DISCOVERY
+    if command == "plan":
+        return _PUBLIC_CLI_SOURCE_DISCOVERY
+    if (
+        command == "--detect-language"
+        and len(arguments) == 2
+        and isinstance(arguments[1], str)
+        and bool(arguments[1])
+    ):
+        return _PUBLIC_CLI_SOURCE_DISCOVERY
+    if arguments in {
+        ("install", "--codex", "--check"),
+        ("install", "--codex", "--check", "--json"),
+    }:
+        return _PUBLIC_CLI_SOURCE_PACKAGE_CHECK
+    return _PUBLIC_CLI_GOVERNED
+
+
+def _source_discovery_without_installed_runtime(argv=None):
+    """Admit pure source discovery only when no installed identity exists."""
+    if _public_cli_route_policy(argv) != _PUBLIC_CLI_SOURCE_DISCOVERY:
+        return False
+    return _installed_runtime_root() is None
+
+
+def _early_posix_native_install_dispatch():
+    """Transfer the one frozen source-install request without fallback."""
+
+    if (
+        __name__ != "__main__"
+        or not _early_exact_posix_native_install_argv()
+    ):
+        return
+    try:
+        import importlib.machinery
+        import importlib.util
+
+        module_path = (
+            Path(__file__).absolute().parent
+            / "scripts"
+            / "posix_native_install_dispatch.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "_plamen_posix_native_install_dispatch", module_path,
+        )
+        if (
+            spec is None
+            or type(spec.loader) is not importlib.machinery.SourceFileLoader
+        ):
+            raise ImportError("POSIX native install dispatcher is unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.exec_posix_install(list(sys.argv[1:]))
+        raise RuntimeError("POSIX native installer returned unexpectedly")
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        sys.stderr.write("Plamen POSIX native install admission denied.\n")
+        raise SystemExit(75)
+
+
+_early_posix_native_install_dispatch()
+
+
+def _early_refuse_unsupported_posix_production_command(
+    *, governed_runtime_capability=None,
+):
     """Reject unsupported mutating production routes before bootstrap writes.
 
     Linux and macOS remain source-development hosts in this release.  Keep the
     public refusal ahead of managed-runtime creation and third-party imports so
     even a first invocation cannot mutate HOME before reporting that boundary.
-    Invalid private recovery argv is deliberately left to its ordinary syntax
-    error instead of being mistaken for an admitted recovery operation.
+    Private recovery/provider routes are refused here too; none may reach
+    projection, bootstrap, scratchpad, or external-provider code on the host.
     """
-    if os.name == "nt" or __name__ != "__main__" or len(sys.argv) < 2:
+    if os.name == "nt" or __name__ != "__main__":
         return
-    command = sys.argv[1].lower()
+    # Reserved integration seam: the governed OCI/provider route will pass a
+    # process-local, identity-validated capability here.  No environment or
+    # argv value is accepted as a bypass, and no capability is issuable until
+    # that authenticated integration exists.
+    if governed_runtime_capability is not None:
+        raise RuntimeError("POSIX governed runtime capability is unavailable")
+    route_policy = _public_cli_route_policy()
+    command = sys.argv[1].lower() if len(sys.argv) >= 2 else ""
+    compat_dependency_repair = tuple(sys.argv[1:]) == (
+        "install", "--posix-compat-v2-dependencies",
+    )
+    if route_policy == _PUBLIC_CLI_SOURCE_DISCOVERY:
+        return
+    if route_policy == _PUBLIC_CLI_SOURCE_PACKAGE_CHECK:
+        # This exact route is an observation only.  _bootstrap() requires an
+        # already-active reviewed runtime and returns the dependency-census
+        # result without creating, repairing, or re-executing anything.
+        return
+    if command == "":
+        # The no-argument route only collects wizard choices.  It must remain
+        # available on every supported host so an operator can inspect and
+        # safely cancel the public flow.  The selected start/resume operation
+        # still crosses the ordinary native/compatibility admission boundary
+        # below and fails closed before creating audit state when no governed
+        # runtime provider is installed.
+        return
+    if _posix_v2_compat_install_active() and command in {
+        "", "light", "core", "thorough", "l1", "resume", "start-config",
+    }:
+        # The complete compatibility closure was admitted before bootstrap.
+        # These routes ultimately append the exact process-local compatibility
+        # ABI to the driver; unrelated mutation/maintenance commands remain
+        # governed and refused below.
+        return
+    if _posix_v2_compat_dependency_repair_active() and compat_dependency_repair:
+        # Exact installed compatibility maintenance leaf. The live opaque
+        # provenance admission above is mandatory; source/ambient argv cannot
+        # activate this route, and all other POSIX install/setup forms remain
+        # refused below.
+        return
+    if _early_exact_posix_native_front_argv():
+        return
+    if _early_exact_posix_v2_compat_front_argv():
+        return
     if command in {"install", "setup"}:
         sys.stderr.write(
             "Plamen V3 production installation is currently qualified "
@@ -3856,9 +4698,54 @@ def _early_refuse_unsupported_posix_production_command():
             "on Windows; POSIX keeper/recovery support is unfinished.\n"
         )
         raise SystemExit(3)
+    sys.stderr.write(
+        "Plamen V3 production execution is currently qualified only on "
+        "Windows. Linux and macOS may use read-only help, version, plan, "
+        "detect, and doctor routes until the authenticated governed "
+        "runtime provider is integrated.\n"
+    )
+    raise SystemExit(3)
 
 
 _early_refuse_unsupported_posix_production_command()
+
+
+def _early_posix_native_front_dispatch():
+    """Transfer exact audit execution routes to the native launcher."""
+    if (
+        os.name == "nt"
+        or _posix_v2_compat_install_active()
+        or __name__ != "__main__"
+        or not _early_exact_posix_native_front_argv()
+    ):
+        return
+    try:
+        import importlib.machinery
+        import importlib.util
+
+        module_path = (
+            Path(__file__).absolute().parent
+            / "scripts"
+            / "posix_native_front_dispatch.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "_plamen_posix_native_front_dispatch", module_path,
+        )
+        if (
+            spec is None
+            or type(spec.loader) is not importlib.machinery.SourceFileLoader
+        ):
+            raise ImportError("POSIX native front dispatcher is unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.exec_native_audit(sys.argv[1].lower(), sys.argv[2])
+        raise RuntimeError("POSIX native launcher returned unexpectedly")
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        sys.stderr.write("POSIX native audit admission denied.\n")
+        raise SystemExit(75)
+
+
+_early_posix_native_front_dispatch()
 
 PLAMEN_RUNTIME_ASSETS = (
     {
@@ -3983,6 +4870,53 @@ def _managed_runtime_python():
     return root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
+def _serialized_launcher_interpreter(interpreter):
+    """Validate an interpreter while preserving a managed POSIX venv path.
+
+    A POSIX venv normally exposes ``bin/python`` as a symlink to the base
+    interpreter.  Resolving that symlink before serializing the public launcher
+    silently discards the venv identity and starts Python with the wrong
+    ``sys.prefix``.  Non-managed interpreters retain the historical canonical
+    spelling, and Windows behavior is unchanged.
+    """
+    candidate = Path(interpreter).absolute()
+    resolved = candidate.resolve(strict=True)
+    if not resolved.is_file():
+        raise RuntimeError(f"launcher interpreter is not a regular file: {candidate}")
+    managed = _managed_runtime_python().absolute()
+    if os.name != "nt" and candidate == managed:
+        return candidate
+    return resolved
+
+
+def _managed_runtime_launcher_python():
+    """Return the active reviewed CPython 3.12 venv interpreter identity."""
+    managed_root = _managed_runtime_root().absolute()
+    managed_python = _managed_runtime_python().absolute()
+    try:
+        active_root = Path(sys.prefix).absolute()
+        active_python = Path(sys.executable).absolute()
+        lock = _runtime_lock_path()
+        valid = (
+            sys.implementation.name == "cpython"
+            and sys.version_info[:2] == _RUNTIME_PYTHON
+            and active_root == managed_root
+            and active_python == managed_python
+            and lock.is_file()
+            and not lock.is_symlink()
+            and _runtime_stamp_valid(_file_sha256(lock))
+        )
+        if not valid:
+            raise RuntimeError(
+                "public launcher requires the active managed CPython 3.12 venv"
+            )
+        return _serialized_launcher_interpreter(managed_python)
+    except OSError as exc:
+        raise RuntimeError(
+            "public launcher requires the active managed CPython 3.12 venv"
+        ) from exc
+
+
 def _runtime_lock_path():
     return Path(__file__).resolve().parent / "requirements-runtime-core.lock"
 
@@ -3995,18 +4929,150 @@ def _file_sha256(path):
     return digest.hexdigest()
 
 
+def _fsync_parent_directory(path):
+    """Durably publish a directory entry during bootstrap and normal runtime.
+
+    This primitive intentionally lives before ``_bootstrap()``.  Bootstrap
+    stamp publication uses the generic atomic writer before the later backend
+    projection helpers are defined, so durability cannot depend on a
+    Claude-specific late-bound symbol.
+    """
+
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        parent = os.path.dirname(os.path.abspath(path))
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
+        kernel32.FlushFileBuffers.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        invalid = wintypes.HANDLE(-1).value
+        handle = kernel32.CreateFileW(
+            parent,
+            0x80000000 | 0x40000000,  # GENERIC_READ | GENERIC_WRITE
+            0x00000001 | 0x00000002 | 0x00000004,
+            None, 3, 0x02000000 | 0x20000000, None,
+        )
+        if handle == invalid:
+            raise OSError(
+                ctypes.get_last_error(),
+                "parent-directory flush open failed",
+                parent,
+            )
+        try:
+            if not kernel32.FlushFileBuffers(handle):
+                raise OSError(
+                    ctypes.get_last_error(),
+                    "parent-directory flush failed",
+                    parent,
+                )
+        finally:
+            kernel32.CloseHandle(handle)
+        return
+    parent = os.path.dirname(os.path.abspath(path))
+    descriptor = os.open(
+        parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _claude_projection_fsync_parent(path):
+    """Compatibility name for callers predating the generic primitive."""
+
+    return _fsync_parent_directory(path)
+
+
 def _atomic_write_bytes(path, raw):
-    destination = Path(path)
+    """Replace one ordinary file without widening or racing its preimage."""
+    if not isinstance(raw, bytes):
+        raise TypeError("atomic payload must be bytes")
+    destination = Path(path).absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
+
+    def snapshot():
+        flags = (
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_BINARY", 0)
+        )
+        try:
+            descriptor = os.open(destination, flags)
+        except FileNotFoundError:
+            if os.path.lexists(destination):
+                raise RuntimeError("atomic destination is indirect")
+            return None
+        try:
+            opened_before = os.fstat(descriptor)
+            named_before = os.stat(destination, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(opened_before.st_mode)
+                or not stat.S_ISREG(named_before.st_mode)
+                or opened_before.st_nlink != 1
+                or named_before.st_nlink != 1
+                or stat.S_ISLNK(named_before.st_mode)
+                or _python_dependency_census_reparse(named_before)
+                or (opened_before.st_dev, opened_before.st_ino)
+                != (named_before.st_dev, named_before.st_ino)
+            ):
+                raise RuntimeError("atomic destination is indirect/non-file")
+            digest = hashlib.sha256()
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            opened_after = os.fstat(descriptor)
+            named_after = os.stat(destination, follow_symlinks=False)
+
+            def identity(info):
+                return (
+                    int(info.st_dev), int(info.st_ino), int(info.st_size),
+                    int(info.st_nlink), int(info.st_mode),
+                    int(info.st_mtime_ns), int(info.st_ctime_ns),
+                    int(getattr(info, "st_file_attributes", 0)),
+                )
+
+            authority = identity(opened_before)
+            if authority != identity(opened_after) or authority != identity(named_after):
+                raise RuntimeError("atomic destination changed during admission")
+            return authority, digest.hexdigest(), stat.S_IMODE(opened_before.st_mode)
+        finally:
+            os.close(descriptor)
+
+    predecessor = snapshot()
+    target_mode = predecessor[2] if predecessor is not None else 0o600
     temporary = destination.with_name(
         f".{destination.name}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
     )
     try:
-        with open(temporary, "xb") as handle:
+        flags = (
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        )
+        descriptor = os.open(temporary, flags, target_mode)
+        try:
+            os.fchmod(descriptor, target_mode)
+            handle = os.fdopen(descriptor, "wb", closefd=False)
             handle.write(raw)
             handle.flush()
-            os.fsync(handle.fileno())
+            os.fsync(descriptor)
+            handle.close()
+        finally:
+            os.close(descriptor)
+        if snapshot() != predecessor:
+            raise RuntimeError("atomic destination changed before replacement")
         os.replace(temporary, destination)
+        _claude_projection_fsync_parent(destination)
     finally:
         try:
             temporary.unlink()
@@ -4901,17 +5967,17 @@ def _bootstrap():
         # source or the exact package tree being censused.
         sys.dont_write_bytecode = True
     read_only_package_check = (
-        len(sys.argv) >= 4
-        and sys.argv[1] == "install"
-        and "--codex" in sys.argv[2:]
-        and "--check" in sys.argv[2:]
+        _public_cli_route_policy() == _PUBLIC_CLI_SOURCE_PACKAGE_CHECK
     )
-    if read_only_package_check and not _runtime_stamp_valid(lock_digest):
-        sys.stderr.write(
-            "Error: read-only package check requires an existing verified "
-            "Plamen runtime; run `plamen install` first. No files were changed.\n"
-        )
-        return False
+    if read_only_package_check:
+        try:
+            _managed_runtime_launcher_python()
+        except RuntimeError as exc:
+            sys.stderr.write(
+                "Error: read-only package check requires an existing verified "
+                f"Plamen runtime ({exc}). No files were changed.\n"
+            )
+            return False
     try:
         if not managed_python.is_file():
             import venv
@@ -4982,16 +6048,26 @@ def _bootstrap():
             status = _python_dependency_stamp_status(
                 authority, validated_observation=validated_observation,
             )
+            if read_only_package_check:
+                # VALID and INVALID are terminal observations for --check.
+                # In particular, INVALID must never enter dependency repair,
+                # stamp retirement/publication, a probe subprocess, or re-exec.
+                return status == "VALID"
             if status != "VALID":
                 print("  Repairing exact hash-locked Python dependency runtime...")
                 if not _retire_legacy_python_dependency_stamp():
                     raise RuntimeError(
                         "legacy in-runtime dependency stamp could not be retired safely"
                     )
+                # Preserve the admitted virtual-environment entrypoint. Its
+                # resolved binary is used for identity checks, not argv: on
+                # POSIX a venv symlink resolves to the base interpreter, which
+                # would direct pip and probes outside the managed environment.
                 install = subprocess.run([
-                    str(managed_python.resolve(strict=True)), "-B", "-m", "pip", "install",
-                    "--disable-pip-version-check", "--require-hashes",
-                    "--only-binary=:all:", "-r", str(full_lock),
+                    str(managed_python), "-I", "-B", "-m", "pip", "install",
+                    "--isolated", "--disable-pip-version-check", "--no-input",
+                    "--require-hashes", "--only-binary=:all:",
+                    "--force-reinstall", "-r", str(full_lock),
                 ])
                 if install.returncode != 0:
                     return False
@@ -5010,12 +6086,12 @@ def _bootstrap():
                         + (diagnostics[0] if diagnostics else "bounded diff unavailable")
                     )
                 probe = subprocess.run([
-                    str(managed_python.resolve(strict=True)), "-I", "-B", "-c",
+                    str(managed_python), "-I", "-B", "-c",
                     "import InquirerPy, chromadb, jsonschema, mcp, pydantic, rich, "
                     "sentence_transformers; from google import protobuf",
                 ])
                 check = subprocess.run([
-                    str(managed_python.resolve(strict=True)), "-B", "-m", "pip", "check",
+                    str(managed_python), "-I", "-B", "-m", "pip", "check",
                 ])
                 if probe.returncode != 0 or check.returncode != 0:
                     _invalidate_python_dependency_stamp()
@@ -5047,7 +6123,7 @@ def _bootstrap():
                     "no second full scan will run."
                 )
                 probe = subprocess.run([
-                    str(managed_python.resolve(strict=True)), "-I", "-B", "-c",
+                    str(managed_python), "-I", "-B", "-c",
                     "import InquirerPy, rich",
                 ])
                 if probe.returncode != 0:
@@ -5064,9 +6140,73 @@ def _bootstrap():
         sys.stderr.write(f"Error: could not prepare the reviewed Python runtime: {exc}\n")
         return False
 
-if not _bootstrap():
+_FROZEN_PACKAGE_FRONT_STDLIB_ONLY = (
+    __name__ == "_plamen_frozen_package_front"
+)
+_PREBOOTSTRAP_SOURCE_DISCOVERY = (
+    (
+        __name__ == "__main__"
+        and _source_discovery_without_installed_runtime(sys.argv[1:])
+    )
+    # The production builder loads the already-frozen package front only to
+    # obtain its strict commit/rollback transaction callbacks.  A normal
+    # import would run _bootstrap() and mutate the very managed runtime that
+    # the outer cold-install transaction has not admitted yet.  This exact
+    # private module name grants no mutation capability; it only selects the
+    # existing stdlib-only declaration path.  Every other import retains the
+    # ordinary bootstrap behavior.
+    or _FROZEN_PACKAGE_FRONT_STDLIB_ONLY
+)
+
+if not _PREBOOTSTRAP_SOURCE_DISCOVERY and not _bootstrap():
     print("Error: Could not prepare Plamen's hash-locked Python runtime.")
     sys.exit(1)
+
+if _PREBOOTSTRAP_SOURCE_DISCOVERY:
+    # Public source discovery is stdlib-only and provider-free.  Defining inert
+    # UI placeholders lets the module finish declaring its pure planning
+    # helpers without importing or installing the interactive runtime.  Any
+    # accidental use outside that route fails immediately.
+    import types as _pure_plan_types
+
+    class _PurePlanUIUnavailable:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def print(self, *_args, **_kwargs):
+            return None
+
+        def __getattr__(self, _name):
+            raise RuntimeError(
+                "interactive UI is unavailable during source discovery"
+            )
+
+    _pure_rich = _pure_plan_types.ModuleType("rich")
+    _pure_rich.__path__ = []
+    _pure_rich_console = _pure_plan_types.ModuleType("rich.console")
+    _pure_rich_console.Console = _PurePlanUIUnavailable
+    _pure_rich_text = _pure_plan_types.ModuleType("rich.text")
+    _pure_rich_text.Text = _PurePlanUIUnavailable
+    _pure_rich_rule = _pure_plan_types.ModuleType("rich.rule")
+    _pure_rich_rule.Rule = _PurePlanUIUnavailable
+    _pure_inquirer = _pure_plan_types.ModuleType("InquirerPy")
+    _pure_inquirer.__path__ = []
+    _pure_inquirer.inquirer = _PurePlanUIUnavailable()
+    _pure_inquirer_separator = _pure_plan_types.ModuleType(
+        "InquirerPy.separator"
+    )
+    _pure_inquirer_separator.Separator = _PurePlanUIUnavailable
+    _pure_inquirer_utils = _pure_plan_types.ModuleType("InquirerPy.utils")
+    _pure_inquirer_utils.InquirerPyStyle = lambda value: value
+    sys.modules.update({
+        "rich": _pure_rich,
+        "rich.console": _pure_rich_console,
+        "rich.text": _pure_rich_text,
+        "rich.rule": _pure_rich_rule,
+        "InquirerPy": _pure_inquirer,
+        "InquirerPy.separator": _pure_inquirer_separator,
+        "InquirerPy.utils": _pure_inquirer_utils,
+    })
 
 from rich.console import Console
 from rich.text import Text
@@ -5074,6 +6214,15 @@ from rich.rule import Rule
 from InquirerPy import inquirer
 from InquirerPy.separator import Separator
 from InquirerPy.utils import InquirerPyStyle
+
+if _PREBOOTSTRAP_SOURCE_DISCOVERY:
+    # Keep the imported inert names above, but do not leave fake distributions
+    # visible to Doctor's dependency probes.
+    for _pure_module_name in (
+        "rich", "rich.console", "rich.text", "rich.rule",
+        "InquirerPy", "InquirerPy.separator", "InquirerPy.utils",
+    ):
+        sys.modules.pop(_pure_module_name, None)
 
 def _drain_stdin():
     """Flush buffered keystrokes so a stray Enter from a prior prompt or
@@ -5559,8 +6708,8 @@ def _slither_is_current():
 
 def _scip_go_is_current():
     return bool(
-        _find_bin("scip-go", _GO_PATHS)
-        and _locked_identity_is_current("scip-go")
+        _locked_identity_is_current("scip-go")
+        and _setup_pinned_tool_is_current("scip-go", _GO_PATHS)
     )
 
 
@@ -5674,6 +6823,11 @@ VERSION = _read_version()
 
 def _check_claude_md_version():
     """Warn if ~/.claude/CLAUDE.md has a stale Plamen injection (different version)."""
+    if _posix_v2_compat_install_active():
+        # This admitted installation launches Codex from its own packaged
+        # methodology. An unrelated legacy Claude injection cannot affect it,
+        # and `plamen install` is not its supported maintenance route.
+        return
     claude_md = os.path.join(CLAUDE_HOME, "CLAUDE.md")
     if not os.path.isfile(claude_md):
         return  # not installed yet
@@ -5925,7 +7079,6 @@ MODES = {
     "light":    {"label": "Light Audit",    "agents": "18-22",    "scope": "ALL severities"},
     "core":     {"label": "Core Audit",     "agents": "30-50",    "scope": "ALL severities"},
     "thorough": {"label": "Thorough Audit", "agents": "40-100",   "scope": "ALL severities"},
-    "compare":  {"label": "Compare",        "agents": "variable", "scope": "DELTA report"},
 }
 L1_MODES = {
     "light":    {"label": "L1 Light",    "agents": "15-20",  "scope": "Quick scan"},
@@ -5997,6 +7150,73 @@ def _detect_cli_backends() -> list[str]:
     if _find_codex_bin():
         backends.append("codex")
     return backends
+
+
+def _dependency_backend_paths() -> dict[str, str]:
+    """Return managed backends for an installed package, ambient only for source dev.
+
+    A production launcher must never turn a globally installed Claude/Codex
+    executable into runtime authority.  Setup may still be inspected from an
+    uninstalled source checkout, where ambient discovery is informational.
+    """
+    installed = _installed_runtime_root()
+    if _posix_v2_compat_install_active():
+        # Compatibility provenance authenticates Plamen's installed closure,
+        # while the user keeps each provider CLI current independently. Resolve
+        # only ordinary PATH names here: environment executable overrides are
+        # not install authority and must not cross this boundary.
+        return {
+            name: path
+            for name, path in (
+                ("claude", _find_bin("claude")),
+                ("codex", _find_bin("codex")),
+            )
+            if path
+        }
+    try:
+        if installed is not None:
+            _reader, _kind, root, _codex, receipt = (
+                _early_admitted_install_authority()
+            )
+            if Path(receipt["plamen_root"]).absolute() != Path(root).absolute():
+                raise RuntimeError("managed backend receipt root differs")
+        else:
+            receipt = _validated_committed_install_receipt()
+        return {
+            name: os.fspath(path)
+            for name, path in _validated_managed_backend_paths(
+                receipt["plamen_root"]
+            ).items()
+        }
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+        if installed is not None:
+            return {}
+    return {
+        name: path
+        for name, path in (
+            ("claude", _find_claude_bin()),
+            ("codex", _find_codex_bin()),
+        )
+        if path
+    }
+
+
+def _audit_cli_backends() -> list[str]:
+    """Installed executables eligible for this runtime's audit transport."""
+    if _installed_runtime_root() is None:
+        return _detect_cli_backends()
+    managed = _dependency_backend_paths()
+    return [backend for backend in ("claude", "codex") if backend in managed]
+
+
+def _show_installed_audit_runtime():
+    """Keep transport policy at the backend selection boundary.
+
+    The installed compatibility launcher is an implementation detail, not an
+    acceptable Claude audit transport.  The wizard probes Claude's contained
+    transport after the operator selects Claude and otherwise returns them to
+    backend selection without creating audit state.
+    """
 
 
 def _ambient_backend(backends: list[str]) -> str:
@@ -6110,6 +7330,28 @@ def _claude_headless_transport_capability() -> dict:
     }
 
 
+def _check_local_claude_login_before_launch() -> None:
+    """Check the selected native CLI login before creating a run destination.
+
+    Authentication stays inside Claude Code. In particular, do not set its
+    default config directory explicitly: on macOS that changes Keychain lookup.
+    This performs no model request and never copies subscription credentials.
+    """
+    scripts_dir = os.path.join(PLAMEN_HOME, "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import posix_v2_compat_claude as claude_compat
+
+    expected = os.path.realpath(os.path.join(scripts_dir, "posix_v2_compat_claude.py"))
+    observed = os.path.realpath(str(getattr(claude_compat, "__file__", "")))
+    if os.path.normcase(observed) != os.path.normcase(expected):
+        raise RuntimeError("Claude login helper does not belong to this installation")
+    claude_compat.check_claude_native_auth(
+        executable=_find_claude_bin(), source_environment=dict(os.environ),
+        config_root=os.environ.get("CLAUDE_CONFIG_DIR") or None,
+    )
+
+
 def _new_transport_resolution_authority():
     """Issue and validate opaque, immutable new-launch transport bindings."""
     seal = object()
@@ -6219,10 +7461,11 @@ def _resolve_new_claude_transport(
 ) -> tuple[str, str, str]:
     """Return canonical backend, literal exec mode, and any visible warning.
 
-    An actual Claude audit launch is admitted only through the authenticated
-    contained-headless route.  ``audit_model_launch=False`` exists solely for
-    the interactive wizard while it is collecting choices; it grants no
-    authority to write a config or launch a provider.
+    Native installations consume their authenticated contained-headless route.
+    Verified POSIX compatibility installations consume the separately admitted
+    local headless route. ``audit_model_launch=False`` exists solely for the
+    interactive wizard while it is collecting choices; it grants no authority
+    to write a config or launch a provider.
     """
     backend = (backend or "claude").strip().lower()
     requested = (requested or "").strip().lower()
@@ -6248,35 +7491,14 @@ def _resolve_new_claude_transport(
         # transport denominator rather than a dormant PTY value.
         return backend, "headless", ""
 
-    supports_headless_route = pipeline == "sc" and mode == "thorough"
-    if audit_model_launch and not supports_headless_route:
-        raise RuntimeError(
-            "authenticated contained Claude headless is not available for this "
-            f"{pipeline.upper()} {mode} audit; choose Codex explicitly"
-        )
-    if requested == "headless" and not supports_headless_route:
-        raise RuntimeError(
-            "contained headless is currently supported only for Smart Contract Thorough audits"
-        )
-    if supports_headless_route and (requested == "headless" or not requested):
-        capability = capability or _claude_headless_transport_capability()
-        if capability.get("available") is True:
-            return backend, "headless", ""
-        if requested == "headless" or audit_model_launch:
-            reason = str(capability.get("reason") or "authority unavailable")
-            raise RuntimeError(
-                "authenticated contained Claude headless is unavailable on this "
-                f"host: {reason}; choose Codex explicitly"
-            )
-        reason = str(capability.get("reason") or "authority unavailable")
-        raise RuntimeError(
-            "authenticated contained Claude headless is unavailable on this "
-            f"host: {reason}; choose Codex explicitly"
-        )
-    raise RuntimeError(
-        "authenticated contained Claude headless is not available for this "
-        f"{pipeline.upper()} {mode} audit; choose Codex explicitly"
-    )
+    if pipeline not in {"sc", "l1"} or mode not in {"light", "core", "thorough"}:
+        raise RuntimeError("unsupported Claude audit pipeline or depth")
+    if _posix_v2_compat_install_active() and audit_model_launch:
+        _check_local_claude_login_before_launch()
+    # Backend selection is platform-neutral.  The installed-generation and
+    # execution capabilities are consumed by the selected driver route before
+    # any provider launch; the legacy host process probe is not that authority.
+    return backend, "headless", ""
 
 
 _ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
@@ -6456,12 +7678,12 @@ def check_dependencies() -> bool:
     ok = True
 
     # ── Probe all tools ─────────────────────────────────────
-    backends = _detect_cli_backends()
+    backends = _dependency_backend_paths()
     required = [
-        ("claude/codex",  backends[0] if backends else ""),
-        ("python",  _find_bin("python", _python_extra_paths()) or _find_bin("python3")),
-        ("npx",     _find_bin("npx")),
-        ("npm",     _find_bin("npm")),
+        ("claude/codex", next(iter(backends.values()), "")),
+        # Check the interpreter actually running the admitted launcher, as the
+        # quick check does. An unrelated PATH alias is not this runtime.
+        ("python",  sys.executable if sys.executable and os.path.isfile(sys.executable) else ""),
         ("git",     _find_bin("git")),
     ]
     req_found = sum(1 for _, b in required if b)
@@ -6473,9 +7695,8 @@ def check_dependencies() -> bool:
             ("anvil",   _find_bin("anvil", ["~/.foundry/bin"])),
             ("cast",    _find_bin("cast", ["~/.foundry/bin"])),
             ("slither", _find_bin("slither") or _find_bin("slither-mcp")),
-            # `go install` honors GOBIN/GOPATH — resolve the real bin dir so the
-            # re-check doesn't report medusa missing when it landed off ~/go/bin.
-            ("medusa",  _find_bin("medusa", _go_medusa_paths())),
+            # Medusa is a signed native image member, never a host PATH tool.
+            ("medusa(native-v1.5.1)", "receipt-verified"),
         ]),
         ("Solana", [
             ("solana",  _find_bin("solana", ["~/.local/share/solana/install/active_release/bin"])),
@@ -6489,9 +7710,7 @@ def check_dependencies() -> bool:
             ("sui",      _find_bin("sui", ["~/AppData/Local/bin", "~/.local/bin"])),
         ]),
         ("Soroban", [
-            ("stellar", _find_bin("stellar", ["~/.cargo/bin",
-                                              "C:/Program Files (x86)/Stellar CLI",
-                                              "C:/Program Files/Stellar CLI"])),
+            ("stellar", _find_bin("stellar", _STELLAR_PATHS)),
             ("scout",   _find_bin("cargo-scout-audit", ["~/.cargo/bin"])),
             *([] if sys.platform == "win32" else [
                 ("cargo-fuzz", _find_bin("cargo-fuzz", _CARGO_PATHS)),
@@ -6545,10 +7764,9 @@ def check_dependencies() -> bool:
                          f"    {_C_RED}✗ {name} not found{_RST}")
 
     # Alternative backend row
-    codex_bin = _find_bin("codex")
     _box_row(w, bx, W,
-             f"  {_C_GRAY}Backend{_RST}   {_check_tool('claude', _find_bin('claude'))}  "
-             f"{_check_tool('codex', codex_bin)}")
+             f"  {_C_GRAY}Backend{_RST}   {_check_tool('claude', backends.get('claude', ''))}  "
+             f"{_check_tool('codex', backends.get('codex', ''))}")
 
     w(f"  {bx}├{'─' * W}┤{_RST}\n")
 
@@ -6584,54 +7802,15 @@ def check_dependencies() -> bool:
              f"  {_C_GRAY}RAG DB{_RST}   vulnerability knowledge base",
              rag_status)
 
-    # MCP server health probes
+    # MCP servers are admitted per audit from the installed managed closure.
+    # Never execute ambient ~/.claude commands (especially npx) during setup or
+    # doctor: that both crosses authority boundaries and can trigger downloads.
     w(f"  {bx}├{'─' * W}┤{_RST}\n")
-    mcp_results = _probe_mcp_servers()
-    if mcp_results:
-        mcp_probed = [(n, s) for n, s in mcp_results if s is not None]
-        mcp_ok = sum(1 for _, s in mcp_probed if s)
-        mcp_total = len(mcp_results)
-        mcp_skipped = sum(1 for _, s in mcp_results if s is None)
-        if mcp_ok == len(mcp_probed) and mcp_skipped == 0:
-            mcp_tag = f"{_C_GREEN}{mcp_ok}/{mcp_total}{_RST}"
-        elif mcp_ok == 0 and mcp_skipped == 0:
-            mcp_tag = f"{_C_RED}{mcp_ok}/{mcp_total}{_RST}"
-        else:
-            label = f"{mcp_ok}/{mcp_total}"
-            if mcp_skipped:
-                label += f" ({mcp_skipped} skip)"
-            mcp_tag = f"{_C_ORANGE}{label}{_RST}"
-        # Split into rows of ~4-5 servers to fit box width
-        _box_row(w, bx, W, f"  {_BOLD}{_C_WHITE}MCP Servers{_RST}", mcp_tag)
-        row_items = []
-        row_vis = 2  # leading indent
-        for name, status in mcp_results:
-            # Use short names: drop common suffixes
-            short = name.replace("-analyzer", "").replace("-search", "") \
-                        .replace("-suite", "").replace("-chain-data", "")
-            if status is None:
-                # Not cached / skipped — show with dim marker
-                item = f"{_C_DARK_GRAY}~{short}{_RST}"
-            else:
-                item = _check_tool(short, status)
-            item_vis = len(short) + 1  # icon + name
-            if row_vis + item_vis + 1 > W - 2 and row_items:
-                _box_row(w, bx, W, "  " + " ".join(row_items))
-                row_items = []
-                row_vis = 2
-            row_items.append(item)
-            row_vis += item_vis + 1
-        if row_items:
-            _box_row(w, bx, W, "  " + " ".join(row_items))
-        # Show names of failed servers (not skipped ones)
-        failed = [n for n, s in mcp_results if s is False]
-        if failed:
-            for n in failed:
-                _box_row(w, bx, W, f"    {_C_RED}✗ {n}: not responding{_RST}")
-    else:
-        _box_row(w, bx, W,
-                 f"  {_C_GRAY}MCP{_RST}      no servers configured",
-                 f"{_C_DARK_GRAY}--{_RST}")
+    _box_row(
+        w, bx, W,
+        f"  {_C_GRAY}MCP{_RST}      managed per admitted audit phase",
+        f"{_C_GREEN}no ambient probe{_RST}",
+    )
 
     w(f"  {bx}╰{'─' * W}╯{_RST}\n")
 
@@ -6712,11 +7891,25 @@ _FOUNDRY_PATHS = ["~/.foundry/bin"]
 _SOLANA_PATHS = ["~/.local/share/solana/install/active_release/bin"]
 _AVM_PATHS = ["~/.avm/bin"]
 _CARGO_PATHS = ["~/.cargo/bin"]
-_GO_PATHS = ["~/.local/go/bin", "~/go/bin", "/usr/local/go/bin",
-             "/c/Program Files/Go/bin", "C:/Program Files/Go/bin"]
+_GO_PATHS = (
+    ["~/go/bin", "/c/Program Files/Go/bin", "C:/Program Files/Go/bin"]
+    if sys.platform == "win32"
+    else ["~/.local/go/bin", "~/go/bin", "/usr/local/go/bin"]
+)
 # DAML SDK install dirs: the Unix `get.daml.com` installer drops into
 # ~/.daml/bin; the Windows installer uses the APPDATA roaming form.
-_DAML_PATHS = ["~/.daml/bin", "~/AppData/Roaming/daml/bin"]
+_DAML_PATHS = (
+    ["~/AppData/Roaming/daml/bin"]
+    if sys.platform == "win32" else ["~/.daml/bin"]
+)
+_STELLAR_PATHS = _CARGO_PATHS + (
+    ["C:/Program Files/Stellar CLI", "C:/Program Files (x86)/Stellar CLI"]
+    if sys.platform == "win32" else []
+)
+_AST_GREP_PATHS = _CARGO_PATHS + (
+    ["/opt/homebrew/bin", "/usr/local/bin"]
+    if sys.platform == "darwin" else []
+)
 
 
 _GO_BIN_DIR_CACHE = []  # memo box: [] = unresolved, [val] = resolved (val may be "")
@@ -6835,6 +8028,14 @@ _PREREQ_INSTALLERS = {
         "est": "~30s",
         "url": "https://rustup.rs",
     },
+    "rustup": {
+        "check": lambda: bool(_find_bin("rustup", _CARGO_PATHS)),
+        "cmds_fn": _rust_install_cmds,
+        "paths": _CARGO_PATHS,
+        "label": "rustup (required for the pinned cargo-fuzz nightly)",
+        "est": "manual",
+        "url": "https://rustup.rs",
+    },
     "go": {
         "check": lambda: bool(_find_bin("go", _GO_PATHS)),
         "cmds_fn": _go_install_cmds,
@@ -6950,11 +8151,29 @@ def _cargo_fuzz_cmds():
     works but `cargo +nightly fuzz` will require a nightly toolchain the
     user must provide separately.
     """
-    cmds = []
-    if shutil.which("rustup"):
-        cmds.append('rustup toolchain install nightly-2026-08-01')
-    cmds.append('cargo install cargo-fuzz --version 0.13.2 --locked')
-    return cmds
+    return [
+        'rustup toolchain install nightly-2026-08-01',
+        'cargo install cargo-fuzz --version 0.13.2 --locked',
+    ]
+
+
+def _cargo_fuzz_nightly_is_current():
+    rustup = _find_bin("rustup", _CARGO_PATHS)
+    if not rustup:
+        return False
+    try:
+        result = subprocess.run(
+            [rustup, "toolchain", "list"], timeout=5,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    return any(
+        re.fullmatch(r"nightly-2026-08-01(?:-[A-Za-z0-9_.-]+)?(?:\s+\(.*\))?", line.strip())
+        for line in (result.stdout or "").splitlines()
+    )
 
 
 def _rust_analyzer_cmds():
@@ -6962,10 +8181,7 @@ def _rust_analyzer_cmds():
 
 
 def _ast_grep_cmds():
-    """Install ast-grep. Prefer cargo (works on all platforms) with brew
-    fallback on macOS for a faster binary install."""
-    if sys.platform == "darwin" and _has_brew():
-        return ['cargo install ast-grep --version 0.45.2 --locked']
+    """Install exact ast-grep through Cargo on every supported host."""
     return ['cargo install ast-grep --version 0.45.2 --locked']
 
 
@@ -6987,126 +8203,193 @@ def _solana_fender_cmds():
     return ['cargo install solana_fender --version 0.5.4 --locked']
 
 
+_SETUP_PINNED_TOOL_VERSIONS = {
+    "ast-grep": "0.45.2",
+    "cargo-audit": "0.22.2",
+    "cargo-fuzz": "0.13.2",
+    "cargo-scout-audit": "0.3.16",
+    "govulncheck": "1.7.0",
+    "osv-scanner": "2.5.1",
+    "scip-go": "0.2.7",
+    "solana_fender": "0.5.4",
+    "stellar": "28.0.0",
+}
+
+
+_SETUP_TOOL_VERSION_LINE_PATTERNS = {
+    "ast-grep": (r"ast-grep\s+v?({version})(?:\s+.*)?",),
+    "cargo-audit": (r"cargo-audit\s+v?({version})(?:\s+.*)?",),
+    "cargo-fuzz": (r"cargo-fuzz\s+v?({version})(?:\s+.*)?",),
+    # `cargo install --list` is the only stable exact-version observation for
+    # Scout's cargo plugin.  Require its package row, not an unrelated crate
+    # that happens to print the same version elsewhere in the ledger.
+    "cargo-scout-audit": (
+        r"cargo-scout-audit\s+v?({version}):(?:\s+.*)?",
+    ),
+    # govulncheck reports its scanner revision separately from the Go runtime
+    # and vulnerability DB.  Never accept the expected token from those other
+    # lines as proof of the scanner version.
+    "govulncheck": (
+        r"Scanner:\s*govulncheck@v?({version})(?:\s+.*)?",
+        r"govulncheck(?:\s+version:?|@|\s+)\s*v?({version})(?:\s+.*)?",
+    ),
+    "osv-scanner": (
+        r"osv-scanner(?:\s+version:|\s+)\s*v?({version})(?:\s+.*)?",
+    ),
+    # scip-go currently prints only the bare semver, but accepting its labelled
+    # form keeps the probe portable across release builds.
+    "scip-go": (
+        r"v?({version})",
+        r"scip-go(?:\s+version:?|\s+)\s*v?({version})(?:\s+.*)?",
+    ),
+    "solana_fender": (
+        r"solana[_-]fender(?:\s+version:?|\s+)\s*v?({version})(?:\s+.*)?",
+    ),
+    "stellar": (r"stellar\s+v?({version})(?:\s+.*)?",),
+}
+
+
+def _setup_tool_version_matches(binary_name, expected_version, output):
+    """Verify a setup-tool version against that tool's own version field.
+
+    A generic semver substring is unsafe here: several CLIs print dependency,
+    compiler, database, or protocol versions alongside their own.  Pinned setup
+    postconditions therefore use a small per-tool line grammar and return a
+    diagnostic that distinguishes an observed mismatch from unparseable output.
+    """
+    patterns = _SETUP_TOOL_VERSION_LINE_PATTERNS.get(binary_name)
+    escaped = re.escape(expected_version)
+    lines = [line.strip() for line in str(output).splitlines() if line.strip()]
+    if not patterns:
+        return False, f"no exact version parser for {binary_name}"
+    for line in lines:
+        for pattern in patterns:
+            if re.fullmatch(pattern.format(version=escaped), line, re.IGNORECASE):
+                return True, "ok"
+
+    # Extract only semver-looking values for useful bounded diagnostics.  This
+    # is explanatory, never acceptance authority.
+    observed = []
+    for line in lines[:8]:
+        for match in re.finditer(
+            r"(?<![0-9A-Za-z.+-])v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)"
+            r"(?![0-9A-Za-z.+-])",
+            line,
+        ):
+            if match.group(1) not in observed:
+                observed.append(match.group(1))
+    if observed:
+        return False, (
+            f"version mismatch (expected {expected_version}; observed "
+            + ", ".join(observed[:3]) + ")"
+        )
+    return False, f"version output is unrecognized (expected {expected_version})"
+
+
+def _setup_pinned_tool_is_current(binary_name, search_paths=None):
+    expected = _SETUP_PINNED_TOOL_VERSIONS.get(binary_name)
+    if expected is None:
+        return False
+    if not _probe_tool_runtime(
+        binary_name, search_paths or [], expected_version=expected,
+    )[0]:
+        return False
+    return _validate_setup_tool_receipt(
+        binary_name, expected, search_paths or [],
+    )[0]
+
+
+# Upstream channels without an authenticated per-platform artifact remain
+# visible guidance, never selectable "install" actions.  This keeps `All`
+# truthful: every selected row has an executable governed recipe.
+_UNSUPPORTED_TOOLCHAIN_RECIPES = {
+    "EVM": [
+        ("Foundry (forge+anvil+cast)", "operator-provided reviewed release; see book.getfoundry.sh"),
+        ("slither", "installed only by Plamen's private hash-locked Python runtime"),
+    ],
+    "Solana": [
+        ("Solana CLI", "operator-provided reviewed release; see docs.anza.xyz"),
+        ("Anchor (via AVM)", "operator-provided reviewed release; see anchor-lang.com"),
+        ("Trident fuzzer", "no reviewed cross-OS artifact authority is admitted"),
+    ],
+    "Move": [
+        ("Aptos CLI", "operator-provided reviewed release; see aptos.dev"),
+        ("Sui CLI", "operator-provided reviewed release; see docs.sui.io"),
+    ],
+    "DAML": [
+        ("DAML SDK", "operator-provided reviewed SDK and JDK"),
+    ],
+    "L1 (Rust)": [
+        ("rust-analyzer", "operator-provided reviewed Rust component"),
+    ],
+}
+
+_BUNDLED_TOOLCHAIN_STATUS = {
+    "EVM": [
+        (
+            "Medusa v1.5.1",
+            "exact guest member is signed and receipt-verified at "
+            "/usr/local/lib/plamen/toolchains/medusa/bin/medusa; "
+            "ambient Go installation is disabled",
+        ),
+    ],
+}
+
+
 _INSTALL_RECIPES = {
     "Supply Chain": [
         ("OSV-Scanner (fail-closed dependency audit)",
-         lambda: _find_bin("osv-scanner", _GO_PATHS),
+         lambda: _setup_pinned_tool_is_current("osv-scanner", _GO_PATHS),
          _osv_scanner_cmds,
          ["osv-scanner"], "~1-2 min", _go_medusa_paths, "go"),
         ("cargo-audit (RustSec cross-check)",
-         lambda: _find_bin("cargo-audit", _CARGO_PATHS),
+         lambda: _setup_pinned_tool_is_current("cargo-audit", _CARGO_PATHS),
          _cargo_audit_cmds,
          ["cargo-audit"], "~2-3 min", _CARGO_PATHS, "rust"),
         ("govulncheck (Go reachability audit)",
-         lambda: _find_bin("govulncheck", _GO_PATHS),
+         lambda: _setup_pinned_tool_is_current("govulncheck", _GO_PATHS),
          _govulncheck_cmds,
          ["govulncheck"], "~1 min", _go_medusa_paths, "go"),
     ],
-    "EVM": [
-        ("Foundry (forge+anvil+cast)",
-         lambda: _find_bin("forge", _FOUNDRY_PATHS),
-         _foundry_cmds,
-         ["forge", "anvil", "cast"], "~30s",
-         ["~/.foundry/bin"], None),
-
-        ("slither",
-         _slither_is_current,
-         _slither_cmds,
-         ["slither"], "~15s", [], None),
-
-        # medusa builds with cgo, so it needs BOTH Go and a C compiler.
-        # Listing "cc" as a prereq makes _ensure_prereq surface a clear
-        # "needs a C compiler" message before `go install` fails with a raw
-        # linker error on a minimal Linux image or a Windows box without MSVC.
-        # `go install` honors GOBIN/GOPATH, so resolve the real bin dir via
-        # `go env` (falling back through GOPATH/bin then ~/go/bin) and also
-        # carry the full _GO_PATHS list. Otherwise a box with GOPATH/GOBIN
-        # exported elsewhere installs medusa off the search path, the re-check
-        # reports it missing, and EVM Medusa fuzz silently degrades. The
-        # path_adds field is a callable so the `go env` probe stays lazy (never
-        # at module import) — the installer resolves it at use.
-        ("medusa",
-         lambda: _find_bin("medusa", _go_medusa_paths()),
-         lambda: ['go install github.com/crytic/medusa@v1.5.1'],
-         ["medusa"], "~60s",
-         _go_medusa_paths, ["go", "cc"]),
-    ],
+    "EVM": [],
 
     "Solana": [
-        ("Solana CLI",
-         lambda: _find_bin("solana", _SOLANA_PATHS),
-         _solana_cmds,
-         ["solana", "cargo-build-sbf"], "~30s",
-         ["~/.local/share/solana/install/active_release/bin"], None),
-
-        ("Anchor (via AVM)",
-         lambda: _find_bin("anchor", _AVM_PATHS),
-         _anchor_cmds,
-         ["anchor"], "~3-5 min",
-         ["~/.avm/bin"], ["rust", "openssl"] if sys.platform == "win32" else "rust"),
-
-        ("Trident fuzzer",
-         lambda: _find_bin("trident", _CARGO_PATHS),
-         lambda: [],
-         ["trident"], "~2-3 min",
-         _CARGO_PATHS, ["rust", "openssl"] if sys.platform == "win32" else "rust"),
-
         ("Solana Fender (optional static analyzer)",
-         lambda: _find_bin("solana_fender", _CARGO_PATHS),
+         lambda: _setup_pinned_tool_is_current("solana_fender", _CARGO_PATHS),
          _solana_fender_cmds,
          ["solana_fender"], "~2-3 min",
          _CARGO_PATHS, "rust"),
 
     ],
 
-    "Move": [
-        ("Aptos CLI",
-         lambda: _find_bin("aptos", ["~/.aptoscli/bin"]),
-         _aptos_cmds,
-         ["aptos"], "~30s", ["~/.aptoscli/bin"], None),
-
-        ("Sui CLI",
-         lambda: _find_bin("sui", ["~/AppData/Local/bin", "~/.local/bin"]),
-         _sui_cmds,
-         ["sui"], "~1-2 min",
-         ["~/AppData/Local/bin", "~/.local/bin"], None),
-    ],
+    "Move": [],
 
     "Soroban": [
         ("Stellar CLI",
-         lambda: _find_bin("stellar", _CARGO_PATHS +
-                           ["C:/Program Files (x86)/Stellar CLI",
-                            "C:/Program Files/Stellar CLI"]),
+         lambda: _setup_pinned_tool_is_current("stellar", _STELLAR_PATHS),
          _stellar_cmds,
          ["stellar"], "~2-3 min",
-         ["~/.cargo/bin", "C:/Program Files/Stellar CLI", "C:/Program Files (x86)/Stellar CLI"], "rust" if sys.platform != "win32" else None),
+         _STELLAR_PATHS, "rust"),
 
         ("Scout (Soroban static analyzer)",
-         lambda: _find_bin("cargo-scout-audit", _CARGO_PATHS),
+         lambda: _setup_pinned_tool_is_current("cargo-scout-audit", _CARGO_PATHS),
          _scout_soroban_cmds,
          ["cargo-scout-audit"], "~2-3 min",
          ["~/.cargo/bin"], "rust"),
 
         *([] if sys.platform == "win32" else [
             ("cargo-fuzz (Soroban Thorough-mode fuzzing)",
-             lambda: _find_bin("cargo-fuzz", _CARGO_PATHS),
+             lambda: (
+                 _setup_pinned_tool_is_current("cargo-fuzz", _CARGO_PATHS)
+                 and _cargo_fuzz_nightly_is_current()
+             ),
              _cargo_fuzz_cmds,
              ["cargo-fuzz"], "~2-3 min",
-             ["~/.cargo/bin"], "rust"),
+             ["~/.cargo/bin"], ["rust", "rustup"]),
         ]),
     ],
 
-    "DAML": [
-        # The DAML runtime is JVM-based and needs a JDK, but we do NOT
-        # auto-install the JDK (prereq=None) — it is documented as a manual
-        # requirement (winget Microsoft.OpenJDK / brew temurin / apt). The SDK
-        # installer itself is per-OS (mirrors the Stellar CLI channel logic).
-        ("DAML SDK (daml build / daml test / damlc)",
-         lambda: _find_bin("daml", _DAML_PATHS),
-         _daml_sdk_cmds,
-         ["daml"], "~2-4 min",
-         _DAML_PATHS, None),
-    ],
+    "DAML": [],
 
     "L1 (Go)": [
         ("scip-go (SCIP semantic index)",
@@ -7118,36 +8401,25 @@ _INSTALL_RECIPES = {
     ],
 
     "L1 (Rust)": [
-        ("rust-analyzer (SCIP semantic index)",
-         lambda: bool(_find_bin("rust-analyzer", _CARGO_PATHS)
-                      or (sys.platform == "darwin" and _find_bin("rust-analyzer", ["/opt/homebrew/bin", "/usr/local/bin"]))),
-         _rust_analyzer_cmds,
-         ["rust-analyzer"], "~15s",
-         ["~/.cargo/bin", "/opt/homebrew/bin", "/usr/local/bin"],
-         # Only require the `rust` (rustup) prereq when we'd use rustup.
-         # Brew-Rust users get rust-analyzer via `brew install rust-analyzer`.
-         "rust" if not (sys.platform == "darwin" and _has_brew()) else None),
-
         *([] if sys.platform == "win32" else [
             ("cargo-fuzz (L1-Rust Thorough-mode fuzzing)",
-             lambda: _find_bin("cargo-fuzz", _CARGO_PATHS),
+             lambda: (
+                 _setup_pinned_tool_is_current("cargo-fuzz", _CARGO_PATHS)
+                 and _cargo_fuzz_nightly_is_current()
+             ),
              _cargo_fuzz_cmds,
              ["cargo-fuzz"], "~2-3 min",
-             ["~/.cargo/bin"],
-             "rust" if not (sys.platform == "darwin" and _has_brew()) else None),
+             ["~/.cargo/bin"], ["rust", "rustup"]),
         ]),
     ],
 
     "L1 (ast-grep)": [
         ("ast-grep (structural pattern matching)",
-         lambda: bool(_find_bin("ast-grep", _CARGO_PATHS)
-                      or _find_bin("sg", _CARGO_PATHS)
-                      or (sys.platform == "darwin" and _find_bin("ast-grep", ["/opt/homebrew/bin", "/usr/local/bin"]))),
+         lambda: _setup_pinned_tool_is_current("ast-grep", _AST_GREP_PATHS),
          _ast_grep_cmds,
          ["ast-grep"], "~30s",
-         ["~/.cargo/bin", "/opt/homebrew/bin", "/usr/local/bin"],
-         # cargo path needs rustup; brew path doesn't.
-         "rust" if not (sys.platform == "darwin" and _has_brew()) else None),
+         _AST_GREP_PATHS,
+         "rust"),
     ],
 }
 
@@ -7159,7 +8431,19 @@ def _needs_bash(cmd: str) -> bool:
     return any(ind in cmd for ind in bash_indicators)
 
 
-def _toolchain_acquisition_rejection(cmd: str) -> str | None:
+def _toolchain_command_text(cmd) -> str:
+    if isinstance(cmd, (tuple, list)):
+        if not cmd or any(
+            not isinstance(item, str) or not item or "\x00" in item
+            or "\n" in item or "\r" in item
+            for item in cmd
+        ):
+            return ""
+        return shlex.join(list(cmd))
+    return str(cmd).strip()
+
+
+def _toolchain_acquisition_rejection(cmd) -> str | None:
     """Return why a toolchain acquisition command is not immutable enough.
 
     This gate applies to setup's third-party tool recipes, not to Plamen's
@@ -7167,7 +8451,7 @@ def _toolchain_acquisition_rejection(cmd: str) -> str | None:
     their registry/module checksum verification; everything else needs a
     future reviewed artifact manifest with per-platform digests.
     """
-    value = str(cmd).strip()
+    value = _toolchain_command_text(cmd)
     lower = value.lower()
     if not value:
         return "no reviewed stable release is currently admitted"
@@ -7194,7 +8478,7 @@ def _toolchain_acquisition_rejection(cmd: str) -> str | None:
     return "command is absent from the reviewed immutable acquisition grammar"
 
 
-def _run_install_cmd(cmd: str, retries: int = 1, timeout: int = None) -> bool:
+def _run_install_cmd(cmd, retries: int = 0, timeout: int = None, *, cwd=None) -> bool:
     """Run a single install command with visible output. Returns True on success.
 
     Args:
@@ -7203,42 +8487,69 @@ def _run_install_cmd(cmd: str, retries: int = 1, timeout: int = None) -> bool:
     """
     w = sys.stdout.write
 
-    w(f"  {_C_GRAY}$ {cmd}{_RST}\n")
+    rendered = _toolchain_command_text(cmd)
+    w(f"  {_C_GRAY}$ {rendered}{_RST}\n")
     sys.stdout.flush()
 
-    # Pick shell per command: bash for shell-scripting, native shell for simple commands.
-    # On Windows, Git Bash mangles paths with spaces (C:\Program Files → broken),
-    # so simple commands like "go install" or "cargo install" use cmd.exe.
-    bash = shutil.which("bash")
-    if _needs_bash(cmd) and bash:
-        run_kwargs = {"shell": True, "executable": bash}
-    elif _needs_bash(cmd) and not bash and sys.platform != "win32":
-        # On a non-Windows host with no bash on PATH (e.g. Alpine/Docker /bin/sh
-        # only, stripped CI runner), falling through to /bin/sh would run
-        # bash-only constructs (| bash chained installers, export PATH=...&&) and
-        # fail with an opaque sh syntax/exec error. Surface the prereq clearly.
-        w(f"  {_C_RED}  bash required for this installer but not found — "
-          f"install bash or run the documented manual command{_RST}\n")
+    explicit_argv = isinstance(cmd, (tuple, list))
+    direct_argv = None
+    if explicit_argv:
+        direct_argv = list(cmd)
+    elif re.match(r"(?i)^(?:cargo|go|rustup)\s+", rendered):
+        try:
+            direct_argv = shlex.split(rendered, posix=True)
+        except ValueError:
+            w(f"  {_C_RED}  malformed direct toolchain command{_RST}\n")
+            return False
+    if direct_argv is not None:
+        if not direct_argv:
+            return False
+        executable_name = direct_argv[0]
+        search_paths = (
+            _GO_PATHS if executable_name == "go" else _CARGO_PATHS
+        )
+        executable = _find_bin(executable_name, search_paths)
+        if not executable:
+            w(
+                f"  {_C_RED}  operator-provided {executable_name} executable "
+                f"is unavailable{_RST}\n"
+            )
+            return False
+        direct_argv[0] = os.path.abspath(executable)
+
+    if direct_argv is None:
+        w(
+            f"  {_C_RED}  shell-form install commands are not admitted; "
+            f"use a reviewed argv recipe{_RST}\n"
+        )
         sys.stdout.flush()
         return False
-    else:
-        run_kwargs = {"shell": True}
 
-    for attempt in range(1 + retries):
+    # Governed tool acquisition is intentionally one-shot.  Retrying a failed
+    # registry/module transaction obscures the first failure and can observe a
+    # different mutable network state.  Legacy local build/index operations
+    # may still request an explicit bounded retry.
+    # Explicit argv is also used for the hash-locked pip and git source setup
+    # steps, whose exact inputs may be retried. Parsed third-party recipes stay
+    # one-shot even if a caller accidentally supplies a retry count.
+    attempt_count = 1 + max(0, retries) if explicit_argv else 1
+    for attempt in range(attempt_count):
         try:
-            result = subprocess.run(cmd, timeout=timeout, **run_kwargs)
+            result = subprocess.run(
+                direct_argv, timeout=timeout, cwd=cwd, shell=False,
+            )
             if result.returncode == 0:
                 return True
             # winget exit codes that mean the tool is already present:
             # 0x8A15002B (-1978335189) = UPDATE_NOT_APPLICABLE (no newer version)
             # 0x8A150061 (-1978335135) = PACKAGE_ALREADY_INSTALLED
-            if "winget" in cmd and result.returncode in (-1978335189, -1978335135):
+            if "winget" in rendered and result.returncode in (-1978335189, -1978335135):
                 return True
         except subprocess.TimeoutExpired:
             w(f"  {_C_RED}  timed out after {timeout}s{_RST}\n")
             sys.stdout.flush()
-        if attempt < retries:
-            w(f"  {_C_ORANGE}  retry {attempt + 1}/{retries}...{_RST}\n")
+        if attempt + 1 < attempt_count:
+            w(f"  {_C_ORANGE}  retry {attempt + 1}/{attempt_count - 1}...{_RST}\n")
             sys.stdout.flush()
     return False
 
@@ -7249,10 +8560,9 @@ def _run_install_cmd(cmd: str, retries: int = 1, timeout: int = None) -> bool:
 # "skip the probe" — used for tools that have no version flag, only show
 # a TTY-clearing banner, or whose CLI is too slow to reasonably probe.
 #
-# This is STRICTLY informational. A failed probe never blocks install
-# completion, never short-circuits other tools, never raises. The worst
-# possible outcome is a yellow "installed but couldn't verify" line in
-# the post-install report.
+# Setup treats these probes as hard postconditions. Doctor may use them as
+# observations, but a selected acquisition cannot succeed unless its claimed
+# executable runs and, for safety-pinned tools, prints the exact version.
 _VERSION_PROBES = {
     "forge":              "--version",
     "cast":               "--version",
@@ -7263,9 +8573,8 @@ _VERSION_PROBES = {
     "anchor":             "--version",
     "cargo-build-sbf":    "--version",
     "trident":            "--version",
-    # Cargo plugin: direct binary has no --version, only `help` and the
-    # `scout-audit` subcommand. `--help` exits zero and prints the usage
-    # block, which is enough to confirm the binary runs.
+    # Cargo plugin: direct binary has no --version. Exact setup validation uses
+    # Cargo's installed-package ledger below, then binds executable bytes.
     "cargo-scout-audit":  "--help",
     # cargo-fuzz ships a `cargo-fuzz` shim that accepts `--version` directly
     # (runtime fuzzing still needs `cargo +nightly fuzz`, but the version
@@ -7289,7 +8598,9 @@ _VERSION_PROBES = {
 }
 
 
-def _probe_tool_runtime(binary_name: str, search_paths: list = None) -> tuple[bool, str]:
+def _probe_tool_runtime(
+    binary_name: str, search_paths: list = None, *, expected_version: str = None,
+) -> tuple[bool, str]:
     """Return (ok, message) for a post-install runtime probe.
 
     ok=True   → binary runs and version flag exits zero (with output).
@@ -7305,17 +8616,34 @@ def _probe_tool_runtime(binary_name: str, search_paths: list = None) -> tuple[bo
     if not path:
         return False, "not on PATH"
     try:
+        argv = [path, flag]
+        # Scout's cargo plugin exposes help but no executable version flag.
+        # Cargo's own installed-package ledger is the upstream-supported exact
+        # version observation; the executable bytes are bound separately by
+        # the setup receipt immediately after this check.
+        if binary_name == "cargo-scout-audit" and expected_version is not None:
+            cargo = _find_bin("cargo", _CARGO_PATHS)
+            if not cargo:
+                return False, "cargo package ledger is unavailable"
+            argv = [cargo, "install", "--list"]
         # 5s ceiling. cargo-installed binaries cold-start in 200-800ms.
         # Anything past 5s is a hung process and we treat it as broken.
         result = subprocess.run(
-            [path, flag],
+            argv,
             timeout=5,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
         )
-        if result.returncode == 0 and (result.stdout.strip() or result.stderr.strip()):
+        output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+        if result.returncode == 0 and output:
+            if expected_version is not None:
+                version_ok, version_message = _setup_tool_version_matches(
+                    binary_name, expected_version, output,
+                )
+                if not version_ok:
+                    return False, version_message
             return True, "ok"
         return False, f"exited {result.returncode}"
     except subprocess.TimeoutExpired:
@@ -7324,32 +8652,131 @@ def _probe_tool_runtime(binary_name: str, search_paths: list = None) -> tuple[bo
         return False, f"could not exec ({exc.__class__.__name__})"
 
 
+_SETUP_TOOL_RECEIPT_SCHEMA = "plamen.setup_tool_observation.v1"
+
+
+def _setup_tool_receipt_root() -> Path:
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA")
+        root = Path(base) if base else Path.home() / "AppData" / "Local"
+    else:
+        base = os.environ.get("XDG_DATA_HOME")
+        root = Path(base) if base else Path.home() / ".local" / "share"
+    return root / "plamen" / "toolchain-receipts"
+
+
+def _setup_tool_receipt_path(binary_name: str) -> Path:
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", binary_name or "") is None:
+        raise ValueError("tool receipt binary name is invalid")
+    return _setup_tool_receipt_root() / f"{binary_name}.json"
+
+
+def _setup_tool_executable_observation(binary_name: str, search_paths=None):
+    path = _find_bin(binary_name, search_paths or [])
+    if not path:
+        raise RuntimeError(f"{binary_name} is not visible")
+    address = (
+        Path(path).absolute()
+        if sys.platform == "win32"
+        else Path(path).resolve(strict=True)
+    )
+    before = os.lstat(address)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or before.st_nlink != 1
+    ):
+        raise RuntimeError(f"{binary_name} is not an ordinary single-link executable")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(str(address), flags)
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise RuntimeError(f"{binary_name} changed while it was opened")
+        digest = hashlib.sha256()
+        size = 0
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    if (
+        (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        != (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+        or size != opened.st_size
+    ):
+        raise RuntimeError(f"{binary_name} changed while it was read")
+    return {
+        "executable_path": str(address),
+        "executable_sha256": digest.hexdigest(),
+        "executable_size": size,
+    }
+
+
+def _validate_setup_tool_receipt(binary_name, expected_version, search_paths=None):
+    try:
+        receipt_path = _setup_tool_receipt_path(binary_name)
+        raw = receipt_path.read_bytes()
+        value = json.loads(raw.decode("utf-8"))
+        expected_fields = {
+            "binary", "expected_version", "executable_path",
+            "executable_sha256", "executable_size", "platform", "schema",
+        }
+        if (
+            type(value) is not dict
+            or set(value) != expected_fields
+            or value.get("schema") != _SETUP_TOOL_RECEIPT_SCHEMA
+            or value.get("binary") != binary_name
+            or value.get("expected_version") != expected_version
+            or value.get("platform") != sys.platform
+            or not re.fullmatch(r"[0-9a-f]{64}", value.get("executable_sha256", ""))
+            or type(value.get("executable_size")) is not int
+            or value["executable_size"] < 1
+        ):
+            return False, "receipt is malformed"
+        observed = _setup_tool_executable_observation(binary_name, search_paths)
+        if any(value[key] != observed[key] for key in observed):
+            return False, "receipt executable identity differs"
+        return True, "receipt verified"
+    except (OSError, UnicodeError, ValueError, TypeError, RuntimeError, json.JSONDecodeError) as exc:
+        return False, f"receipt unavailable ({type(exc).__name__})"
+
+
+def _publish_setup_tool_receipt(binary_name, expected_version, search_paths=None):
+    ok, message = _probe_tool_runtime(
+        binary_name, search_paths or [], expected_version=expected_version,
+    )
+    if not ok:
+        return False, message
+    try:
+        value = {
+            "schema": _SETUP_TOOL_RECEIPT_SCHEMA,
+            "binary": binary_name,
+            "expected_version": expected_version,
+            "platform": sys.platform,
+            **_setup_tool_executable_observation(binary_name, search_paths),
+        }
+        destination = _setup_tool_receipt_path(binary_name)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(destination, value)
+    except (OSError, TypeError, ValueError, RuntimeError) as exc:
+        return False, f"could not publish receipt ({type(exc).__name__})"
+    return _validate_setup_tool_receipt(
+        binary_name, expected_version, search_paths or [],
+    )
+
+
 def _report_toolchain_visibility(w):
-    """Cross-OS report after install: which chain toolchains are visible.
-
-    Background: `plamen install` is the non-interactive install. It
-    does NOT install per-chain toolchains (Foundry, Solana CLI, Anchor,
-    Aptos, Sui, etc.) — that's `plamen setup`. But users often:
-      - install `plamen` non-interactively (Claude Code Bash, CI, docs)
-      - skip `plamen setup` ("I'll do it later")
-      - launch an audit
-      - watch the fuzz phases report COMPILATION_FAILED because
-        forge / cargo / sui isn't on PATH for the audit subprocess
-
-    The fast-fail isn't a bug — `phase4b-required-artifacts.md`
-    explicitly accepts COMPILATION_FAILED as a present-artifact value.
-    But silently degrading the EVM fuzz campaign on a user's first
-    Thorough run is bad UX.
-
-    Fix: surface a one-screen report at install time showing exactly
-    which chain pipelines will be fully functional and which will
-    degrade. The user sees the truth before they spend $30 on a
-    Thorough run that won't fuzz.
-    """
+    """Report binary visibility, not version validation or audit readiness."""
     # (label, binary_name, install_cmd_hint, used_by)
     toolchains = [
         ("Foundry (forge/cast/anvil)", "forge", "operator-provided reviewed Foundry release; see book.getfoundry.sh", "EVM invariant + Medusa fuzz, Slither integration"),
-        ("Medusa",                     "medusa", "plamen setup → EVM (locked v1.5.1)", "EVM Medusa stateful fuzz"),
         ("Slither",                    "slither", "plamen install (private hash-locked Python runtime)", "EVM static analysis"),
         ("Solana CLI",                 "solana", "operator-provided reviewed release; see docs.anza.xyz", "Solana / Anchor audits"),
         ("Anchor",                     "anchor", "operator-provided reviewed release; see anchor-lang.com", "Solana program audits"),
@@ -7357,7 +8784,7 @@ def _report_toolchain_visibility(w):
         ("Sui CLI",                    "sui",    "operator-provided reviewed release; see docs.sui.io", "Sui Move audits"),
         ("Stellar CLI",                "stellar","plamen setup → Soroban (locked 28.0.0)", "Soroban audits"),
         ("DAML SDK",                   "daml",   "operator-provided reviewed SDK and JDK", "DAML / Canton audits"),
-        ("Go (scip-go, medusa)",       "go",     "operator-provided Go SDK from go.dev/dl", "L1 mode + Medusa"),
+        ("Go (scip-go + analyzers)",   "go",     "operator-provided Go SDK from go.dev/dl", "L1 mode + Go analyzers"),
         ("Rust (cargo)",               "cargo",  "operator-provided Rust toolchain from rustup.rs", "L1 mode + Soroban + Solana"),
         ("cargo-fuzz",                 "cargo-fuzz", "plamen setup → Soroban / L1 (locked 0.13.2 + nightly-2026-08-01)", "Soroban + L1-Rust Thorough fuzz"),
     ]
@@ -7365,30 +8792,43 @@ def _report_toolchain_visibility(w):
     # a different answer here than `plamen doctor` would give.
     search_paths = {
         "forge": _FOUNDRY_PATHS,
-        # `go install` honors GOBIN/GOPATH; mirror the install recipe's lazy
-        # resolution so medusa isn't reported missing when it landed off ~/go/bin.
-        "medusa": _go_medusa_paths(),
         "solana": _SOLANA_PATHS,
         "anchor": _AVM_PATHS,
         "aptos": ["~/.aptoscli/bin"],
         "sui": ["~/AppData/Local/bin", "~/.local/bin"],
-        "stellar": _CARGO_PATHS + ["C:/Program Files/Stellar CLI", "C:/Program Files (x86)/Stellar CLI"],
+        "stellar": _STELLAR_PATHS,
         "daml": _DAML_PATHS,
         "go": _GO_PATHS,
         "cargo": _CARGO_PATHS,
         "cargo-fuzz": _CARGO_PATHS,
     }
+    compatibility_install = _posix_v2_compat_install_active()
     found, missing = [], []
     for label, bin_name, install_hint, used_by in toolchains:
         paths = search_paths.get(bin_name, [])
-        if _find_bin(bin_name, paths) or _find_bin(bin_name + ".exe", paths):
+        required = ("forge", "cast", "anvil") if bin_name == "forge" else (bin_name,)
+        absent = [
+            binary for binary in required
+            if not (_find_bin(binary, paths) or _find_bin(binary + ".exe", paths))
+        ]
+        if not absent:
             found.append((label, bin_name))
         else:
+            if compatibility_install and install_hint.startswith("plamen setup"):
+                install_hint = "operator-provided reviewed release; automated setup is unavailable in this compatibility installation"
+            if len(required) > 1:
+                label += f" — missing: {', '.join(absent)}"
             missing.append((label, bin_name, install_hint, used_by))
 
     console.print(Rule(title="Toolchain Visibility (audit-subprocess view)", style="color(238)"))
+    w(
+        f"  {_C_GREEN}Bundled:{_RST} Medusa v1.5.1 exact native guest member "
+        f"is signed and receipt-verified; no ambient Go binary is used.\n"
+    )
+    w(f"  {_C_GRAY}Presence check only: versions, complete SDKs, provider access and{_RST}\n")
+    w(f"  {_C_GRAY}end-to-end audit readiness are not verified by this report.{_RST}\n")
     if not missing:
-        w(f"  {_C_GREEN}All chain toolchains visible.{_RST} Every audit mode will run end-to-end.\n\n")
+        w(f"  {_C_GREEN}All chain-tool binaries listed here are visible.{_RST}\n\n")
         return
     if found:
         w(f"  {_C_GREEN}Detected:{_RST} {', '.join(label for label, _ in found)}\n")
@@ -7398,11 +8838,13 @@ def _report_toolchain_visibility(w):
         w(f"      {_C_GRAY}needed for: {used_by}{_RST}\n")
         w(f"      {_C_GRAY}install:    {install_hint}{_RST}\n")
     w(f"\n")
-    w(f"  {_C_GRAY}Audits will run, but phases that depend on missing tools{_RST}\n")
-    w(f"  {_C_GRAY}will report `COMPILATION_FAILED` / `<TOOL>_UNAVAILABLE`{_RST}\n")
-    w(f"  {_C_GRAY}artifacts (accepted by the gate, but reduced coverage).{_RST}\n")
-    w(f"  {_C_GRAY}Run `plamen setup` from a real terminal to install missing{_RST}\n")
-    w(f"  {_C_GRAY}toolchains interactively.{_RST}\n")
+    w(f"  {_C_GRAY}Missing dependencies can block phases or leave explicit coverage debt.{_RST}\n")
+    if compatibility_install:
+        w(f"  {_C_GRAY}Automated toolchain setup is unavailable in this compatibility installation.{_RST}\n")
+        w(f"  {_C_GRAY}Follow the reviewed manual installation guidance, then run `plamen doctor`.{_RST}\n")
+    else:
+        w(f"  {_C_GRAY}Run `plamen setup` in a real terminal for supported recipes;{_RST}\n")
+        w(f"  {_C_GRAY}manual prerequisites still require separate installation.{_RST}\n")
     if sys.platform != "win32":
         w(f"\n")
         w(f"  {_C_GRAY}macOS/Linux PATH note: if you installed a toolchain manually{_RST}\n")
@@ -7428,16 +8870,52 @@ def _update_path_env(new_paths: list, persist: bool = False):
     of whether the running process already has it. `_persist_path_windows`
     is itself idempotent, so this is safe.
     """
-    current = os.environ.get("PATH", "")
-    for p in new_paths:
-        expanded = os.path.normpath(os.path.expanduser(p))
-        exists = os.path.isdir(expanded)
-        # Running-process PATH: only add dirs that actually exist — adding a
-        # non-existent dir to the live PATH for post-install detection is
-        # pointless.
-        if exists and expanded not in current:
-            os.environ["PATH"] = expanded + os.pathsep + os.environ.get("PATH", "")
-            current = os.environ["PATH"]
+    expanded_paths = []
+    for value in new_paths:
+        if not isinstance(value, (str, os.PathLike)):
+            continue
+        expanded = os.path.normpath(os.path.expanduser(os.fspath(value)))
+        # NUL/newline values are neither executable PATH entries nor safe shell
+        # configuration material.  A colon cannot identify one POSIX PATH
+        # component; on Windows the platform separator is `;`, so reject that
+        # corresponding ambiguity there as well.
+        if (
+            not expanded
+            or "\x00" in expanded
+            or "\n" in expanded
+            or "\r" in expanded
+            or os.pathsep in expanded
+        ):
+            sys.stderr.write(
+                f"warning: plamen ignored an invalid toolchain PATH entry: "
+                f"{expanded!r}\n"
+            )
+            continue
+        if not any(
+            os.path.normcase(existing) == os.path.normcase(expanded)
+            for existing in expanded_paths
+        ):
+            expanded_paths.append(expanded)
+
+    # Keep the caller's precedence exactly.  Repeatedly prepending one item at
+    # a time reverses it and can make an unrelated ambient executable win over
+    # the just-installed Cargo/GOBIN destination during the security probe.
+    # Compare complete components rather than substrings (`/go/bin` must not be
+    # considered present merely because `/go/binary` is on PATH).
+    existing_entries = [
+        entry for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if entry
+    ]
+    visible = [path for path in expanded_paths if os.path.isdir(path)]
+    visible_keys = {os.path.normcase(path) for path in visible}
+    remaining = [
+        entry for entry in existing_entries
+        if os.path.normcase(os.path.normpath(entry)) not in visible_keys
+    ]
+    if visible:
+        os.environ["PATH"] = os.pathsep.join(visible + remaining)
+
+    for expanded in expanded_paths:
         # Persistence: persist standard toolchain dirs even when they don't
         # exist yet (callers pass well-known locations like ~/.foundry/bin,
         # ~/.cargo/bin). This closes the bare-box gap — `plamen install` before
@@ -7470,12 +8948,43 @@ def _persist_path_posix(directory: str):
     home = os.path.expanduser("~")
     shell = os.environ.get("SHELL", "")
 
+    def _marker_dirs(body):
+        values = []
+        for line in body.splitlines():
+            prefix = "# plamen-path-json: "
+            if not line.startswith(prefix):
+                continue
+            try:
+                value = json.loads(line[len(prefix):])
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            if isinstance(value, str) and value and os.pathsep not in value:
+                values.append(value)
+        if values:
+            return list(dict.fromkeys(values))
+        # One-time migration from the older marker body.
+        old = _re.search(r'export PATH="([^"]*):\$PATH"', body)
+        if old:
+            return [value for value in old.group(1).split(":") if value]
+        return []
+
+    def _metadata(values):
+        return "\n".join(
+            "# plamen-path-json: " + json.dumps(value, ensure_ascii=True)
+            for value in values
+        )
+
+    def _fish_quote(value):
+        # fish single quotes accept backslash escapes only for quote/backslash.
+        return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
     def _warn(rc_path, err):
         # Best-effort, but NOT silent: a swallowed persist failure surfaces
         # later as `command not found` mid-audit with no install-time signal.
         sys.stderr.write(
             f"warning: plamen could not persist PATH to {rc_path}: {err}\n"
-            f"         add it manually: export PATH=\"{directory}:$PATH\"\n"
+            f"         add it manually: export PATH="
+            f"{shlex.quote(directory)}:\"$PATH\"\n"
         )
 
     # POSIX sh/bash/zsh rc files. Write ~/.profile (login-shell baseline) AND
@@ -7500,15 +9009,20 @@ def _persist_path_posix(directory: str):
                 _re.escape(BEGIN) + r"\n(.*?)\n" + _re.escape(END), text, _re.S
             )
             if m:
-                em = _re.search(r'export PATH="([^"]*):\$PATH"', m.group(1))
-                if em:
-                    dirs = [d for d in em.group(1).split(":") if d]
+                dirs = _marker_dirs(m.group(1))
             if directory in dirs:
                 continue  # already persisted in this rc — idempotent
             dirs.append(directory)
+            joined_dirs = ":".join(dirs)
+            path_export = (
+                'export PATH="' + joined_dirs + ':$PATH"'
+                if _re.fullmatch(r"[A-Za-z0-9_./:+~-]+", joined_dirs)
+                else "export PATH=" + shlex.quote(joined_dirs) + ':"$PATH"'
+            )
             block = (
                 BEGIN + "\n"
-                + 'export PATH="' + ":".join(dirs) + ':$PATH"\n'
+                + _metadata(dirs) + "\n"
+                + path_export + "\n"
                 + END
             )
             if m:
@@ -7518,8 +9032,7 @@ def _persist_path_posix(directory: str):
                 if prefix and not prefix.endswith("\n"):
                     prefix += "\n"
                 new_text = prefix + block + "\n"
-            with open(rc, "w", encoding="utf-8") as f:
-                f.write(new_text)
+            _atomic_write_text(rc, new_text)
         except Exception as e:
             _warn(rc, e)
 
@@ -7540,14 +9053,15 @@ def _persist_path_posix(directory: str):
                 _re.escape(BEGIN) + r"\n(.*?)\n" + _re.escape(END), text, _re.S
             )
             if m:
-                em = _re.search(r"set -gx PATH (.*) \$PATH", m.group(1))
-                if em:
-                    dirs = [d for d in em.group(1).split() if d]
+                dirs = _marker_dirs(m.group(1))
             if directory not in dirs:  # idempotent
                 dirs.append(directory)
                 block = (
                     BEGIN + "\n"
-                    + "set -gx PATH " + " ".join(dirs) + " $PATH\n"
+                    + _metadata(dirs) + "\n"
+                    + "set -gx PATH "
+                    + " ".join(_fish_quote(value) for value in dirs)
+                    + " $PATH\n"
                     + END
                 )
                 if m:
@@ -7557,8 +9071,7 @@ def _persist_path_posix(directory: str):
                     if prefix and not prefix.endswith("\n"):
                         prefix += "\n"
                     new_text = prefix + block + "\n"
-                with open(fish_rc, "w", encoding="utf-8") as f:
-                    f.write(new_text)
+                _atomic_write_text(fish_rc, new_text)
         except Exception as e:
             _warn(fish_rc, e)
 
@@ -7732,36 +9245,42 @@ def _build_rag_db(w):
     # On macOS/Linux, run the indexer at reduced CPU priority so it doesn't
     # hog the machine. nice -n 10 yields CPU to other apps with ~10-20% throughput
     # cost on an otherwise idle machine. Skipped on Windows (no nice command).
-    nice = "nice -n 10 " if sys.platform != "win32" else ""
+    command_prefix = ["nice", "-n", "10"] if sys.platform != "win32" else []
+
+    def indexer_arguments(source, *extra):
+        return [
+            *command_prefix, py, "-m", "unified_vuln.indexer", "index",
+            "-s", source, *map(str, extra),
+        ]
 
     steps = [
         # (label, est, cmd, retry_cmd, timeout)
         # Solodit: no retry — a hanging API call won't improve on retry
         ("Solodit — live API",
          f"~{'20' if fanless else '10'} min",
-         f'cd "{vuln_db_dir}" && {nice}{py} -m unified_vuln.indexer index -s solodit --max-pages {max_pages}',
+         indexer_arguments("solodit", "--max-pages", max_pages),
          None,
          solodit_timeout),
         # DeFiHackLabs: local parsing + embedding; retry with same command is safe
         ("DeFiHackLabs — local",
          "~1 min",
-         f'cd "{vuln_db_dir}" && {nice}{py} -m unified_vuln.indexer index -s defihacklabs',
-         f'cd "{vuln_db_dir}" && {nice}{py} -m unified_vuln.indexer index -s defihacklabs',
+         indexer_arguments("defihacklabs"),
+         indexer_arguments("defihacklabs"),
          indexing_timeout),
         # Immunefi: first attempt fetches 139 URLs + embeds; retry skips the HTTP fetch
         # phase (uses cached immunefi_fetched.json) and goes straight to embedding
         ("Immunefi — writeups",
          "~2 min",
-         f'cd "{vuln_db_dir}" && {nice}{py} -m unified_vuln.indexer index -s immunefi',
-         f'cd "{vuln_db_dir}" && {nice}{py} -m unified_vuln.indexer index -s immunefi --skip-fetch',
+         indexer_arguments("immunefi"),
+         indexer_arguments("immunefi", "--skip-fetch"),
          indexing_timeout),
         # Immunefi Competitions: 879 findings from 25 audit competitions via GitHub raw URLs.
         # No token needed (~50 API calls for directory listing, content via raw.githubusercontent.com).
         # Retry uses cached markdown files (skip-fetch).
         ("Immunefi — competitions",
          "~3 min",
-         f'cd "{vuln_db_dir}" && {nice}{py} -m unified_vuln.indexer index -s immunefi-competitions',
-         f'cd "{vuln_db_dir}" && {nice}{py} -m unified_vuln.indexer index -s immunefi-competitions --skip-fetch',
+         indexer_arguments("immunefi-competitions"),
+         indexer_arguments("immunefi-competitions", "--skip-fetch"),
          indexing_timeout),
     ]
 
@@ -7770,39 +9289,49 @@ def _build_rag_db(w):
     w(f"  {_C_GRAY}Your machine may feel sluggish for several minutes — this is normal.{_RST}\n")
     w(f"  {_C_GRAY}Do not close this terminal or press Ctrl+C during indexing.{_RST}\n\n")
 
+    all_steps_ok = True
     for label, est, cmd, retry_cmd, timeout in steps:
         w(f"  {_C_ORANGE}>{_RST} {_C_WHITE}{label}{_RST}"
           f"  {_C_DARK_GRAY}{est}{_RST}\n")
         sys.stdout.flush()
-        ok = _run_install_cmd(cmd, retries=0, timeout=timeout)
+        ok = _run_install_cmd(
+            cmd, retries=0, timeout=timeout, cwd=vuln_db_dir,
+        )
         if not ok and retry_cmd:
             w(f"  {_C_ORANGE}  retry 1/1 (cached)...{_RST}\n")
             sys.stdout.flush()
-            ok = _run_install_cmd(retry_cmd, retries=0, timeout=timeout)
+            ok = _run_install_cmd(
+                retry_cmd, retries=0, timeout=timeout, cwd=vuln_db_dir,
+            )
         if ok:
             w(f"  {_C_GREEN}  done{_RST}\n")
         else:
             w(f"  {_C_RED}  failed — continuing with partial data{_RST}\n")
+            all_steps_ok = False
         w("\n")
 
     count = _probe_rag_db()
-    if count > 0:
+    complete = all_steps_ok and count >= _RAG_MIN_ENTRIES
+    if complete:
         w(f"  {_C_GREEN}RAG database: {count:,} entries indexed{_RST}\n\n")
-        return True
-    return False
+    elif count > 0:
+        w(
+            f"  {_C_ORANGE}RAG database incomplete: {count:,} entries indexed; "
+            f"one or more requested sources or completeness postconditions "
+            f"failed.{_RST}\n\n"
+        )
+    return complete
 
 
 def _quick_check_required() -> bool:
     """Silent check for required tools. Returns True if all present."""
-    if not _detect_cli_backends():
+    if not _dependency_backend_paths():
         return False
-    for name in ("python", "npx", "npm", "git"):
-        if name == "python":
-            if not (_find_bin("python", _python_extra_paths()) or _find_bin("python3")):
-                return False
-        elif not _find_bin(name):
-            return False
-    return True
+    # The front already runs under the admitted interpreter. Requiring an
+    # unrelated `python`/`python3` PATH alias breaks normal macOS terminals.
+    if not sys.executable or not os.path.isfile(sys.executable):
+        return False
+    return bool(_find_bin("git"))
 
 
 def _python_dependency_runtime_healthy():
@@ -7845,7 +9374,6 @@ def _python_dependency_exact_probe(expression, *, cwd=None, isolated=True):
 def _setup_python_deps(w, *, force_refresh=False):
     """Install all Python dependencies if missing. Returns True if all installed."""
     base = PLAMEN_HOME
-    py = _python_bin()
     req_files = [
         ("Reviewed universal Python runtime", "requirements-runtime-full.lock"),
         # unified-vuln-db handles all RAG indexing (solodit, defihacklabs, immunefi writeups, immunefi competitions)
@@ -7977,11 +9505,11 @@ def _setup_python_deps(w, *, force_refresh=False):
 
     # The active interpreter must be the Plamen-owned runtime before any pip
     # mutation. The full lock supplies the complete cross-platform graph.
-    _pip_install_args()  # fail closed unless this is the Plamen-owned runtime
-    pip_base = (
-        f'{py} -B -m pip install --disable-pip-version-check '
-        '--require-hashes --only-binary=:all:'
-    )
+    pip_base = [
+        *_pip_install_args(),
+        "--disable-pip-version-check", "--require-hashes",
+        "--only-binary=:all:",
+    ]
 
     if not _retire_legacy_python_dependency_stamp():
         w(
@@ -7997,7 +9525,7 @@ def _setup_python_deps(w, *, force_refresh=False):
             continue
         w(f"  {_C_ORANGE}>{_RST} {label}\n")
         sys.stdout.flush()
-        if not _run_install_cmd(f'{pip_base} -r "{path}"', retries=1):
+        if not _run_install_cmd([*pip_base, "-r", path], retries=1):
             w(f"  {_C_RED}  failed{_RST}\n")
             all_ok = False
         else:
@@ -8117,17 +9645,22 @@ _MCP_INSTALL_STAMP = ".plamen-lock-materialization.json"
 _MCP_INSTALL_POLICY = "npm-ci-ignore-scripts-reviewed-cli-byte-authority-v4"
 _MCP_INSTALL_STAMP_SCHEMA = "plamen.node_runtime_materialization.v2"
 _MCP_ADMITTED_NPM_VERSIONS = frozenset({"11.19.0"})
-_MCP_SELECTION_SCHEMA = "plamen.mcp_current_selection.v1"
+_MCP_SELECTION_SCHEMA = "plamen.mcp_current_selection.v2"
 _MCP_SELECTION_FIELDS = frozenset({
     "schema", "store_root", "generation_id", "receipt_sha256",
     "census_sha256", "request_sha256", "generation_policy_sha256",
     "receipt_key_id", "receipt_public_key", "install_transaction_id",
     "install_receipt_sha256", "install_source_manifest_sha256",
     "install_runtime_manifest_sha256", "install_adapter_manifest_sha256",
-    "server_launches", "backend_launches", "signature",
+    "server_launches", "backend_launches", "backend_acquisition_policy_sha256",
+    "backend_receipts", "signature",
+})
+_MCP_SELECTION_V1_FIELDS = _MCP_SELECTION_FIELDS.difference({
+    "backend_acquisition_policy_sha256", "backend_receipts",
 })
 _MCP_RUNTIME_MODULE = None
 _BACKEND_PROBE_SCOPE_MODULE = None
+_BACKEND_ACQUISITION_MODULE = None
 
 
 def _mcp_runtime_module(plamen_root=None):
@@ -8146,9 +9679,225 @@ def _mcp_runtime_module(plamen_root=None):
         raise RuntimeError("MCP runtime module is unavailable")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        if sys.modules.get(spec.name) is module:
+            del sys.modules[spec.name]
+        raise
     _MCP_RUNTIME_MODULE = module
     return module
+
+
+def _backend_acquisition_module(plamen_root=None):
+    global _BACKEND_ACQUISITION_MODULE
+    root = Path(plamen_root or PLAMEN_HOME).absolute()
+    path = root / "scripts" / "backend_acquisition.py"
+    if _BACKEND_ACQUISITION_MODULE is not None:
+        if Path(_BACKEND_ACQUISITION_MODULE.__file__).absolute() != path:
+            raise RuntimeError("backend acquisition authority root changed")
+        return _BACKEND_ACQUISITION_MODULE
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_plamen_authenticated_backend_acquisition", path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("backend acquisition authority is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    _BACKEND_ACQUISITION_MODULE = module
+    return module
+
+
+def _backend_platform_name():
+    machine = platform.machine().lower()
+    if machine in {"arm64", "aarch64"}:
+        arch = "arm64"
+    elif machine in {"amd64", "x86_64"}:
+        arch = "x64"
+    else:
+        raise RuntimeError(
+            "dynamic backend acquisition is unsupported on this architecture"
+        )
+    if sys.platform == "darwin":
+        return "darwin-" + arch
+    if sys.platform == "win32":
+        return "win32-" + arch
+    if sys.platform.startswith("linux"):
+        libc_name = (platform.libc_ver()[0] or "").lower()
+        musl = libc_name == "musl" or any(
+            Path(candidate).exists()
+            for candidate in ("/etc/alpine-release", "/lib/libc.musl-x86_64.so.1")
+        )
+        return "linux-" + arch + ("-musl" if musl else "")
+    raise RuntimeError("dynamic backend acquisition is unsupported on this OS")
+
+
+def _backend_fetch_bytes(url, *, maximum_bytes=512 * 1024 * 1024):
+    """Fetch one policy-selected HTTPS object without proxy/redirect/credentials."""
+    import ssl
+    import urllib.error
+    import urllib.request
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+
+    if not isinstance(url, str) or not url.startswith("https://"):
+        raise RuntimeError("backend acquisition URL differs")
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), NoRedirect(),
+        urllib.request.HTTPSHandler(context=context),
+    )
+    request = urllib.request.Request(
+        url, headers={"Accept": "application/json, application/octet-stream"},
+        method="GET",
+    )
+    with opener.open(request, timeout=60) as response:
+        if response.geturl() != url or response.status != 200:
+            raise RuntimeError("backend acquisition transport authority differs")
+        chunks = []
+        total = 0
+        while True:
+            block = response.read(min(1024 * 1024, maximum_bytes + 1 - total))
+            if not block:
+                break
+            total += len(block)
+            if total > maximum_bytes:
+                raise RuntimeError("backend acquisition response exceeds bound")
+            chunks.append(block)
+    return b"".join(chunks)
+
+
+def _backend_fetch_json(url):
+    raw = _backend_fetch_bytes(url, maximum_bytes=16 * 1024 * 1024)
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise RuntimeError("backend acquisition metadata is malformed") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("backend acquisition metadata root differs")
+    return value
+
+
+def _dynamic_backend_generation_manifests(
+    *, root, runtime, managed_node, verifier, node, npm,
+    package_value, lock_value, materialization_parent,
+):
+    """Resolve latest once and return one exact combined install-time lock."""
+    import tempfile
+
+    acquisition = _backend_acquisition_module(root)
+    policy_path = (
+        Path(root) / "verification_policy" / "native_backend_acquisition.v2.json"
+    )
+    policy, policy_sha256 = acquisition.load_policy(policy_path)
+    platform_name = _backend_platform_name()
+    resolutions = acquisition.resolve_latest_backends(
+        policy, fetch_json=_backend_fetch_json, fetch_bytes=_backend_fetch_bytes,
+        platform=platform_name,
+    )
+    payloads = {}
+    for selector in ("claude", "codex"):
+        platform_row = resolutions[selector]["platform_package"]
+        raw = _backend_fetch_bytes(platform_row["tarball_url"])
+        member_pattern = (
+            r"package/claude(?:\.exe)?" if selector == "claude"
+            else r"package/vendor/[^/]+/bin/codex(?:\.exe)?"
+        )
+        payloads[selector] = acquisition.authenticate_archive_payload(
+            raw, source_url=platform_row["tarball_url"],
+            expected_integrity=platform_row["integrity"],
+            selected_member_pattern=member_pattern,
+        )
+
+    combined_package = json.loads(json.dumps(package_value))
+    dependencies = combined_package.get("dependencies")
+    if not isinstance(dependencies, dict):
+        raise RuntimeError("frozen MCP package dependency map differs")
+    dependencies.update({
+        "@anthropic-ai/claude-code": resolutions["claude"]["version"],
+        "@openai/codex": resolutions["codex"]["version"],
+    })
+    combined_package["dependencies"] = dict(sorted(dependencies.items()))
+    stage = Path(tempfile.mkdtemp(
+        prefix="backend-lock-", dir=materialization_parent,
+    ))
+    try:
+        package_bytes = runtime._canonical_json(combined_package) + b"\n"
+        (stage / "package.json").write_bytes(package_bytes)
+        (stage / "package-lock.json").write_bytes(
+            runtime._canonical_json(lock_value) + b"\n"
+        )
+        environment = runtime.materialization_environment(
+            os.path.abspath(node), os.path.abspath(npm), stage,
+            source_env=os.environ,
+        )
+        result = runtime.run_managed_node(
+            managed_node,
+            [
+                os.path.abspath(npm), "install", "--package-lock-only",
+                "--ignore-scripts", "--no-audit", "--no-fund", "--save-exact",
+                "@anthropic-ai/claude-code@" + resolutions["claude"]["version"],
+                "@openai/codex@" + resolutions["codex"]["version"],
+            ],
+            verifier=verifier, cwd=stage, environment=environment,
+            timeout=600, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "dynamic backend lock generation failed: "
+                + str(result.stderr or "")[:300]
+            )
+        generated_raw = (stage / "package-lock.json").read_bytes()
+        generated = _strict_json_bytes(generated_raw)
+        safety_packages = lock_value.get("packages") or {}
+        generated_packages = generated.get("packages") or {}
+        for name, row in safety_packages.items():
+            if name and generated_packages.get(name) != row:
+                raise RuntimeError(
+                    "dynamic backend resolution changed frozen safety closure: " + name
+                )
+        for name, row in generated_packages.items():
+            if not name or name in safety_packages or row.get("link"):
+                continue
+            if (
+                not isinstance(row, dict)
+                or not str(row.get("resolved") or "").startswith(
+                    "https://registry.npmjs.org/"
+                )
+                or not str(row.get("integrity") or "").startswith("sha512-")
+            ):
+                raise RuntimeError(
+                    "dynamic backend closure has unauthenticated package: " + name
+                )
+        expected_integrities = {
+            "node_modules/@anthropic-ai/claude-code":
+                resolutions["claude"]["integrity"],
+            "node_modules/@openai/codex": resolutions["codex"]["integrity"],
+            "node_modules/" + resolutions["claude"]["platform_package"]["install_name"]:
+                resolutions["claude"]["platform_package"]["integrity"],
+            "node_modules/" + resolutions["codex"]["platform_package"]["install_name"]:
+                resolutions["codex"]["platform_package"]["integrity"],
+        }
+        for name, integrity in expected_integrities.items():
+            if (generated_packages.get(name) or {}).get("integrity") != integrity:
+                raise RuntimeError("dynamic backend lock integrity differs: " + name)
+        lock_bytes = runtime._canonical_json(generated) + b"\n"
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    return {
+        "package_bytes": package_bytes,
+        "lock_bytes": lock_bytes,
+        "package_value": combined_package,
+        "resolutions": resolutions,
+        "payloads": payloads,
+        "policy": policy,
+        "policy_sha256": policy_sha256,
+    }
 
 
 def _mcp_generation_store_root():
@@ -8321,14 +10070,32 @@ def _mcp_backend_launches(validated, *, runtime, signer, generation_policy_sha25
     ]
     if len(codex_candidates) != 1:
         raise RuntimeError("MCP generation Codex native denominator differs")
+    package_paths = {
+        "claude": "node_modules/@anthropic-ai/claude-code/package.json",
+        "codex": "node_modules/@openai/codex/package.json",
+    }
+    versions = {}
+    for backend, package_relative in package_paths.items():
+        package_row = census.get(package_relative)
+        if not isinstance(package_row, dict) or package_row.get("kind") != "file":
+            raise RuntimeError("MCP generation omits backend package: " + backend)
+        package = json.loads(
+            validated.payload_path.joinpath(*package_relative.split("/")).read_bytes()
+        )
+        version = package.get("version")
+        if not isinstance(version, str) or not re.fullmatch(
+            r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", version,
+        ):
+            raise RuntimeError("MCP generation backend version differs: " + backend)
+        versions[backend] = version
     definitions = {
         "claude": (
             "native", "node_modules/@anthropic-ai/claude-code/bin/claude.exe",
-            "2.1.252", "node_modules/@anthropic-ai/claude-code/package.json",
+            versions["claude"], package_paths["claude"],
         ),
         "codex": (
             "native", codex_candidates[0],
-            "0.152.0", "node_modules/@openai/codex/package.json",
+            versions["codex"], package_paths["codex"],
         ),
     }
     rows = {}
@@ -8340,9 +10107,9 @@ def _mcp_backend_launches(validated, *, runtime, signer, generation_policy_sha25
             or not isinstance(package_row, dict) or package_row.get("kind") != "file"
         ):
             raise RuntimeError("MCP generation omits backend CLI: " + backend)
-        package = json.loads(
-            validated.payload_path.joinpath(*package_relative.split("/")).read_bytes()
-        )
+        package = json.loads(validated.payload_path.joinpath(
+            *package_relative.split("/")
+        ).read_bytes())
         if package.get("version") != version:
             raise RuntimeError("MCP generation backend version differs: " + backend)
         expected_roster = set(runtime.native_resource_roster(relative))
@@ -8394,6 +10161,167 @@ def _mcp_backend_launches(validated, *, runtime, signer, generation_policy_sha25
     return rows
 
 
+def _backend_code_signature_receipt(path, selector, policy, platform_name):
+    publisher = policy["backends"][selector]["publisher"]
+    if not platform_name.startswith("darwin"):
+        return {
+            "mode": "REGISTRY_SIGNATURE_ONLY", "identifier": None,
+            "team_identifier": None, "cdhash_sha256": None,
+        }
+    verify = subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--strict", "--verbose=4", str(path)],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+    )
+    details = subprocess.run(
+        ["/usr/bin/codesign", "-d", "--verbose=6", str(path)],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+    )
+    text_value = (details.stdout or "") + "\n" + (details.stderr or "")
+    def field(pattern):
+        match = re.search(pattern, text_value, flags=re.MULTILINE)
+        return match.group(1) if match else None
+    identifier = field(r"^Identifier=([^\r\n]+)$")
+    team = field(r"^TeamIdentifier=([^\r\n]+)$")
+    cdhash = field(r"^CandidateCDHashFull sha256=([0-9a-f]{64})$")
+    if (
+        verify.returncode != 0 or details.returncode != 0
+        or identifier != publisher["apple_identifier"]
+        or team != publisher["apple_team_identifier"]
+        or cdhash is None
+    ):
+        raise RuntimeError("backend Apple publisher signature differs: " + selector)
+    return {
+        "mode": "APPLE_DEVELOPER_ID", "identifier": identifier,
+        "team_identifier": team, "cdhash_sha256": cdhash,
+    }
+
+
+def _backend_probe_receipt(path, selector, version, policy):
+    probes = {}
+    rows = (
+        ("version", ["--version"]),
+        ("help", ["--help"] if selector == "claude" else ["exec", "--help"]),
+    )
+    for name, arguments in rows:
+        result = subprocess.run(
+            [str(path), *arguments], stdin=subprocess.DEVNULL,
+            capture_output=True, timeout=60,
+        )
+        stdout = bytes(result.stdout or b"").replace(b"\r\n", b"\n")
+        stderr = bytes(result.stderr or b"").replace(b"\r\n", b"\n")
+        combined = (stdout + b"\n" + stderr).decode("utf-8", "replace")
+        required = []
+        if name == "help":
+            key = (
+                "help_required_flags" if selector == "claude"
+                else "exec_help_required_flags"
+            )
+            required = policy["backends"][selector]["cli_contract"][key]
+            if any(flag not in combined for flag in required):
+                raise RuntimeError("backend CLI contract differs: " + selector)
+        normalized = ""
+        if name == "version":
+            normalized = combined.strip()
+            expected = (
+                f"{version} (Claude Code)" if selector == "claude"
+                else f"codex-cli {version}"
+            )
+            if result.returncode != 0 or normalized != expected:
+                raise RuntimeError("backend version conformance differs: " + selector)
+        elif result.returncode != 0:
+            raise RuntimeError("backend help conformance differs: " + selector)
+        probes[name] = {
+            "argv": arguments, "returncode": result.returncode,
+            "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
+            "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
+            "normalized_output": normalized,
+            "observed_contract": list(required),
+        }
+    return probes
+
+
+def _mcp_backend_acquisition_receipts(
+    published, launches, dynamic, committed, raw_install_receipt, signer,
+):
+    acquisition = _backend_acquisition_module(committed["plamen_root"])
+    census = {row["path"]: row for row in published.entries}
+    platform_name = _backend_platform_name()
+    receipts = {}
+    for selector in ("claude", "codex"):
+        endpoints = []
+        launch = launches[selector]
+        relative = launch["relative_path"]
+        expected_roster = set(
+            _mcp_runtime_module(committed["plamen_root"]).native_resource_roster(
+                relative
+            )
+        )
+        closure_rows = [census[path] for path in sorted(expected_roster)]
+        if len(closure_rows) != len(expected_roster):
+            raise RuntimeError("backend closure receipt denominator differs")
+        executable = published.payload_path.joinpath(*relative.split("/"))
+        resolution = dict(dynamic["resolutions"][selector])
+        upstream = resolution.pop("upstream_release", None)
+        platform_row = resolution["platform_package"]
+        endpoints.extend((
+            resolution["metadata_url"], platform_row["metadata_url"],
+            platform_row["tarball_url"],
+        ))
+        if upstream is not None:
+            endpoints.extend((upstream["latest_url"], upstream["manifest_url"]))
+        installed = {
+            "platform": platform_name,
+            "relative_path": relative,
+            "executable_size": launch["size"],
+            "executable_sha256": launch["sha256"],
+            "closure_count": len(closure_rows),
+            "closure_bytes": sum(
+                row["size"] for row in closure_rows if row["kind"] == "file"
+            ),
+            "closure_sha256": hashlib.sha256(
+                acquisition.canonical_json(closure_rows)
+            ).hexdigest(),
+            "code_signature": _backend_code_signature_receipt(
+                executable, selector, dynamic["policy"], platform_name,
+            ),
+        }
+        source_manifest_raw = acquisition.canonical_json({
+            "schema": "plamen.backend-installed-source-manifest.v1",
+            "selector": selector,
+            "payload": dynamic["payloads"][selector],
+            "closure": closure_rows,
+        })
+        probes = _backend_probe_receipt(
+            executable, selector, launch["version"], dynamic["policy"],
+        )
+        receipt = acquisition.build_generation_receipt(
+            selector=selector, policy_sha256=dynamic["policy_sha256"],
+            resolution=resolution,
+            resolved_release=platform_row["version"], upstream=upstream,
+            transport={
+                "tls_minimum": "1.2", "redirect_count": 0,
+                "credentials": "FORBIDDEN", "proxy_environment": "IGNORED",
+                "endpoints_sha256": hashlib.sha256(
+                    acquisition.canonical_json(sorted(set(endpoints)))
+                ).hexdigest(),
+            },
+            payload=dynamic["payloads"][selector], installed=installed,
+            probes=probes,
+            install={
+                "transaction_id": committed["transaction_id"],
+                "generation_id": published.generation_id,
+                "install_receipt_sha256": hashlib.sha256(raw_install_receipt).hexdigest(),
+                "source_manifest_sha256": hashlib.sha256(
+                    source_manifest_raw
+                ).hexdigest(),
+                "source_manifest_size": len(source_manifest_raw),
+            },
+            signer=signer,
+        )
+        receipts[selector] = receipt
+    return receipts
+
+
 def _mcp_selection_unsigned_bytes(value):
     unsigned = dict(value); unsigned.pop("signature", None)
     return json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -8412,7 +10340,11 @@ def _publish_mcp_selection(value, private, public):
         prior = _strict_json_bytes(prior_raw)
         if (
             prior_raw != (json.dumps(prior, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-            or not isinstance(prior, dict) or set(prior) != _MCP_SELECTION_FIELDS
+            or not isinstance(prior, dict)
+            or set(prior) not in {_MCP_SELECTION_FIELDS, _MCP_SELECTION_V1_FIELDS}
+            or prior.get("schema") not in {
+                _MCP_SELECTION_SCHEMA, "plamen.mcp_current_selection.v1",
+            }
             or not re.fullmatch(r"[0-9a-f]{128}", prior.get("signature", ""))
         ):
             raise RuntimeError("existing MCP selection authority is malformed")
@@ -8474,7 +10406,7 @@ def _validated_mcp_current_selection(
         or value["install_adapter_manifest_sha256"] != committed["adapter_manifest_sha256"]
         or any(not re.fullmatch(r"[0-9a-f]{64}", value.get(field, "")) for field in (
             "receipt_sha256", "census_sha256", "request_sha256",
-            "generation_policy_sha256",
+            "generation_policy_sha256", "backend_acquisition_policy_sha256",
         ))
         or not re.fullmatch(r"npm-[0-9a-f]{64}", value.get("generation_id", ""))
         or not re.fullmatch(r"[0-9a-f]{128}", value.get("signature", ""))
@@ -8490,6 +10422,38 @@ def _validated_mcp_current_selection(
     if type(full_generation) is not bool or type(verify_generation_receipt) is not bool:
         raise RuntimeError("MCP selection validation policy differs")
     runtime = _mcp_runtime_module(committed["plamen_root"])
+    acquisition = _backend_acquisition_module(committed["plamen_root"])
+    acquisition_policy, acquisition_policy_sha256 = acquisition.load_policy(
+        Path(committed["plamen_root"]) / "verification_policy"
+        / "native_backend_acquisition.v2.json"
+    )
+    if value["backend_acquisition_policy_sha256"] != acquisition_policy_sha256:
+        raise RuntimeError("backend acquisition policy selection differs")
+    backend_receipts = value.get("backend_receipts")
+    selected_launches = value.get("backend_launches")
+    if (
+        set(backend_receipts or {}) != {"claude", "codex"}
+        or not isinstance(selected_launches, dict)
+    ):
+        raise RuntimeError("backend acquisition receipt roster differs")
+    for name, receipt in backend_receipts.items():
+        replayed = acquisition.validate_generation_receipt(
+            receipt, policy=acquisition_policy,
+            policy_sha256=acquisition_policy_sha256, verifier=verifier,
+        )
+        launch = selected_launches.get(name)
+        if (
+            replayed.selector != name
+            or launch is None
+            or replayed.resolved_version != launch.get("version")
+            or replayed.relative_path != launch.get("relative_path")
+            or replayed.executable_size != launch.get("size")
+            or replayed.executable_sha256 != launch.get("sha256")
+            or replayed.generation_id != value["generation_id"]
+            or replayed.transaction_id != value["install_transaction_id"]
+            or replayed.install_receipt_sha256 != value["install_receipt_sha256"]
+        ):
+            raise RuntimeError("backend acquisition receipt selection differs")
     if not full_generation:
         servers = value.get("server_launches")
         backends = value.get("backend_launches")
@@ -8524,8 +10488,13 @@ def _validated_mcp_current_selection(
         ):
             raise RuntimeError("MCP selection execution projection differs")
         if (
-            backends["claude"]["version"] != "2.1.252"
-            or backends["codex"]["version"] != "0.152.0"
+            any(
+                re.fullmatch(
+                    r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?",
+                    backends[name]["version"],
+                ) is None
+                for name in ("claude", "codex")
+            )
             or backends["claude"]["relative_path"]
             != "node_modules/@anthropic-ai/claude-code/bin/claude.exe"
             or not re.fullmatch(
@@ -8976,6 +10945,16 @@ def _mcp_public_route(argv):
 
 def _setup_mcp_immutable_generation(w, *, mcp_root=None, allow_materialization=True):
     root = Path(mcp_root or PLAMEN_HOME).absolute()
+    if not allow_materialization:
+        try:
+            _validated_mcp_current_selection(
+                backend="codex", full_generation=False,
+                verify_generation_receipt=True,
+            )
+        except Exception as exc:
+            w(f"  {_C_ORANGE}!{_RST} immutable MCP replay failed: {exc}\n")
+            return False
+        return True
     mcp_dir = root / "mcp-packages"
     package_path = mcp_dir / "package.json"
     lock_path = mcp_dir / "package-lock.json"
@@ -9003,20 +10982,37 @@ def _setup_mcp_immutable_generation(w, *, mcp_root=None, allow_materialization=T
         store.parent.mkdir(parents=True, exist_ok=True)
         package_value = _strict_json_bytes(package_path.read_bytes())
         lock_value = _strict_json_bytes(lock_path.read_bytes())
-        package_bytes = runtime._canonical_json(package_value) + b"\n"
-        lock_bytes = runtime._canonical_json(lock_value) + b"\n"
+        materialization_parent = store.parent / "mcp-materialization-retained"
+        materialization_parent.mkdir(parents=True, exist_ok=True)
+        dynamic = _dynamic_backend_generation_manifests(
+            root=root, runtime=runtime, managed_node=managed_node,
+            verifier=verifier, node=node, npm=npm,
+            package_value=package_value, lock_value=lock_value,
+            materialization_parent=materialization_parent,
+        )
+        package_value = dynamic["package_value"]
+        package_bytes = dynamic["package_bytes"]
+        lock_bytes = dynamic["lock_bytes"]
         sanitizer_bytes = sanitizer_path.read_bytes()
+        claude_resolution = dynamic["resolutions"]["claude"]
+        claude_upstream = claude_resolution["upstream_release"]
         finalizer = {
             "schema": "plamen.mcp_finalizer_policy.v1",
             "output_entrypoint": "schema-sanitizer.js",
             "require_ordinary_file": True,
             "require_single_link": True,
             "post_npm_actions": [{
-                "schema": "plamen.claude_native_finalizer.v1",
-                "package": "@anthropic-ai/claude-code", "version": "2.1.252",
+                "schema": "plamen.claude_native_finalizer.v2",
+                "package": "@anthropic-ai/claude-code",
+                "version": claude_resolution["version"],
                 "script": "node_modules/@anthropic-ai/claude-code/install.cjs",
                 "output": "node_modules/@anthropic-ai/claude-code/bin/claude.exe",
                 "probe_args": ["--version"],
+                "acquisition_policy_sha256": dynamic["policy_sha256"],
+                "registry_metadata_sha256": claude_resolution["metadata_sha256"],
+                "upstream_manifest_sha256": claude_upstream["manifest_sha256"],
+                "expected_executable_sha256": claude_upstream["executable_sha256"],
+                "expected_executable_size": claude_upstream["executable_size"],
             }],
         }
         request = runtime.derive_generation_request(
@@ -9030,7 +11026,6 @@ def _setup_mcp_immutable_generation(w, *, mcp_root=None, allow_materialization=T
             npm_install_flags=runtime.REQUIRED_NPM_INSTALL_FLAGS,
             finalizer_policy=finalizer,
         )
-        materialization_parent = store.parent / "mcp-materialization-retained"
         materialization_root = materialization_parent / request.generation_id
         def materialize(payload):
             materialization_parent.mkdir(parents=True, exist_ok=True)
@@ -9055,6 +11050,11 @@ def _setup_mcp_immutable_generation(w, *, mcp_root=None, allow_materialization=T
                 node_executable=os.path.abspath(node), env=materialization_env,
                 runtime_module=runtime, managed_node=managed_node,
                 managed_node_verifier=verifier,
+                acquisition_policy_sha256=dynamic["policy_sha256"],
+                registry_metadata_sha256=claude_resolution["metadata_sha256"],
+                upstream_manifest_sha256=claude_upstream["manifest_sha256"],
+                expected_executable_sha256=claude_upstream["executable_sha256"],
+                expected_executable_size=claude_upstream["executable_size"],
             ):
                 raise RuntimeError("locked Claude CLI finalization failed")
 
@@ -9092,6 +11092,9 @@ def _setup_mcp_immutable_generation(w, *, mcp_root=None, allow_materialization=T
             published, runtime=runtime, signer=signer,
             generation_policy_sha256=generation_policy,
         )
+        backend_receipts = _mcp_backend_acquisition_receipts(
+            published, backend_launches, dynamic, committed, raw_receipt, signer,
+        )
         selection = {
             "schema": _MCP_SELECTION_SCHEMA,
             "store_root": str(store),
@@ -9108,6 +11111,8 @@ def _setup_mcp_immutable_generation(w, *, mcp_root=None, allow_materialization=T
             "install_adapter_manifest_sha256": committed["adapter_manifest_sha256"],
             "server_launches": launches,
             "backend_launches": backend_launches,
+            "backend_acquisition_policy_sha256": dynamic["policy_sha256"],
+            "backend_receipts": backend_receipts,
         }
         _publish_mcp_selection(selection, private, public)
         # ``published`` was fully censused immediately above (or returned by
@@ -9330,6 +11335,9 @@ def _mcp_node_modules_valid(
 def _finalize_locked_claude_cli(
     nm_dir: str, expected_version: str, w, *, node_executable=None, env=None,
     runtime_module=None, managed_node=None, managed_node_verifier=None,
+    acquisition_policy_sha256=None, registry_metadata_sha256=None,
+    upstream_manifest_sha256=None, expected_executable_sha256=None,
+    expected_executable_size=None,
 ) -> bool:
     """Run the one reviewed lifecycle action required by the locked Claude CLI.
 
@@ -9342,9 +11350,6 @@ def _finalize_locked_claude_cli(
     )
     if not os.path.isdir(package_dir):
         return True
-    if expected_version != "2.1.252":
-        w(f"  {_C_ORANGE}!{_RST} unadmitted Claude CLI version {expected_version}\n")
-        return False
     if (
         runtime_module is None or managed_node is None
         or managed_node_verifier is None or node_executable is None
@@ -9354,6 +11359,11 @@ def _finalize_locked_claude_cli(
     try:
         runtime_module.finalize_claude_native(
             Path(nm_dir).parent, version=expected_version,
+            acquisition_policy_sha256=acquisition_policy_sha256,
+            registry_metadata_sha256=registry_metadata_sha256,
+            upstream_manifest_sha256=upstream_manifest_sha256,
+            expected_executable_sha256=expected_executable_sha256,
+            expected_executable_size=expected_executable_size,
             node_executable=node_executable, environment=env or {},
             managed_node=managed_node, verifier=managed_node_verifier,
         )
@@ -10321,56 +12331,6 @@ def _claude_projection_publish_bytes_noreplace(
             pass
 
 
-def _claude_projection_fsync_parent(path):
-    if os.name == "nt":
-        import ctypes
-        from ctypes import wintypes
-
-        parent = os.path.dirname(os.path.abspath(path))
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CreateFileW.argtypes = [
-            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
-            wintypes.HANDLE,
-        ]
-        kernel32.CreateFileW.restype = wintypes.HANDLE
-        kernel32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
-        kernel32.FlushFileBuffers.restype = wintypes.BOOL
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        invalid = wintypes.HANDLE(-1).value
-        handle = kernel32.CreateFileW(
-            parent,
-            0x80000000 | 0x40000000,  # GENERIC_READ | GENERIC_WRITE
-            0x00000001 | 0x00000002 | 0x00000004,
-            None, 3, 0x02000000 | 0x20000000, None,
-        )
-        if handle == invalid:
-            raise OSError(
-                ctypes.get_last_error(),
-                "Claude projection parent-directory flush open failed",
-                parent,
-            )
-        try:
-            if not kernel32.FlushFileBuffers(handle):
-                raise OSError(
-                    ctypes.get_last_error(),
-                    "Claude projection parent-directory flush failed",
-                    parent,
-                )
-        finally:
-            kernel32.CloseHandle(handle)
-        return
-    parent = os.path.dirname(os.path.abspath(path))
-    descriptor = os.open(
-        parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-    )
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def _claude_projection_atomic_json(path, value):
     raw = (json.dumps(value, indent=2) + "\n").encode("utf-8")
     parent = os.path.dirname(path)
@@ -10815,6 +12775,25 @@ def _claude_projection_durable_unlink(path):
     _claude_projection_fsync_parent(path)
 
 
+def _darwin_fchflags_exact(descriptor, flags):
+    """Set Darwin vnode flags on the retained descriptor and verify them."""
+    if sys.platform != "darwin" or os.name == "nt":
+        return
+    import ctypes
+
+    if not isinstance(flags, int) or isinstance(flags, bool) or flags < 0:
+        raise RuntimeError("Darwin retained vnode flags are malformed")
+    libc = ctypes.CDLL(None, use_errno=True)
+    fchflags = libc.fchflags
+    fchflags.argtypes = [ctypes.c_int, ctypes.c_uint]
+    fchflags.restype = ctypes.c_int
+    if fchflags(int(descriptor), int(flags)) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, "fchflags retained projection lock")
+    if int(getattr(os.fstat(descriptor), "st_flags", -1)) != flags:
+        raise RuntimeError("Darwin retained vnode flags did not persist")
+
+
 def _claude_projection_durable_rmdir(path):
     os.rmdir(path)
     _claude_projection_fsync_parent(path)
@@ -11244,12 +13223,50 @@ def _claude_projection_validate_state_native_authority(value, expected_kind):
 
 
 def _claude_projection_posix_fd_xattrs(descriptor):
+    maximum_names = 1024
+    maximum_roster_bytes = 1024 * 1024
+    maximum_value_bytes = 1024 * 1024
+    maximum_aggregate_value_bytes = 8 * 1024 * 1024
+
+    def validate_names(names):
+        if (
+            not isinstance(names, (list, tuple))
+            or len(names) > maximum_names
+            or any(
+                not isinstance(name, str) or not name or "\x00" in name
+                for name in names
+            )
+            or sum(len(os.fsencode(name)) + 1 for name in names)
+            > maximum_roster_bytes
+        ):
+            raise RuntimeError("POSIX projection xattr roster is oversized")
+        return list(names)
+
+    def append_bounded(values, raw, total):
+        if not isinstance(raw, bytes):
+            raw = bytes(raw)
+        if len(raw) > maximum_value_bytes:
+            raise RuntimeError("POSIX projection xattr value is oversized")
+        total += len(raw)
+        if total > maximum_aggregate_value_bytes:
+            raise RuntimeError(
+                "POSIX projection aggregate xattr values are oversized"
+            )
+        values.append(raw)
+        return total
+
     if (
         hasattr(os, "listxattr") and hasattr(os, "getxattr")
         and os.listxattr in os.supports_fd and os.getxattr in os.supports_fd
     ):
-        names = os.listxattr(descriptor)
-        return names, [os.getxattr(descriptor, name) for name in names]
+        names = validate_names(os.listxattr(descriptor))
+        values = []
+        total = 0
+        for name in names:
+            total = append_bounded(
+                values, os.getxattr(descriptor, name), total,
+            )
+        return names, values
     if sys.platform != "darwin":
         raise RuntimeError("POSIX fd-relative xattr authority is unavailable")
     import ctypes
@@ -11266,7 +13283,7 @@ def _claude_projection_posix_fd_xattrs(descriptor):
     name_size = int(libc.flistxattr(descriptor, None, 0, 0))
     if name_size < 0:
         raise OSError(ctypes.get_errno(), "flistxattr projection authority")
-    if name_size > 1024 * 1024:
+    if name_size > maximum_roster_bytes:
         raise RuntimeError("POSIX projection xattr roster is oversized")
     if name_size:
         name_buffer = ctypes.create_string_buffer(name_size)
@@ -11280,15 +13297,16 @@ def _claude_projection_posix_fd_xattrs(descriptor):
             encoded_names.pop()
     else:
         encoded_names = []
-    names = [os.fsdecode(name) for name in encoded_names]
+    names = validate_names([os.fsdecode(name) for name in encoded_names])
     values = []
+    total = 0
     for encoded_name in encoded_names:
         size = int(libc.fgetxattr(
             descriptor, encoded_name, None, 0, 0, 0,
         ))
         if size < 0:
             raise OSError(ctypes.get_errno(), "fgetxattr projection authority")
-        if size > 1024 * 1024:
+        if size > maximum_value_bytes:
             raise RuntimeError("POSIX projection xattr value is oversized")
         buffer = ctypes.create_string_buffer(size or 1)
         observed = int(libc.fgetxattr(
@@ -11296,7 +13314,7 @@ def _claude_projection_posix_fd_xattrs(descriptor):
         ))
         if observed != size:
             raise RuntimeError("POSIX projection xattr value changed")
-        values.append(buffer.raw[:observed])
+        total = append_bounded(values, buffer.raw[:observed], total)
     return names, values
 
 
@@ -12792,6 +14810,7 @@ def _claude_projection_lock_impl(
         descriptor = os.open(lock_path, flags)
     except (OSError, ValueError, TypeError) as exc:
         raise RuntimeError("Claude projection lock is unavailable") from exc
+    darwin_original_flags = None
     try:
         import stat as _stat
         opened = os.fstat(descriptor)
@@ -12864,6 +14883,18 @@ def _claude_projection_lock_impl(
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exc:
                 raise RuntimeError("another Claude projection transaction is active") from exc
+            if sys.platform == "darwin":
+                # flock is advisory and does not stop an uncooperative same-user
+                # unlink.  Hold UF_IMMUTABLE on the exact retained vnode for the
+                # critical section, using fchflags so no pathname race is
+                # introduced.  The original flags are restored before release.
+                immutable = int(getattr(_stat, "UF_IMMUTABLE", 0x00000002))
+                darwin_original_flags = int(
+                    getattr(os.fstat(descriptor), "st_flags", 0)
+                )
+                _darwin_fchflags_exact(
+                    descriptor, darwin_original_flags | immutable,
+                )
         named_after = os.stat(lock_path, follow_symlinks=False)
         if (
             named_after.st_dev != opened.st_dev or named_after.st_ino != opened.st_ino
@@ -12920,6 +14951,9 @@ def _claude_projection_lock_impl(
             backup = migration_request.get("backup")
             if expected != authority or not isinstance(backup, str):
                 raise RuntimeError("legacy Claude projection lock move request differs")
+            if darwin_original_flags is not None:
+                _darwin_fchflags_exact(descriptor, darwin_original_flags)
+                darwin_original_flags = None
             _claude_projection_move_retained_lock(descriptor, authority, backup)
             migration_request["moved"] = True
     finally:
@@ -12927,6 +14961,14 @@ def _claude_projection_lock_impl(
             registered = _active_leases.pop(
                 id(authority), None,
             )
+        if descriptor is not None and darwin_original_flags is not None:
+            try:
+                _darwin_fchflags_exact(descriptor, darwin_original_flags)
+            except (OSError, RuntimeError):
+                # Preserve the stronger immutable state on an exceptional
+                # cleanup path.  A later authenticated recovery can reopen the
+                # same vnode and deliberately restore its prior flags.
+                pass
         try:
             if os.name == "nt" and descriptor is not None:
                 import msvcrt
@@ -16182,7 +18224,8 @@ def _backend_shim_path(backend):
 
 def _backend_shim_bytes(
     backend, plamen_root, interpreter=None, *, selection=None,
-    suppress_bytecode=True,
+    suppress_bytecode=True, platform_name=None, target_identity=None,
+    release_path=None,
 ):
     # Shims only serialize the signed immutable launch authority.  The public
     # backend route revalidates the selected member immediately before exec.
@@ -16193,15 +18236,23 @@ def _backend_shim_bytes(
     args = _backend_launcher_args(selection, backend=backend)
     executable = str(Path(interpreter or sys.executable).resolve(strict=True))
     target = str((Path(plamen_root).absolute() / "plamen.py").resolve(strict=True))
-    if sys.platform == "win32":
+    platform_name = sys.platform if platform_name is None else platform_name
+    if platform_name == "win32":
         if any('"' in item or "%" in item or "\r" in item or "\n" in item
                for item in [executable, target, *args]):
             raise RuntimeError("backend shim authority contains unsafe Windows text")
-        bytecode_flag = " -B" if suppress_bytecode else ""
+        command = (
+            _windows_bound_source_command(
+                executable, target, args, target_identity=target_identity,
+                release_path=release_path,
+            )
+            if suppress_bytecode else
+            f'"{executable}" "{target}" '
+            + " ".join(f'"{item}"' for item in args) + " %*"
+        )
         return (
             "@echo off\r\nREM Plamen authenticated immutable backend launcher v1.\r\n"
-            + f'"{executable}"{bytecode_flag} "{target}" '
-            + " ".join(f'"{item}"' for item in args) + " %*\r\n"
+            + command + "\r\n"
         ).encode("utf-8")
     command_items = [executable]
     if suppress_bytecode:
@@ -16836,17 +18887,26 @@ def _launcher_publish_bytes_noreplace(path, raw, *, mode):
         except FileNotFoundError: pass
 
 
-def _launcher_existing_state(path, raw, label):
+def _launcher_existing_state(path, raw, label, *, required_mode=None):
     authority = _launcher_regular_snapshot(path, raw, label)
-    if os.name != "nt" and authority[-1] != 0o700:
-        raise RuntimeError(f"{label} mode differs from 0700: {path}")
+    if (
+        required_mode is not None
+        and (
+            isinstance(required_mode, bool)
+            or not isinstance(required_mode, int)
+            or required_mode < 0
+            or required_mode > 0o777
+        )
+    ):
+        raise RuntimeError("launcher required mode is malformed")
     return {
         "kind": "exact-existing",
         "authority": authority,
         "raw": raw,
         "security_current": (
             _win_launcher_authority_is_exact(authority)
-            if os.name == "nt" else True
+            if os.name == "nt"
+            else required_mode is None or authority[-1] == required_mode
         ),
     }
 
@@ -16974,7 +19034,7 @@ def _publish_public_launcher(path, raw, state, *, mode, admitted_targets=()):
 
     if state.get("kind") == "exact-existing":
         _launcher_replay_existing(path, state, "existing public launcher")
-        if state["raw"] == raw:
+        if state["raw"] == raw and state.get("security_current", False):
             return None
     elif state.get("kind") == "exact-symlink":
         _launcher_replay_symlink(
@@ -17106,19 +19166,85 @@ def _authenticated_retained_backend_shim(
     except (OSError, UnicodeError, ValueError, TypeError):
         return False
     digest = r"(?P<{}>[0-9a-f]{{64}})"
-    pattern = (
-        re.escape("@echo off\r\n")
-        + re.escape("REM Plamen authenticated immutable backend launcher v1.\r\n")
-        + re.escape(f'"{executable}"')
-        + r"(?: -B)? "
-        + re.escape(f'"{target}" "backend-launch" "--backend" "{backend}" ')
-        + r'"--generation" "npm-(?P<request>[0-9a-f]{64})" '
-        + r'"--receipt-sha256" "' + digest.format("receipt") + r'" '
-        + r'"--census-sha256" "' + digest.format("census") + r'" '
-        + r'"--request-sha256" "(?P=request)" '
-        + r'"--policy-sha256" "' + digest.format("policy") + r'" "--" %\*\r\n'
+    if sys.platform == "win32":
+        direct_pattern = (
+            re.escape("@echo off\r\n")
+            + re.escape(
+                "REM Plamen authenticated immutable backend launcher v1.\r\n"
+            )
+            + re.escape(f'"{executable}"')
+            + r"(?: -B)? "
+            + re.escape(
+                f'"{target}" "backend-launch" "--backend" "{backend}" '
+            )
+            + r'"--generation" "npm-(?P<request>[0-9a-f]{64})" '
+            + r'"--receipt-sha256" "' + digest.format("receipt") + r'" '
+            + r'"--census-sha256" "' + digest.format("census") + r'" '
+            + r'"--request-sha256" "(?P=request)" '
+            + r'"--policy-sha256" "' + digest.format("policy")
+            + r'" "--" %\*\r\n'
+        )
+        import zlib
+        bootstrap = base64.b64encode(zlib.compress(
+            _WINDOWS_BOUND_SOURCE_BOOTSTRAP.encode("ascii"), level=9,
+        )).decode("ascii")
+        target_argument = base64.b64encode(
+            os.fsencode(str(PureWindowsPath(target)))
+        ).decode("ascii")
+        release_argument = base64.b64encode(os.fsencode(str(PureWindowsPath(
+            _backend_shim_path(backend).parent
+            / _WINDOWS_RELEASE_AUTHORITY_NAME
+        )))).decode("ascii")
+        secure_pattern = (
+            re.escape(
+                "@echo off\r\n"
+                "REM Plamen authenticated immutable backend launcher v1.\r\n"
+                f'"{executable}" -I -B -c '
+                f'"import base64,zlib;exec(zlib.decompress(base64.b64decode(\'{bootstrap}\')))" '
+                f'"{target_argument}" "-" "0" "{release_argument}" '
+                f'"backend-launch" "--backend" "{backend}" '
+                '"--generation" "npm-'
+            )
+            + r"(?P<request>[0-9a-f]{64})"
+            + re.escape('" "--receipt-sha256" "')
+            + digest.format("receipt")
+            + re.escape('" "--census-sha256" "')
+            + digest.format("census")
+            + re.escape('" "--request-sha256" "')
+            + r"(?P=request)"
+            + re.escape('" "--policy-sha256" "')
+            + digest.format("policy")
+            + re.escape('" "--" %*\r\n')
+        )
+        patterns = (direct_pattern, secure_pattern)
+    else:
+        # Match only the byte grammar emitted by _backend_shim_bytes on POSIX.
+        # In particular, paths retain their exact shlex.quote rendering and
+        # the caller argument vector must remain the literal quoted "$@".
+        patterns = ((
+            re.escape(
+                "#!/bin/sh\n"
+                "# Plamen authenticated immutable backend launcher v1.\n"
+                "exec " + shlex.quote(executable)
+            )
+            + r"(?: -B)? "
+            + re.escape(
+                shlex.quote(target)
+                + " backend-launch --backend " + backend + " --generation npm-"
+            )
+            + r"(?P<request>[0-9a-f]{64}) "
+            + r"--receipt-sha256 " + digest.format("receipt") + r" "
+            + r"--census-sha256 " + digest.format("census") + r" "
+            + r"--request-sha256 (?P=request) "
+            + r"--policy-sha256 " + digest.format("policy")
+            + re.escape(' -- "$@"\n')
+        ),)
+    match = next(
+        (candidate for candidate in (
+            re.fullmatch(pattern, text) for pattern in patterns
+        ) if candidate is not None),
+        None,
     )
-    match = re.fullmatch(pattern, text)
     if match is None:
         return False
     generation_id = "npm-" + match.group("request")
@@ -17143,24 +19269,31 @@ def _authenticated_retained_backend_shim(
 
 def _backend_cli_shim_plan(
     plamen_root, interpreter=None, *, return_selection=False,
+    platform_name=None, target_identity=None, release_path=None,
+    selection=None,
 ):
     """Preflight every backend-shim collision before publishing any byte."""
-    selection = _validated_mcp_current_selection(
-        backend="codex", full_generation=False,
-    )
+    if selection is None:
+        selection = _validated_mcp_current_selection(
+            backend="codex", full_generation=False,
+        )
     plan = {}
     for backend in ("claude", "codex"):
         path = _backend_shim_path(backend)
         raw = _backend_shim_bytes(
             backend, plamen_root, interpreter, selection=selection,
+            platform_name=platform_name, target_identity=target_identity,
+            release_path=release_path,
         )
         legacy_raw = _backend_shim_bytes(
             backend, plamen_root, interpreter, selection=selection,
-            suppress_bytecode=False,
+            suppress_bytecode=False, platform_name=platform_name,
         )
         if os.path.lexists(path):
             if path.is_symlink() or not path.is_file():
                 raise RuntimeError("backend shim is indirect: " + str(path))
+            if os.stat(path, follow_symlinks=False).st_size > 32768:
+                raise RuntimeError("backend shim exceeds the fixed byte bound: " + str(path))
             observed = path.read_bytes()
             # Marker text is descriptive, not ownership authority.  In
             # particular, accepting any file that merely contains the marker
@@ -17180,7 +19313,7 @@ def _backend_cli_shim_plan(
             ):
                 raise RuntimeError("refusing to replace foreign backend shim: " + str(path))
             state = _launcher_existing_state(
-                path, observed, "existing backend shim",
+                path, observed, "existing backend shim", required_mode=0o700,
             )
         else:
             state = _launcher_absent_state(path)
@@ -17320,7 +19453,17 @@ def _launcher_safe_command_directory(user_root):
 
 
 def _launcher_directory_replay(directory, authority):
-    if _launcher_directory_authority(directory) != authority:
+    current = _launcher_directory_authority(directory)
+    # A directory's link count changes when an unrelated concurrent process
+    # creates or removes a sibling subdirectory.  It is not object identity and
+    # must not invalidate an otherwise retained ancestor chain.  Continue to
+    # bind path spelling, device/inode, type/mode, owner, and Windows ACL.
+    stable = lambda row: (*row[:4], *row[5:])
+    if (
+        len(current) != len(authority)
+        or any(row[4] < 1 for row in current)
+        or tuple(map(stable, current)) != tuple(map(stable, authority))
+    ):
         raise RuntimeError("launcher directory ancestry changed")
 
 
@@ -17388,6 +19531,17 @@ def _launcher_directory_guard_replay(guard):
                 handle, directory=True, dangerous_mask=None,
             ) != tuple(row[-4:]):
                 raise RuntimeError("retained launcher ancestor ACL changed")
+    else:
+        for row, descriptor in zip(guard["authority"], guard["handles"]):
+            retained = os.fstat(descriptor)
+            if (
+                not stat.S_ISDIR(retained.st_mode)
+                or (int(retained.st_dev), int(retained.st_ino))
+                != (row[1], row[2])
+                or stat.S_IMODE(retained.st_mode) != row[3]
+                or int(getattr(retained, "st_uid", 0)) != row[5]
+            ):
+                raise RuntimeError("retained launcher ancestor changed")
 
 
 @contextlib.contextmanager
@@ -17989,7 +20143,7 @@ def _launcher_transaction_backup_authority(wanted, backup):
     if raw not in admitted:
         raise RuntimeError("retained launcher predecessor bytes are foreign")
     state = _launcher_existing_state(
-        backup, raw, "retained launcher predecessor",
+        backup, raw, "retained launcher predecessor", required_mode=0o700,
     )
     return _launcher_transaction_predecessor_authority(probe, state)
 
@@ -18004,7 +20158,7 @@ def _launcher_transaction_parse(path, expected_rows, selection):
         or value.get("selection") != _launcher_transaction_selection(selection)
         or not re.fullmatch(r"[0-9a-f]{32}", value.get("transaction_id", ""))
         or not isinstance(value.get("rows"), list)
-        or len(value["rows"]) != 3
+        or len(value["rows"]) != len(expected_rows)
     ):
         raise RuntimeError("launcher transaction journal authority differs")
     expected = {row["label"]: row for row in expected_rows}
@@ -18415,6 +20569,7 @@ def _launcher_transaction_publish_locked(directory, rows, selection):
                     raise RuntimeError("launcher transaction predecessor state differs")
                 staged_state = _launcher_existing_state(
                     authority["stage"], row["raw"], "staged launcher successor",
+                    required_mode=0o700,
                 )
                 _launcher_transaction_rename(
                     guard, authority["stage"], row["path"],
@@ -18494,7 +20649,10 @@ def _publish_backend_cli_shim_plan(plan, *, return_created=False):
             path, raw, state = plan[backend]
             path.parent.mkdir(parents=True, exist_ok=True)
             if state.get("kind") == "exact-existing":
-                if state.get("raw") == raw:
+                if (
+                    state.get("raw") == raw
+                    and state.get("security_current", False)
+                ):
                     _launcher_replay_existing(
                         path, state, "existing backend shim",
                     )
@@ -18542,8 +20700,13 @@ def _locked_backend_cli(backend, plamen_root, *, selection=None):
     candidate = _backend_shim_path(backend)
     if candidate.is_file() and not candidate.is_symlink():
         try:
+            release_path = (
+                candidate.parent / _WINDOWS_RELEASE_AUTHORITY_NAME
+                if sys.platform == "win32" else None
+            )
             if candidate.read_bytes() == _backend_shim_bytes(
                 backend, plamen_root, selection=selection,
+                release_path=release_path,
             ):
                 return candidate.absolute()
         except (OSError, RuntimeError, ValueError, TypeError):
@@ -18599,10 +20762,12 @@ def _validated_managed_backend_authority(plamen_root):
     }
 
 
-_MANAGED_BACKEND_VERSION_OUTPUTS = {
-    "claude": b"2.1.252 (Claude Code)\n",
-    "codex": b"codex-cli 0.152.0\n",
-}
+def _managed_backend_version_output(backend, version):
+    if backend == "claude":
+        return f"{version} (Claude Code)\n".encode("ascii")
+    if backend == "codex":
+        return f"codex-cli {version}\n".encode("ascii")
+    raise RuntimeError("managed backend selector differs")
 _BACKEND_PROBE_OUTPUT_LIMIT_BYTES = 1024 * 1024
 
 
@@ -18891,7 +21056,13 @@ def _assert_managed_backend_version_postcondition(managed_authority):
             raise RuntimeError(
                 f"managed {backend} backend version probe failed"
             ) from exc
-        expected = _MANAGED_BACKEND_VERSION_OUTPUTS[backend]
+        try:
+            version = managed_authority["selection"]["backend_launches"][backend][
+                "version"
+            ]
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError("managed backend version receipt is absent") from exc
+        expected = _managed_backend_version_output(backend, version)
         observed = bytes(probe.stdout or b"").replace(b"\r\n", b"\n")
         error = bytes(probe.stderr or b"").replace(b"\r\n", b"\n")
         if probe.returncode != 0 or observed != expected or error:
@@ -18900,12 +21071,392 @@ def _assert_managed_backend_version_postcondition(managed_authority):
             )
 
 
+_WINDOWS_BOUND_SOURCE_MAX_BYTES = 16 * 1024 * 1024
+_WINDOWS_CMD_LINE_MAX_CHARS = 8191
+_WINDOWS_RELEASE_AUTHORITY_SCHEMA = "plamen.windows_release_authority.v1"
+_WINDOWS_RELEASE_AUTHORITY_NAME = ".plamen-release-authority.json"
+_WINDOWS_BOUND_SOURCE_BOOTSTRAP = r'''import base64,hashlib,json,os,stat,sys
+def deny(message):
+    raise SystemExit("Plamen Windows launcher denied: " + message)
+def decode_path(value, label):
+    try:
+        return os.fsdecode(base64.b64decode(value, validate=True))
+    except Exception:
+        deny(label + " path is malformed")
+def read_bound(path, expected_sha256, expected_size, maximum, label):
+    if len(expected_sha256) != 64 or any(c not in "0123456789abcdef" for c in expected_sha256):
+        deny(label + " digest is malformed")
+    if expected_size < 1 or expected_size > maximum:
+        deny(label + " size is outside the fixed bound")
+    absolute = os.path.abspath(path)
+    if os.path.normcase(os.path.realpath(absolute)) != os.path.normcase(absolute):
+        deny(label + " path is indirect")
+    drive, tail = os.path.splitdrive(absolute)
+    cursor = drive + os.sep if drive else os.sep
+    for component in [item for item in tail.split(os.sep) if item]:
+        cursor = os.path.join(cursor, component)
+        try:
+            component_info = os.lstat(cursor)
+        except OSError:
+            deny(label + " path disappeared")
+        if stat.S_ISLNK(component_info.st_mode) or bool(getattr(component_info, "st_file_attributes", 0) & 0x400):
+            deny(label + " path traverses a reparse point")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(absolute, flags)
+    except OSError:
+        deny(label + " could not be opened")
+    try:
+        opened_before = os.fstat(descriptor)
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            raw = stream.read(expected_size + 1)
+        opened_after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        named_after = os.stat(absolute, follow_symlinks=False)
+    except OSError:
+        deny(label + " name disappeared")
+    def identity(value):
+        return (int(value.st_dev), int(value.st_ino), int(value.st_size), int(value.st_nlink), int(getattr(value, "st_file_attributes", 0)))
+    if (not stat.S_ISREG(opened_before.st_mode) or opened_before.st_nlink != 1
+            or identity(opened_before) != identity(opened_after)
+            or identity(opened_before) != identity(named_after)):
+        deny(label + " identity changed")
+    if len(raw) != expected_size or hashlib.sha256(raw).hexdigest() != expected_sha256:
+        deny(label + " bytes differ from the installed release authority")
+    return absolute, raw
+if len(sys.argv) < 5:
+    deny("authority arguments are missing")
+try:
+    path = decode_path(sys.argv[1], "source")
+    expected_sha256 = sys.argv[2]
+    expected_size = int(sys.argv[3], 10)
+except Exception:
+    deny("authority arguments are malformed")
+release_argument = sys.argv[4]
+if release_argument != "-":
+    release_path = decode_path(release_argument, "release authority")
+    try:
+        release_absolute = os.path.abspath(release_path)
+        if os.path.normcase(os.path.realpath(release_absolute)) != os.path.normcase(release_absolute):
+            deny("release authority path is indirect")
+        release_drive, release_tail = os.path.splitdrive(release_absolute)
+        release_cursor = release_drive + os.sep if release_drive else os.sep
+        for release_component in [item for item in release_tail.split(os.sep) if item]:
+            release_cursor = os.path.join(release_cursor, release_component)
+            release_component_info = os.lstat(release_cursor)
+            if stat.S_ISLNK(release_component_info.st_mode) or bool(getattr(release_component_info, "st_file_attributes", 0) & 0x400):
+                deny("release authority traverses a reparse point")
+        release_named = os.stat(release_absolute, follow_symlinks=False)
+        release_size = release_named.st_size
+        if release_size < 1 or release_size > 1048576:
+            deny("release authority size is outside the fixed bound")
+        release_descriptor = os.open(release_absolute, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        release_opened_before = os.fstat(release_descriptor)
+        with os.fdopen(release_descriptor, "rb", closefd=False) as release_stream:
+            release_raw = release_stream.read(release_size + 1)
+        release_opened_after = os.fstat(release_descriptor)
+        os.close(release_descriptor)
+        release_named_after = os.stat(release_absolute, follow_symlinks=False)
+        release_identity = lambda value: (int(value.st_dev), int(value.st_ino), int(value.st_size), int(value.st_nlink), int(getattr(value, "st_file_attributes", 0)))
+        if (not stat.S_ISREG(release_opened_before.st_mode) or release_opened_before.st_nlink != 1
+                or release_identity(release_opened_before) != release_identity(release_opened_after)
+                or release_identity(release_opened_before) != release_identity(release_named_after)):
+            deny("release authority identity changed")
+        release = json.loads(release_raw.decode("utf-8"))
+    except Exception:
+        deny("release authority is malformed")
+    if (not isinstance(release, dict) or set(release) != {"artifacts", "entry_point", "schema", "selection"}
+            or release.get("schema") != "plamen.windows_release_authority.v1"
+            or release_raw != (json.dumps(release, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")):
+        deny("release authority differs")
+    entry = release.get("entry_point")
+    if (not isinstance(entry, dict) or set(entry) != {"path", "sha256", "size"}
+            or os.path.normcase(os.path.abspath(entry.get("path", ""))) != os.path.normcase(os.path.abspath(path))):
+        deny("release entry-point authority differs")
+    expected_sha256 = entry["sha256"]
+    expected_size = entry["size"]
+    artifacts = release.get("artifacts")
+    selection = release.get("selection")
+    selection_fields = {"generation_id", "receipt_sha256", "census_sha256", "request_sha256", "generation_policy_sha256"}
+    if (not isinstance(selection, dict) or set(selection) != selection_fields
+            or len(selection.get("generation_id", "")) != 68 or not selection["generation_id"].startswith("npm-")
+            or any(c not in "0123456789abcdef" for c in selection["generation_id"][4:])
+            or any(len(selection.get(field, "")) != 64 or any(c not in "0123456789abcdef" for c in selection[field]) for field in selection_fields - {"generation_id"})):
+        deny("release selection authority differs")
+    if not isinstance(artifacts, list) or not (4 <= len(artifacts) <= 16):
+        deny("release artifact denominator differs")
+    seen = set()
+    for artifact in artifacts:
+        if not isinstance(artifact, dict) or set(artifact) != {"path", "sha256", "size"}:
+            deny("release artifact row differs")
+        artifact_path = os.path.normcase(os.path.abspath(artifact["path"]))
+        if artifact_path in seen:
+            deny("release artifact path is duplicated")
+        seen.add(artifact_path)
+        read_bound(artifact["path"], artifact["sha256"], artifact["size"], 67108864, "release artifact")
+absolute, raw = read_bound(path, expected_sha256, expected_size, 16777216, "source")
+sys.argv = [absolute, *sys.argv[5:]]
+sys.path.insert(0, os.path.dirname(absolute))
+namespace = {"__name__": "__main__", "__file__": absolute, "__package__": None, "__cached__": None}
+exec(compile(raw, absolute, "exec"), namespace, namespace)
+'''
+
+
+def _windows_bound_source_identity(target, *, expected=None):
+    """Return one exact ordinary source identity for a generated launcher."""
+    target = Path(target).resolve(strict=True)
+    if target.is_symlink() or not target.is_file():
+        raise RuntimeError("Windows launcher entry point is indirect/non-file")
+    info = os.stat(target, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or _python_dependency_census_reparse(info)
+        or info.st_size < 1
+        or info.st_size > _WINDOWS_BOUND_SOURCE_MAX_BYTES
+    ):
+        raise RuntimeError("Windows launcher entry point authority differs")
+    raw = target.read_bytes()
+    authority = _launcher_regular_snapshot(
+        target, raw, "Windows bound launcher entry point",
+    )
+    value = {
+        "path": str(PureWindowsPath(target)),
+        "size": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "authority": authority,
+    }
+    if expected is not None and value != expected:
+        raise RuntimeError("Windows launcher entry point changed during publication")
+    return value
+
+
+def _windows_release_artifact_identity(path, label):
+    """Bind one bounded, direct artifact consumed by a Windows install."""
+    candidate = Path(path).resolve(strict=True)
+    info = os.stat(candidate, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or info.st_nlink != 1
+        or _python_dependency_census_reparse(info)
+        or info.st_size < 1
+        or info.st_size > 64 * 1024 * 1024
+    ):
+        raise RuntimeError(f"Windows release {label} is indirect or oversized")
+    raw = candidate.read_bytes()
+    _launcher_regular_snapshot(candidate, raw, f"Windows release {label}")
+    return {
+        "path": str(PureWindowsPath(candidate)),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "size": len(raw),
+    }
+
+
+def _windows_release_authority_bytes(
+    installed, interpreter, target_identity, selection,
+):
+    """Seal all post-package update domains behind one launcher generation.
+
+    The package transaction, self-repair cache, immutable MCP generation,
+    Codex configuration and Python dependency stamp have separate recovery
+    mechanics.  This receipt does not pretend those stores share a filesystem
+    transaction; it makes their exact, jointly-ready postimages one fail-closed
+    launch precondition and is published atomically with all public launchers.
+    """
+    committed = _validated_committed_install_receipt()
+    installed = Path(installed).absolute()
+    if Path(committed.get("plamen_root", "")).absolute() != installed:
+        raise RuntimeError("Windows release package root differs")
+    transaction_id = committed.get("transaction_id")
+    if not re.fullmatch(r"[0-9a-f]{32}", transaction_id or ""):
+        raise RuntimeError("Windows release package transaction differs")
+    codex_root = Path(committed["codex_root"]).absolute()
+    artifacts = [
+        _windows_release_artifact_identity(
+            interpreter, "Python interpreter",
+        ),
+        _windows_release_artifact_identity(
+            codex_root / _CODEX_INSTALL_RECEIPT, "package receipt",
+        ),
+        _windows_release_artifact_identity(
+            Path(selection["store_root"]) / "current-selection.json",
+            "MCP selection",
+        ),
+        _windows_release_artifact_identity(
+            codex_root / "config.toml", "Codex configuration",
+        ),
+        _windows_release_artifact_identity(
+            _runtime_stamp_path(), "Python dependency stamp",
+        ),
+    ]
+    cache_evidence = (
+        codex_root / ".plamen-install-transactions" / transaction_id
+        / "source-cache.json"
+    )
+    if Path(committed.get("source_root", "")).absolute() != installed:
+        artifacts.append(_windows_release_artifact_identity(
+            cache_evidence, "adapter source cache receipt",
+        ))
+    selection_projection = {
+        field: selection.get(field)
+        for field in _LAUNCHER_TRANSACTION_SELECTION_FIELDS
+    }
+    _launcher_transaction_selection(selection_projection)
+    entry = {
+        key: target_identity[key] for key in ("path", "sha256", "size")
+    }
+    value = {
+        "artifacts": artifacts,
+        "entry_point": entry,
+        "schema": _WINDOWS_RELEASE_AUTHORITY_SCHEMA,
+        "selection": selection_projection,
+    }
+    raw = (
+        json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    if len(raw) > 1024 * 1024:
+        raise RuntimeError("Windows release authority exceeds its fixed byte bound")
+    return raw
+
+
+def _windows_launcher_execution_path_authority(path, label):
+    """Reject a Windows execution path with replaceable/reparse ancestry.
+
+    The batch bootstrap authenticates the Python source bytes at every launch.
+    This install-time boundary supplies the other half: the Windows loader's
+    executable and the source name must live below direct ACL-backed ancestry,
+    and the leaves themselves may not grant foreign mutation rights.
+    """
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    canonical = candidate.resolve(strict=True)
+    if os.path.normcase(os.fspath(candidate)) != os.path.normcase(
+        os.fspath(canonical)
+    ):
+        raise RuntimeError(f"Windows launcher {label} ancestry is indirect")
+    parent = _startup_decision_directory_chain_authority(
+        canonical.parent, platform_name="nt",
+    )
+    info = os.stat(canonical, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or info.st_nlink != 1
+        or _python_dependency_census_reparse(info)
+    ):
+        raise RuntimeError(f"Windows launcher {label} is indirect/non-file")
+    _win_launcher_require_persistent_acls(canonical)
+    security = _win_launcher_security_snapshot_path(
+        canonical, directory=False,
+        dangerous_mask=_WIN_LAUNCHER_EXACT_DANGEROUS,
+        additional_trusted_sids=_WIN_STARTUP_ANCESTOR_TRUSTED_SIDS,
+        reject_inherit_only=False,
+    )
+    return {
+        "path": str(canonical),
+        "identity": (
+            int(info.st_dev), int(info.st_ino), int(info.st_size),
+            int(info.st_nlink), int(info.st_mode),
+        ),
+        "parent": parent,
+        "security": security,
+    }
+
+
+def _windows_launcher_execution_authority(interpreter, target):
+    if os.name != "nt":
+        return None
+    return {
+        "interpreter": _windows_launcher_execution_path_authority(
+            interpreter, "interpreter",
+        ),
+        "entry_point": _windows_launcher_execution_path_authority(
+            target, "entry point",
+        ),
+    }
+
+
+def _windows_launcher_execution_authority_replays(before, after):
+    if before is None or after is None or set(before) != {"interpreter", "entry_point"}:
+        return before is after
+    if set(after) != set(before):
+        return False
+    for label in before:
+        left = before[label]; right = after[label]
+        if (
+            left["path"] != right["path"]
+            or left["identity"] != right["identity"]
+            or left["security"] != right["security"]
+            or not _startup_decision_directory_chain_replays(
+                left["parent"], right["parent"],
+            )
+        ):
+            return False
+    return True
+
+
+def _windows_bound_source_command(interpreter, target, arguments=(), *,
+                                  target_identity=None, release_path=None):
+    """Render a cmd.exe-safe CPython loader for descriptor-bound source bytes.
+
+    CPython receives only a small immutable bootstrap through ``-c``.  That
+    bootstrap rejects junction/reparse ancestry, opens ``plamen.py`` once,
+    binds the opened and named identities, hashes the bounded bytes, and then
+    executes those exact bytes.  Consequently cmd.exe never asks CPython to
+    reopen a replaceable source pathname after admission.
+    """
+    executable = str(Path(interpreter).resolve(strict=True))
+    identity = target_identity or _windows_bound_source_identity(target)
+    target_path = str(identity["path"])
+    if any(
+        char in value
+        for value in (executable, target_path, *map(str, arguments))
+        for char in ('\r', '\n', '\x00', '%', '"')
+    ):
+        raise RuntimeError("Windows bound launcher text is not safely representable")
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", str(identity.get("sha256", "")))
+        or type(identity.get("size")) is not int
+        or not (1 <= identity["size"] <= _WINDOWS_BOUND_SOURCE_MAX_BYTES)
+    ):
+        raise RuntimeError("Windows bound launcher source identity is malformed")
+    import zlib
+    bootstrap = base64.b64encode(zlib.compress(
+        _WINDOWS_BOUND_SOURCE_BOOTSTRAP.encode("ascii"), level=9,
+    )).decode("ascii")
+    encoded_target = base64.b64encode(os.fsencode(target_path)).decode("ascii")
+    encoded_release = (
+        base64.b64encode(
+            os.fsencode(str(PureWindowsPath(Path(release_path).absolute())))
+        ).decode("ascii")
+        if release_path is not None else "-"
+    )
+    serialized_sha256 = "-" if release_path is not None else identity["sha256"]
+    serialized_size = 0 if release_path is not None else identity["size"]
+    command = (
+        f'"{executable}" -I -B -c '
+        f'"import base64,zlib;exec(zlib.decompress(base64.b64decode(\'{bootstrap}\')))" '
+        f'"{encoded_target}" "{serialized_sha256}" "{serialized_size}" '
+        f'"{encoded_release}"'
+    )
+    if arguments:
+        command += " " + " ".join(f'"{item}"' for item in arguments)
+    command += " %*"
+    if len(command) > _WINDOWS_CMD_LINE_MAX_CHARS:
+        raise RuntimeError("Windows bound launcher exceeds cmd.exe's line bound")
+    return command
+
+
 def _windows_plamen_command_bytes(
     interpreter, target, claude_bin=None, codex_bin=None, *,
     allow_unpublished_backend_shims=False, suppress_bytecode=True,
+    target_identity=None, release_path=None,
 ):
     interpreter = str(Path(interpreter).resolve(strict=True))
-    target = str(Path(target).resolve(strict=True))
+    target_native = Path(target).resolve(strict=True)
+    target = str(PureWindowsPath(target_native))
     values = [("interpreter", interpreter), ("entry point", target)]
     if claude_bin is not None:
         claude_bin = str(
@@ -18929,8 +21480,15 @@ def _windows_plamen_command_bytes(
         rows.append(f'set "CLAUDE_BIN={claude_bin}"')
     if codex_bin is not None:
         rows.append(f'set "CODEX_BIN={codex_bin}"')
-    bytecode_flag = " -B" if suppress_bytecode else ""
-    rows.append(f'"{interpreter}"{bytecode_flag} "{target}" %*')
+    if suppress_bytecode:
+        rows.append(_windows_bound_source_command(
+            interpreter, target_native, target_identity=target_identity,
+            release_path=release_path,
+        ))
+    else:
+        rows.append(f'"{interpreter}" "{target}" %*')
+    if any(len(row) > _WINDOWS_CMD_LINE_MAX_CHARS for row in rows):
+        raise RuntimeError("Windows launcher exceeds cmd.exe's line bound")
     return ("\r\n".join(rows) + "\r\n").encode("utf-8")
 
 
@@ -18983,19 +21541,44 @@ def _ensure_windows_plamen_command(*, user_root=None, plamen_root=None,
         raise RuntimeError(
             f"installed Plamen entry point is unavailable or indirect: {target}"
         )
-    interpreter_path = Path(interpreter or sys.executable).resolve(strict=True)
+    requested_interpreter = Path(interpreter or sys.executable).absolute()
+    execution_authority = _windows_launcher_execution_authority(
+        requested_interpreter, target,
+    )
+    interpreter_path = _serialized_launcher_interpreter(requested_interpreter)
+    target_identity = _windows_bound_source_identity(target)
     command_dir = _launcher_safe_command_directory(root)
     command_path = command_dir / "plamen.cmd"
+    release_path = command_dir / _WINDOWS_RELEASE_AUTHORITY_NAME
+    production_release = os.name == "nt" and user_root is None
     for _attempt in range(2):
+        selected_before = _validated_mcp_current_selection(
+            backend="codex", full_generation=False,
+        )
+        release_raw = (
+            _windows_release_authority_bytes(
+                installed, interpreter_path, target_identity, selected_before,
+            )
+            if production_release else None
+        )
         shim_plan, selection = _backend_cli_shim_plan(
             installed, interpreter_path, return_selection=True,
+            platform_name=platform_name, target_identity=target_identity,
+            release_path=release_path if production_release else None,
+            selection=selected_before,
         )
+        if selection != selected_before:
+            raise RuntimeError(
+                "Windows release selection changed during launcher preflight"
+            )
         desired = _windows_plamen_command_bytes(
             interpreter_path,
             target,
             shim_plan["claude"][0],
             shim_plan["codex"][0],
             allow_unpublished_backend_shims=True,
+            target_identity=target_identity,
+            release_path=release_path if production_release else None,
         )
         public_predecessors = {
             desired,
@@ -19020,7 +21603,7 @@ def _ensure_windows_plamen_command(*, user_root=None, plamen_root=None,
                     f"refusing to replace an indirect/non-file plamen command: {command_path}"
                 )
             raw = command_path.read_bytes()
-            if len(raw) > 4096:
+            if len(raw) > 32768:
                 raise RuntimeError(
                     f"refusing to replace an oversized plamen command: {command_path}"
                 )
@@ -19033,7 +21616,60 @@ def _ensure_windows_plamen_command(*, user_root=None, plamen_root=None,
             )
         else:
             command_state = _launcher_absent_state(command_path)
-        rows = [
+        rows = []
+        if production_release:
+            if os.path.lexists(release_path):
+                if release_path.is_symlink() or not release_path.is_file():
+                    raise RuntimeError("Windows release authority is indirect")
+                if os.stat(release_path, follow_symlinks=False).st_size > 1024 * 1024:
+                    raise RuntimeError("Windows release authority is oversized")
+                prior_release_raw = release_path.read_bytes()
+                try:
+                    prior_release = _strict_json_bytes(prior_release_raw)
+                except (ValueError, TypeError) as exc:
+                    raise RuntimeError(
+                        "refusing to replace a foreign Windows release authority"
+                    ) from exc
+                if (
+                    not isinstance(prior_release, dict)
+                    or
+                    prior_release_raw
+                    != (json.dumps(
+                        prior_release, sort_keys=True, separators=(",", ":"),
+                    ) + "\n").encode("utf-8")
+                    or prior_release.get("schema")
+                    != _WINDOWS_RELEASE_AUTHORITY_SCHEMA
+                    or set(prior_release) != {
+                        "artifacts", "entry_point", "schema", "selection",
+                    }
+                    or prior_release.get("entry_point", {}).get("path")
+                    != target_identity["path"]
+                    or (
+                        prior_release_raw != release_raw
+                        and (
+                            not command_path.is_file()
+                            or command_path.is_symlink()
+                            or command_path.read_bytes() != desired
+                        )
+                    )
+                ):
+                    raise RuntimeError(
+                        "refusing to replace a foreign Windows release authority"
+                    )
+                release_state = _launcher_existing_state(
+                    release_path, prior_release_raw,
+                    "existing Windows release authority", required_mode=0o700,
+                )
+                release_predecessors = (prior_release_raw,)
+            else:
+                release_state = _launcher_absent_state(release_path)
+                release_predecessors = ()
+            rows.append({
+                "label": "release", "path": release_path,
+                "raw": release_raw, "state": release_state,
+                "admitted_predecessor_raws": release_predecessors,
+            })
+        rows.extend([
             {
                 "label": backend, "path": shim_plan[backend][0],
                 "raw": shim_plan[backend][1], "state": shim_plan[backend][2],
@@ -19042,6 +21678,7 @@ def _ensure_windows_plamen_command(*, user_root=None, plamen_root=None,
                     _backend_shim_bytes(
                         backend, installed, interpreter_path,
                         selection=selection, suppress_bytecode=False,
+                        platform_name=platform_name,
                     ),
                 ),
             }
@@ -19050,13 +21687,23 @@ def _ensure_windows_plamen_command(*, user_root=None, plamen_root=None,
             "label": "public", "path": command_path,
             "raw": desired, "state": command_state,
             "admitted_predecessor_raws": tuple(public_predecessors),
-        }]
+        }])
         outcome = _launcher_transaction_publish(command_dir, rows, selection)
         if outcome == "RECOVERED":
             continue
         for row in rows:
             _launcher_regular_snapshot(
                 row["path"], row["raw"], "installed launcher transaction row",
+            )
+        _windows_bound_source_identity(target, expected=target_identity)
+        replayed_execution_authority = _windows_launcher_execution_authority(
+            interpreter_path, target,
+        )
+        if not _windows_launcher_execution_authority_replays(
+            execution_authority, replayed_execution_authority,
+        ):
+            raise RuntimeError(
+                "Windows launcher execution authority changed during publication"
             )
         return command_path
     raise RuntimeError("launcher transaction recovery did not reach a fresh preflight")
@@ -19149,6 +21796,7 @@ def _ensure_posix_plamen_command(*, user_root=None, plamen_root=None,
                     )
                 command_state = _launcher_existing_state(
                     command_path, raw, "existing POSIX plamen command",
+                    required_mode=0o700,
                 )
         else:
             command_state = _launcher_absent_state(command_path)
@@ -19185,7 +21833,7 @@ def _ensure_posix_plamen_command(*, user_root=None, plamen_root=None,
 def _sync_codex_adapter_source_cache(receipt):
     """Preserve the adapter sources needed by installed-copy self-repair.
 
-    The committed 823-row transaction installs adapter files into ~/.codex,
+    The committed governed transaction installs adapter files into ~/.codex,
     while an installed `plamen install --codex` uses ~/.plamen as its source.
     Keep a byte-exact, separately backed-up cache under
     ~/.plamen/codex-adapter so that source reconstruction cannot depend on
@@ -19461,10 +22109,10 @@ def _codex_install_doctor_issues(codex_home=None, plamen_root=None):
         or type(receipt.get("adapter_count")) is not int
         or receipt.get("adapter_count") != _CODEX_INSTALL_ADAPTER_COUNT
     ):
-        issues.append("Codex install receipt projection is not 792/31/823")
+        issues.append("Codex install receipt projection denominator differs")
     rows = receipt.get("rows")
     if not isinstance(rows, list) or len(rows) != _CODEX_INSTALL_SOURCE_COUNT:
-        issues.append("Codex install receipt denominator is not 823")
+        issues.append("Codex install receipt denominator differs")
         rows = []
     for row in rows:
         if not isinstance(row, dict):
@@ -19527,6 +22175,7 @@ def _codex_install_doctor_issues(codex_home=None, plamen_root=None):
 # user Codex directories.
 _CODEX_INSTALL_METHOD_ROOTS = (
     "agents",
+    "opengrep-rules",
     "prompts",
     "rules",
     "skills",
@@ -19568,8 +22217,24 @@ def _raw_rows_sha256(rows):
 
 
 def _codex_install_source_rows(source_root=None, *, failpoint=None, hook_context=None):
-    """Return the source-exact 792 runtime + 31 Codex adapter rows."""
+    """Return the governed runtime and Codex-adapter install rows."""
     source_root = Path(source_root or PLAMEN_HOME).absolute()
+    scripts_dir = os.fspath(source_root / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    from opengrep_rule_authority import (
+        installed_rule_projection_census,
+        source_rule_projection_census,
+    )
+    rules_base = source_root / "opengrep-rules"
+    if any(os.path.lexists(rules_base / name / ".git") for name in (
+        "aptos-move-rules", "decurity-rules", "opengrep-rules",
+    )):
+        replay_rule_census = source_rule_projection_census
+    else:
+        replay_rule_census = installed_rule_projection_census
+    rule_census = replay_rule_census(rules_base)
+    rule_roster = tuple(row[0] for row in rule_census)
     closure_raw = _codex_install_committed_read(
         source_root,
         ("verification_policy", "toolchain_runtime_closure.v1.json"),
@@ -19577,11 +22242,17 @@ def _codex_install_source_rows(source_root=None, *, failpoint=None, hook_context
     )[1]
     closure = _strict_json_bytes(closure_raw)
     assets = closure.get("assets")
-    if not isinstance(assets, list) or len(assets) != 354:
-        raise RuntimeError("runtime closure must contain exactly 354 typed assets")
+    if (
+        not isinstance(assets, list)
+        or len(assets) != _CODEX_INSTALL_CLOSURE_ASSET_COUNT
+    ):
+        raise RuntimeError(
+            "runtime closure has the wrong typed-asset denominator"
+        )
     runtime_paths = {
         "verification_policy/toolchain_runtime_closure.v1.json",
         "verification_policy/__init__.py",
+        "verification_policy/js_toolchain_acquisition.v1.json",
         "verification_policy/methodology_reachability.v1.json",
         "verification_policy/verification_method_registry.v1.json",
         *_CODEX_INSTALL_TOP_LEVEL,
@@ -19599,12 +22270,35 @@ def _codex_install_source_rows(source_root=None, *, failpoint=None, hook_context
         typed[relative] = row
         runtime_paths.add(relative)
     exact_files = set(runtime_paths) | {"codex-adapter/AGENTS.md"}
-    tree_roots = list(_CODEX_INSTALL_METHOD_ROOTS) + [
+    exact_files.update("opengrep-rules/" + path for path in rule_roster)
+    tree_roots = [
+        root for root in _CODEX_INSTALL_METHOD_ROOTS
+        if root != "opengrep-rules"
+    ] + [
         "codex-adapter/" + root for root in _CODEX_INSTALL_ADAPTER_ROOTS
     ]
     snapshot, _source_root_authority = _codex_install_source_snapshot(
         source_root, exact_files=exact_files, tree_roots=tree_roots,
     )
+    for relative, expected_size, expected_sha256 in rule_census:
+        source_path = "opengrep-rules/" + relative
+        captured = snapshot.get(source_path)
+        if captured is None:
+            raise RuntimeError(
+                "governed rule projection is missing: " + source_path
+            )
+        raw, source_authority = captured
+        if (
+            len(raw) != expected_size
+            or int(source_authority.get("size", -1)) != expected_size
+            or hashlib.sha256(raw).hexdigest() != expected_sha256
+        ):
+            raise RuntimeError(
+                "governed rule projection differs during capture: "
+                + source_path
+            )
+    if replay_rule_census(rules_base) != rule_census:
+        raise RuntimeError("governed rule projection changed during capture")
     for root_name in _CODEX_INSTALL_METHOD_ROOTS:
         prefix = root_name + "/"
         runtime_paths.update(path for path in snapshot if path.startswith(prefix))
@@ -19644,6 +22338,7 @@ def _codex_install_source_rows(source_root=None, *, failpoint=None, hook_context
             "install_kind": (
                 "RUNTIME_VERIFICATION_POLICY_AUTHORITY"
                 if source_path in {
+                    "verification_policy/js_toolchain_acquisition.v1.json",
                     "verification_policy/methodology_reachability.v1.json",
                     "verification_policy/verification_method_registry.v1.json",
                 }
@@ -20151,6 +22846,32 @@ def _legacy_codex_adapter_is_owned(codex_home, plamen_root, *, legacy_owned):
         root_handle, close = _codex_dispatcher_open_root(
             codex_home, full_mutation=False,
         )
+        if os.name != "nt":
+            information = os.stat(
+                "plamen", dir_fd=root_handle, follow_symlinks=False,
+            )
+            target = os.readlink("plamen", dir_fd=root_handle)
+            expected = os.fspath(Path(plamen_root).absolute())
+            if (
+                not stat.S_ISLNK(information.st_mode)
+                or information.st_uid != os.getuid()
+                or information.st_nlink != 1
+                or target != expected
+            ):
+                return False
+            target_handle, target_close = _codex_dispatcher_open_root(
+                Path(plamen_root).absolute(), full_mutation=False,
+            )
+            try:
+                target_identity = _borrowed_reader_handle_identity(
+                    target_handle
+                )
+                return bool(
+                    target_identity.get("attributes", 0) & 0x10
+                    and target_identity.get("reparse_tag") == 0
+                )
+            finally:
+                target_close()
         link_handle = _codex_native_open_relative(
             root_handle, "plamen", directory=True, create=False,
             access=0x00000001 | 0x00000080 | 0x00100000,
@@ -20305,8 +23026,97 @@ def _codex_dispatcher_open_root(path, *, full_mutation=True):
         if handle == wintypes.HANDLE(-1).value:
             raise OSError(ctypes.get_last_error(), "CreateFileW retained install root")
         return int(handle), lambda: kernel32.CloseHandle(int(handle))
-    descriptor = os.open(path, os.O_RDONLY)
-    return descriptor, lambda: os.close(descriptor)
+    # POSIX mutation remains object-bound to this complete retained directory
+    # chain.  Every mutating *at() call below targets one of these already-
+    # admitted directory objects and replays every canonical name/vnode join
+    # before and after the effect.  A concurrent namespace move therefore
+    # cannot redirect an operation into a replacement directory; it only
+    # causes the transaction to fail and compensate against the same retained
+    # objects.  No pathname-only mutation is admitted by this dispatcher.
+    required = (
+        (os.open, os.supports_dir_fd),
+        (os.stat, os.supports_dir_fd),
+        (os.stat, os.supports_follow_symlinks),
+        (os.scandir, os.supports_fd),
+    )
+    if (
+        not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_DIRECTORY")
+        or any(function not in support for function, support in required)
+    ):
+        raise RuntimeError("POSIX native dispatcher authority is unavailable")
+    root_value = os.fspath(path)
+    canonical = (
+        os.path.normpath(os.path.abspath(root_value))
+        if isinstance(root_value, str) else None
+    )
+    if (
+        not isinstance(canonical, str)
+        or not os.path.isabs(root_value)
+        or root_value != canonical
+        or (canonical != os.sep and canonical.startswith(os.sep * 2))
+        or "\x00" in canonical
+    ):
+        raise RuntimeError("POSIX native root path is not canonical")
+    flags = (
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    opened = []
+    relationships = []
+    try:
+        parent = os.open(os.sep, flags)
+        opened.append(parent)
+        for component in (
+            item for item in canonical.split(os.sep) if item
+        ):
+            child = _codex_native_open_relative(
+                parent, component, directory=True, create=False,
+                access=0x00000001 | 0x00000080 | 0x00100000,
+                share_delete=False,
+            )
+            opened.append(child)
+            relationships.append((parent, component, child))
+            parent = child
+        for preceding, component, child in relationships:
+            _codex_posix_require_named_handle(preceding, component, child)
+    except BaseException:
+        for retained in reversed(opened):
+            try:
+                os.close(retained)
+            except OSError:
+                pass
+
+        raise
+
+    released = False
+
+    def validate_root_chain():
+        if released:
+            raise RuntimeError("POSIX retained root authority is closed")
+        for preceding, component, child in relationships:
+            _codex_posix_require_named_handle(preceding, component, child)
+
+    def close_root_chain():
+        nonlocal released
+        if released:
+            return
+        released = True
+        error = None
+        for retained in reversed(opened):
+            try:
+                os.close(retained)
+            except OSError as exc:
+                error = error or exc
+        if error is not None:
+            raise error
+
+    # Keep every preceding directory descriptor live.  The dispatcher calls
+    # this validator before/after retained reads, proving that its root is
+    # still named by the canonical chain admitted above rather than merely
+    # referring to an object that has since been moved elsewhere.
+    close_root_chain._codex_validate = validate_root_chain
+    return parent, close_root_chain
 
 
 def _codex_native_api():
@@ -20426,6 +23236,10 @@ def _build_codex_native_api():
 
 
 def _codex_native_close(handle):
+    if os.name != "nt":
+        if handle is not None:
+            os.close(int(handle))
+        return
     api = _codex_native_api()
     if handle is not None and not api["kernel32"].CloseHandle(int(handle)):
         raise OSError(api["ctypes"].get_last_error(), "CloseHandle")
@@ -20475,6 +23289,111 @@ def _codex_native_reusable_unicode_buffer(ctypes, slot, requested):
     return retained[1], retained[0]
 
 
+def _codex_posix_fsync_descriptor(descriptor):
+    """Request strict POSIX persistence, including Darwin drive-cache flush."""
+    if os.name == "nt":
+        raise RuntimeError("POSIX durability called on Windows")
+    try:
+        os.fsync(int(descriptor))
+        if sys.platform == "darwin":
+            # Public Darwin fcntl(2) scalar command.  Python exposes the exact
+            # constant on macOS; 51 is its documented ABI value for runtimes
+            # that omit the symbolic name.  No foreign pointer/FFI call is
+            # involved.
+            import fcntl
+            command = getattr(fcntl, "F_FULLFSYNC", 51)
+            if command != 51:
+                raise RuntimeError("Darwin F_FULLFSYNC ABI differs")
+            if fcntl.fcntl(int(descriptor), command, 0) != 0:
+                raise RuntimeError("Darwin F_FULLFSYNC result differs")
+    except OSError as exc:
+        raise RuntimeError(
+            "POSIX strict durability is unavailable"
+        ) from exc
+
+
+def _codex_posix_fsync_directory(descriptor):
+    """Persist a descriptor-relative namespace transition before publication."""
+    _codex_posix_fsync_descriptor(descriptor)
+
+
+def _codex_posix_stable_stat(value):
+    return (
+        int(value.st_dev), int(value.st_ino), int(value.st_mode),
+        int(value.st_nlink), int(value.st_size), int(value.st_mtime_ns),
+        int(value.st_ctime_ns),
+    )
+
+
+def _codex_posix_named_identity(parent, component):
+    value = os.stat(component, dir_fd=parent, follow_symlinks=False)
+    return int(value.st_dev), int(value.st_ino), stat.S_IFMT(value.st_mode)
+
+
+def _codex_posix_require_named_handle(parent, component, handle):
+    opened = os.fstat(handle)
+    named = _codex_posix_named_identity(parent, component)
+    if (
+        named != (
+            int(opened.st_dev), int(opened.st_ino), stat.S_IFMT(opened.st_mode),
+        )
+        or stat.S_ISLNK(opened.st_mode)
+        or int(opened.st_nlink) <= 0
+    ):
+        raise RuntimeError("POSIX retained named identity differs")
+    return opened
+
+
+def _codex_posix_retire_exact_created(
+    parent, component, handle, *, directory,
+):
+    """Remove only the still-named POSIX object created by this operation."""
+    opened = os.fstat(int(handle))
+    named = os.stat(component, dir_fd=parent, follow_symlinks=False)
+    if (
+        int(opened.st_dev) != int(named.st_dev)
+        or int(opened.st_ino) != int(named.st_ino)
+        or stat.S_IFMT(opened.st_mode) != stat.S_IFMT(named.st_mode)
+        or bool(stat.S_ISDIR(opened.st_mode)) != bool(directory)
+        or int(opened.st_nlink) <= 0
+    ):
+        raise RuntimeError("POSIX created-object cleanup authority differs")
+    operation = os.rmdir if directory else os.unlink
+    operation(component, dir_fd=parent)
+    _codex_posix_fsync_directory(parent)
+    try:
+        os.stat(component, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    raise RuntimeError("POSIX created-object cleanup did not reach absence")
+
+
+def _codex_posix_retire_exact_symlink(
+    parent, component, target, *, expected_identity=None,
+):
+    """Retire only the exact installer-owned symlink just published."""
+    information = os.stat(component, dir_fd=parent, follow_symlinks=False)
+    identity = (
+        int(information.st_dev), int(information.st_ino), int(information.st_mode),
+        int(information.st_nlink), int(information.st_uid),
+    )
+    if (
+        not stat.S_ISLNK(information.st_mode)
+        or information.st_uid != os.getuid()
+        or information.st_nlink != 1
+        or os.readlink(component, dir_fd=parent) != target
+        or (expected_identity is not None and identity != expected_identity)
+    ):
+        raise RuntimeError("POSIX created-symlink cleanup authority differs")
+    os.unlink(component, dir_fd=parent)
+    _codex_posix_fsync_directory(parent)
+    try:
+        os.stat(component, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    raise RuntimeError("POSIX created-symlink cleanup did not reach absence")
+
+
 def _codex_native_open_relative(
     parent_handle, component, *, directory=None, create=False,
     access=None, share_delete=False,
@@ -20482,6 +23401,113 @@ def _codex_native_open_relative(
     """Open/create one raw component relative to a retained directory handle."""
     if not isinstance(component, str) or not component:
         raise RuntimeError("native dispatcher component is malformed")
+    if (
+        component in {".", ".."}
+        or "\x00" in component
+        or "/" in component
+        or (os.name == "nt" and ("\\" in component or ":" in component))
+    ):
+        raise RuntimeError("native dispatcher component is not one raw component")
+    if os.name != "nt":
+        import unicodedata
+
+        def alias_key(value):
+            return unicodedata.normalize("NFC", value).casefold()
+
+        names = _codex_native_directory_names(parent_handle)
+        aliases = [name for name in names if alias_key(name) == alias_key(component)]
+        if aliases and aliases != [component]:
+            raise RuntimeError(
+                "POSIX native component case/NFC identity differs"
+            )
+        if create and aliases:
+            raise FileExistsError(
+                errno.EEXIST, "POSIX native component already exists", component,
+            )
+        if not create and not aliases:
+            raise FileNotFoundError(
+                errno.ENOENT, "POSIX native component is absent", component,
+            )
+        flags = (
+            os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        if directory is True:
+            flags |= os.O_RDONLY | os.O_DIRECTORY
+        else:
+            flags |= os.O_RDWR if create else os.O_RDONLY
+        descriptor = None
+        created_here = False
+        try:
+            if create and directory is True:
+                os.mkdir(component, 0o700, dir_fd=parent_handle)
+                created_here = True
+                descriptor = os.open(
+                    component, flags, 0o600, dir_fd=parent_handle,
+                )
+                _codex_posix_fsync_directory(parent_handle)
+            elif create and directory is False:
+                flags |= os.O_CREAT | os.O_EXCL
+            elif create:
+                raise RuntimeError(
+                    "POSIX native creation requires an exact object kind"
+                )
+            if descriptor is None:
+                descriptor = os.open(
+                    component, flags, 0o600, dir_fd=parent_handle,
+                )
+            if create and directory is False:
+                created_here = True
+            opened = os.fstat(descriptor)
+            named = os.stat(
+                component, dir_fd=parent_handle, follow_symlinks=False,
+            )
+            if (
+                int(opened.st_dev) != int(named.st_dev)
+                or int(opened.st_ino) != int(named.st_ino)
+                or stat.S_IFMT(opened.st_mode) != stat.S_IFMT(named.st_mode)
+                or stat.S_ISLNK(named.st_mode)
+                or not (
+                    stat.S_ISREG(opened.st_mode)
+                    or stat.S_ISDIR(opened.st_mode)
+                )
+                or (directory is True and not stat.S_ISDIR(opened.st_mode))
+                or (directory is False and not stat.S_ISREG(opened.st_mode))
+                or int(opened.st_nlink) <= 0
+            ):
+                raise RuntimeError("POSIX native component identity differs")
+            return descriptor
+        except BaseException as operation_exc:
+            cleanup_exc = None
+            cleanup_authority_unavailable = (
+                created_here and descriptor is None
+            )
+            if created_here and descriptor is not None:
+                try:
+                    _codex_posix_retire_exact_created(
+                        parent_handle, component, descriptor,
+                        directory=directory is True,
+                    )
+                except BaseException as exc:
+                    cleanup_exc = exc
+            if descriptor is not None:
+                os.close(descriptor)
+            if cleanup_exc is not None:
+                raise RuntimeError(
+                    "POSIX native creation failed and cleanup was incomplete: "
+                    f"{type(operation_exc).__name__}:{str(operation_exc)[:200]} | "
+                    f"{type(cleanup_exc).__name__}:{str(cleanup_exc)[:200]}"
+                ) from operation_exc
+            if cleanup_authority_unavailable:
+                diagnostic = (
+                    "POSIX native creation failed before cleanup authority "
+                    "was retained; namespace residue may remain"
+                )
+                if not isinstance(operation_exc, Exception):
+                    operation_exc.add_note(diagnostic)
+                    raise
+                raise RuntimeError(diagnostic) from operation_exc
+            raise
     api = _codex_native_api(); ctypes = api["ctypes"]; wintypes = api["wintypes"]
     encoded_length = len(component.encode("utf-16-le"))
     if encoded_length <= 0 or encoded_length > 0xFFFC:
@@ -20537,6 +23563,26 @@ def _codex_native_open_relative(
 
 
 def _codex_native_final_name(handle):
+    if os.name != "nt":
+        if sys.platform == "darwin":
+            import fcntl
+            size = 1024
+            buffer = bytes(size)
+            try:
+                observed = fcntl.fcntl(int(handle), 50, buffer)
+            except (OSError, TypeError) as exc:
+                raise RuntimeError(
+                    "POSIX native final path authority is unavailable"
+                ) from exc
+            raw = bytes(observed if isinstance(observed, (bytes, bytearray)) else buffer)
+            path = os.fsdecode(raw.split(b"\x00", 1)[0])
+        elif sys.platform.startswith("linux"):
+            path = os.readlink(f"/proc/self/fd/{int(handle)}")
+        else:
+            raise RuntimeError("POSIX native final path authority is unsupported")
+        if not path or not os.path.isabs(path) or "\x00" in path:
+            raise RuntimeError("POSIX native final path authority differs")
+        return path
     api = _codex_native_api(); ctypes = api["ctypes"]
     needed = api["kernel32"].GetFinalPathNameByHandleW(int(handle), None, 0, 0)
     if not needed:
@@ -20552,9 +23598,13 @@ def _codex_native_final_name(handle):
     return buffer.value
 
 
-def _codex_native_exact_component(handle, expected):
+def _codex_native_final_component(handle):
     final = _codex_native_final_name(handle).rstrip("\\/")
-    observed = final.rsplit("\\", 1)[-1]
+    return final.rsplit("\\", 1)[-1] if os.name == "nt" else os.path.basename(final)
+
+
+def _codex_native_exact_component(handle, expected):
+    observed = _codex_native_final_component(handle)
     if observed != expected:
         raise RuntimeError(
             f"native dispatcher component case/name mismatch: {expected!r} != {observed!r}"
@@ -20570,6 +23620,11 @@ def _codex_native_exact_component(handle, expected):
 
 
 def _codex_native_streams(handle):
+    if os.name != "nt":
+        names, _values = _claude_projection_posix_fd_xattrs(handle)
+        if names:
+            raise RuntimeError("native dispatcher rejected extended metadata")
+        return ()
     api = _codex_native_api(); ctypes = api["ctypes"]
     # The common case is one short ``::$DATA`` record.  Starting at 64 KiB and
     # then materializing ``buffer.raw`` made every metadata check allocate and
@@ -20607,6 +23662,11 @@ def _codex_native_streams(handle):
 
 def _codex_native_stream_roster(handle):
     """Return the complete handle-bound stream name/size/allocation roster."""
+    if os.name != "nt":
+        names, _values = _claude_projection_posix_fd_xattrs(handle)
+        if names:
+            raise RuntimeError("native dispatcher rejected extended metadata")
+        return ()
     api = _codex_native_api(); ctypes = api["ctypes"]
     size = 4096
     while size <= 8 * 1024 * 1024:
@@ -20651,7 +23711,6 @@ def _codex_native_stream_roster(handle):
 
 
 def _codex_native_read(handle, *, maximum=1024 * 1024 * 1024):
-    api = _codex_native_api(); ctypes = api["ctypes"]; wintypes = api["wintypes"]
     identity = _borrowed_reader_handle_identity(handle)
     size = identity["size"]
     if (
@@ -20662,6 +23721,25 @@ def _codex_native_read(handle, *, maximum=1024 * 1024 * 1024):
         or size > maximum
     ):
         raise RuntimeError("native dispatcher file size exceeds bound")
+    if os.name != "nt":
+        before = _codex_posix_stable_stat(os.fstat(handle))
+        chunks = []
+        offset = 0
+        while offset < size:
+            raw = os.pread(handle, min(1024 * 1024, size - offset), offset)
+            if not raw or len(raw) > size - offset:
+                raise RuntimeError("native dispatcher encountered short/invalid read")
+            chunks.append(raw)
+            offset += len(raw)
+        if os.pread(handle, 1, size):
+            raise RuntimeError("native dispatcher same-handle file grew")
+        raw = b"".join(chunks)
+        if len(raw) != size or _codex_posix_stable_stat(os.fstat(handle)) != before:
+            raise RuntimeError("native dispatcher same-handle authority drift")
+        _CODEX_INSTALL_MEMORY_COUNTERS["native_read_calls"] += 1
+        _CODEX_INSTALL_MEMORY_COUNTERS["native_read_bytes"] += size
+        return raw
+    api = _codex_native_api(); ctypes = api["ctypes"]; wintypes = api["wintypes"]
     if not api["kernel32"].SetFilePointerEx(int(handle), 0, None, 0):
         raise OSError(ctypes.get_last_error(), "SetFilePointerEx(read)")
     chunks = []
@@ -20689,7 +23767,6 @@ def _codex_native_read(handle, *, maximum=1024 * 1024 * 1024):
 
 def _codex_native_sha256(handle, *, maximum=1024 * 1024 * 1024):
     """Hash one retained ordinary file without materializing it in memory."""
-    api = _codex_native_api(); ctypes = api["ctypes"]; wintypes = api["wintypes"]
     identity = _borrowed_reader_handle_identity(handle)
     size = identity["size"]
     if (
@@ -20700,6 +23777,24 @@ def _codex_native_sha256(handle, *, maximum=1024 * 1024 * 1024):
         or size > maximum
     ):
         raise RuntimeError("native dispatcher file size exceeds bound")
+    if os.name != "nt":
+        before = _codex_posix_stable_stat(os.fstat(handle))
+        digest = hashlib.sha256()
+        offset = 0
+        while offset < size:
+            raw = os.pread(handle, min(1024 * 1024, size - offset), offset)
+            if not raw or len(raw) > size - offset:
+                raise RuntimeError("native dispatcher encountered short/invalid hash read")
+            digest.update(raw)
+            offset += len(raw)
+        if os.pread(handle, 1, size):
+            raise RuntimeError("native dispatcher same-handle file grew")
+        if _codex_posix_stable_stat(os.fstat(handle)) != before:
+            raise RuntimeError("native dispatcher same-handle hash authority drift")
+        _CODEX_INSTALL_MEMORY_COUNTERS["native_hash_calls"] += 1
+        _CODEX_INSTALL_MEMORY_COUNTERS["native_hash_bytes"] += size
+        return digest.hexdigest()
+    api = _codex_native_api(); ctypes = api["ctypes"]; wintypes = api["wintypes"]
     if not api["kernel32"].SetFilePointerEx(int(handle), 0, None, 0):
         raise OSError(ctypes.get_last_error(), "SetFilePointerEx(hash)")
     digest = hashlib.sha256()
@@ -20727,6 +23822,24 @@ def _codex_native_sha256(handle, *, maximum=1024 * 1024 * 1024):
 
 def _codex_native_content_cache_authority(handle, identity):
     """Return mutation-sensitive identity and stream authority for hash reuse."""
+    if os.name != "nt":
+        value = os.fstat(handle)
+        if (
+            int(value.st_dev) != int(identity["volume"])
+            or int(value.st_ino) != int(identity["file_id"])
+            or int(value.st_size) != int(identity["size"])
+            or int(value.st_nlink) != int(identity["links"])
+        ):
+            raise RuntimeError("native dispatcher cache identity differs")
+        names, _values = _claude_projection_posix_fd_xattrs(handle)
+        if names:
+            raise RuntimeError("native dispatcher rejected extended metadata")
+        key = (
+            int(value.st_dev), int(value.st_ino), int(value.st_size),
+            int(value.st_mode), int(value.st_nlink), int(value.st_mtime_ns),
+            int(value.st_ctime_ns), (),
+        )
+        return key, []
     api = _codex_native_api(); ctypes = api["ctypes"]; wintypes = api["wintypes"]
 
     basic = api["BASIC"]()
@@ -20834,6 +23947,26 @@ def _codex_install_trim_working_set(*, collect=False, report=False):
 
 def _codex_native_directory_names(handle):
     """Enumerate one retained directory handle without reopening its pathname."""
+    if os.name != "nt":
+        import unicodedata
+        names = []
+        with os.scandir(handle) as entries:
+            for entry in entries:
+                name = entry.name
+                if (
+                    not isinstance(name, str) or not name
+                    or name in {".", ".."} or "\x00" in name
+                ):
+                    raise RuntimeError("native directory roster is malformed")
+                names.append(name)
+                if len(names) > 4096:
+                    raise RuntimeError("native directory roster exceeds bound")
+        folded = [unicodedata.normalize("NFC", name).casefold() for name in names]
+        if len(names) != len(set(names)) or len(folded) != len(set(folded)):
+            raise RuntimeError(
+                "native directory roster contains duplicate/case-NFC aliases"
+            )
+        return tuple(names)
     api = _codex_native_api(); ctypes = api["ctypes"]
     names = []
     restart = True
@@ -21014,7 +24147,14 @@ def _codex_install_source_snapshot(source_root, *, exact_files, tree_roots):
     root_handle, root_close = _codex_dispatcher_open_root(
         source_root, full_mutation=False,
     )
-    root_identity = _borrowed_reader_handle_identity(root_handle)
+    try:
+        root_identity = _borrowed_reader_handle_identity(root_handle)
+    except BaseException:
+        try:
+            root_close()
+        except BaseException:
+            pass
+        raise
     if (
         not root_identity.get("attributes", 0) & 0x10
         or root_identity.get("reparse_tag") != 0
@@ -21037,9 +24177,11 @@ def _codex_install_source_snapshot(source_root, *, exact_files, tree_roots):
                     raise RuntimeError("install source traversal crossed volume")
                 relative = prefix + (name,)
                 if identity["attributes"] & 0x10:
-                    if name.casefold() != "__pycache__":
+                    if name.casefold() not in {"__pycache__", ".git"}:
                         walk(child, relative)
                 else:
+                    if name.casefold() == ".git":
+                        continue
                     descriptor = _CodexInstallMutationDispatcher._native_handle_descriptor(
                         child, identity=identity,
                     )
@@ -21112,6 +24254,29 @@ def _codex_install_source_snapshot(source_root, *, exact_files, tree_roots):
 
 
 def _codex_native_write(handle, raw):
+    if os.name != "nt":
+        if not isinstance(raw, bytes):
+            raw = bytes(raw)
+        if os.ftruncate(int(handle), 0) is not None:
+            raise RuntimeError("POSIX retained truncate returned unexpectedly")
+        offset = 0
+        while offset < len(raw):
+            amount = os.pwrite(int(handle), raw[offset:offset + 1024 * 1024], offset)
+            if amount <= 0 or amount > len(raw) - offset:
+                raise RuntimeError("native dispatcher encountered short write")
+            offset += amount
+        _codex_posix_fsync_descriptor(handle)
+        identity = _borrowed_reader_handle_identity(handle)
+        if (
+            identity["size"] != len(raw)
+            or _codex_native_sha256(handle) != hashlib.sha256(raw).hexdigest()
+        ):
+            raise RuntimeError(
+                "native dispatcher same-handle write verification failed"
+            )
+        _CODEX_INSTALL_MEMORY_COUNTERS["native_write_calls"] += 1
+        _CODEX_INSTALL_MEMORY_COUNTERS["native_write_bytes"] += len(raw)
+        return
     api = _codex_native_api(); ctypes = api["ctypes"]; wintypes = api["wintypes"]
     if not api["kernel32"].SetFilePointerEx(int(handle), 0, None, 0):
         raise OSError(ctypes.get_last_error(), "SetFilePointerEx(write)")
@@ -21149,6 +24314,22 @@ def _codex_native_write(handle, raw):
 
 
 def _codex_native_set_readonly(handle):
+    if os.name != "nt":
+        before = os.fstat(int(handle))
+        mode = stat.S_IMODE(before.st_mode) & ~(
+            stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+        )
+        os.fchmod(int(handle), mode)
+        _codex_posix_fsync_descriptor(handle)
+        after = os.fstat(int(handle))
+        if (
+            int(before.st_dev) != int(after.st_dev)
+            or int(before.st_ino) != int(after.st_ino)
+            or stat.S_IMODE(after.st_mode) != mode
+            or after.st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            raise RuntimeError("native readonly transition did not persist")
+        return
     api = _codex_native_api(); ctypes = api["ctypes"]; wintypes = api["wintypes"]
 
     api["kernel32"].SetFileInformationByHandle.argtypes = [
@@ -21178,7 +24359,59 @@ def _codex_native_delete(handle):
         raise OSError(ctypes.get_last_error(), "FileDispositionInfoEx")
 
 
-def _codex_native_rename(handle, destination_parent, component, *, replace):
+def _codex_posix_rename(
+    source_parent, source_component, source_handle,
+    destination_parent, destination_component, *, replace,
+):
+    """Rename one retained ordinary object between retained parents."""
+    if os.name == "nt":
+        raise RuntimeError("POSIX native rename called on Windows")
+    before = _codex_posix_require_named_handle(
+        source_parent, source_component, source_handle,
+    )
+    try:
+        destination = os.stat(
+            destination_component, dir_fd=destination_parent,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        destination = None
+    if destination is not None and not replace:
+        raise FileExistsError(
+            errno.EEXIST, "POSIX native rename destination exists",
+            destination_component,
+        )
+    os.rename(
+        source_component, destination_component,
+        src_dir_fd=source_parent, dst_dir_fd=destination_parent,
+    )
+    _codex_posix_fsync_directory(source_parent)
+    if destination_parent != source_parent:
+        _codex_posix_fsync_directory(destination_parent)
+    after = _codex_posix_require_named_handle(
+        destination_parent, destination_component, source_handle,
+    )
+    if (
+        int(before.st_dev), int(before.st_ino), stat.S_IFMT(before.st_mode),
+        int(before.st_nlink), int(before.st_size),
+    ) != (
+        int(after.st_dev), int(after.st_ino), stat.S_IFMT(after.st_mode),
+        int(after.st_nlink), int(after.st_size),
+    ):
+        raise RuntimeError("POSIX retained rename identity changed")
+
+
+def _codex_native_rename(
+    handle, destination_parent, component, *, replace,
+    source_parent=None, source_component=None,
+):
+    if os.name != "nt":
+        if source_parent is None or source_component is None:
+            raise RuntimeError("POSIX native rename source authority is missing")
+        return _codex_posix_rename(
+            source_parent, source_component, handle,
+            destination_parent, component, replace=replace,
+        )
     api = _codex_native_api(); ctypes = api["ctypes"]
     wintypes = api["wintypes"]
     _RENAME = api["RENAME"]
@@ -21273,7 +24506,7 @@ class _CodexInstallMutationDispatcher:
             not isinstance(source_rows, list)
             or len(source_rows) != _CODEX_INSTALL_SOURCE_COUNT
         ):
-            raise RuntimeError("Codex install dispatcher requires exact 823 plan")
+            raise RuntimeError("Codex install dispatcher requires exact governed plan")
         self.transaction_id = transaction_id
         self.writer_generation = writer_generation
         self.writer_handle = writer_handle
@@ -21440,30 +24673,61 @@ class _CodexInstallMutationDispatcher:
         self._roots = (self.codex_home, self.plamen_root, self.source_root)
         self._root_handles = {}
         self._root_identity = {}
-        for root in self._roots:
-            handle, close = _codex_dispatcher_open_root(
-                root, full_mutation=root != self.source_root,
-            )
-            identity = _borrowed_reader_handle_identity(handle)
-            self._root_handles[str(root)] = (handle, close)
-            self._root_identity[str(root)] = {"handle": identity}
-        if any(
-            not value["handle"].get("attributes", 0) & 0x10
-            or value["handle"].get("reparse_tag") != 0
-            or value["handle"].get("volume", 0) <= 0
-            or value["handle"].get("file_id", 0) <= 0
-            for value in self._root_identity.values()
-        ):
-            raise RuntimeError("Codex install dispatcher root authority is missing")
         self._foreign_b_baseline = {}
-        for typed_root in ("codex", "plamen"):
-            for key, authority in self._native_census(typed_root).items():
-                if key not in self._operation_policy:
-                    self._foreign_b_baseline[key] = authority
         self._volatile_capability_secret = secrets.token_bytes(32)
         self._volatile_roots = {}
         self._volatile_observations = {}
-        _initialize_codex_install_volatile_universe(self)
+        try:
+            if len({str(root) for root in self._roots}) != len(self._roots):
+                raise RuntimeError("Codex install dispatcher roots overlap")
+            for root in self._roots:
+                handle, close = _codex_dispatcher_open_root(
+                    root, full_mutation=root != self.source_root,
+                )
+                # Publish the close authority before any fallible inspection
+                # of the acquired handle.  Constructor rollback must own the
+                # just-opened chain even when identity capture itself fails.
+                self._root_handles[str(root)] = (handle, close)
+                identity = _borrowed_reader_handle_identity(handle)
+                self._root_identity[str(root)] = {"handle": identity}
+            if any(
+                not value["handle"].get("attributes", 0) & 0x10
+                or value["handle"].get("reparse_tag") != 0
+                or value["handle"].get("volume", 0) <= 0
+                or value["handle"].get("file_id", 0) <= 0
+                for value in self._root_identity.values()
+            ):
+                raise RuntimeError(
+                    "Codex install dispatcher root authority is missing"
+                )
+            for typed_root in ("codex", "plamen"):
+                for key, authority in self._native_census(typed_root).items():
+                    if key not in self._operation_policy:
+                        self._foreign_b_baseline[key] = authority
+            _initialize_codex_install_volatile_universe(self)
+        except BaseException:
+            # Construction is transactional too.  Do not route through
+            # close(): not every field/invariant exists yet, and cleanup must
+            # never replace the admission exception.
+            for _name, row in reversed(tuple(self._volatile_roots.items())):
+                for key in ("close", "parent_close"):
+                    callback = row.get(key) if isinstance(row, dict) else None
+                    if callable(callback):
+                        try:
+                            callback()
+                        except BaseException:
+                            pass
+            self._volatile_roots.clear()
+            for _root, (_handle, close) in reversed(
+                tuple(self._root_handles.items())
+            ):
+                try:
+                    close()
+                except BaseException:
+                    pass
+            self._root_handles.clear()
+            self._root_identity.clear()
+            raise
 
     @staticmethod
     def _components(relative):
@@ -21529,7 +24793,10 @@ class _CodexInstallMutationDispatcher:
 
     def _root_join(self, root):
         retained = self._root_identity[str(root)]
-        handle = self._root_handles[str(root)][0]
+        handle, close = self._root_handles[str(root)]
+        validate = getattr(close, "_codex_validate", None)
+        if callable(validate):
+            validate()
         handle_value = _borrowed_reader_handle_identity(handle)
         drift = _borrowed_retained_directory_identity_drift(
             retained["handle"], handle_value,
@@ -21651,10 +24918,14 @@ class _CodexInstallMutationDispatcher:
         ):
             raise RuntimeError("native dispatcher file size exceeds bound")
         kind = "directory" if identity["attributes"] & 0x10 else "file"
-        final_name = _codex_native_final_name(handle).rstrip("\\/").rsplit("\\", 1)[-1]
+        final_name = _codex_native_final_component(handle)
         value = {
             "kind": kind, "device": identity["volume"],
-            "inode": identity["file_id"], "mode": identity["attributes"],
+            "inode": identity["file_id"],
+            "mode": (
+                identity["attributes"] if os.name == "nt"
+                else int(os.fstat(handle).st_mode)
+            ),
             "links": identity["links"], "size": identity["size"],
             "attributes": identity["attributes"],
             "reparse_tag": identity["reparse_tag"],
@@ -21867,6 +25138,32 @@ class _CodexInstallMutationDispatcher:
                         raise RuntimeError("native dispatcher census writer anchor differs")
                     rows[(typed_root, components)] = authority
                     continue
+                if (
+                    os.name != "nt" and typed_root == "codex"
+                    and components == ("plamen",)
+                ):
+                    # The sole governed POSIX link is the compatibility
+                    # projection from the Codex root to the authenticated
+                    # runtime root.  O_NOFOLLOW correctly refuses to open it as
+                    # a directory, so census it through the dedicated lstat /
+                    # readlink authority rather than following its target.
+                    authority, retained = self._native_junction_snapshot(
+                        self.address("codex", components)
+                    )
+                    try:
+                        if authority is None:
+                            raise RuntimeError(
+                                "native dispatcher runtime link disappeared"
+                            )
+                        rows[(typed_root, components)] = authority
+                    finally:
+                        handles = (
+                            [retained["leaf"]]
+                            if retained.get("leaf") is not None else []
+                        )
+                        handles += list(retained.get("parents", ()))
+                        self._close_native_chain(handles)
+                    continue
                 leaf = _codex_native_open_relative(
                     parent, name, directory=None, create=False,
                     access=0x80000000 | 0x00000001 | 0x00000080 | 0x00100000,
@@ -21874,7 +25171,7 @@ class _CodexInstallMutationDispatcher:
                 )
                 try:
                     identity = _borrowed_reader_handle_identity(leaf)
-                    observed_name = _codex_native_final_name(leaf).rstrip("\\/").rsplit("\\", 1)[-1]
+                    observed_name = _codex_native_final_component(leaf)
                     if observed_name != name:
                         raise RuntimeError("native dispatcher census component name differs")
                     if identity["reparse_tag"]:
@@ -21910,16 +25207,20 @@ class _CodexInstallMutationDispatcher:
         self._root_join(root)
         return rows
 
-    def _native_rejoin_parents(self, retained):
+    def _native_rejoin_parents(self, retained, *, require_leaf=True):
         root = retained["root"]
         self._root_join(root)
-        root_volume = _borrowed_reader_handle_identity(
-            self._root_handles[str(root)][0]
-        )["volume"]
+        root_handle = self._root_handles[str(root)][0]
+        root_volume = _borrowed_reader_handle_identity(root_handle)["volume"]
+        preceding = root_handle
         for handle, expected, component in zip(
             retained["parents"], retained["parent_identities"],
             retained["components"][:-1],
         ):
+            if os.name != "nt":
+                _codex_posix_require_named_handle(
+                    preceding, component, handle,
+                )
             observed = _codex_native_exact_component(handle, component)
             drift = list(_borrowed_retained_directory_identity_drift(
                 expected, observed,
@@ -21931,6 +25232,14 @@ class _CodexInstallMutationDispatcher:
                     "native dispatcher retained parent drift: "
                     + ",".join(dict.fromkeys(drift))
                 )
+            preceding = handle
+        if (
+            os.name != "nt" and require_leaf
+            and retained.get("leaf") is not None
+        ):
+            _codex_posix_require_named_handle(
+                preceding, retained["components"][-1], retained["leaf"],
+            )
 
     def _release_event(self, event):
         retained = event.pop("_native", None)
@@ -21947,7 +25256,15 @@ class _CodexInstallMutationDispatcher:
         if retained is None or retained.get("leaf") is None:
             raise RuntimeError("native dispatcher replacement leaf authority is missing")
         leaf = retained["leaf"]
-        _codex_native_delete(leaf)
+        if os.name == "nt":
+            _codex_native_delete(leaf)
+        else:
+            component = retained["components"][-1]
+            _codex_posix_require_named_handle(
+                retained["parent"], component, leaf,
+            )
+            os.unlink(component, dir_fd=retained["parent"])
+            _codex_posix_fsync_directory(retained["parent"])
         _codex_native_close(leaf)
         retained["leaf"] = None
 
@@ -21964,6 +25281,8 @@ class _CodexInstallMutationDispatcher:
         try:
             identity = _codex_native_exact_component(leaf, component)
             _codex_native_write(leaf, raw)
+            if os.name != "nt":
+                _codex_posix_fsync_directory(retained["parent"])
             descriptor = self._native_handle_descriptor(
                 leaf, content_cache=self._native_descriptor_cache,
             )
@@ -21974,16 +25293,32 @@ class _CodexInstallMutationDispatcher:
             event["new"] = descriptor; event["state"] = "COMPLETED"
             self._release_event(event)
             return leaf, descriptor
-        except BaseException:
+        except BaseException as operation_exc:
             event["state"] = "FAILED"
+            cleanup_exc = None
+            if os.name != "nt" and leaf is not None:
+                try:
+                    _codex_posix_retire_exact_created(
+                        retained["parent"], component, leaf, directory=False,
+                    )
+                except BaseException as exc:
+                    cleanup_exc = exc
             self._release_event(event)
             _codex_native_close(leaf)
+            if cleanup_exc is not None:
+                raise RuntimeError(
+                    "native temporary publication failed and cleanup was "
+                    f"incomplete: {type(operation_exc).__name__}:"
+                    f"{str(operation_exc)[:200]} | {type(cleanup_exc).__name__}:"
+                    f"{str(cleanup_exc)[:200]}"
+                ) from operation_exc
             raise
 
     def _native_create_directory(self, path):
         root, components = self._relative(path)
         parent, opened, _identities = self._native_parent_chain(root, components)
         leaf = None
+        created = False
         try:
             current, existing = self._native_descriptor_from_parent(parent, components[-1])
             if existing is not None:
@@ -21995,10 +25330,19 @@ class _CodexInstallMutationDispatcher:
                 access=0x80000000 | 0x40000000 | 0x00010000 | 0x00100000,
                 share_delete=True,
             )
+            created = True
             identity = _codex_native_exact_component(leaf, components[-1])
             if not identity["attributes"] & 0x10:
                 raise RuntimeError("native dispatcher created a non-directory")
+            if os.name != "nt":
+                _codex_posix_fsync_directory(parent)
             return identity
+        except BaseException:
+            if os.name != "nt" and created and leaf is not None:
+                _codex_posix_retire_exact_created(
+                    parent, components[-1], leaf, directory=True,
+                )
+            raise
         finally:
             if leaf is not None:
                 _codex_native_close(leaf)
@@ -22008,6 +25352,7 @@ class _CodexInstallMutationDispatcher:
         root, components = self._relative(path)
         parent, opened, _identities = self._native_parent_chain(root, components)
         leaf = None
+        created = False
         try:
             current, existing = self._native_descriptor_from_parent(parent, components[-1])
             if existing is not None:
@@ -22019,11 +25364,20 @@ class _CodexInstallMutationDispatcher:
                 access=0x80000000 | 0x40000000 | 0x00010000 | 0x00100000,
                 share_delete=True,
             )
+            created = True
             _codex_native_exact_component(leaf, components[-1])
             _codex_native_write(leaf, raw)
+            if os.name != "nt":
+                _codex_posix_fsync_directory(parent)
             if _codex_native_streams(leaf) not in (("::$DATA",), ()):
                 raise RuntimeError("native dispatcher created alternate stream")
             return _borrowed_reader_handle_identity(leaf)
+        except BaseException:
+            if os.name != "nt" and created and leaf is not None:
+                _codex_posix_retire_exact_created(
+                    parent, components[-1], leaf, directory=False,
+                )
+            raise
         finally:
             if leaf is not None:
                 _codex_native_close(leaf)
@@ -22066,6 +25420,8 @@ class _CodexInstallMutationDispatcher:
             before_source_sha256 = _codex_native_sha256(source_leaf)
             _codex_native_rename(
                 source_leaf, dest_parent, dest_components[-1], replace=replace,
+                source_parent=source_parent,
+                source_component=source_components[-1],
             )
             if _codex_native_sha256(source_leaf) != before_source_sha256:
                 raise RuntimeError("native dispatcher renamed source bytes drifted")
@@ -22094,7 +25450,15 @@ class _CodexInstallMutationDispatcher:
                 share_delete=True,
             )
             _codex_native_exact_component(leaf, components[-1])
-            _codex_native_delete(leaf)
+            if os.name == "nt":
+                _codex_native_delete(leaf)
+            else:
+                _codex_posix_require_named_handle(
+                    parent, components[-1], leaf,
+                )
+                operation = os.rmdir if directory else os.unlink
+                operation(components[-1], dir_fd=parent)
+                _codex_posix_fsync_directory(parent)
         finally:
             if leaf is not None:
                 _codex_native_close(leaf)
@@ -22105,6 +25469,44 @@ class _CodexInstallMutationDispatcher:
         parent, opened, identities = self._native_parent_chain(root, components)
         leaf = None
         try:
+            if os.name != "nt":
+                try:
+                    information = os.stat(
+                        components[-1], dir_fd=parent,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    return None, {
+                        "root": root, "components": components,
+                        "parent": parent, "parents": opened,
+                        "parent_identities": identities, "leaf": None,
+                    }
+                if (
+                    not stat.S_ISLNK(information.st_mode)
+                    or information.st_uid != os.getuid()
+                    or information.st_nlink != 1
+                ):
+                    raise RuntimeError(
+                        "native dispatcher runtime link identity mismatch"
+                    )
+                target = os.readlink(components[-1], dir_fd=parent)
+                if (
+                    not isinstance(target, str) or not target
+                    or not os.path.isabs(target) or "\x00" in target
+                    or os.path.normpath(target) != target
+                ):
+                    raise RuntimeError(
+                        "native dispatcher runtime link target is malformed"
+                    )
+                return {
+                    "kind": "junction", "device": int(information.st_dev),
+                    "inode": int(information.st_ino), "attributes": 0x410,
+                    "reparse_tag": 0xA0000003, "target": target,
+                }, {
+                    "root": root, "components": components,
+                    "parent": parent, "parents": opened,
+                    "parent_identities": identities, "leaf": None,
+                }
             try:
                 leaf = _codex_native_open_relative(
                     parent, components[-1], directory=True, create=False,
@@ -22116,7 +25518,7 @@ class _CodexInstallMutationDispatcher:
                     "root": root, "components": components, "parent": parent,
                     "parents": opened, "parent_identities": identities, "leaf": None,
                 }
-            observed_name = _codex_native_final_name(leaf).rstrip("\\/").rsplit("\\", 1)[-1]
+            observed_name = _codex_native_final_component(leaf)
             if observed_name != components[-1]:
                 raise RuntimeError("native dispatcher junction name/case mismatch")
             identity = _borrowed_reader_handle_identity(leaf)
@@ -22157,7 +25559,37 @@ class _CodexInstallMutationDispatcher:
         root, components = self._relative(path)
         parent, opened, _ = self._native_parent_chain(root, components)
         leaf = None
+        created_symlink = None
         try:
+            if os.name != "nt":
+                target = os.fspath(Path(target).absolute())
+                os.symlink(target, components[-1], dir_fd=parent)
+                information = os.stat(
+                    components[-1], dir_fd=parent, follow_symlinks=False,
+                )
+                created_symlink = (
+                    int(information.st_dev), int(information.st_ino),
+                    int(information.st_mode), int(information.st_nlink),
+                    int(information.st_uid),
+                )
+                _codex_posix_fsync_directory(parent)
+                replay = os.stat(
+                    components[-1], dir_fd=parent, follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISLNK(replay.st_mode)
+                    or replay.st_uid != os.getuid()
+                    or os.readlink(components[-1], dir_fd=parent) != target
+                    or created_symlink != (
+                        int(replay.st_dev), int(replay.st_ino),
+                        int(replay.st_mode), int(replay.st_nlink),
+                        int(replay.st_uid),
+                    )
+                ):
+                    raise RuntimeError(
+                        "native dispatcher runtime link publication failed"
+                    )
+                return
             leaf = _codex_native_open_relative(
                 parent, components[-1], directory=True, create=True,
                 access=0x80000000 | 0x40000000 | 0x00010000 | 0x00100000,
@@ -22168,6 +25600,13 @@ class _CodexInstallMutationDispatcher:
             identity = _borrowed_reader_handle_identity(leaf)
             if identity["reparse_tag"] != 0xA0000003:
                 raise RuntimeError("native dispatcher junction publication failed")
+        except BaseException:
+            if os.name != "nt" and created_symlink is not None:
+                _codex_posix_retire_exact_symlink(
+                    parent, components[-1], target,
+                    expected_identity=created_symlink,
+                )
+            raise
         finally:
             if leaf is not None:
                 _codex_native_close(leaf)
@@ -22277,11 +25716,27 @@ class _CodexInstallMutationDispatcher:
         retained = event.get("_native")
         if retained is None or retained["root"] != root or retained["components"] != components:
             raise RuntimeError("native dispatcher completion authority mismatch")
-        self._native_rejoin_parents(retained)
+        # A completed unlink or rename-source transition is expected to make
+        # the old leaf name disappear.  Its authorization already retained and
+        # checked that exact leaf at the effect boundary; replay the still-live
+        # parent chain here, but do not incorrectly require the retired name to
+        # keep joining the retained leaf.
+        self._native_rejoin_parents(
+            retained, require_leaf=event.get("expected_new") is not None,
+        )
         new_retained = None
         try:
-            new, new_retained = self._native_snapshot(root, components)
-            self._native_rejoin_parents(new_retained)
+            try:
+                new, new_retained = self._native_snapshot(root, components)
+            except FileNotFoundError:
+                # Destructive and rename-source transitions complete at an
+                # authenticated absence.  The Windows relative-open adapter
+                # reports that as a null snapshot, while POSIX openat reports
+                # ENOENT; normalize the two without weakening any expected-new
+                # check below.
+                new = None
+            else:
+                self._native_rejoin_parents(new_retained)
         finally:
             if new_retained is not None:
                 handles = ([new_retained["leaf"]] if new_retained.get("leaf") is not None else [])
@@ -22354,11 +25809,14 @@ class _CodexInstallMutationDispatcher:
             )
             if old is not None:
                 self._retire_event_leaf(event)
-            _codex_native_rename(
-                temp_handle, event["_native"]["parent"],
-                event["_native"]["components"][-1], replace=False,
-            )
-            final_name = _codex_native_final_name(temp_handle).rstrip("\\/").rsplit("\\", 1)[-1]
+            if os.name == "nt":
+                _codex_native_rename(
+                    temp_handle, event["_native"]["parent"],
+                    event["_native"]["components"][-1], replace=False,
+                )
+            else:
+                self._native_rename_path(temp, address, replace=False)
+            final_name = _codex_native_final_component(temp_handle)
             if final_name != event["_native"]["components"][-1]:
                 raise RuntimeError("native dispatcher renamed leaf name mismatch")
             published = self._native_handle_descriptor(
@@ -22458,7 +25916,17 @@ class _CodexInstallMutationDispatcher:
         }
         self.events.append(event)
         try:
-            self._retire_event_leaf(event)
+            if os.name == "nt":
+                self._retire_event_leaf(event)
+            else:
+                current, _check = self._native_junction_snapshot(address)
+                self._close_native_chain(list(_check.get("parents", ())))
+                if current != old:
+                    raise RuntimeError(
+                        "native dispatcher runtime link authority drifted"
+                    )
+                os.unlink(components[-1], dir_fd=retained["parent"])
+                _codex_posix_fsync_directory(retained["parent"])
             new, check = self._native_junction_snapshot(address)
             try:
                 if new is not None:
@@ -22512,6 +25980,10 @@ class _CodexInstallMutationDispatcher:
             return created
         except BaseException:
             event["state"] = "FAILED"
+            if created and os.name != "nt":
+                _codex_posix_retire_exact_symlink(
+                    retained["parent"], components[-1], expected_target,
+                )
             raise
         finally:
             self._release_event(event)
@@ -22522,7 +25994,12 @@ class _CodexInstallMutationDispatcher:
             raise RuntimeError("native readonly target is missing")
         expected = dict(before)
         expected["attributes"] = int(expected["attributes"]) | 0x1
-        expected["mode"] = int(expected["mode"]) | 0x1
+        expected["mode"] = (
+            int(expected["mode"]) | 0x1 if os.name == "nt" else
+            int(expected["mode"]) & ~(
+                stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+            )
+        )
         event = self._authorize(
             "MAKE_READONLY", address,
             expected_old=before, expected_new=expected,
@@ -22582,7 +26059,12 @@ class _CodexInstallMutationDispatcher:
         expected["sha256"] = hashlib.sha256(raw).hexdigest()
         if readonly:
             expected["attributes"] = int(expected["attributes"]) | 0x1
-            expected["mode"] = int(expected["mode"]) | 0x1
+            expected["mode"] = (
+                int(expected["mode"]) | 0x1 if os.name == "nt" else
+                int(expected["mode"]) & ~(
+                    stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+                )
+            )
         event = {
             "ordinal": len(self.events), "transaction_id": self.transaction_id,
             "writer_generation": self.writer_generation,
@@ -22907,7 +26389,7 @@ def _capture_codex_install_batch_boundary(
     # Production batch checkpoints bind the exact broker event stream and all
     # retained root/writer identities.  Full A/B/C namespace censuses already
     # bracket every phase and terminal publication; repeating the entire
-    # 823-file source/install census before and after first/middle/last rows
+    # complete source/install census before and after first/middle/last rows
     # made Windows installs and recovery take tens of minutes without adding a
     # distinct security boundary.  Contract-failpoint tests retain the full
     # census so adversarial mutation hooks still exercise every edge.
@@ -22994,11 +26476,28 @@ def _initialize_codex_install_volatile_universe(dispatcher):
     """Retain the closed volatile-root authority for the transaction lifetime."""
     seen = set()
     rules = []
-    for typed_root in ("TEMP", "TMP", "LOCALAPPDATA"):
-        initial = os.environ.get(typed_root)
+    volatile_candidates = (
+        (("TMPDIR", "/private/tmp" if sys.platform == "darwin" else "/tmp"),)
+        if os.name != "nt" else
+        (("TEMP", None), ("TMP", None), ("LOCALAPPDATA", None))
+    )
+    for typed_root, default in volatile_candidates:
+        initial = os.environ.get(typed_root) or default
         if not initial:
             continue
-        path = Path(initial).absolute()
+        # Darwin commonly publishes TMPDIR through the system-owned `/var`
+        # compatibility symlink.  The retained dispatcher deliberately refuses
+        # to traverse symlinks, so canonicalize that ambient address once and
+        # retain/replay the resulting no-follow directory chain below.  The
+        # capability and every later observation use only this canonical
+        # address; the ambient spelling is never used as mutation authority.
+        try:
+            canonical_initial = os.path.realpath(os.fspath(initial), strict=True)
+        except (OSError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "install volatile root address is unavailable"
+            ) from exc
+        path = Path(canonical_initial).absolute()
         handle = close = parent_handle = parent_close = None
         try:
             parent_handle, parent_close = _codex_dispatcher_open_root(
@@ -23092,7 +26591,7 @@ def _codex_install_volatile_capability(dispatcher, typed_root, *, child_pid=None
         or child_pid != installer_pid
     ):
         raise RuntimeError("install volatile capability child is unauthorized")
-    executable = Path(sys.executable)
+    executable = _codex_install_active_executable_path()
     executable_authority = _codex_install_committed_descriptor(
         executable.parent, (executable.name,),
         allow_stable_foreign_links=True,
@@ -23275,7 +26774,8 @@ def _enumerate_codex_install_volatile_universe(dispatcher, *, label):
                     or capability.get("child_parent_pid") != installer_parent
                     or capability.get("child_executable")
                     != _codex_install_committed_descriptor(
-                        Path(sys.executable).parent, (Path(sys.executable).name,),
+                        _codex_install_active_executable_path().parent,
+                        (_codex_install_active_executable_path().name,),
                         allow_stable_foreign_links=True,
                     )
                     or capability.get("operations") != rule["allowed_external_operations"]
@@ -23433,7 +26933,7 @@ def _capture_codex_install_sentinel_in_process(
         b_values.append({
             "root": root, "components": list(components), "authority": authority,
         })
-    executable = Path(sys.executable)
+    executable = _codex_install_active_executable_path()
     interpreter_handle = getattr(dispatcher, "_census_interpreter_handle", None)
     if interpreter_handle is None:
         interpreter_authority, _interpreter_raw = _codex_install_committed_read(
@@ -24311,7 +27811,7 @@ def _capture_codex_install_sentinel_isolated(
                 _codex_install_census_duplicate_for_child(retained["parent_handle"]),
             )
             handles["volatile"][typed_root] = pair; duplicates.extend(pair)
-        interpreter = Path(sys.executable).absolute()
+        interpreter = _codex_install_active_executable_path()
         script = Path(__file__).absolute()
         interpreter_guard = _codex_install_census_open_guard(
             interpreter, allow_stable_foreign_links=True,
@@ -24623,7 +28123,8 @@ def _prepare_codex_install_terminal_evidence(
                 _codex_install_child_environment(codex_home)
             ),
             "interpreter_sha256": _codex_install_committed_read(
-                Path(sys.executable).parent, (Path(sys.executable).name,), directory=False,
+                _codex_install_active_executable_path().parent,
+                (_codex_install_active_executable_path().name,), directory=False,
                 allow_stable_foreign_links=True,
             )[0]["sha256"],
             "script_sha256": _codex_install_committed_read(
@@ -24917,7 +28418,7 @@ def _install_codex_package_transaction(
     *, source_root=None, plamen_root=None, codex_home=None, failpoint=None,
     _transaction_context=None, enable_claude_projection=True,
 ):
-    """Stage, backup, commit, verify, and receipt the exact 823-file package."""
+    """Stage, backup, commit, verify, and receipt the exact governed package."""
     source_root = Path(source_root or PLAMEN_HOME).absolute()
     plamen_root = Path(plamen_root or os.path.expanduser("~/.plamen")).absolute()
     codex_home = Path(codex_home or os.path.expanduser("~/.codex")).absolute()
@@ -25573,10 +29074,10 @@ def _install_codex_package_transaction(
             "lock_identity": [anchor_identity["device"], anchor_identity["inode"]],
             "owner": {
                 "pid": os.getpid(),
-                "executable": sys.executable,
+                "executable": str(_codex_install_active_executable_path()),
                 "executable_sha256": _codex_install_committed_read(
-                    Path(sys.executable).parent,
-                    (Path(sys.executable).name,), directory=False,
+                    _codex_install_active_executable_path().parent,
+                    (_codex_install_active_executable_path().name,), directory=False,
                     allow_stable_foreign_links=True,
                 )[0]["sha256"],
                 "principal": os.environ.get("USERNAME") or os.environ.get("USER") or "",
@@ -26497,6 +29998,377 @@ def _install_codex_package_transaction(
                 _release_prior_lock_lease()
 
 
+def _rollback_committed_codex_package_transaction(
+    receipt, prior, *, codex_home=None, plamen_root=None, failpoint=None,
+):
+    """Exactly compensate one already-COMMITTED Codex package generation.
+
+    The combined native cold installer needs a post-commit compensation seam:
+    its native transaction can fail only after the package receipt exists.  A
+    normal uninstall is not sufficient here.  This function admits only the
+    exact receipt artifact named by the caller, authenticates its durable
+    inverse and receipt prestate, classifies *every* live destination before
+    the first mutation, and then reuses the package transaction's signed-row
+    compensation primitive in reverse order.
+    """
+
+    artifact_fields = {
+        "schema", "kind", "path", "size", "sha256", "transaction_id",
+    }
+    prior_fields = {
+        "schema", "state", "package_receipt", "native_install_receipt",
+        "deployment_receipt", "public_launcher",
+    }
+    if (
+        type(receipt) is not dict
+        or set(receipt) != artifact_fields
+        or receipt.get("schema")
+        != "plamen.posix-native-install.artifact.v1"
+        or receipt.get("kind") != "package-receipt"
+        or not re.fullmatch(r"[0-9a-f]{32}", receipt.get("transaction_id", ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", receipt.get("sha256", ""))
+        or type(receipt.get("size")) is not int
+        or receipt["size"] <= 0
+        or type(prior) is not dict
+        or set(prior) != prior_fields
+        or prior.get("schema") != "plamen.posix-native-install.prior.v1"
+        or prior.get("state") not in {"ABSENT", "VERIFIED"}
+    ):
+        raise RuntimeError("post-commit package rollback authority is malformed")
+    transaction_id = receipt["transaction_id"]
+    codex_root = Path(
+        codex_home or os.path.expanduser("~/.codex")
+    ).absolute()
+    runtime_root = Path(
+        plamen_root or os.path.expanduser("~/.plamen")
+    ).absolute()
+    receipt_path = codex_root / _CODEX_INSTALL_RECEIPT
+    if receipt.get("path") != str(receipt_path):
+        raise RuntimeError("post-commit package receipt path differs")
+    if prior["state"] == "ABSENT":
+        if any(prior[name] is not None for name in (
+            "package_receipt", "native_install_receipt",
+            "deployment_receipt", "public_launcher",
+        )):
+            raise RuntimeError("post-commit ABSENT predecessor carries authority")
+    else:
+        predecessor = prior.get("package_receipt")
+        if (
+            type(predecessor) is not dict
+            or set(predecessor) != artifact_fields
+            or predecessor.get("schema") != receipt["schema"]
+            or predecessor.get("kind") != "package-receipt"
+            or predecessor.get("path") != str(receipt_path)
+            or not re.fullmatch(
+                r"[0-9a-f]{32}", predecessor.get("transaction_id", ""),
+            )
+            or not re.fullmatch(r"[0-9a-f]{64}", predecessor.get("sha256", ""))
+            or type(predecessor.get("size")) is not int
+            or predecessor["size"] <= 0
+        ):
+            raise RuntimeError("post-commit package predecessor differs")
+
+    transaction_root = (
+        codex_root / ".plamen-install-transactions" / transaction_id
+    )
+    transaction_components = (
+        ".plamen-install-transactions", transaction_id,
+    )
+    anchor, writer_handle, close = _open_install_admission_anchor(
+        codex_root, writer=True, create=False,
+    )
+    dispatcher = None
+    try:
+        writer_identity = _borrowed_reader_handle_identity(writer_handle)
+        inverse_authority, inverse_raw = _codex_install_committed_read(
+            codex_root, transaction_components + ("inverse.json",),
+            directory=False,
+        )
+        inverse = _strict_json_bytes(inverse_raw)
+        prestate_authority, prestate_raw = _codex_install_committed_read(
+            codex_root,
+            transaction_components + ("receipt-prestate.json",),
+            directory=False,
+        )
+        prestate = _strict_json_bytes(prestate_raw)
+        journal_authority, journal_raw = _codex_install_committed_read(
+            codex_root, transaction_components + ("journal.json",),
+            directory=False,
+        )
+        durable_journal = _strict_json_bytes(journal_raw)
+        source_rows = inverse.get("source_rows") if isinstance(inverse, dict) else None
+        inverse_rows = inverse.get("rows") if isinstance(inverse, dict) else None
+        journal_rows = (
+            durable_journal.get("rows")
+            if isinstance(durable_journal, dict) else None
+        )
+        if (
+            not isinstance(source_rows, list)
+            or len(source_rows) != _CODEX_INSTALL_SOURCE_COUNT
+            or not isinstance(inverse_rows, list)
+            or len(inverse_rows) != _CODEX_INSTALL_SOURCE_COUNT
+            or durable_journal.get("transaction_id") != transaction_id
+            or not isinstance(journal_rows, list)
+            or len(journal_rows) != _CODEX_INSTALL_SOURCE_COUNT
+            or inverse.get("transaction_id") != transaction_id
+            or inverse.get("receipt_prestate") != prestate
+            or prestate.get("schema")
+            != "plamen.codex_install.receipt_prestate.v1"
+            or prestate.get("transaction_id") != transaction_id
+            or prestate.get("state")
+            != ("ABSENT" if prior["state"] == "ABSENT" else "PRESENT")
+            or prestate.get("lock_identity") != [
+                int(writer_identity["volume"]), int(writer_identity["file_id"]),
+            ]
+            or inverse_authority.get("sha256")
+            != hashlib.sha256(inverse_raw).hexdigest()
+            or prestate_authority.get("sha256")
+            != hashlib.sha256(prestate_raw).hexdigest()
+            or journal_authority.get("sha256")
+            != hashlib.sha256(journal_raw).hexdigest()
+        ):
+            raise RuntimeError("post-commit package inverse authority differs")
+
+        prior_receipt_raw = None
+        if prestate["state"] == "PRESENT":
+            prior_authority, prior_receipt_raw = _codex_install_committed_read(
+                codex_root,
+                transaction_components + ("receipt-prestate.raw",),
+                directory=False,
+            )
+            predecessor = prior["package_receipt"]
+            if (
+                len(prior_receipt_raw) != prestate.get("size")
+                or hashlib.sha256(prior_receipt_raw).hexdigest()
+                != prestate.get("sha256")
+                or prior_authority.get("sha256") != prestate.get("sha256")
+                or predecessor.get("size") != len(prior_receipt_raw)
+                or predecessor.get("sha256")
+                != hashlib.sha256(prior_receipt_raw).hexdigest()
+            ):
+                raise RuntimeError("post-commit package predecessor receipt differs")
+            prior_value = _strict_json_bytes(prior_receipt_raw)
+            if prior_value.get("transaction_id") != predecessor["transaction_id"]:
+                raise RuntimeError("post-commit predecessor transaction differs")
+
+        current_raw = None
+        try:
+            current_authority, current_raw = _codex_install_committed_read(
+                codex_root, (_CODEX_INSTALL_RECEIPT,), directory=False,
+            )
+        except FileNotFoundError:
+            current_authority = None
+        successor_live = (
+            current_raw is not None
+            and len(current_raw) == receipt["size"]
+            and hashlib.sha256(current_raw).hexdigest() == receipt["sha256"]
+            and current_authority.get("sha256") == receipt["sha256"]
+        )
+        predecessor_live = (
+            (prestate["state"] == "ABSENT" and current_raw is None)
+            or (
+                prestate["state"] == "PRESENT"
+                and current_raw == prior_receipt_raw
+            )
+        )
+        if not successor_live and not predecessor_live:
+            raise RuntimeError(
+                "post-commit rollback encountered foreign package receipt"
+            )
+        if successor_live:
+            current = _strict_json_bytes(current_raw)
+            if (
+                current.get("schema") != _CODEX_INSTALL_SCHEMA
+                or current.get("state") != "COMMITTED"
+                or current.get("transaction_id") != transaction_id
+                or current.get("codex_root") != str(codex_root)
+                or current.get("plamen_root") != str(runtime_root)
+                or current.get("transaction_root") != str(transaction_root)
+                or current.get("inverse_sha256")
+                != hashlib.sha256(inverse_raw).hexdigest()
+                or current.get("journal") != journal_rows
+                or not isinstance(current.get("rows"), list)
+                or len(current["rows"]) != _CODEX_INSTALL_SOURCE_COUNT
+            ):
+                raise RuntimeError("post-commit successor receipt differs")
+            _validate_codex_install_terminal_evidence(
+                current, current_raw, codex_home=codex_root,
+                expected_outcome="COMMITTED",
+                expected_transaction_id=transaction_id,
+                require_fresh=False,
+            )
+            rows = current["rows"]
+        else:
+            # The committed receipt is gone only after an earlier rollback
+            # attempt crossed its final restore seam.  Reconstruct no identity:
+            # the signed inverse successor plus durable journal contain the
+            # exact terminal authority for every row.
+            current = None
+            rows = []
+            for source_row, entry, inverse_row in zip(
+                source_rows, journal_rows, inverse_rows, strict=True,
+            ):
+                row = dict(source_row)
+                destination = (
+                    runtime_root if row["destination_root"] == "plamen"
+                    else codex_root
+                ) / Path(*row["destination_path"].split("/"))
+                row["destination"] = str(destination)
+                row["stage"] = str(
+                    transaction_root / "stage" / row["destination_root"]
+                    / Path(*row["destination_path"].split("/"))
+                )
+                row["terminal_authority"] = entry.get("terminal_authority")
+                if row["terminal_authority"] != (
+                    inverse_row.get("successor", {}).get("authority")
+                ):
+                    raise RuntimeError(
+                        "post-commit archived successor authority differs"
+                    )
+                rows.append(row)
+
+        for source_row, row, entry, inverse_row in zip(
+            source_rows, rows, journal_rows, inverse_rows, strict=True,
+        ):
+            if (
+                not isinstance(source_row, dict)
+                or not isinstance(row, dict)
+                or not isinstance(entry, dict)
+                or not isinstance(inverse_row, dict)
+                or any(source_row.get(name) != row.get(name) for name in (
+                    "source_path", "destination_root", "destination_path",
+                    "destination_key", "size", "sha256",
+                ))
+                or entry.get("destination") != row.get("destination")
+                or entry.get("sha256") != row.get("sha256")
+                or entry.get("terminal_authority")
+                != row.get("terminal_authority")
+                or inverse_row.get("destination") != row.get("destination")
+            ):
+                raise RuntimeError("post-commit signed row denominator differs")
+
+        dispatcher = _CodexInstallMutationDispatcher(
+            _CODEX_INSTALL_CONTEXT_AUTHORITY,
+            transaction_id=transaction_id,
+            writer_generation="postcommit-rollback:" + transaction_id,
+            writer_handle=writer_handle,
+            source_root=transaction_root,
+            plamen_root=runtime_root,
+            codex_home=codex_root,
+            source_rows=source_rows,
+        )
+        def address(root_name, components):
+            return dispatcher.address(root_name, tuple(components))
+
+        # Classify the entire live denominator before the first write.  This is
+        # what prevents a late third-state row from causing a partial rollback.
+        for row, inverse_row in zip(rows, inverse_rows, strict=True):
+            destination_components = tuple(row["destination_path"].split("/"))
+            current_authority = dispatcher._current(
+                address(row["destination_root"], destination_components)
+            )
+            successor = _validate_codex_install_successor(inverse_row, row)
+            restored = _validate_codex_install_restored_authority(
+                inverse_row, row,
+            )
+            _codex_install_live_state(
+                current_authority, inverse_row, successor, restored,
+            )
+        if rows:
+            projection_address = address("codex", ("plamen",))
+            current_projection, projection_retained = (
+                dispatcher._native_junction_snapshot(projection_address)
+            )
+            try:
+                dispatcher._native_rejoin_parents(projection_retained)
+            finally:
+                projection_handles = (
+                    [projection_retained["leaf"]]
+                    if projection_retained.get("leaf") is not None else []
+                )
+                projection_handles += list(
+                    projection_retained.get("parents", ())
+                )
+                dispatcher._close_native_chain(projection_handles)
+            receipt_projection = (
+                current.get("junction_identity")
+                if successor_live else None
+            )
+            created_projection = (
+                bool(current.get("created_junction"))
+                if successor_live else prestate["state"] == "ABSENT"
+            )
+            if (
+                created_projection
+                and current_projection is not None
+                and current_projection != receipt_projection
+            ):
+                raise RuntimeError(
+                    "post-commit rollback encountered foreign runtime projection"
+                )
+
+        for index in range(len(rows) - 1, -1, -1):
+            _codex_install_compensate_signed_row(
+                dispatcher=dispatcher, address=address, row=rows[index],
+                prior=inverse_rows[index], transaction_id=transaction_id,
+                transaction_components=transaction_components,
+            )
+            _install_failpoint(failpoint, "after_postcommit_rollback_row", index)
+        if successor_live and current.get("created_junction"):
+            dispatcher.remove_link(address("codex", ("plamen",)))
+        elif prestate["state"] == "ABSENT":
+            # Idempotent crash replay after receipt restoration.
+            dispatcher.remove_link(address("codex", ("plamen",)))
+        receipt_result = _restore_receipt_prestate(
+            transaction_root=transaction_root,
+            transaction_id=transaction_id,
+            receipt_path=receipt_path,
+            anchor=anchor,
+            dispatcher=dispatcher,
+        )
+        result_address = address(
+            "codex", transaction_components + ("rollback-result.json",),
+        )
+        existing_result = dispatcher._current(result_address)
+        if existing_result is None:
+            result = {
+                "schema": "plamen.codex_install.postcommit_rollback.v1",
+                "state": "ROLLED_BACK",
+                "transaction_id": transaction_id,
+                "successor_receipt_sha256": receipt["sha256"],
+                "predecessor_state": prestate["state"],
+                "predecessor_receipt_sha256": (
+                    prestate["sha256"] if prestate["state"] == "PRESENT" else None
+                ),
+                "restored_rows": len(rows),
+                "receipt_result": receipt_result,
+            }
+            dispatcher.atomic_json(result_address, result)
+        else:
+            result_raw, result_authority = dispatcher.read_bytes(result_address)
+            result = _strict_json_bytes(result_raw)
+            if (
+                result.get("schema")
+                != "plamen.codex_install.postcommit_rollback.v1"
+                or result.get("state") != "ROLLED_BACK"
+                or result.get("transaction_id") != transaction_id
+                or result.get("successor_receipt_sha256") != receipt["sha256"]
+                or result.get("predecessor_state") != prestate["state"]
+                or result.get("restored_rows") != len(rows)
+                or result.get("receipt_result") != receipt_result
+                or result_authority.get("sha256")
+                != hashlib.sha256(result_raw).hexdigest()
+            ):
+                raise RuntimeError("post-commit rollback result differs")
+        return True
+    finally:
+        try:
+            if dispatcher is not None:
+                dispatcher.close()
+        finally:
+            close()
+
+
 def _codex_install_bootstrap_recovery_plan(
     *, transaction_id, codex_home, current, inverse, descriptor,
     inverse_raw, writer_identity,
@@ -26888,8 +30760,8 @@ def _recover_codex_package_transaction(
                 "script_sha256", "recovery_argv", "recovery_argv_sha256",
             }
             interpreter_sha256 = _codex_install_committed_read(
-                Path(sys.executable).parent,
-                (Path(sys.executable).name,),
+                _codex_install_active_executable_path().parent,
+                (_codex_install_active_executable_path().name,),
                 directory=False,
                 allow_stable_foreign_links=True,
             )[0].get("sha256")
@@ -26899,7 +30771,8 @@ def _recover_codex_package_transaction(
                 directory=False,
             )[0].get("sha256")
             recovery_argv = [
-                os.path.abspath(sys.executable), "-B", os.path.abspath(__file__),
+                str(_codex_install_active_executable_path()), "-B",
+                os.path.abspath(__file__),
                 "--recover-codex-install", transaction_id,
             ]
             if descriptor.get("schema") == _CODEX_KEEPER_ACTIVE_V2_SCHEMA:
@@ -27077,7 +30950,7 @@ def _recover_codex_package_transaction(
             or writer_identity.get("attributes", 0) & 0x400
             or writer_identity.get("reparse_tag") != 0
             or writer_identity.get("links") != 1
-            or _codex_native_final_name(writer_handle).rstrip("\\/").rsplit("\\", 1)[-1]
+            or _codex_native_final_component(writer_handle)
             != _CODEX_INSTALL_ANCHOR
         ):
             raise RuntimeError("borrowed recovery writer identity differs")
@@ -27564,7 +31437,7 @@ def _recover_codex_package_transaction(
 def _install_codex_adapter(
     w, *, return_receipt=False, enable_claude_projection=None,
 ):
-    """Install the source-exact Codex package under one writer transaction."""
+    """Install the source-exact Plamen runtime under one writer transaction."""
     try:
         if "--check" in sys.argv:
             if sys.argv[1:] != ["install", "--codex", "--check"]:
@@ -27635,7 +31508,7 @@ def _install_codex_adapter(
                     enable_claude_projection=bool(enable_claude_projection),
                 )
     except Exception as exc:
-        w(f"  {_C_RED}Codex package transaction failed: {exc}{_RST}\n")
+        w(f"  {_C_RED}Plamen runtime transaction failed: {exc}{_RST}\n")
         return False
     try:
         cached = _sync_codex_adapter_source_cache(receipt)
@@ -27665,12 +31538,12 @@ def _install_codex_adapter(
         )
     except Exception as exc:
         w(
-            f"  {_C_RED}Codex package committed, but the main command could "
+            f"  {_C_RED}Plamen runtime committed, but the main command could "
             f"not be repaired: {exc}{_RST}\n"
         )
         return False
     w(
-        f"  {_C_GREEN}Codex package committed: {receipt['source_count']} files "
+        f"  {_C_GREEN}Plamen runtime committed: {receipt['source_count']} files "
         f"({receipt['transaction_id']}){_RST}\n"
     )
     if command_path is not None:
@@ -27681,21 +31554,22 @@ def _install_codex_adapter(
 _VERIFICATION_POLICY_INSTALL_FILES = (
     "__init__.py",
     "methodology_reachability.v1.json",
+    "native_backend_acquisition.v2.json",
     "toolchain_governance.v1.json",
     "toolchain_version_lock.v1.json",
     "verification_method_registry.v1.json",
 )
 
 # Managed CLIs can have a materially slower first process start on Windows
-# (for example, Claude 2.1.252 has been observed taking 15.362 seconds just to
+# (for example, a prior Claude release took 15.362 seconds just to
 # answer ``--version``).  Keep doctor bounded, but leave enough room for an
 # authenticated cold start instead of treating it as a broken installation.
 _DOCTOR_BACKEND_VERSION_PROBE_TIMEOUT_SECONDS = 60
 
 
-def _missing_claude_verification_policy_files():
+def _missing_claude_verification_policy_files(runtime_root=None):
     """Return required policy files absent from the Claude install layout."""
-    root = os.path.join(CLAUDE_HOME, "verification_policy")
+    root = os.path.join(runtime_root or CLAUDE_HOME, "verification_policy")
     return [
         name
         for name in _VERIFICATION_POLICY_INSTALL_FILES
@@ -27737,7 +31611,9 @@ def _doctor_probe_backend_versions(
         except (OSError, RuntimeError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
             fail(f"Locked {backend_name} version probe failed ({exc})")
             continue
-        expected_output = _MANAGED_BACKEND_VERSION_OUTPUTS.get(backend)
+        expected_output = _managed_backend_version_output(
+            backend, selected["version"],
+        )
         observed = bytes(version_probe.stdout or b"").replace(b"\r\n", b"\n")
         error = bytes(version_probe.stderr or b"").replace(b"\r\n", b"\n")
         if (
@@ -27772,6 +31648,76 @@ def _doctor_authenticated_claude_status(managed_authority):
         and isinstance(auth_payload, dict)
         and auth_payload.get("loggedIn") is True
     )
+
+
+def _doctor_installed_package_evidence(installed_runtime, installed_codex):
+    """Revalidate the installed package using its actual publication contract.
+
+    The native Codex transaction and the explicit POSIX V2 compatibility
+    transaction intentionally publish different receipts.  Treating every
+    installed ``~/.plamen`` tree as a native Codex transaction made a
+    genuine descriptor-censused compatibility install fail Doctor merely
+    because it correctly did *not* forge ``.plamen-codex-install.json``.
+
+    This selector is not a fallback from failed native verification.  The
+    process-local compatibility capability exists only when pre-bootstrap
+    admission already verified the complete installed census, its fixed JS
+    bootstrap anchor, runtime-closure binding, Codex skill projection, and
+    unchanged verifier identity.  Doctor repeats that complete verification
+    and otherwise uses the native receipt validator unchanged.
+    """
+    installed = Path(installed_runtime["address"])
+    compatibility = _posix_v2_compat_install_evidence()
+    if compatibility is not None:
+        if Path(compatibility["installed_root"]) != installed.absolute():
+            raise RuntimeError(
+                "POSIX compatibility Doctor root differs from admission"
+            )
+        provenance = _verify_installed_posix_v2_compat_runtime(installed)
+        if (
+            provenance.get("generation_sha256")
+            != compatibility["generation_sha256"]
+        ):
+            raise RuntimeError(
+                "POSIX compatibility Doctor generation differs from admission"
+            )
+        return {
+            "kind": "POSIX_COMPAT_V2",
+            "generation_sha256": provenance["generation_sha256"],
+            "source_entry_count": provenance["source_entry_count"],
+        }
+    issues = _codex_install_doctor_issues(
+        codex_home=installed_codex,
+        plamen_root=installed,
+    )
+    return {
+        "kind": "CODEX_COMMITTED",
+        "issues": issues,
+        "source_entry_count": _CODEX_INSTALL_SOURCE_COUNT,
+    }
+
+
+def _doctor_platform_repair_guidance(windows_command, platform_name=None):
+    """Return repair advice consistent with the public platform gate."""
+    platform_name = os.name if platform_name is None else str(platform_name)
+    if platform_name == "nt":
+        suffix = " from a real terminal" if windows_command == "plamen setup" else ""
+        return f"run `{windows_command}`{suffix}"
+    return (
+        "qualified repair is unavailable on POSIX compatibility; "
+        "ordinary `plamen install`/`plamen setup` is refused until a governed "
+        "POSIX installer is qualified"
+    )
+
+
+def _doctor_toolchain_repair_guidance(platform_name=None):
+    return _doctor_platform_repair_guidance("plamen setup", platform_name)
+
+
+def _doctor_python_dependency_repair_guidance():
+    if os.name != "nt" and _posix_v2_compat_install_active():
+        return "run `plamen install --posix-compat-v2-dependencies`"
+    return _doctor_platform_repair_guidance("plamen install")
 
 
 def run_doctor():
@@ -27813,8 +31759,9 @@ def run_doctor():
 
     if not borrowed_install_doctor and _claude_projection_pending():
         fail(
-            "Incomplete Claude projection transaction; run `plamen install` "
-            "to recover before doctor can inspect the runtime"
+            "Incomplete Claude projection transaction; "
+            + _doctor_platform_repair_guidance("plamen install")
+            + " before doctor can inspect the runtime"
         )
         return 1
     if (
@@ -27841,6 +31788,9 @@ def run_doctor():
     managed_backend_authority = None
     managed_claude_auth_checked = False
     managed_claude_authenticated = False
+    compatibility_install = bool(
+        installed_runtime is not None and _posix_v2_compat_install_active()
+    )
     if installed_runtime is not None:
         # The installed root was already identity-bound to the platform's
         # authenticated home location. Derive the sibling Codex projection
@@ -27848,12 +31798,26 @@ def run_doctor():
         # requirement on POSIX.
         installed_codex = Path(installed_runtime["address"]).parent / ".codex"
         integrity_started = time.monotonic()
-        w("  Checking committed package integrity (823 files; this may take up to a minute)...\n")
-        sys.stdout.flush()
-        installed_issues = _codex_install_doctor_issues(
-            codex_home=installed_codex,
-            plamen_root=installed_runtime["address"],
+        integrity_label = (
+            "complete POSIX compatibility census"
+            if compatibility_install
+            else f"committed package integrity ({_CODEX_INSTALL_SOURCE_COUNT} files)"
         )
+        w(
+            f"  Checking {integrity_label}; this may take up to a minute...\n"
+        )
+        sys.stdout.flush()
+        try:
+            installed_evidence = _doctor_installed_package_evidence(
+                installed_runtime, installed_codex,
+            )
+            installed_issues = installed_evidence.get("issues", [])
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            installed_evidence = None
+            installed_issues = [
+                "installed package authority mismatch: "
+                + type(exc).__name__ + ": " + str(exc)[:500]
+            ]
         if installed_issues:
             for issue in installed_issues:
                 fail(issue)
@@ -27862,10 +31826,22 @@ def run_doctor():
                 w(f"    {_C_RED}- {issue}{_RST}\n")
             w("\n")
             return 1
-        ok(
-            "Codex installed package: exact committed 823-row authority "
-            f"({time.monotonic() - integrity_started:.1f}s)"
-        )
+        if installed_evidence["kind"] == "POSIX_COMPAT_V2":
+            ok(
+                "POSIX compatibility package: exact committed "
+                f"{installed_evidence['source_entry_count']}-entry census "
+                f"({time.monotonic() - integrity_started:.1f}s)"
+            )
+            warn(
+                "Installed compatibility receipt explicitly records reduced "
+                "isolation; it does not claim native broker or guest isolation"
+            )
+        else:
+            ok(
+                "Codex installed package: exact committed "
+                f"{_CODEX_INSTALL_SOURCE_COUNT}-row authority "
+                f"({time.monotonic() - integrity_started:.1f}s)"
+            )
 
         # The transaction's retained-writer smoke runs before unreceipted MCP
         # node_modules are post-materialized.  Its FRONT_DOCTOR capability is
@@ -27878,91 +31854,93 @@ def run_doctor():
             ok("Integrated install package doctor smoke complete")
             return 0
 
-        installed_mcp_root = os.path.join(
-            os.fspath(installed_runtime["address"]), "mcp-packages"
-        )
-        installed_package_json = os.path.join(installed_mcp_root, "package.json")
-        try:
-            managed_backend_authority = _validated_managed_backend_authority(
-                installed_runtime["address"]
+        if not compatibility_install:
+            installed_mcp_root = os.path.join(
+                os.fspath(installed_runtime["address"]), "mcp-packages"
             )
-            managed_backend_paths = dict(managed_backend_authority["paths"])
-        except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
-            fail(f"Immutable MCP/CLI generation authority differs ({exc})")
-        else:
-            ok(
-                "Signed generation receipt/selection and exact public shims "
-                "are intact"
-            )
-            warn(
-                "Default doctor does not run a full MCP payload census; that "
-                "broader denominator is reserved for deep integrity validation"
-            )
-
-        try:
-            import tomllib as _tomllib
-
-            codex_config_path = installed_codex / "config.toml"
-            codex_config_text = codex_config_path.read_text(encoding="utf-8")
-            codex_config = _tomllib.loads(codex_config_text)
-            expected_mcp_block = _codex_mcp_toml_block(
-                installed_runtime["address"],
-                codex_config.get("mcp_servers") or {},
-            )
-            if (
-                codex_config_text.count(_CODEX_MCP_START) != 1
-                or codex_config_text.count(_CODEX_MCP_END) != 1
-                or expected_mcp_block not in codex_config_text
-            ):
-                raise ValueError(
-                    "managed block differs from locked runtime authority"
-                )
-        except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
-            fail(f"Codex managed MCP configuration is not exact ({exc})")
-        else:
-            ok("Codex managed MCP configuration is exact and parseable")
-            warn("Codex --ignore-user-config intentionally disables all configured MCP servers")
-
-        try:
-            with open(installed_package_json, encoding="utf-8") as stream:
-                installed_dependencies = (
-                    _json.load(stream).get("dependencies") or {}
-                )
-        except (OSError, ValueError, TypeError):
-            installed_dependencies = {}
-        backend_probes = (
-            (
-                "Claude",
-                managed_backend_paths.get("claude"),
-                installed_dependencies.get("@anthropic-ai/claude-code"),
-            ),
-            (
-                "Codex",
-                managed_backend_paths.get("codex"),
-                installed_dependencies.get("@openai/codex"),
-            ),
-        )
-        _doctor_probe_backend_versions(
-            managed_backend_authority, backend_probes, ok=ok, fail=fail,
-        )
-
-        claude_path = managed_backend_paths.get("claude")
-        if claude_path and managed_backend_authority is not None:
-            managed_claude_auth_checked = True
+            installed_package_json = os.path.join(installed_mcp_root, "package.json")
             try:
-                authenticated = _doctor_authenticated_claude_status(
-                    managed_backend_authority
+                managed_backend_authority = _validated_managed_backend_authority(
+                    installed_runtime["address"]
                 )
-            except (
-                OSError, RuntimeError, subprocess.TimeoutExpired,
-                ValueError, TypeError,
-            ):
-                authenticated = False
-            if authenticated:
-                managed_claude_authenticated = True
-                ok("Claude authentication route is active")
+                managed_backend_paths = dict(managed_backend_authority["paths"])
+            except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+                fail(f"Immutable MCP/CLI generation authority differs ({exc})")
             else:
-                fail("Claude authentication route is not active")
+                ok(
+                    "Signed generation receipt/selection and exact public shims "
+                    "are intact"
+                )
+                warn(
+                    "Default doctor does not run a full MCP payload census; that "
+                    "broader denominator is reserved for deep integrity validation"
+                )
+
+            try:
+                import tomllib as _tomllib
+
+                codex_config_path = installed_codex / "config.toml"
+                codex_config_text = codex_config_path.read_text(encoding="utf-8")
+                codex_config = _tomllib.loads(codex_config_text)
+                expected_mcp_block = _codex_mcp_toml_block(
+                    installed_runtime["address"],
+                    codex_config.get("mcp_servers") or {},
+                )
+                if (
+                    codex_config_text.count(_CODEX_MCP_START) != 1
+                    or codex_config_text.count(_CODEX_MCP_END) != 1
+                    or expected_mcp_block not in codex_config_text
+                ):
+                    raise ValueError(
+                        "managed block differs from locked runtime authority"
+                    )
+            except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+                fail(f"Codex managed MCP configuration is not exact ({exc})")
+            else:
+                ok("Codex managed MCP configuration is exact and parseable")
+                warn("Codex --ignore-user-config intentionally disables all configured MCP servers")
+
+            # Backend releases are selected dynamically at install/update and
+            # are intentionally absent from the frozen MCP safety lock.  Doctor
+            # obtains their exact versions only from the authenticated current
+            # generation; it never asks npm/upstream what "latest" means.
+            selected_backends = (
+                managed_backend_authority["selection"]["backend_launches"]
+                if managed_backend_authority is not None else {}
+            )
+            backend_probes = (
+                (
+                    "Claude",
+                    managed_backend_paths.get("claude"),
+                    (selected_backends.get("claude") or {}).get("version"),
+                ),
+                (
+                    "Codex",
+                    managed_backend_paths.get("codex"),
+                    (selected_backends.get("codex") or {}).get("version"),
+                ),
+            )
+            _doctor_probe_backend_versions(
+                managed_backend_authority, backend_probes, ok=ok, fail=fail,
+            )
+
+            claude_path = managed_backend_paths.get("claude")
+            if claude_path and managed_backend_authority is not None:
+                managed_claude_auth_checked = True
+                try:
+                    authenticated = _doctor_authenticated_claude_status(
+                        managed_backend_authority
+                    )
+                except (
+                    OSError, RuntimeError, subprocess.TimeoutExpired,
+                    ValueError, TypeError,
+                ):
+                    authenticated = False
+                if authenticated:
+                    managed_claude_authenticated = True
+                    ok("Claude authentication route is active")
+                else:
+                    fail("Claude authentication route is not active")
 
     # An authenticated installed generation is the doctor denominator.  The
     # checkout which happened to launch this command is mutable and must not
@@ -27991,10 +31969,18 @@ def run_doctor():
     if dependency_cache_status == "VALID":
         ok("Python dependency user-writable drift cache exactly replays")
     else:
-        fail(
-            "Python dependency drift cache is absent/mismatched; `plamen install` "
-            "will perform an exact hash-locked reinstall"
-        )
+        if _posix_v2_compat_install_active():
+            fail(
+                "Python dependency drift cache is absent/mismatched; rerun the "
+                "explicit POSIX V2 compatibility installer, which performs the "
+                "isolated hash-locked dependency repair before commit"
+            )
+        else:
+            fail(
+                "Python dependency drift cache is absent/mismatched; "
+                + _doctor_platform_repair_guidance("plamen install")
+                + " for an exact hash-locked reinstall"
+            )
     warn(
         "Python dependency trust boundary: USER_WRITABLE_DRIFT_DETECTION_ONLY. "
         "The hash lock protects registry/package substitution during reinstall; "
@@ -28011,7 +31997,7 @@ def run_doctor():
         fail("~/.plamen missing")
 
     # R134: an installed Codex path is authoritative only when the complete
-    # committed 823-row transaction, junction, admission anchor, and wizard
+    # committed governed transaction, junction, admission anchor, and wizard
     # references validate.  This is purely local byte/metadata inspection.
     _codex_root = Path(os.path.expanduser("~/.codex"))
     try:
@@ -28021,7 +32007,16 @@ def run_doctor():
         _codex_receipt_present = True
     except (FileNotFoundError, OSError):
         _codex_receipt_present = False
-    if _codex_receipt_present or _installed_runtime_root() is not None:
+    except RuntimeError as exc:
+        _codex_receipt_present = False
+        if os.path.lexists(_codex_root):
+            fail(
+                "Codex install receipt authority is invalid ("
+                f"{type(exc).__name__}: {str(exc)[:500]})"
+            )
+    if _codex_receipt_present or (
+        _installed_runtime_root() is not None and not compatibility_install
+    ):
         _install_issues = _codex_install_doctor_issues(
             codex_home=_codex_root,
             plamen_root=plamen_dir,
@@ -28030,7 +32025,10 @@ def run_doctor():
             for _issue in _install_issues:
                 fail(_issue)
         else:
-            ok("Codex installed package: exact committed 823-row authority")
+            ok(
+                "Codex installed package: exact committed "
+                f"{_CODEX_INSTALL_SOURCE_COUNT}-row authority"
+            )
 
     # 2. Required platform CLIs. Node/npm/npx are intentionally absent: the
     # committed generation authenticates its own exact Node/npm closure.
@@ -28071,7 +32069,7 @@ def run_doctor():
                     f"aliases (turn OFF App Installer python/python3)."
                 )
 
-    if installed_runtime is not None:
+    if installed_runtime is not None and not compatibility_install:
         claude_bin = os.fspath(managed_backend_paths.get("claude") or "")
         codex_bin = os.fspath(managed_backend_paths.get("codex") or "")
     else:
@@ -28131,7 +32129,10 @@ def run_doctor():
             __import__(mod)
             ok(f"Python module `{mod}` importable")
         except ImportError:
-            fail(f"Python module `{mod}` missing (run `plamen install`)")
+            fail(
+                f"Python module `{mod}` missing ("
+                + _doctor_python_dependency_repair_guidance() + ")"
+            )
     for mod, hint in (("sentence_transformers", "RAG"), ("chromadb", "RAG")):
         try:
             from importlib.util import find_spec
@@ -28177,10 +32178,19 @@ def run_doctor():
         elif status == "UNAVAILABLE" and identity_id != "protobuf":
             warn(
                 detail
-                + " (optional provider unavailable; run `plamen setup`)"
+                + " (optional provider unavailable; "
+                + _doctor_toolchain_repair_guidance()
+                + ")"
             )
         else:
-            fail(detail)
+            fail(
+                detail
+                + (
+                    " (" + _doctor_toolchain_repair_guidance() + ")"
+                    if identity_id != "protobuf"
+                    else ""
+                )
+            )
 
     # 4. ~/.claude install (if claude backend exists)
     if claude_bin and not borrowed_install_doctor:
@@ -28193,37 +32203,56 @@ def run_doctor():
                 installed = m.get("installed", [])
                 missing_links = [p for p in installed if not os.path.exists(p)]
                 if missing_links:
-                    fail(f"{len(missing_links)} symlinked items missing on disk (re-run `plamen install`)")
+                    fail(
+                        f"{len(missing_links)} symlinked items missing on disk ("
+                        + _doctor_platform_repair_guidance("plamen install") + ")"
+                    )
                 else:
                     ok(f"All {len(installed)} symlinked items resolve")
             except Exception as e:
                 fail(f"Manifest unreadable: {e}")
         else:
-            warn(f"No Plamen manifest at {manifest_path} (run `plamen install`)")
+            warn(
+                f"No Plamen manifest at {manifest_path} ("
+                + _doctor_platform_repair_guidance("plamen install") + ")"
+            )
 
+        # The POSIX compatibility launcher executes the authenticated
+        # ~/.plamen generation directly; legacy ~/.claude command/methodology
+        # links resolve into that same tree. It intentionally does not publish
+        # a second verification-policy copy under ~/.claude. Native installs
+        # retain the independent Claude projection denominator unchanged.
+        claude_runtime_root = (
+            plamen_dir if compatibility_install else CLAUDE_HOME
+        )
         runtime_issues = _toolchain_runtime_required_integrity_issues(
-            CLAUDE_HOME, closure_root=CLAUDE_HOME,
+            claude_runtime_root, closure_root=claude_runtime_root,
         )
         if runtime_issues["missing"]:
             fail(
                 "Claude runtime package incomplete "
                 f"({', '.join(runtime_issues['missing'])} missing; "
-                "re-run `plamen install`)"
+                + _doctor_platform_repair_guidance("plamen install") + ")"
             )
         if runtime_issues["mismatched"]:
             fail(
                 "Claude runtime package digest mismatch "
                 f"({', '.join(runtime_issues['mismatched'])}; "
-                "re-run `plamen install`)"
+                + _doctor_platform_repair_guidance("plamen install") + ")"
             )
         if not runtime_issues["missing"] and not runtime_issues["mismatched"]:
             ok("Claude runtime-required file denominator complete")
 
-        missing_policy = _missing_claude_verification_policy_files()
+        missing_policy = (
+            _missing_claude_verification_policy_files(claude_runtime_root)
+            if compatibility_install
+            else _missing_claude_verification_policy_files()
+        )
         if missing_policy:
             fail(
                 "Claude verification-policy install incomplete "
-                f"({', '.join(missing_policy)} missing; re-run `plamen install`)"
+                f"({', '.join(missing_policy)} missing; "
+                + _doctor_platform_repair_guidance("plamen install") + ")"
             )
         else:
             ok("Claude verification-policy package complete")
@@ -28241,7 +32270,10 @@ def run_doctor():
                 if _CLAUDE_MD_START in text and _CLAUDE_MD_END in text:
                     ok("CLAUDE.md has Plamen marker block")
                 else:
-                    warn("CLAUDE.md missing PLAMEN markers (re-run `plamen install`)")
+                    warn(
+                        "CLAUDE.md missing PLAMEN markers ("
+                        + _doctor_platform_repair_guidance("plamen install") + ")"
+                    )
             except OSError as e:
                 warn(f"Could not read CLAUDE.md: {e}")
         else:
@@ -28261,23 +32293,29 @@ def run_doctor():
                 fail(
                     "Codex runtime package incomplete "
                     f"({', '.join(runtime_issues['missing'])} missing; "
-                    "re-run `plamen install --codex`)"
+                    + _doctor_platform_repair_guidance("plamen install --codex") + ")"
                 )
             if runtime_issues["mismatched"]:
                 fail(
                     "Codex runtime package digest mismatch "
                     f"({', '.join(runtime_issues['mismatched'])}; "
-                    "re-run `plamen install --codex`)"
+                    + _doctor_platform_repair_guidance("plamen install --codex") + ")"
                 )
             if not runtime_issues["missing"] and not runtime_issues["mismatched"]:
                 ok("Codex runtime-required file denominator complete")
         else:
-            warn("~/.codex/plamen missing (run `plamen install --codex`)")
+            warn(
+                "~/.codex/plamen missing ("
+                + _doctor_platform_repair_guidance("plamen install --codex") + ")"
+            )
         agents_md = os.path.normpath(os.path.expanduser("~/.codex/AGENTS.md"))
         if os.path.isfile(agents_md):
             ok("~/.codex/AGENTS.md present")
         else:
-            warn("~/.codex/AGENTS.md missing (run `plamen install --codex`)")
+            warn(
+                "~/.codex/AGENTS.md missing ("
+                + _doctor_platform_repair_guidance("plamen install --codex") + ")"
+            )
 
     # 6. Submodules populated
     for sub, critical_for in (
@@ -28535,8 +32573,9 @@ def run_install():
     # files inherits a PATH without `~/.foundry/bin`. The remediation
     # there is shell-config-level, not registry-level — see the
     # diagnostic block below for the user-facing message.
+    path_persistence_dirs = []
     if sys.platform == "win32":
-        toolchain_dirs = [
+        path_persistence_dirs = [
             "~/.foundry/bin",       # Foundry (forge / cast / anvil / chisel)
             "~/go/bin",             # Medusa, scip-go, ast-grep (Go-based)
             "~/.cargo/bin",         # Rust tooling (Stellar CLI, Scout, rust-analyzer)
@@ -28551,9 +32590,15 @@ def run_install():
         # box with GOPATH/GOBIN exported off ~/go/bin still exposes medusa/scip-go
         # to the audit subprocess.
         _gobin = _go_bin_dir()
-        if _gobin and _gobin not in (os.path.normpath(os.path.expanduser(p)) for p in toolchain_dirs):
-            toolchain_dirs.insert(2, _gobin)
-        _update_path_env(toolchain_dirs, persist=True)
+        if _gobin and _gobin not in (
+            os.path.normpath(os.path.expanduser(p))
+            for p in path_persistence_dirs
+        ):
+            path_persistence_dirs.insert(2, _gobin)
+        # Process-local visibility is reversible on install failure. Persistent
+        # registry/profile mutation is deferred until every package and launcher
+        # postcondition below has succeeded.
+        _update_path_env(path_persistence_dirs, persist=False)
     else:
         # POSIX equivalent (macOS / Linux): same bug class as Windows.
         # A Codex / Claude audit subprocess inherits PATH from a parent shell
@@ -28567,7 +32612,7 @@ def run_install():
         # present gets zero PATH persistence. Mirror the Windows branch:
         # scan the standard toolchain dirs; for any that EXIST on disk,
         # persist them to the shell rc via _persist_path_posix. Idempotent.
-        posix_toolchain_dirs = [
+        path_persistence_dirs = [
             "~/.foundry/bin",       # Foundry (forge / cast / anvil / chisel)
             "~/go/bin",             # Medusa, scip-go, ast-grep (Go-based)
             "~/.cargo/bin",         # Rust tooling (Stellar CLI, Scout, rust-analyzer)
@@ -28581,9 +32626,12 @@ def run_install():
         # box with GOPATH/GOBIN exported off ~/go/bin still exposes medusa/scip-go
         # to the audit subprocess.
         _gobin = _go_bin_dir()
-        if _gobin and _gobin not in (os.path.normpath(os.path.expanduser(p)) for p in posix_toolchain_dirs):
-            posix_toolchain_dirs.insert(2, _gobin)
-        _update_path_env(posix_toolchain_dirs, persist=True)
+        if _gobin and _gobin not in (
+            os.path.normpath(os.path.expanduser(p))
+            for p in path_persistence_dirs
+        ):
+            path_persistence_dirs.insert(2, _gobin)
+        _update_path_env(path_persistence_dirs, persist=False)
 
     # ── Cross-OS toolchain visibility report (all platforms) ────
     # Tell the user which chain-specific toolchains are detected and
@@ -28607,10 +32655,9 @@ def run_install():
 
     # ── Submodules ─────────────────────────────────────────────
     # Init must fire when ANY git submodule is empty, not just slither-mcp.
-    # The opengrep-rules/* submodules self-heal at recon time, but the
-    # custom-mcp/* ones (slither-mcp, farofino-mcp) do not — so on a partial
-    # clone or upgrade where slither-mcp happens to be populated but
-    # farofino-mcp is empty, EVM/Aderyn integration would silently stay broken.
+    # OpenGrep rule Git metadata is consumed only here to authenticate the
+    # portable package attestation; recon never materializes or repairs it.
+    # The custom-mcp/* submodules likewise must be present before packaging.
     # Check all submodule paths from .gitmodules so init covers every case.
     _gitmodules = os.path.join(PLAMEN_HOME, ".gitmodules")
     _submodule_paths = []
@@ -28653,7 +32700,10 @@ def run_install():
             w(f"  {_C_ORANGE}>{_RST} Initializing git submodules ({_empty_rel} empty)...\n")
             sys.stdout.flush()
             submodule_init_ok = _run_install_cmd(
-                f'git -C "{PLAMEN_HOME}" submodule update --init --recursive',
+                [
+                    "git", "-C", str(PLAMEN_HOME), "submodule", "update",
+                    "--init", "--recursive",
+                ],
                 retries=1,
             )
             submodules_initialized = bool(submodule_init_ok)
@@ -28764,8 +32814,10 @@ def run_install():
     if launcher_ok:
         command_root = Path(committed_receipt["plamen_root"])
         try:
-            launcher_interpreter = _managed_runtime_python().resolve(
-                strict=True
+            launcher_interpreter = (
+                _managed_runtime_python().absolute()
+                if sys.platform == "win32"
+                else _managed_runtime_launcher_python()
             )
             if sys.platform == "win32":
                 _ensure_windows_plamen_command(
@@ -28841,6 +32893,12 @@ def run_install():
             committed_generation=committed_generation,
         )
 
+    # Shell profiles and the Windows user PATH are external to the package
+    # transaction. Mutate them only after the complete installed release,
+    # manifest, launchers, projections and backend probes have reached their
+    # terminal postconditions, so rollback/failure cannot leave partial PATH.
+    _update_path_env(path_persistence_dirs, persist=True)
+
     return 0
 
 
@@ -28868,7 +32926,7 @@ def run_setup():
             f"\n  {_C_RED}Base Plamen install failed; toolchain setup was not "
             f"started.{_RST}\n\n"
         )
-        return install_rc
+        return install_rc if isinstance(install_rc, int) else 1
     source_runtime_missing = _toolchain_runtime_required_missing(PLAMEN_HOME)
     if source_runtime_missing:
         w(
@@ -28893,8 +32951,12 @@ def run_setup():
 
     try:
         provider_rows = _locked_toolchain_identity_report()
-    except RuntimeError:
-        provider_rows = []
+    except RuntimeError as exc:
+        w(
+            f"\n  {_C_RED}Toolchain controls are invalid; setup stopped: "
+            f"{exc}{_RST}\n\n"
+        )
+        return 1
     provider_blocked = [
         row
         for row in provider_rows
@@ -28913,6 +32975,8 @@ def run_setup():
             item_choices.append({"name": f"{group:8s} {names}", "value": group})
     else:
         for group, recipes in _INSTALL_RECIPES.items():
+            if not recipes:
+                continue
             names = ", ".join(d for d, _, _, _, _, _, _ in recipes)
             item_choices.append({"name": f"{group:8s} {names}  ✓",
                                  "value": group, "enabled": False})
@@ -28929,7 +32993,7 @@ def run_setup():
     # ~/.codex/plamen, AGENTS.md, and config.toml are already staged by the
     # time we reach this checkbox. This toggle remains as an explicit
     # refresh/reinstall path for the interactive user.
-    codex_present = bool(_find_codex_bin())
+    codex_present = bool(_dependency_backend_paths().get("codex"))
     codex_linked = (os.path.isdir(os.path.expanduser("~/.codex/plamen"))
                     or os.path.islink(os.path.expanduser("~/.codex/plamen")))
     if codex_present:
@@ -28955,6 +33019,7 @@ def run_setup():
     choices.append({"name": "Skip     back to menu", "value": "__skip__"})
 
     if missing:
+        w(f"  {_C_GRAY}Supported governed acquisitions:{_RST}\n")
         w(f"  {_C_GRAY}Time estimates:{_RST}\n")
         for group, entries in missing.items():
             for display, _, _, _, est, _, requires in entries:
@@ -28975,7 +33040,7 @@ def run_setup():
                 row["identity_id"] for row in provider_blocked
             )
             w(
-                f"  {_C_ORANGE}All reviewed tool versions installed "
+                f"  {_C_ORANGE}Recipe checks passed "
                 f"({rag_count:,} RAG entries), but precise-provider authority "
                 f"is unavailable for: {blocked}.{_RST}\n"
             )
@@ -28984,8 +33049,30 @@ def run_setup():
                 f"use source-graph fallbacks; this is not provider-ready.{_RST}\n"
             )
         else:
-            w(f"  {_C_GREEN}All tools installed ({rag_count:,} RAG entries).{_RST}\n")
+            w(f"  {_C_GREEN}Recipe checks passed ({rag_count:,} RAG entries).{_RST}\n")
+        w(f"  {_C_GRAY}These checks do not certify complete toolchains or end-to-end audit readiness.{_RST}\n")
         w(f"  {_C_GRAY}Select components to reinstall/rebuild, or Skip to go back.{_RST}\n\n")
+    if _UNSUPPORTED_TOOLCHAIN_RECIPES:
+        w(
+            f"  {_C_GRAY}Operator prerequisites "
+            f"(status only; not selectable):{_RST}\n"
+        )
+        for group, entries in _UNSUPPORTED_TOOLCHAIN_RECIPES.items():
+            for display, reason in entries:
+                w(
+                    f"    {_C_DARK_GRAY}{group} · {display}: "
+                    f"{reason}{_RST}\n"
+                )
+        w("\n")
+    if _BUNDLED_TOOLCHAIN_STATUS:
+        w(f"  {_C_GRAY}Bundled native tools (status only; not selectable):{_RST}\n")
+        for group, entries in _BUNDLED_TOOLCHAIN_STATUS.items():
+            for display, status in entries:
+                w(
+                    f"    {_C_GREEN}✓{_RST} {_C_DARK_GRAY}{group} · "
+                    f"{display}: {status}{_RST}\n"
+                )
+        w("\n")
     if codex_present and not codex_linked:
         w(f"  {_C_ORANGE}! Codex backend detected, but ~/.codex is NOT linked.{_RST}\n")
         w(f"  {_C_GRAY}  Claude-side setup does NOT wire Codex. Toggle 'Codex' below{_RST}\n")
@@ -29006,7 +33093,7 @@ def run_setup():
     ).execute()
 
     if not selected or selected == ["__skip__"]:
-        return
+        return 0
 
     # Expand "All" into individual items
     if "__all__" in selected:
@@ -29014,10 +33101,16 @@ def run_setup():
     selected = [s for s in selected if s not in ("__skip__", "__all__")]
 
     if not selected:
-        return
+        return 0
 
     # ── Run installs ─────────────────────────────────────────
     console.print(Rule(style="color(238)"))
+    failed_actions = []
+    attempted_recipe_keys = set()
+
+    def record_failure(action):
+        if action not in failed_actions:
+            failed_actions.append(action)
 
     for group in selected:
         if group == "__skip__":
@@ -29025,14 +33118,17 @@ def run_setup():
 
         if group == "__codex__":
             console.print(Rule(title="Codex Adapter", style="color(238)"))
-            _install_codex_adapter(w, enable_claude_projection=False)
+            if not _install_codex_adapter(w, enable_claude_projection=False):
+                record_failure("Codex adapter")
             continue
 
         if group == "__rag__":
             w(f"\n  {_BOLD}{_C_WHITE}Building RAG vulnerability database...{_RST}"
               f"  {_C_DARK_GRAY}~3-5 min{_RST}\n\n")
             sys.stdout.flush()
-            _build_rag_db(w)
+            rag_built = _build_rag_db(w)
+            if not rag_built or _rag_needs_build():
+                record_failure("RAG DB")
             continue
 
         w(f"\n  {_BOLD}{_C_WHITE}Installing {group} toolchain...{_RST}\n")
@@ -29054,6 +33150,17 @@ def run_setup():
             sys.stdout.flush()
 
             cmds = cmds_fn()
+            recipe_key = (
+                tuple(_toolchain_command_text(command) for command in cmds),
+                tuple(provides or ()),
+            )
+            if recipe_key in attempted_recipe_keys:
+                w(
+                    f"  {_C_GRAY}  already evaluated through another selected "
+                    f"toolchain group{_RST}\n\n"
+                )
+                continue
+            attempted_recipe_keys.add(recipe_key)
             acquisition_rejections = [
                 reason for reason in (
                     _toolchain_acquisition_rejection(cmd) for cmd in cmds
@@ -29068,6 +33175,7 @@ def run_setup():
                 w(f"  {_C_ORANGE}  external prerequisite — {reason}{_RST}\n")
                 w(f"  {_C_DARK_GRAY}  Nothing was downloaded or executed."
                   f" Install a reviewed version manually, then rerun doctor.{_RST}\n\n")
+                record_failure(display)
                 continue
 
             # Check and install prerequisites first
@@ -29079,6 +33187,7 @@ def run_setup():
                     break
             if not prereq_ok:
                 w(f"  {_C_RED}  skipped — prerequisite unavailable{_RST}\n\n")
+                record_failure(display)
                 continue
 
             # Pre-create target dirs and add to PATH BEFORE install,
@@ -29099,7 +33208,7 @@ def run_setup():
 
             success = True
             for cmd in cmds:
-                if not _run_install_cmd(cmd, retries=1):
+                if not _run_install_cmd(cmd):
                     w(f"  {_C_RED}  failed — see output above{_RST}\n")
                     success = False
                     break
@@ -29121,6 +33230,16 @@ def run_setup():
                         )
                         success = False
                         break
+            if (
+                success
+                and "cargo-fuzz" in (provides or [])
+                and not _cargo_fuzz_nightly_is_current()
+            ):
+                w(
+                    f"  {_C_RED}  failed — pinned nightly-2026-08-01 "
+                    f"postcondition is absent{_RST}\n"
+                )
+                success = False
             # Refresh PATH after install so re-check finds newly installed tools
             # (especially important for winget which modifies system PATH)
             if paths:
@@ -29136,9 +33255,36 @@ def run_setup():
             # state as success.
             if success:
                 for binary in (provides or []):
-                    ok, msg = _probe_tool_runtime(binary, paths or [])
+                    expected_version = _SETUP_PINNED_TOOL_VERSIONS.get(binary)
+                    if expected_version is None:
+                        ok, msg = _probe_tool_runtime(binary, paths or [])
+                    else:
+                        ok, msg = _probe_tool_runtime(
+                            binary, paths or [],
+                            expected_version=expected_version,
+                        )
                     if ok and msg == "ok":
-                        w(f"  {_C_GRAY}    ✓ {binary} runs{_RST}\n")
+                        if expected_version is not None:
+                            receipt_ok, receipt_message = (
+                                _publish_setup_tool_receipt(
+                                    binary, expected_version, paths or [],
+                                )
+                            )
+                            if not receipt_ok:
+                                success = False
+                                w(
+                                    f"  {_C_RED}    ✗ {binary}: "
+                                    f"{receipt_message}; exact receipt "
+                                    f"postcondition failed{_RST}\n"
+                                )
+                                break
+                            w(
+                                f"  {_C_GRAY}    ✓ {binary} "
+                                f"{expected_version} runs; receipt "
+                                f"verified{_RST}\n"
+                            )
+                        else:
+                            w(f"  {_C_GRAY}    ✓ {binary} runs{_RST}\n")
                     elif ok and msg == "skipped":
                         pass
                     else:
@@ -29146,14 +33292,25 @@ def run_setup():
                         w(f"  {_C_RED}    ✗ {binary}: {msg}; install postcondition failed{_RST}\n")
             if success:
                 w(f"  {_C_GREEN}  done{_RST}\n")
+            else:
+                record_failure(display)
             w("\n")
 
     # ── Re-check ─────────────────────────────────────────────
     console.print(Rule(style="color(238)"))
     w(f"  {_C_GRAY}Re-checking...{_RST}\n\n")
     sys.stdout.flush()
-    check_dependencies()
+    if not check_dependencies():
+        record_failure("required dependencies")
     w("\n")
+
+    if failed_actions:
+        w(
+            f"  {_C_RED}Setup incomplete; failed or unavailable selected "
+            f"actions: {', '.join(failed_actions)}.{_RST}\n\n"
+        )
+        return 1
+    return 0
 
 
 # ── Banner ───────────────────────────────────────────────────
@@ -29200,8 +33357,6 @@ def show_hint_panel():
          ("whitepaper or spec (optional)", _C_GRAY)])
     row([("  ", None), ("scope", _C_GREEN), ("           ", None),
          ("scope.txt or notes (optional)", _C_GRAY)])
-    row([("  ", None), ("ground truth", _C_GREEN), ("    ", None),
-         ("reference report (compare only)", _C_GRAY)])
     w(f"  {bx}╰{'─' * W}╯{_RST}\n")
     w("\n")
     sys.stdout.flush()
@@ -29931,7 +34086,7 @@ def _cap(s: str, n: int = 44) -> str:
 # ── Prompts ──────────────────────────────────────────────────
 
 def select_pipeline() -> str:
-    """Returns 'sc', 'l1', 'compare', or 'setup'."""
+    """Returns 'sc', 'l1', or 'setup'."""
     _drain_stdin()
     choices = [
         {"name": "Smart Contract         EVM · Solana · Soroban · Aptos · Sui",
@@ -29940,9 +34095,8 @@ def select_pipeline() -> str:
          "value": "l1"},
         Separator(),
     ]
-    if _find_claude_bin():
-        choices.append({"name": "Compare                Diff reports", "value": "compare"})
-    choices.append({"name": "Setup                  Install tools + build RAG DB", "value": "setup"})
+    if not _posix_v2_compat_install_active():
+        choices.append({"name": "Setup                  Install tools + build RAG DB", "value": "setup"})
     result = inquirer.select(
         message="What are you auditing?",
         choices=choices,
@@ -29990,41 +34144,13 @@ def select_audit_mode(pipeline: str) -> str:
 
 
 def select_claude_transport(pipeline: str, mode: str) -> tuple[object, str]:
-    """Choose a new Claude transport; return (bound resolution, warning)."""
-    capability = _claude_headless_transport_capability()
-    _drain_stdin()
-    if capability.get("available") is True:
-        choices = [
-            {
-                "name": "Contained headless   recommended; governed worker isolation",
-                "value": "headless",
-            },
-            *_back_separator(),
-        ]
-        default = "headless"
-    else:
-        reason = str(capability.get("reason") or "authority unavailable")
-        sys.stdout.write(
-            f"  {_C_ORANGE}! Contained headless is unavailable on this host: "
-            f"{reason}{_RST}\n"
-        )
-        choices = [
-            *_back_separator(),
-        ]
-        default = _BACK
-    result = inquirer.select(
-        message="Claude execution transport?",
-        choices=choices,
-        default=default,
-        pointer="  >",
-        style=_STYLE,
-        qmark=">",
-        amark="✓",
-    ).execute()
-    if result == _BACK:
-        return _BACK, ""
+    """Resolve the supported Claude transport without an implementation quiz."""
+    if _posix_v2_compat_install_active():
+        # Authentication is checked before target selection or scratchpad
+        # creation, and again immediately before a launch config is committed.
+        _check_local_claude_login_before_launch()
     resolution = _bind_new_claude_transport(
-        pipeline, mode, "claude", result, capability=capability,
+        pipeline, mode, "claude", "headless",
         audit_model_launch=False,
     )
     _backend, _transport, warning = _replay_new_transport_resolution(
@@ -30210,49 +34336,6 @@ def select_scope() -> tuple:
         return ("", notes.strip())
 
     return ("", "")
-
-
-def select_report(message: str, allow_back: bool = True) -> str:
-    """Select a markdown report file. Only .md files — PDFs cannot be diffed."""
-    cwd = os.getcwd()
-    report_files = []
-    for f in glob.glob(os.path.join(cwd, "*.md")):
-        name = os.path.basename(f)
-        if any(kw in name.lower() for kw in ["audit", "report", "finding", "security"]):
-            report_files.append(f)
-
-    choices = []
-    for f in report_files[:5]:
-        choices.append({"name": f"  {os.path.basename(f)}", "value": f})
-    if choices:
-        choices.append(Separator())
-    choices.append({"name": "Browse...          pick a file", "value": "__browse__"})
-    if allow_back:
-        choices.extend(_back_separator())
-
-    _drain_stdin()
-    result = inquirer.select(
-        message=message,
-        choices=choices,
-        pointer="  >",
-        style=_STYLE,
-        qmark=">",
-        amark="✓",
-    ).execute()
-
-    if result == _BACK:
-        return _BACK
-
-    if result == "__browse__":
-        path = inquirer.filepath(
-            message="Path to report:",
-            validate=lambda v: os.path.exists(v) or "File not found",
-            only_directories=False,
-            style=_STYLE, qmark=">", amark="✓",
-        ).execute()
-        return os.path.abspath(path)
-
-    return result
 
 
 def confirm_launch() -> str:
@@ -31585,10 +35668,72 @@ def _render_resume_startup_decision(path: Path, *, receipt_mac_key: bytes) -> bo
     return True
 
 
+def _exit3_phase_graph_state(config_path: str) -> tuple[str, str | None]:
+    """Classify exit 3 without turning an incomplete checkpoint into completion.
+
+    The process exit code alone intentionally covers both a halt before the end
+    of the phase graph and a terminal traversal that retains declared debt.
+    Only the driver's checkpoint, bound to the same pipeline/mode as the launch
+    config, may distinguish those cases for presentation.  Any ambiguity stays
+    UNKNOWN and therefore cannot produce terminal wording.
+    """
+    try:
+        with open(config_path, encoding="utf-8") as stream:
+            config = json.load(stream)
+        if type(config) is not dict:
+            return "UNKNOWN", None
+        pipeline = config.get("pipeline")
+        mode = config.get("mode")
+        if pipeline not in {"sc", "l1"} or mode not in {
+            "light", "core", "thorough",
+        }:
+            return "UNKNOWN", None
+
+        checkpoint_path = os.path.join(
+            os.path.dirname(os.path.abspath(config_path)),
+            "_v2_checkpoint.json",
+        )
+        with open(checkpoint_path, encoding="utf-8-sig") as stream:
+            checkpoint = json.load(stream)
+        if type(checkpoint) is not dict:
+            return "UNKNOWN", None
+        checkpoint_config = checkpoint.get("config")
+        if type(checkpoint_config) is not dict or any(
+            checkpoint_config.get(field) != config.get(field)
+            for field in ("pipeline", "mode", "project_root")
+        ):
+            return "UNKNOWN", None
+        completed = checkpoint.get("completed")
+        if (
+            type(completed) is not list
+            or any(type(name) is not str or not name for name in completed)
+            or len(set(completed)) != len(completed)
+        ):
+            return "UNKNOWN", None
+
+        scripts_dir = os.path.join(PLAMEN_HOME, "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from plamen_types import L1_PHASES, SC_PHASES  # type: ignore
+
+        phases = L1_PHASES if pipeline == "l1" else SC_PHASES
+        active = [phase.name for phase in phases if mode in phase.modes]
+        if not active or len(set(active)) != len(active):
+            return "UNKNOWN", None
+        completed_set = set(completed)
+        missing = [name for name in active if name not in completed_set]
+        if missing:
+            return "INCOMPLETE", missing[0]
+        return "TERMINAL_TRAVERSAL", None
+    except (ImportError, OSError, TypeError, ValueError):
+        return "UNKNOWN", None
+
+
 def _render_driver_result(
     returncode: int, config_path: str, target: str, *,
     decision_receipt_path: Path | None = None,
     decision_mac_key: bytes | None = None,
+    posix_compat_v2: bool = False,
 ) -> int:
     """Render the driver's typed exit state without claiming false success."""
     report = os.path.join(target, "AUDIT_REPORT.md")
@@ -31626,9 +35771,33 @@ def _render_driver_result(
             w("  No decision-receipt destination was supplied.\n")
         w("  Restore exact original inputs or use a distinct clean destination.\n")
         return 5
+    if returncode == 3:
+        phase_graph_state, next_phase = _exit3_phase_graph_state(config_path)
+        if phase_graph_state == "TERMINAL_TRAVERSAL":
+            w(
+                "\n  Pipeline traversed every active phase and reached "
+                "terminal delivery checks with declared debt.\n"
+            )
+            if posix_compat_v2:
+                w(
+                    "  POSIX compatibility mode retains reduced-isolation "
+                    "runtime debt; this is not native-isolation completion.\n"
+                )
+        elif phase_graph_state == "INCOMPLETE":
+            w("\n  Pipeline stopped before completing its active phase graph.\n")
+            if next_phase:
+                w(f"  Next incomplete phase: {next_phase}\n")
+        else:
+            w(
+                "\n  Pipeline stopped with degraded exit 3; completion could "
+                "not be established from its checkpoint.\n"
+            )
+        if os.path.isfile(report):
+            w(f"  Current report: {report}\n")
+        w(f"  Scratchpad: {scratchpad}\n  Resume: {resume_cmd}\n")
+        return returncode
     labels = {
         2: "paused by a rate/usage limit",
-        3: "completed in a degraded state",
         4: "stopped because its configuration is missing",
         42: "hibernating until its recorded wake time",
         130: "interrupted; artifacts were preserved",
@@ -31641,8 +35810,11 @@ def _render_driver_result(
     return returncode
 
 
-def resume_v2(config_path: str):
+def resume_v2(config_path: str, *, posix_compat_v2: bool = False):
     """Resume an existing audit via the non-destructive driver contract."""
+    posix_compat_v2 = bool(
+        posix_compat_v2 or _posix_v2_compat_install_active()
+    )
     driver = os.path.join(PLAMEN_HOME, "scripts", "plamen_driver.py")
     if not os.path.isfile(driver):
         sys.stdout.write(f"  {_C_RED}✗ Driver not found: {driver}{_RST}\n")
@@ -31671,6 +35843,8 @@ def resume_v2(config_path: str):
         str(decision_receipt_path),
         config_path,
     ]
+    if posix_compat_v2:
+        cmd.append("--posix-compat-v2")
 
     if sys.platform == "win32":
         os.system("")
@@ -31684,6 +35858,7 @@ def resume_v2(config_path: str):
             result.returncode, config_path, target,
             decision_receipt_path=decision_receipt_path,
             decision_mac_key=bytes(decision_mac_key),
+            posix_compat_v2=posix_compat_v2,
         )
     finally:
         child_env.pop("PLAMEN_STARTUP_DECISION_MAC_KEY", None)
@@ -31692,8 +35867,11 @@ def resume_v2(config_path: str):
     sys.exit(rendered)
 
 
-def start_config_v2(config_path: str):
+def start_config_v2(config_path: str, *, posix_compat_v2: bool = False):
     """Start a pre-created clean config via the locked managed runtime."""
+    posix_compat_v2 = bool(
+        posix_compat_v2 or _posix_v2_compat_install_active()
+    )
     import json as _json
 
     config_path = os.path.abspath(config_path)
@@ -31737,6 +35915,17 @@ def start_config_v2(config_path: str):
         )
         sys.exit(1)
 
+    try:
+        prepared_config = _prepare_new_run_config(config)
+        _atomic_write_json(config_path, prepared_config)
+        config = prepared_config
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        sys.stdout.write(
+            f"  {_C_RED}Cannot start audit: {exc}{_RST}\n"
+            f"  {_C_GRAY}No audit phase or provider was launched.{_RST}\n"
+        )
+        sys.exit(1)
+
     driver = os.path.join(PLAMEN_HOME, "scripts", "plamen_driver.py")
     if not os.path.isfile(driver):
         sys.stdout.write(f"  {_C_RED}Driver not found: {driver}{_RST}\n")
@@ -31762,6 +35951,8 @@ def start_config_v2(config_path: str):
         str(decision_receipt_path),
         config_path,
     ]
+    if posix_compat_v2:
+        cmd.append("--posix-compat-v2")
     if sys.platform == "win32":
         os.system("")
     child_env = os.environ.copy()
@@ -31774,6 +35965,7 @@ def start_config_v2(config_path: str):
             result.returncode, config_path, project_root,
             decision_receipt_path=decision_receipt_path,
             decision_mac_key=bytes(decision_mac_key),
+            posix_compat_v2=posix_compat_v2,
         )
     finally:
         child_env.pop("PLAMEN_STARTUP_DECISION_MAC_KEY", None)
@@ -31783,6 +35975,146 @@ def start_config_v2(config_path: str):
 
 
 # ── Launch ───────────────────────────────────────────────────
+
+def _native_managed_evm_setup_effects_for_start(_config):
+    """Return receipt-bound role-9 effects once native admission provides them."""
+    raise RuntimeError(
+        "Native audit toolchain setup is not available in this installation. "
+        "Reinstall Plamen with the native installer and try again."
+    )
+
+
+def _native_start_completion_identity(config, *, run_id):
+    """Capture the committed native install and Git identities for a new run."""
+    if _posix_v2_compat_install_active():
+        raise RuntimeError(
+            "This compatibility installation cannot start governed audits. "
+            "Reinstall Plamen with the native installer and try again."
+        )
+    scripts_dir = os.path.join(PLAMEN_HOME, "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import audit_completion_receipt as completion_receipt
+
+    expected_module = os.path.normcase(os.path.realpath(
+        os.path.join(scripts_dir, "audit_completion_receipt.py")
+    ))
+    observed_module = os.path.normcase(os.path.realpath(str(
+        getattr(completion_receipt, "__file__", "")
+    )))
+    if observed_module != expected_module:
+        raise RuntimeError("native completion authority belongs to another installation")
+
+    try:
+        _reader, _kind, installed_root, codex_home, package = (
+            _early_admitted_install_authority()
+        )
+        package_receipt = codex_home / _CODEX_INSTALL_RECEIPT
+        if (
+            type(package) is not dict
+            or package.get("schema") != _CODEX_INSTALL_SCHEMA
+            or package.get("state") != _CODEX_INSTALL_TERMINAL_STATE
+            or not all(
+                type(package.get(name)) is str and package[name]
+                for name in ("plamen_root", "source_root")
+            )
+        ):
+            raise RuntimeError("native package receipt is not committed")
+        project_root = Path(str(config["project_root"])).resolve(strict=True)
+        git_root_result = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", "--show-toplevel"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, timeout=10, check=False,
+        )
+        if git_root_result.returncode != 0:
+            raise RuntimeError("target Git identity is unavailable")
+        target_repository_root = Path(git_root_result.stdout.strip()).resolve(
+            strict=True
+        )
+        generation_receipt = (
+            codex_home / _CODEX_INSTALL_ANCHOR
+            if os.name == "nt" else
+            Path.home() / ".local" / "share" / "plamen" / "share"
+            / "plamen" / "native-install-receipt-v2.bin"
+        )
+        return completion_receipt.capture_start_completion_identity(
+            run_id=run_id,
+            installed_package_root=installed_root,
+            installed_package_receipt=package_receipt,
+            installed_generation_receipt=generation_receipt,
+            plamen_source_root=Path(package["source_root"]),
+            target_repository_root=target_repository_root,
+            project_root=project_root,
+        )
+    except (
+        KeyError, OSError, RuntimeError, TypeError, ValueError,
+        subprocess.SubprocessError,
+    ) as exc:
+        raise RuntimeError(
+            "Native audit identity could not be verified. Reinstall Plamen "
+            "with the native installer and retry from a clean Git checkout."
+        ) from exc
+
+
+def _prepare_native_new_run_config(config):
+    """Bind the host-verifiable completion identity before native launch."""
+    prepared = dict(config)
+    if _posix_v2_compat_install_active():
+        raise RuntimeError(
+            "This compatibility installation cannot start governed audits. "
+            "Reinstall Plamen with the native installer and try again."
+        )
+    completion_eligible = (
+        prepared.get("pipeline") == "sc" and prepared.get("mode") == "thorough"
+    )
+    if completion_eligible:
+        existing_identity = prepared.get("_audit_completion_identity")
+        existing_run_id = prepared.get("_run_id")
+        if existing_identity is None and existing_run_id is None:
+            run_id = str(uuid.uuid4())
+        elif (
+            type(existing_identity) is dict
+            and type(existing_run_id) is str
+            and existing_identity.get("run_id") == existing_run_id
+        ):
+            run_id = existing_run_id
+        else:
+            raise RuntimeError("new-run completion identity is incomplete")
+        identity = _native_start_completion_identity(prepared, run_id=run_id)
+        if existing_identity is not None and existing_identity != identity:
+            raise RuntimeError("new-run completion identity changed before launch")
+        prepared["_run_id"] = run_id
+        prepared["_audit_completion_identity"] = identity
+
+    return prepared
+
+
+def _prepare_new_run_config(config):
+    """Dispatch the exact supported start authority without cross-OS guessing."""
+    if _posix_v2_compat_install_active():
+        prepared = dict(config)
+        if str(prepared.get("cli_backend") or "").strip().lower() not in {
+            "codex", "claude",
+        }:
+            raise RuntimeError(
+                "the installed local runtime requires Claude Code or Codex"
+            )
+        if any(
+            key in prepared
+            for key in ("_run_id", "_audit_completion_identity")
+        ):
+            raise RuntimeError(
+                "new compatibility config contains reserved native identity"
+            )
+        if prepared["cli_backend"].strip().lower() == "claude":
+            _check_local_claude_login_before_launch()
+        # The compatibility driver creates and persists its run identity while
+        # holding the startup lock. It must not claim the native install/Git
+        # completion identity, whose receipt format deliberately applies only
+        # to native-contained SC thorough runs.
+        return prepared
+    return _prepare_native_new_run_config(config)
+
 
 def _launch_v2_bound_config_value(
     pipeline, mode, target, language, *, cli_backend,
@@ -31858,9 +36190,10 @@ def launch_v2(pipeline: str, mode: str, target: str, language: str,
     """Write config.json and run plamen_driver.py (deterministic driver)."""
     import json as _json
 
+    posix_compat_v2 = _posix_v2_compat_install_active()
     target = os.path.abspath(target)
     if not cli_backend and _transport_resolution is None:
-        detected_backends = _detect_cli_backends()
+        detected_backends = _audit_cli_backends()
         cli_backend = (
             detected_backends[0]
             if len(detected_backends) == 1
@@ -31886,9 +36219,14 @@ def launch_v2(pipeline: str, mode: str, target: str, language: str,
                 claude_exec_mode=claude_exec_mode,
                 transport_resolution=_transport_resolution,
             )
+        config = _prepare_new_run_config(config)
+        if posix_compat_v2 and config.get("cli_backend") not in {"codex", "claude"}:
+            raise RuntimeError(
+                "the installed local runtime requires Claude Code or Codex"
+            )
     except (RuntimeError, TypeError) as exc:
         sys.stdout.write(
-            f"  {_C_RED}Refusing unsafe audit launch: {exc}{_RST}\n"
+            f"  {_C_RED}Cannot start audit: {exc}{_RST}\n"
         )
         sys.exit(1)
 
@@ -31952,44 +36290,44 @@ def launch_v2(pipeline: str, mode: str, target: str, language: str,
         os.system("")
     # The destination was proven empty before config creation. START_NEW_RUN is
     # explicit and cannot reinterpret any later collision as overwrite authority.
-    _driver_cmd = [
-        sys.executable, driver,
-        "--startup-intent", "START_NEW_RUN",
-        config_path,
-    ]
-    result = subprocess.run(_driver_cmd)
-    sys.exit(_render_driver_result(result.returncode, config_path, target))
-
-
-def launch_claude(mode: str, target: str, docs: str,
-                  network: str = "", scope_file: str = "", scope_notes: str = "",
-                  **kwargs):
-    """Launch 'compare' mode — runs /plamen compare in a Claude Code session."""
-    claude_bin = shutil.which("claude")
-    if not claude_bin:
-        cw = sys.stdout.write
-        cw(f"  {_C_RED}✗ `plamen compare` requires the Claude backend (`claude` CLI), which is not on PATH.{_RST}\n")
-        cw(f"    {_C_GRAY}Compare runs as an in-session /plamen compare workflow and is not available on the{_RST}\n")
-        cw(f"    {_C_GRAY}Codex backend. Install + authenticate Claude Code, or run a standard audit{_RST}\n")
-        cw(f"    {_C_GRAY}(`plamen core` / `plamen thorough`), which both backends support.{_RST}\n")
-        sys.exit(1)
-
-    parts = ["/plamen compare"]
-    if target:
-        parts.append(f"report: {target}")
-    if docs:
-        parts.append(f"ground_truth: {docs}")
-    prompt = " ".join(parts)
-
-    console.print(Rule(style="color(238)"))
-    w = sys.stdout.write
-    w(f"\n  {_BOLD}{_C_WHITE}Launching Claude Code...{_RST}\n\n")
-    sys.stdout.flush()
-
-    if sys.platform == "win32":
-        os.system("")
-    result = subprocess.run([claude_bin, prompt])
-    sys.exit(result.returncode)
+    if posix_compat_v2:
+        decision_receipt_path = _resume_startup_decision_destination(
+            config_path, target,
+        )
+        decision_mac_key = bytearray(secrets.token_bytes(32))
+        _driver_cmd = [
+            sys.executable, driver,
+            "--startup-intent", "START_NEW_RUN",
+            "--startup-decision-receipt", str(decision_receipt_path),
+            config_path, "--posix-compat-v2",
+        ]
+        child_env = os.environ.copy()
+        child_env["PLAMEN_STARTUP_DECISION_MAC_KEY"] = bytes(
+            decision_mac_key
+        ).hex()
+        try:
+            result = subprocess.run(_driver_cmd, env=child_env)
+            rendered = _render_driver_result(
+                result.returncode, config_path, target,
+                decision_receipt_path=decision_receipt_path,
+                decision_mac_key=bytes(decision_mac_key),
+                posix_compat_v2=True,
+            )
+        finally:
+            child_env.pop("PLAMEN_STARTUP_DECISION_MAC_KEY", None)
+            for index in range(len(decision_mac_key)):
+                decision_mac_key[index] = 0
+    else:
+        _driver_cmd = [
+            sys.executable, driver,
+            "--startup-intent", "START_NEW_RUN",
+            config_path,
+        ]
+        result = subprocess.run(_driver_cmd)
+        rendered = _render_driver_result(
+            result.returncode, config_path, target,
+        )
+    sys.exit(rendered)
 
 
 # ── Main: state machine with back support ────────────────────
@@ -32099,7 +36437,7 @@ def _public_plan(mode: str, args) -> dict:
     if docs and not re.match(r"^https?://", docs, re.IGNORECASE) and not os.path.exists(docs):
         _cli_usage_error(f"docs path does not exist: {docs}")
 
-    backends = _detect_cli_backends()
+    backends = _audit_cli_backends()
     backend = opts["cli_backend"] or _ambient_backend(backends)
     if backend not in backends:
         _cli_usage_error(f"requested backend is unavailable: {backend}")
@@ -32168,6 +36506,9 @@ def _public_plan(mode: str, args) -> dict:
         "backend": backend,
         "claude_exec_mode": claude_exec_mode,
         "transport_warning": transport_warning,
+        "runtime_notice": (
+            _POSIX_COMPAT_RUNTIME_NOTICE if _posix_v2_compat_install_active() else ""
+        ),
         "phase_count": len(routes),
         "routes": routes,
         "model_fallback_authorized": bool(opts["allow_model_fallback"]),
@@ -32188,6 +36529,8 @@ def _print_public_plan(plan: dict, *, explain_routes: bool, as_json: bool) -> No
     print(f"  Pipeline: {plan['pipeline'].upper()} {plan['mode']}")
     print(f"  Target:   {plan['target']}")
     print(f"  Backend:  {plan['backend']}")
+    if plan.get("runtime_notice"):
+        print(f"  Runtime:  {plan['runtime_notice']}")
     if plan["backend"] == "claude":
         print(f"  Transport: {plan['claude_exec_mode']}")
         if plan.get("transport_warning"):
@@ -32362,11 +36705,50 @@ def _run_private_wizard_dry(argv, *, pipeline):
 
 
 def main():
-    if len(sys.argv) <= 1:
-        _enforce_public_claude_projection_preflight()
     # Fast path: CLI args skip the interactive UI
     if len(sys.argv) > 1:
         arg = sys.argv[1].lower()
+
+        if tuple(sys.argv[1:]) == (
+            "install", "--posix-compat-v2-dependencies",
+        ):
+            try:
+                evidence = _posix_v2_compat_install_evidence()
+                if (
+                    evidence is None
+                    or not _posix_v2_compat_dependency_repair_active()
+                ):
+                    raise RuntimeError(
+                        "live installed POSIX compatibility admission is absent"
+                    )
+                authority = _python_dependency_authority(
+                    Path(__file__).absolute().parent
+                )
+                status = _python_dependency_stamp_status(authority)
+                if status != "VALID":
+                    raise RuntimeError(
+                        "full locked Python dependency census did not replay"
+                    )
+                result = {
+                    "schema": "plamen.posix_v2_compat_python_dependencies.v1",
+                    "status": "VALID",
+                    "reduced_isolation": True,
+                    "generation_sha256": evidence["generation_sha256"],
+                    "dependency_authority_sha256": authority,
+                    "trust_boundary": _PYTHON_DEPENDENCY_TRUST_BOUNDARY,
+                    "native_install_authority": False,
+                }
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                sys.stderr.write(
+                    "POSIX compatibility Python dependency repair denied: "
+                    + str(exc).splitlines()[0][:300] + ".\n"
+                )
+                raise SystemExit(75)
+            sys.stdout.write(
+                json.dumps(result, sort_keys=True, separators=(",", ":"))
+                + "\n"
+            )
+            return
 
         if (
             arg != "install" and not arg.startswith("--codex-install-")
@@ -32374,6 +36756,9 @@ def main():
                 "--recover-codex-install",
                 "mcp-selection", "mcp-launch", "backend-launch",
             }
+            and not _source_discovery_without_installed_runtime(sys.argv[1:])
+            and not _early_exact_posix_v2_compat_front_argv()
+            and not _posix_v2_compat_install_active()
         ):
             _enforce_public_claude_projection_preflight()
 
@@ -32481,45 +36866,9 @@ def main():
             ))
             return
 
-        # ── Help ──────────────────────────────────────────────
+        # Help uses the same contract as the pre-bootstrap discovery route.
         if arg in ("help", "--help", "-h"):
-            w = sys.stdout.write
-            show_banner()
-            w(f"  {_C_WHITE}Usage:{_RST}\n")
-            w(f"    {_C_ORANGE}plamen{_RST}                              Interactive wizard\n")
-            w(f"\n  {_C_WHITE}Smart Contract (auto-detect language):{_RST}\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}core{_RST} /path/to/project        SC audit in Core mode\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}thorough{_RST} /path/to/project    SC audit in Thorough mode\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}light{_RST} /path/to/project       SC audit in Light mode\n")
-            w(f"\n  {_C_WHITE}L1 Infrastructure:{_RST}\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}l1 core{_RST} /path/to/project     L1 audit in Core mode\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}l1 thorough{_RST} /path             L1 audit in Thorough mode\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}l1 light{_RST} /path                L1 audit in Light mode\n")
-            w(f"\n  {_C_WHITE}Other:{_RST}\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}resume{_RST}                       Resume interrupted audit\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}resume{_RST} path/config.json      Resume specific config\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}start-config{_RST} path/config.json Start a pre-created clean config\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}compare{_RST}                      Diff reports\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}install{_RST}                      Non-interactive governed install (Windows)\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}setup{_RST}                        Install + interactive toolchain wizard + RAG\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}migrate{_RST}                      Migrate a legacy install (~/.claude) to V3 (~/.plamen)\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}doctor{_RST}                       Verify install (no audit run, no API calls)\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}rag{_RST}                          Rebuild RAG database only\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}uninstall{_RST}                    Remove the governed local installation\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}install --codex{_RST}             Install Codex adapter\n")
-            w(f"\n  {_C_WHITE}Options:{_RST}\n")
-            w(f"    {_C_GRAY}--docs{_RST} PATH              Whitepaper or spec file\n")
-            w(f"    {_C_GRAY}--scope{_RST} PATH             Scope file listing contracts\n")
-            w(f"    {_C_GRAY}--notes{_RST} TEXT             Scope notes (free text)\n")
-            w(f"    {_C_GRAY}--network{_RST} NAME           Target network (SC only)\n")
-            w(f"    {_C_GRAY}--proven-only{_RST}            Cap unproven findings at Low (SC only)\n")
-            w(f"    {_C_GRAY}--tier{_RST} T0|T1|T2|T3      L1 tier override\n")
-            w(f"    {_C_GRAY}--modules{_RST} a,b,c          L1 T1 module selection\n")
-            w(f"    {_C_GRAY}--codex{_RST}                  Use Codex CLI backend\n")
-            w(f"    {_C_GRAY}--claude{_RST}                 Use Claude Code backend (default)\n")
-            w(f"    {_C_GRAY}--claude-exec-mode{_RST} MODE  Claude transport: headless only\n")
-            w(f"    {_C_GRAY}--claude-headless{_RST}        Request contained headless (SC Thorough)\n")
-            w(f"\n")
+            print(_public_help_text(VERSION))
             return
 
         # ── Estimate subcommand (for /plamen command) ────────
@@ -32572,7 +36921,7 @@ def main():
             if arg == "install":
                 raise SystemExit(run_install() or 0)
             else:
-                raise SystemExit(run_setup() or 0)
+                raise SystemExit(run_setup())
             return
 
         if arg == "uninstall":
@@ -32589,8 +36938,21 @@ def main():
             sys.exit(rc)
 
         if arg == "resume":
+            posix_compat_v2 = (
+                len(sys.argv) == 4
+                and bool(sys.argv[2])
+                and not sys.argv[2].startswith("-")
+                and sys.argv[3] == "--posix-compat-v2"
+            )
+            if "--posix-compat-v2" in sys.argv[2:] and not posix_compat_v2:
+                _cli_usage_error(
+                    "POSIX compatibility resume requires exactly: "
+                    "resume CONFIG --posix-compat-v2"
+                )
+            if posix_compat_v2 and os.name == "nt":
+                _cli_usage_error("--posix-compat-v2 is unavailable on Windows")
             if (
-                len(sys.argv) > 3
+                (len(sys.argv) > 3 and not posix_compat_v2)
                 or (len(sys.argv) == 3 and sys.argv[2].startswith("-"))
             ):
                 _cli_usage_error(
@@ -32600,7 +36962,9 @@ def main():
             # Accept explicit config path or auto-detect
             config_path = sys.argv[2] if len(sys.argv) > 2 else None
             if config_path and os.path.isfile(config_path):
-                resume_v2(config_path)
+                resume_v2(
+                    config_path, posix_compat_v2=posix_compat_v2,
+                )
             else:
                 existing = _find_existing_audit(config_path or "")
                 if existing and existing.get("config_path"):
@@ -32620,9 +36984,24 @@ def main():
 
         if arg == "start-config":
             show_banner()
-            if len(sys.argv) != 3:
+            posix_compat_v2 = (
+                len(sys.argv) == 4
+                and bool(sys.argv[2])
+                and not sys.argv[2].startswith("-")
+                and sys.argv[3] == "--posix-compat-v2"
+            )
+            if "--posix-compat-v2" in sys.argv[2:] and not posix_compat_v2:
+                _cli_usage_error(
+                    "POSIX compatibility start requires exactly: "
+                    "start-config CONFIG --posix-compat-v2"
+                )
+            if posix_compat_v2 and os.name == "nt":
+                _cli_usage_error("--posix-compat-v2 is unavailable on Windows")
+            if len(sys.argv) != (4 if posix_compat_v2 else 3):
                 _cli_usage_error("start-config requires exactly one config.json path")
-            start_config_v2(sys.argv[2])
+            start_config_v2(
+                sys.argv[2], posix_compat_v2=posix_compat_v2,
+            )
             return
 
         if arg == "rag":
@@ -32668,7 +37047,7 @@ def main():
             if _detect_fork(target) and sys.stdin.isatty() and sys.stdout.isatty():
                 fork_mode = select_l1_fork()
             requested_backend = opts["cli_backend"] or _ambient_backend(
-                _detect_cli_backends()
+                _audit_cli_backends()
             )
             try:
                 transport_resolution = _bind_new_claude_transport(
@@ -32720,7 +37099,7 @@ def main():
             if language in ("go", "rust"):
                 language = "evm"  # SC mode, force SC language
             requested_backend = opts["cli_backend"] or _ambient_backend(
-                _detect_cli_backends()
+                _audit_cli_backends()
             )
             try:
                 transport_resolution = _bind_new_claude_transport(
@@ -32758,20 +37137,6 @@ def main():
                        _transport_resolution=transport_resolution)
             return
 
-        # ── Compare ──────────────────────────────────────────
-        if arg == "compare":
-            _check_claude_md_version()
-            opts = _parse_cli_opts(sys.argv[2:])
-            if opts["cli_backend"] == "codex":
-                _cli_usage_error("compare requires Claude Code and does not support --codex")
-            if not opts["positionals"]:
-                _cli_usage_error("compare requires a report path")
-            target = os.path.abspath(opts["positionals"][0])
-            if not os.path.isfile(target):
-                _cli_usage_error(f"report file does not exist: {target}")
-            launch_claude("compare", target, opts["docs"])
-            return
-
         _cli_usage_error(f"unknown command: {sys.argv[1]}")
 
     # ── Interactive flow (state machine) ─────────────────────
@@ -32784,6 +37149,7 @@ def main():
 
     show_banner()
     _check_claude_md_version()
+    _show_installed_audit_runtime()
 
     # ── Resume detection: check for existing audit before anything else ──
     existing = _find_existing_audit()
@@ -32809,13 +37175,15 @@ def main():
     if not _quick_check_required():
         check_dependencies()
         sys.stdout.write(f"  {_C_RED}Cannot proceed without required tools.{_RST}\n")
+        backend_requirement = "the managed Claude Code or Codex runtime"
         sys.stdout.write(
-            f"  {_C_GRAY}Install Claude Code or Codex CLI, plus python, npm, and git, then retry.{_RST}\n"
+            f"  {_C_GRAY}Check {backend_requirement} and git on PATH, "
+            f"then retry with the installed Plamen launcher.{_RST}\n"
         )
         sys.exit(1)
 
     # ── Non-TTY guard for the interactive wizard ─────────────
-    # `plamen` (no args), `plamen compare`, and any path that falls into
+    # `plamen` (no args) and any path that falls into
     # the InquirerPy-driven wizard need a controlling terminal. Without
     # one, `inquirer.select(...).execute()` crashes inside
     # prompt_toolkit/input/vt100.py with
@@ -32844,7 +37212,6 @@ def main():
     transport_resolution = None
     is_fork = False
     l1_modules = []
-    report = ground_truth = ""
     strict = False
     step = 0
 
@@ -32880,15 +37247,6 @@ def main():
             c.append(("Docs", docs if docs else "none"))
         return c
 
-    def _cmp_crumbs_to(step_id):
-        """Breadcrumbs for Compare flow."""
-        c = [("Mode", "Compare")]
-        if step_id > 1:
-            c.append(("Report", _shorten(report, 40)))
-        if step_id > 2:
-            c.append(("Ground truth", _shorten(ground_truth, 40)))
-        return c
-
     loc = 0  # needed by _l1_crumbs_to before L1 step 1 sets it
     detected_tier = "t2"
 
@@ -32900,9 +37258,6 @@ def main():
             if pipeline == "setup":
                 run_setup()
                 step = 0; continue
-            if pipeline == "compare":
-                mode = "compare"
-                step = 1; continue
             step = 5; continue
 
         # ── Step 0.5: Audit depth selection ──────────────────
@@ -32916,7 +37271,7 @@ def main():
 
         # ── Step 6: Backend selection (only if multiple runtimes exist) ──
         if step == 6:
-            detected_backends = _detect_cli_backends()
+            detected_backends = _audit_cli_backends()
             if _skip_backend_prompt() or len(detected_backends) <= 1:
                 cli_backend = (
                     detected_backends[0]
@@ -32953,9 +37308,9 @@ def main():
             sys.stdout.write("\n"); sys.stdout.flush()
             step = 65; continue
 
-        # ── Step 6.5: Claude transport (SC Thorough only) ──────────────
+        # ── Step 6.5: Resolve Claude execution internally ────────────
         if step == 65:
-            if cli_backend == "claude" and pipeline == "sc" and mode == "thorough":
+            if cli_backend == "claude":
                 transport_resolution, transport_warning = select_claude_transport(
                     pipeline, mode,
                 )
@@ -32963,7 +37318,10 @@ def main():
                     transport_resolution = None
                     claude_exec_mode = ""
                     transport_warning = ""
-                    _clear_and_rebanner()
+                    # Keep the explanation visible. A sole unavailable Claude
+                    # backend must not be auto-selected again in an endless loop.
+                    if _skip_backend_prompt() or len(_audit_cli_backends()) <= 1:
+                        return
                     step = 6; continue
                 cli_backend, claude_exec_mode, transport_warning = (
                     _replay_new_transport_resolution(
@@ -32971,14 +37329,6 @@ def main():
                     )
                 )
                 sys.stdout.write("\n"); sys.stdout.flush()
-            elif cli_backend == "claude":
-                sys.stdout.write(
-                    f"  {_C_RED}Authenticated contained Claude headless is "
-                    f"not available for {pipeline.upper()} {mode} audits.{_RST}\n"
-                    f"  {_C_GRAY}Choose Codex explicitly; no audit config or "
-                    f"scratchpad has been created.{_RST}\n"
-                )
-                return
             else:
                 transport_resolution = _bind_new_claude_transport(
                         pipeline, mode, cli_backend,
@@ -33181,41 +37531,6 @@ def main():
                           claude_exec_mode=claude_exec_mode,
                           _transport_resolution=transport_resolution)
                 return
-
-        # ── Compare flow ─────────────────────────────────────
-        if mode == "compare":
-            if step == 1:
-                result = select_report("Your Plamen audit report (.md):")
-                if result == _BACK:
-                    _clear_and_rebanner()
-                    step = 0; continue
-                report = result
-                sys.stdout.write("\n"); sys.stdout.flush()
-                step = 2; continue
-
-            if step == 2:
-                result = select_report("Ground truth report (.md):")
-                if result == _BACK:
-                    _crumb_set(_cmp_crumbs_to(1))
-                    _clear_and_rebanner()
-                    step = 1; continue
-                ground_truth = result
-                sys.stdout.write("\n"); sys.stdout.flush()
-                step = 3; continue
-
-            if step == 3:
-                show_summary(mode, report, ground_truth)
-                decision = confirm_launch()
-                if decision == "back":
-                    _crumb_set(_cmp_crumbs_to(2))
-                    _clear_and_rebanner()
-                    step = 2; continue
-                if decision == "cancel":
-                    sys.stdout.write(f"  {_C_DARK_GRAY}Cancelled.{_RST}\n")
-                    return
-                launch_claude(mode, report, ground_truth)
-                return
-
 
 if __name__ == "__main__":
     try:

@@ -139,6 +139,22 @@ Check if reaching state S1 (from Finding A) also reaches state S2 (from Finding 
        identity; the chain worker cannot authorize its own exception.
 7. **Severity inheritance**: When grouping findings of different severities, the hypothesis inherits the HIGHEST severity from its constituent findings.
 
+### Typed Pair Contract (MANDATORY)
+
+`hypotheses.md` and `finding_mapping.md` form one semantic relation:
+
+- `hypotheses.md` uses bare IDs in `Hypothesis ID`, a separate `Title`
+  column, and `Constituent Findings` for the source IDs.
+- `finding_mapping.md` uses `Finding ID`, `Hypothesis ID`, and
+  `Mapping Status`.
+- The `(Hypothesis ID, Finding ID)` edge set MUST be identical in both files.
+  Never place provenance aliases or scanner labels in only one side.
+- The five-constituent maximum still applies. Split a hypothesis when needed,
+  or omit an alias from both tables when its promoted canonical finding is
+  already represented.
+- Compare both edge sets before returning and repair every missing or extra
+  edge. This is semantic relation consistency, not presentation formatting.
+
 **Confidence-aware grouping**: Group LOW_CONFIDENCE findings with CONFIDENT findings of the same root cause where possible. Flag CONTESTED findings for verification priority.
 
 ## Output

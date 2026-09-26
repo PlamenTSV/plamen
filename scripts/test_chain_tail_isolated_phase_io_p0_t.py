@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Mapping
 
@@ -547,6 +548,18 @@ def _commit_one_driver_merge(
     assert merge_issues == []
     assert merged["status"] == "APPLIED"
     return scratchpad, config, merged
+
+
+def test_post_merge_readiness_replays_snapshots_and_registered_successor(
+    tmp_path: Path,
+) -> None:
+    """Run57: an authorized MERGE must not invalidate its predecessors."""
+
+    scratchpad, config, _merged = _commit_one_driver_merge(tmp_path)
+    assert D._chain_tail_final_reconcile_readiness_issues(
+        scratchpad,
+        expected_run_id=config["_run_id"],
+    ) == []
 
 
 @pytest.fixture(scope="module")
@@ -1164,6 +1177,61 @@ def test_isolated_driver_commits_model_before_disposition_and_final_publication(
     )
     assert state["work_units"][final_key]["execution_state"] == "OUTPUT_COMMITTED"
     assert D._chain_tail_phase_completion_issues(scratchpad) == []
+
+
+def test_codex_inner_shard_reuses_exact_root_model_authority(
+    tmp_path: Path,
+) -> None:
+    scratchpad = tmp_path / ".scratchpad"
+    scratchpad.mkdir()
+    _write_sources(scratchpad)
+    _initialize_with_live_producer(
+        tmp_path, scratchpad, [_row(1)], shard_size=1, backend="codex"
+    )
+    phase = _phase()
+    config = _config(tmp_path, scratchpad)
+    config["cli_backend"] = "codex"
+    assert D._bind_typed_model_phase_inputs(phase, scratchpad, config) == []
+    isolated = config["_chain_tail_active_isolated"]
+    shard_root = scratchpad / isolated["shard_root"]
+    inner_phase = replace(phase, expected_artifacts=["chain_iteration2.md"])
+    inner_config = dict(config)
+    inner_config["scratchpad"] = str(shard_root)
+    inner_config["_chain_tail_inner_launch"] = True
+    inner_config["_chain_tail_authority_scratchpad"] = str(scratchpad)
+
+    authority = D._prepared_monolithic_headless_transaction_authority(
+        phase=inner_phase,
+        config=inner_config,
+        scratchpad=shard_root,
+        timeout_s=phase.base_timeout_s,
+        attempt=1,
+    )
+
+    assert authority is not None
+    contract, _launch, outputs = authority
+    assert contract.work_unit_id == "tail_shard_model.0000"
+    assert outputs == [isolated["transcript_path"]]
+    assert D._headless_phase_io_authority_scratchpad(
+        phase=inner_phase,
+        config=inner_config,
+        scratchpad=shard_root,
+        contract=contract,
+    ) == scratchpad.resolve()
+
+    redirected = tmp_path / "redirected" / ".scratchpad"
+    redirected.mkdir(parents=True)
+    inner_config["_chain_tail_authority_scratchpad"] = str(redirected)
+    with pytest.raises(
+        D.HeadlessWorkerRuntimeError,
+        match="not the project scratchpad",
+    ):
+        D._headless_phase_io_authority_scratchpad(
+            phase=inner_phase,
+            config=inner_config,
+            scratchpad=shard_root,
+            contract=contract,
+        )
 
 
 def test_soft_phase_cannot_complete_with_pending_chain_tail_rows(
@@ -1842,6 +1910,37 @@ def test_work_loader_rejects_mutate_original_after_arm(tmp_path: Path):
             scratchpad,
             isolated,
             expected_source_names=isolated["authoritative_source_paths"],
+        )
+
+
+def test_archival_work_loader_accepts_root_successor_but_not_copy_drift(
+    tmp_path: Path,
+) -> None:
+    """Historical replay binds the frozen copy, never successor live bytes."""
+
+    scratchpad, _shard, isolated = _isolated_one(tmp_path)
+    source = scratchpad / "findings_inventory.md"
+    source.write_text("# authorized later successor\n", encoding="utf-8")
+
+    work = CTA.load_isolated_chain_tail_work_unit(
+        scratchpad,
+        isolated,
+        expected_source_names=isolated["authoritative_source_paths"],
+        require_live_authority=False,
+    )
+    binding = work["authoritative_sources"]["findings_inventory.md"]
+    copy_path = scratchpad / binding["copy_path"]
+    copy_path.write_text("# forged archived bytes\n", encoding="utf-8")
+
+    with pytest.raises(
+        CTA.ChainTailAuthorityError,
+        match="source/copy byte binding mismatch",
+    ):
+        CTA.load_isolated_chain_tail_work_unit(
+            scratchpad,
+            isolated,
+            expected_source_names=isolated["authoritative_source_paths"],
+            require_live_authority=False,
         )
 
 

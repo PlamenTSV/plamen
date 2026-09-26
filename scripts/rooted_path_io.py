@@ -10,14 +10,34 @@ authority consumers do not each grow subtly different path semantics.
 from __future__ import annotations
 
 import ctypes
+import contextvars
 import errno
 import hashlib
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
+import tempfile
+import threading
+from collections import OrderedDict
 from typing import Iterator
+import unicodedata
 import uuid
+
+PLAMEN_RUNTIME_ASSETS = (
+    {
+        "kind": "runtime-data",
+        "mode": "named-files",
+        "root": "scripts",
+        "names": ("darwin_cas_helper.c",),
+    },
+)
+
+if os.name != "nt":
+    import fcntl as _posix_fcntl
+else:  # pragma: no cover - Windows import guard
+    _posix_fcntl = None
 
 if os.name == "nt":
     from ctypes import wintypes
@@ -210,6 +230,23 @@ _FILE_ATTRIBUTE_DIRECTORY = 0x10
 _FILE_RENAME_INFO_CLASS = 3
 _FILE_DISPOSITION_INFO_CLASS = 4
 
+_DARWIN_CAS_HELPER_LOCK = threading.Lock()
+_DARWIN_CAS_HELPER_DIRECTORY: tempfile.TemporaryDirectory[str] | None = None
+_DARWIN_CAS_HELPER_PATH: Path | None = None
+_DARWIN_CAS_HELPER_IDENTITY: tuple[int, int, int, str] | None = None
+_DARWIN_CAS_HELPER_DIRECTORY_IDENTITY: tuple[int, int] | None = None
+_DARWIN_CAS_MAX_HELPER_BYTES = 4 * 1024 * 1024
+_DARWIN_CAS_MAX_PAYLOAD_BYTES = 1024 * 1024 * 1024
+_DARWIN_CAS_MAX_STDOUT_BYTES = 4096
+_DARWIN_CAS_MAX_STDERR_BYTES = 16 * 1024
+_DARWIN_CAS_HELPER_TIMEOUT_SECONDS = 60
+_DARWIN_CAS_EXIT_EXISTS = 17
+_DARWIN_CAS_EXIT_UNSUPPORTED = 74
+_DARWIN_CAS_EXIT_QUARANTINED_FOREIGN = 76
+_DARWIN_CAS_PARENT_AUTHORITY: contextvars.ContextVar[
+    tuple[int, Path, tuple[int, int]] | None
+] = contextvars.ContextVar("plamen_darwin_cas_parent_authority", default=None)
+
 
 class RootedPathIOError(RuntimeError):
     """A lexical or filesystem object violated rooted authority."""
@@ -334,9 +371,15 @@ def _fsync_directory(path: str | os.PathLike[str]) -> None:
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     descriptor = os.open(native_path(path), flags)
     try:
-        os.fsync(descriptor)
+        _fsync_file_descriptor(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _fsync_file_descriptor(descriptor: int) -> None:
+    os.fsync(descriptor)
+    if sys.platform == "darwin":
+        _posix_fcntl.fcntl(descriptor, _posix_fcntl.F_FULLFSYNC)
 
 
 def _windows_move(
@@ -939,19 +982,68 @@ def exact_existing_name(path: str | os.PathLike[str]) -> None:
         return
     if not is_dir(parent):
         return
+    exact, folded = _parent_name_sets(parent)
+    if candidate.name in exact:
+        return
+    if candidate.name.casefold() in folded:
+        raise RootedPathIOError(
+            f"path casing mismatch for {candidate}"
+        )
+
+
+# POSIX has no O(1) exact-casing lookup (Windows gets one from
+# FindFirstFileW above), so the check must enumerate the parent.  Doing that
+# per CALL made `_snapshot_file_state` -- which calls this once per entry of
+# the directory it is snapshotting -- O(n^2): 32,769 listings of 32,769
+# entries, measured as a >59-minute 100%-CPU spin in
+# `test_containment_control_authority_survives_32769_prior_entries`.
+#
+# Cache one listing per parent, and revalidate on EVERY call with a single
+# lstat of the parent: any add, remove or rename in a directory changes its
+# mtime/ctime on APFS and ext4, so a hit is exactly as fresh as the
+# filesystem's own change signal.  That is no weaker than the previous
+# point-in-time listing (which had the same list-then-use window); it just
+# stops paying for the listing n times.  Bounded so a long-lived process
+# cannot grow it without limit.
+# `checked_directory` re-verifies EVERY ancestor before each file, so one
+# `checked_file` call touches path-depth+1 parents. The first bound here was
+# 8 with FIFO eviction; a 10-deep temp path therefore evicted on every call
+# and the cache hit 0 of 8,222 calls in 40s (measured) -- the O(n^2) was
+# still there with the cache "installed". Working set must fit: bound well
+# above any realistic depth, and evict least-recently-USED, not first-in.
+_PARENT_NAME_CACHE_LIMIT = 64
+_parent_name_cache: "OrderedDict[str, tuple[tuple[int, int, int, int], frozenset[str], frozenset[str]]]" = OrderedDict()
+_parent_name_cache_lock = threading.Lock()
+
+
+def _parent_name_sets(parent: Path) -> tuple[frozenset[str], frozenset[str]]:
+    key_path = os.fspath(parent)
     try:
-        with scandir(parent) as entries:
-            names = [entry.name for entry in entries]
+        row = lstat(parent)
     except OSError as exc:
         raise RootedPathIOError(
             f"cannot enumerate rooted directory {parent}: {exc}"
         ) from exc
-    if candidate.name in names:
-        return
-    if any(name.casefold() == candidate.name.casefold() for name in names):
+    stamp = (row.st_dev, row.st_ino, row.st_mtime_ns, row.st_ctime_ns)
+    with _parent_name_cache_lock:
+        cached = _parent_name_cache.get(key_path)
+        if cached is not None and cached[0] == stamp:
+            _parent_name_cache.move_to_end(key_path)
+            return cached[1], cached[2]
+    try:
+        with scandir(parent) as entries:
+            names = frozenset(entry.name for entry in entries)
+    except OSError as exc:
         raise RootedPathIOError(
-            f"path casing mismatch for {candidate}"
-        )
+            f"cannot enumerate rooted directory {parent}: {exc}"
+        ) from exc
+    folded = frozenset(name.casefold() for name in names)
+    with _parent_name_cache_lock:
+        _parent_name_cache.pop(key_path, None)
+        while len(_parent_name_cache) >= _PARENT_NAME_CACHE_LIMIT:
+            _parent_name_cache.popitem(last=False)
+        _parent_name_cache[key_path] = (stamp, names, folded)
+    return names, folded
 
 
 def _validate_directory_row(
@@ -1443,7 +1535,7 @@ def _open_exact_single_descriptor(
                 label=label,
             )
         if durable:
-            os.fsync(descriptor)
+            _fsync_file_descriptor(descriptor)
         _validate_named_descriptor(descriptor, path, label=label)
         if _descriptor_bytes(descriptor) != raw:
             raise RootedPathIOError(
@@ -1497,6 +1589,51 @@ def _retire_exact_write_once_stage(
 ) -> None:
     """Retire an exact stage left beside an already-exact destination."""
 
+    if sys.platform == "darwin":
+        authority, owned_authority = _darwin_current_parent_authority(
+            destination
+        )
+        try:
+            _darwin_validate_retained_quarantine(stage, destination, raw)
+            if not _darwin_exact_entry_exists(authority, stage.name):
+                return
+            source_descriptor = _darwin_open_exact_at(
+                authority,
+                stage.name,
+                raw,
+                label="durable write-once staging bytes",
+                stage=True,
+                durable=True,
+                destination=destination,
+            )
+            try:
+                _darwin_run_cas_helper(
+                    "retire",
+                    destination,
+                    raw,
+                    source_descriptor=source_descriptor,
+                    stage=stage,
+                )
+            finally:
+                os.close(source_descriptor)
+            if _darwin_exact_entry_exists(authority, stage.name):
+                raise DurableWriteOnceDebtError(
+                    stage=stage,
+                    destination=destination,
+                    expected=raw,
+                    observed=_darwin_best_effort_observed_at(
+                        authority, stage.name
+                    ),
+                    cleanup_state="DARWIN_STAGE_RETIREMENT_UNPROVEN",
+                    detail=(
+                        "Darwin stage name remained after quarantine transition"
+                    ),
+                )
+            _darwin_validate_retained_quarantine(stage, destination, raw)
+        finally:
+            if owned_authority:
+                os.close(authority[0])
+        return
     if not lexists(stage):
         return
     if os.name == "nt":
@@ -1537,8 +1674,8 @@ def _posix_link_open_descriptor(
         os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
     )
     try:
-        library = ctypes.CDLL(None, use_errno=True)
         if sys.platform.startswith("linux"):
+            library = ctypes.CDLL(None, use_errno=True)
             linkat = getattr(library, "linkat", None)
             if linkat is None:
                 raise RootedPathIOError(
@@ -1577,25 +1714,9 @@ def _posix_link_open_descriptor(
                 # of the deterministic recovery stage.
                 return "ANONYMOUS"
         elif sys.platform == "darwin":
-            clone = getattr(library, "fclonefileat", None)
-            if clone is None:
-                raise RootedPathIOError(
-                    "descriptor-bound clone publication is unavailable"
-                )
-            clone.argtypes = (
-                ctypes.c_int,
-                ctypes.c_int,
-                ctypes.c_char_p,
-                ctypes.c_int,
+            raise RootedPathIOError(
+                "Darwin native CAS calls require the typed crash-isolation helper"
             )
-            clone.restype = ctypes.c_int
-            if clone(
-                descriptor,
-                directory_descriptor,
-                os.fsencode(destination.name),
-                0,
-            ) == 0:
-                return "CLONE"
         else:
             raise RootedPathIOError(
                 "descriptor-bound no-replace publication is unsupported "
@@ -2235,7 +2356,7 @@ def _linux_publish_anonymous_bytes(
             if written <= 0 or written > len(view) - offset:
                 raise OSError(errno.EIO, "anonymous durable write-once short write")
             offset += written
-        os.fsync(descriptor)
+        _fsync_file_descriptor(descriptor)
         row = os.fstat(descriptor)
         if (
             not stat.S_ISREG(row.st_mode)
@@ -2299,6 +2420,897 @@ def _linux_publish_anonymous_bytes(
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def _darwin_cas_quarantine_path(stage: Path) -> Path:
+    return stage.with_name(f"{stage.name}.abandoned")
+
+
+def _darwin_open_parent_authority(
+    parent: Path,
+) -> tuple[int, Path, tuple[int, int]]:
+    checked_directory(parent, label="Darwin CAS authoritative parent")
+    descriptor = os.open(
+        native_path(parent),
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        opened = os.fstat(descriptor)
+        named = lstat(parent)
+        _validate_directory_row(
+            parent,
+            opened,
+            label="Darwin CAS authoritative parent",
+        )
+        _validate_directory_row(
+            parent,
+            named,
+            label="Darwin CAS authoritative parent",
+        )
+        if not _same_inode(opened, named):
+            raise RootedPathIOError(
+                "Darwin CAS authoritative parent identity changed while opened"
+            )
+        identity = (int(opened.st_dev), int(opened.st_ino))
+        return descriptor, parent, identity
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _darwin_assert_parent_authority(
+    authority: tuple[int, Path, tuple[int, int]],
+) -> None:
+    descriptor, parent, identity = authority
+    opened = os.fstat(descriptor)
+    try:
+        named = lstat(parent)
+    except OSError as exc:
+        raise RootedPathIOError(
+            "Darwin CAS authoritative parent name is unavailable"
+        ) from exc
+    _validate_directory_row(
+        parent,
+        opened,
+        label="Darwin CAS retained parent",
+    )
+    _validate_directory_row(
+        parent,
+        named,
+        label="Darwin CAS named parent",
+    )
+    observed = (int(opened.st_dev), int(opened.st_ino))
+    if observed != identity or not _same_inode(opened, named):
+        raise RootedPathIOError(
+            "Darwin CAS authoritative parent identity drifted"
+        )
+
+
+def _darwin_exact_entry_exists(
+    authority: tuple[int, Path, tuple[int, int]],
+    name: str,
+) -> bool:
+    if (
+        not name
+        or name in {".", ".."}
+        or "/" in name
+        or "\x00" in name
+        or unicodedata.normalize("NFC", name) != name
+    ):
+        raise RootedPathIOError(
+            "Darwin CAS entry name is not canonical NFC lexical authority"
+        )
+    _darwin_assert_parent_authority(authority)
+    try:
+        names = os.listdir(authority[0])
+    except OSError as exc:
+        raise RootedPathIOError(
+            "Darwin CAS retained parent census failed"
+        ) from exc
+    if len(names) > 65536:
+        raise RootedPathIOError(
+            "Darwin CAS retained parent census exceeds its bound"
+        )
+    aliases = [
+        observed
+        for observed in names
+        if unicodedata.normalize("NFC", observed).casefold()
+        == name.casefold()
+    ]
+    if aliases == [name]:
+        return True
+    if aliases:
+        raise RootedPathIOError(
+            "Darwin CAS entry has a case-distinct or Unicode-normalization alias: "
+            + ", ".join(sorted(repr(value) for value in aliases))
+        )
+    return False
+
+
+def _darwin_current_parent_authority(
+    destination: Path,
+) -> tuple[tuple[int, Path, tuple[int, int]], bool]:
+    authority = _DARWIN_CAS_PARENT_AUTHORITY.get()
+    if authority is not None:
+        if authority[1] != destination.parent:
+            raise RootedPathIOError(
+                "Darwin CAS retained parent does not match the destination"
+            )
+        _darwin_assert_parent_authority(authority)
+        return authority, False
+    authority = _darwin_open_parent_authority(destination.parent)
+    return authority, True
+
+
+def _darwin_open_exact_at(
+    authority: tuple[int, Path, tuple[int, int]],
+    name: str,
+    raw: bytes,
+    *,
+    label: str,
+    stage: bool,
+    durable: bool,
+    destination: Path,
+) -> int:
+    if not _darwin_exact_entry_exists(authority, name):
+        raise FileNotFoundError(errno.ENOENT, "Darwin CAS entry is missing", name)
+    descriptor = os.open(
+        name,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        dir_fd=authority[0],
+    )
+    logical_path = authority[1] / name
+    try:
+        opened = os.fstat(descriptor)
+        named = os.stat(name, dir_fd=authority[0], follow_symlinks=False)
+        _validate_single_link_row(logical_path, opened, label=label)
+        _validate_single_link_row(logical_path, named, label=label)
+        if not _same_inode(opened, named):
+            raise RootedPathIOError(
+                f"{label} identity changed under retained parent authority"
+            )
+        observed = _descriptor_bytes(descriptor)
+        if observed != raw:
+            raise _mismatch_error(
+                logical_path,
+                raw,
+                observed,
+                destination=destination,
+                stage=stage,
+                label=label,
+            )
+        # The crash-isolated native validator owns the durability
+        # linearization.  It orders an ordinary source fsync before one durable
+        # directory sync, with exact identity/metadata/bytes checks on both
+        # sides.  Repeating F_FULLFSYNC here is not an independent guarantee
+        # and makes every validation pay three additional drive-wide barriers.
+        _darwin_run_cas_helper(
+            "validate",
+            logical_path,
+            raw,
+            source_descriptor=descriptor,
+        )
+        _darwin_assert_parent_authority(authority)
+        if not _darwin_exact_entry_exists(authority, name):
+            raise RootedPathIOError(
+                f"{label} lost its exact lexical name during validation"
+            )
+        final_opened = os.fstat(descriptor)
+        final_named = os.stat(
+            name,
+            dir_fd=authority[0],
+            follow_symlinks=False,
+        )
+        if (
+            not _same_inode(opened, final_opened)
+            or not _same_inode(opened, final_named)
+            or int(final_opened.st_nlink) != 1
+            or int(final_named.st_nlink) != 1
+            or int(final_opened.st_uid) != int(os.geteuid())
+            or stat.S_IMODE(final_opened.st_mode) != 0o600
+            or int(getattr(final_opened, "st_flags", 0)) != 0
+            or _descriptor_bytes(descriptor) != raw
+        ):
+            raise RootedPathIOError(
+                f"{label} changed before retained-parent validation completed"
+            )
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _darwin_existing_is_exact_at(
+    authority: tuple[int, Path, tuple[int, int]],
+    name: str,
+    raw: bytes,
+    *,
+    label: str,
+    stage: bool = False,
+    durable: bool = False,
+    destination: Path,
+) -> bool:
+    if not _darwin_exact_entry_exists(authority, name):
+        return False
+    descriptor = _darwin_open_exact_at(
+        authority,
+        name,
+        raw,
+        label=label,
+        stage=stage,
+        durable=durable,
+        destination=destination,
+    )
+    os.close(descriptor)
+    return True
+
+
+def _darwin_best_effort_observed_at(
+    authority: tuple[int, Path, tuple[int, int]],
+    name: str,
+) -> bytes | None:
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=authority[0],
+        )
+        return _descriptor_bytes(descriptor)
+    except BaseException:
+        return None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _darwin_cas_helper_executable() -> Path:
+    """Build the typed crash-isolation helper in a process-private directory."""
+
+    global _DARWIN_CAS_HELPER_DIRECTORY
+    global _DARWIN_CAS_HELPER_DIRECTORY_IDENTITY
+    global _DARWIN_CAS_HELPER_IDENTITY
+    global _DARWIN_CAS_HELPER_PATH
+
+    if sys.platform != "darwin":
+        raise RootedPathIOError("Darwin CAS helper requested on a non-Darwin host")
+    with _DARWIN_CAS_HELPER_LOCK:
+        if _DARWIN_CAS_HELPER_PATH is not None:
+            return _DARWIN_CAS_HELPER_PATH
+
+        source = Path(__file__).with_name("darwin_cas_helper.c")
+        source_descriptor = os.open(
+            native_path(source),
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            _validate_named_descriptor(
+                source_descriptor,
+                source,
+                label="Darwin CAS helper source",
+            )
+            directory = tempfile.TemporaryDirectory(
+                prefix="plamen-darwin-cas-helper-"
+            )
+            build_root = Path(directory.name)
+            os.chmod(build_root, 0o700)
+            executable = build_root / "darwin-cas-helper"
+            completed = subprocess.run(
+                (
+                    "/usr/bin/clang",
+                    "-x",
+                    "c",
+                    "-std=c11",
+                    "-O2",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    f"/dev/fd/{source_descriptor}",
+                    "-o",
+                    os.fspath(executable),
+                ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                close_fds=True,
+                pass_fds=(source_descriptor,),
+                timeout=60,
+                check=False,
+                env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+            )
+        except BaseException:
+            if "directory" in locals():
+                directory.cleanup()
+            raise
+        finally:
+            os.close(source_descriptor)
+
+        if completed.returncode != 0:
+            detail = completed.stderr.decode("utf-8", errors="replace")[-2048:]
+            directory.cleanup()
+            raise RootedPathIOError(
+                "Darwin CAS helper compilation failed: " + detail
+            )
+        os.chmod(executable, 0o500)
+        executable_descriptor = os.open(
+            native_path(executable),
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            opened = _validate_named_descriptor(
+                executable_descriptor,
+                executable,
+                label="Darwin CAS helper executable",
+            )
+            if (
+                int(opened.st_uid) != int(os.geteuid())
+                or stat.S_IMODE(opened.st_mode) != 0o500
+                or int(opened.st_size) <= 0
+                or int(opened.st_size) > _DARWIN_CAS_MAX_HELPER_BYTES
+            ):
+                raise RootedPathIOError(
+                    "Darwin CAS helper executable authority is not private"
+                )
+            executable_digest = _darwin_descriptor_sha256(
+                executable_descriptor,
+                expected_size=int(opened.st_size),
+                maximum_size=_DARWIN_CAS_MAX_HELPER_BYTES,
+            )
+            final_opened = os.fstat(executable_descriptor)
+            if (
+                not _same_inode(opened, final_opened)
+                or int(final_opened.st_size) != int(opened.st_size)
+            ):
+                raise RootedPathIOError(
+                    "Darwin CAS helper executable changed while authenticated"
+                )
+        except BaseException:
+            directory.cleanup()
+            raise
+        finally:
+            os.close(executable_descriptor)
+
+        os.chmod(build_root, 0o500)
+        build_row = lstat(build_root)
+        if (
+            not stat.S_ISDIR(build_row.st_mode)
+            or int(build_row.st_uid) != int(os.geteuid())
+            or stat.S_IMODE(build_row.st_mode) != 0o500
+        ):
+            directory.cleanup()
+            raise RootedPathIOError(
+                "Darwin CAS helper directory authority is not immutable-private"
+            )
+        _DARWIN_CAS_HELPER_DIRECTORY = directory
+        _DARWIN_CAS_HELPER_DIRECTORY_IDENTITY = (
+            int(build_row.st_dev),
+            int(build_row.st_ino),
+        )
+        _DARWIN_CAS_HELPER_IDENTITY = (
+            int(opened.st_dev),
+            int(opened.st_ino),
+            int(opened.st_size),
+            executable_digest,
+        )
+        _DARWIN_CAS_HELPER_PATH = executable
+        return executable
+
+
+def _darwin_descriptor_sha256(
+    descriptor: int,
+    *,
+    expected_size: int,
+    maximum_size: int,
+) -> str:
+    if (
+        expected_size < 0
+        or maximum_size < 0
+        or expected_size > maximum_size
+    ):
+        raise RootedPathIOError("Darwin CAS helper size exceeds its bound")
+    digest = hashlib.sha256()
+    observed = 0
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while observed <= maximum_size:
+        chunk = os.read(
+            descriptor,
+            min(65536, maximum_size + 1 - observed),
+        )
+        if not chunk:
+            break
+        observed += len(chunk)
+        if observed > maximum_size:
+            raise RootedPathIOError(
+                "Darwin CAS helper grew beyond its authenticated bound"
+            )
+        digest.update(chunk)
+    if observed != expected_size:
+        raise RootedPathIOError(
+            "Darwin CAS helper size changed while authenticated"
+        )
+    return digest.hexdigest()
+
+
+def _darwin_open_cas_helper_executable() -> tuple[Path, int]:
+    """Authenticate the cached helper pathname and retain its exact inode."""
+
+    executable = _darwin_cas_helper_executable()
+    expected = _DARWIN_CAS_HELPER_IDENTITY
+    expected_directory = _DARWIN_CAS_HELPER_DIRECTORY_IDENTITY
+    if expected is None or expected_directory is None:
+        raise RootedPathIOError("Darwin CAS helper identity is unavailable")
+    try:
+        directory_row = lstat(executable.parent)
+        if (
+            not stat.S_ISDIR(directory_row.st_mode)
+            or (int(directory_row.st_dev), int(directory_row.st_ino))
+            != expected_directory
+            or int(directory_row.st_uid) != int(os.geteuid())
+            or stat.S_IMODE(directory_row.st_mode) != 0o500
+        ):
+            raise RootedPathIOError(
+                "Darwin CAS helper directory identity changed"
+            )
+        descriptor = os.open(
+            native_path(executable),
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            opened = _validate_named_descriptor(
+                descriptor,
+                executable,
+                label="Darwin CAS authenticated helper executable",
+            )
+            identity = (
+                int(opened.st_dev),
+                int(opened.st_ino),
+                int(opened.st_size),
+            )
+            if (
+                identity != expected[:3]
+                or int(opened.st_uid) != int(os.geteuid())
+                or stat.S_IMODE(opened.st_mode) != 0o500
+                or _darwin_descriptor_sha256(
+                    descriptor,
+                    expected_size=expected[2],
+                    maximum_size=_DARWIN_CAS_MAX_HELPER_BYTES,
+                )
+                != expected[3]
+            ):
+                raise RootedPathIOError(
+                    "Darwin CAS helper executable identity or digest changed"
+                )
+            return executable, descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+    except BaseException as exc:
+        raise RootedPathIOError(
+            "Darwin CAS helper executable identity validation failed"
+        ) from exc
+
+
+def _darwin_run_bounded_helper_process(
+    arguments: tuple[str, ...],
+    *,
+    executable: Path,
+    input_bytes: bytes,
+    pass_fds: tuple[int, ...],
+) -> subprocess.CompletedProcess[bytes]:
+    """Run one helper with bounded protocol input and pipe capture."""
+
+    if len(input_bytes) > _DARWIN_CAS_MAX_PAYLOAD_BYTES:
+        raise RootedPathIOError("Darwin CAS helper payload exceeds its bound")
+    process = subprocess.Popen(
+        arguments,
+        executable=os.fspath(executable),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=0,
+        close_fds=True,
+        pass_fds=pass_fds,
+        env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+    assert process.stderr is not None
+    captures = {"stdout": bytearray(), "stderr": bytearray()}
+    overflows: set[str] = set()
+    thread_errors: list[BaseException] = []
+    state_lock = threading.Lock()
+
+    def _kill() -> None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+
+    def _read_pipe(label: str, descriptor: int, limit: int) -> None:
+        try:
+            while True:
+                chunk = os.read(descriptor, 65536)
+                if not chunk:
+                    return
+                with state_lock:
+                    remaining = limit - len(captures[label])
+                    if remaining > 0:
+                        captures[label].extend(chunk[:remaining])
+                    if len(chunk) > remaining:
+                        overflows.add(label)
+                        _kill()
+                        return
+        except BaseException as exc:
+            with state_lock:
+                thread_errors.append(exc)
+
+    def _write_pipe(descriptor: int) -> None:
+        offset = 0
+        view = memoryview(input_bytes)
+        try:
+            while offset < len(view):
+                written = os.write(descriptor, view[offset : offset + 65536])
+                if written <= 0:
+                    raise OSError(errno.EIO, "Darwin CAS helper short input write")
+                offset += written
+        except BrokenPipeError:
+            pass
+        except OSError as exc:
+            if exc.errno not in {errno.EBADF, errno.EPIPE}:
+                with state_lock:
+                    thread_errors.append(exc)
+        finally:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+    stdin_descriptor = os.dup(process.stdin.fileno())
+    process.stdin.close()
+    threads = (
+        threading.Thread(
+            target=_read_pipe,
+            args=(
+                "stdout",
+                process.stdout.fileno(),
+                _DARWIN_CAS_MAX_STDOUT_BYTES,
+            ),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_read_pipe,
+            args=(
+                "stderr",
+                process.stderr.fileno(),
+                _DARWIN_CAS_MAX_STDERR_BYTES,
+            ),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_write_pipe,
+            args=(stdin_descriptor,),
+            daemon=True,
+        ),
+    )
+    for thread in threads:
+        thread.start()
+    timed_out = False
+    try:
+        process.wait(timeout=_DARWIN_CAS_HELPER_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _kill()
+        process.wait()
+    finally:
+        for thread in threads:
+            thread.join(timeout=5)
+        process.stdout.close()
+        process.stderr.close()
+    if any(thread.is_alive() for thread in threads):
+        raise RootedPathIOError("Darwin CAS helper protocol thread did not stop")
+    if timed_out:
+        raise subprocess.TimeoutExpired(
+            arguments,
+            _DARWIN_CAS_HELPER_TIMEOUT_SECONDS,
+        )
+    if overflows:
+        raise RootedPathIOError(
+            "Darwin CAS helper exceeded bounded "
+            + "/".join(sorted(overflows))
+            + " output"
+        )
+    if thread_errors:
+        raise RootedPathIOError(
+            f"Darwin CAS helper pipe protocol failed: {thread_errors[0]}"
+        )
+    return subprocess.CompletedProcess(
+        arguments,
+        process.returncode,
+        bytes(captures["stdout"]),
+        bytes(captures["stderr"]),
+    )
+
+
+def _darwin_run_cas_helper(
+    mode: str,
+    destination: Path,
+    raw: bytes,
+    *,
+    source_descriptor: int | None = None,
+    stage: Path | None = None,
+) -> None:
+    if len(raw) > _DARWIN_CAS_MAX_PAYLOAD_BYTES:
+        raise RootedPathIOError("Darwin CAS helper payload exceeds its bound")
+    if mode not in {"publish", "retire", "validate"}:
+        raise RootedPathIOError("Darwin CAS helper mode is invalid")
+    if source_descriptor is None:
+        raise RootedPathIOError("Darwin CAS helper source authority is missing")
+    if (mode == "validate") != (stage is None):
+        raise RootedPathIOError("Darwin CAS helper source authority is incomplete")
+    authority, owned_authority = _darwin_current_parent_authority(destination)
+    directory_descriptor = authority[0]
+    child_directory_descriptor = -1
+    child_source_descriptor = -1
+    helper_descriptor = -1
+    try:
+        _darwin_assert_parent_authority(authority)
+        destination_exists = _darwin_exact_entry_exists(
+            authority, destination.name
+        )
+        if mode in {"retire", "validate"} and not destination_exists:
+            raise RootedPathIOError(
+                "Darwin CAS required destination is absent"
+            )
+        if stage is not None and not _darwin_exact_entry_exists(
+            authority, stage.name
+        ):
+            raise RootedPathIOError(
+                "Darwin CAS stage disappeared before helper launch"
+            )
+        source_row = os.fstat(source_descriptor)
+        child_directory_descriptor = _posix_fcntl.fcntl(
+            directory_descriptor,
+            _posix_fcntl.F_DUPFD_CLOEXEC,
+            3,
+        )
+        child_source_descriptor = _posix_fcntl.fcntl(
+            source_descriptor,
+            _posix_fcntl.F_DUPFD_CLOEXEC,
+            3,
+        )
+        helper_executable, helper_descriptor = (
+            _darwin_open_cas_helper_executable()
+        )
+        arguments = (
+            os.fspath(helper_executable),
+            mode,
+            str(child_directory_descriptor),
+            destination.name,
+            str(child_source_descriptor),
+            str(int(source_row.st_dev)),
+            str(int(source_row.st_ino)),
+            stage.name if stage is not None else "-",
+            str(len(raw)),
+        )
+        completed = _darwin_run_bounded_helper_process(
+            arguments,
+            executable=helper_executable,
+            input_bytes=raw,
+            pass_fds=(child_directory_descriptor, child_source_descriptor),
+        )
+        post_executable, post_descriptor = (
+            _darwin_open_cas_helper_executable()
+        )
+        try:
+            if post_executable != helper_executable:
+                raise RootedPathIOError(
+                    "Darwin CAS helper executable path changed during launch"
+                )
+        finally:
+            os.close(post_descriptor)
+        _darwin_assert_parent_authority(authority)
+    except BaseException as exc:
+        observed_destination = _darwin_best_effort_observed_at(
+            authority, destination.name
+        )
+        if owned_authority:
+            os.close(directory_descriptor)
+        raise DurableWriteOnceDebtError(
+            stage=stage or _write_once_stage_path(destination, raw),
+            destination=destination,
+            expected=raw,
+            observed=observed_destination,
+            cleanup_state="DARWIN_CAS_HELPER_UNAVAILABLE",
+            detail=f"Darwin CAS helper execution failed: {exc}",
+        ) from exc
+    finally:
+        if helper_descriptor >= 0:
+            os.close(helper_descriptor)
+        if child_source_descriptor >= 0:
+            os.close(child_source_descriptor)
+        if child_directory_descriptor >= 0:
+            os.close(child_directory_descriptor)
+
+    try:
+        if completed.returncode == 0:
+            return
+        if completed.returncode == _DARWIN_CAS_EXIT_EXISTS:
+            raise FileExistsError(
+                errno.EEXIST,
+                "durable write-once destination already exists",
+                os.fspath(destination),
+            )
+        detail = completed.stderr.decode(
+            "utf-8", errors="replace"
+        )[-2048:].strip()
+        if completed.returncode == _DARWIN_CAS_EXIT_QUARANTINED_FOREIGN:
+            observed = None
+            if stage is not None:
+                observed = _darwin_best_effort_observed_at(
+                    authority, stage.name
+                )
+                if observed is None:
+                    observed = _darwin_best_effort_observed_at(
+                        authority,
+                        _darwin_cas_quarantine_path(stage).name,
+                    )
+            raise DurableWriteOnceStageError(
+                stage=stage or _write_once_stage_path(destination, raw),
+                destination=destination,
+                expected=raw,
+                observed=observed or b"",
+            )
+        observed_destination = _darwin_best_effort_observed_at(
+            authority, destination.name
+        )
+        raise DurableWriteOnceDebtError(
+            stage=stage or _write_once_stage_path(destination, raw),
+            destination=destination,
+            expected=raw,
+            observed=observed_destination,
+            cleanup_state=(
+                "DARWIN_CLONE_UNSUPPORTED"
+                if completed.returncode == _DARWIN_CAS_EXIT_UNSUPPORTED
+                else "DARWIN_CAS_PUBLICATION_FAILED_PRESERVED"
+            ),
+            detail=(
+                "Darwin CAS helper failed closed"
+                + (f": {detail}" if detail else "")
+            ),
+        )
+    finally:
+        if owned_authority:
+            os.close(directory_descriptor)
+
+
+def _darwin_validate_retained_quarantine(
+    stage: Path,
+    destination: Path,
+    raw: bytes,
+) -> None:
+    authority, owned_authority = _darwin_current_parent_authority(destination)
+    quarantine = _darwin_cas_quarantine_path(stage)
+    try:
+        if not _darwin_exact_entry_exists(authority, quarantine.name):
+            return
+        _darwin_existing_is_exact_at(
+            authority,
+            quarantine.name,
+            raw,
+            label="Darwin retained exact stage quarantine",
+            stage=True,
+            durable=True,
+            destination=destination,
+        )
+    finally:
+        if owned_authority:
+            os.close(authority[0])
+
+
+def _darwin_publish_open_stage(
+    stage: Path,
+    destination: Path,
+    raw: bytes,
+) -> None:
+    authority, owned_authority = _darwin_current_parent_authority(destination)
+    source_descriptor = -1
+    try:
+        source_descriptor = _darwin_open_exact_at(
+            authority,
+            stage.name,
+            raw,
+            label="durable write-once staging bytes",
+            stage=True,
+            durable=True,
+            destination=destination,
+        )
+        _write_once_pre_publish_hook(stage, destination)
+        _darwin_assert_parent_authority(authority)
+        observed = _descriptor_bytes(source_descriptor)
+        if observed != raw:
+            raise DurableWriteOnceStageError(
+                stage=stage,
+                destination=destination,
+                expected=raw,
+                observed=observed,
+            )
+        _darwin_run_cas_helper(
+            "publish",
+            destination,
+            raw,
+            source_descriptor=source_descriptor,
+            stage=stage,
+        )
+        if _darwin_exact_entry_exists(authority, stage.name):
+            raise DurableWriteOnceDebtError(
+                stage=stage,
+                destination=destination,
+                expected=raw,
+                observed=_darwin_best_effort_observed_at(authority, stage.name),
+                cleanup_state="DARWIN_STAGE_RECREATED_DURING_RETIREMENT",
+                detail="Darwin deterministic stage was recreated before success",
+            )
+        _darwin_validate_success(authority, stage, destination, raw)
+    finally:
+        if source_descriptor >= 0:
+            os.close(source_descriptor)
+        if owned_authority:
+            os.close(authority[0])
+
+
+def _darwin_validate_success(
+    authority: tuple[int, Path, tuple[int, int]],
+    stage: Path,
+    destination: Path,
+    raw: bytes,
+) -> None:
+    if not _darwin_existing_is_exact_at(
+        authority,
+        destination.name,
+        raw,
+        label="durable write-once destination",
+        durable=True,
+        destination=destination,
+    ):
+        raise RootedPathIOError(
+            "Darwin durable write-once publication produced no destination"
+        )
+    _darwin_validate_retained_quarantine(stage, destination, raw)
+    _fsync_file_descriptor(authority[0])
+    _darwin_assert_parent_authority(authority)
+    if not _darwin_existing_is_exact_at(
+        authority,
+        destination.name,
+        raw,
+        label="durable write-once destination",
+        durable=True,
+        destination=destination,
+    ):
+        raise RootedPathIOError(
+            "Darwin durable write-once destination disappeared at success"
+        )
+    if _darwin_exact_entry_exists(authority, stage.name):
+        raise DurableWriteOnceDebtError(
+            stage=stage,
+            destination=destination,
+            expected=raw,
+            observed=_darwin_best_effort_observed_at(authority, stage.name),
+            cleanup_state="DARWIN_STAGE_RECREATED_DURING_RETIREMENT",
+            detail="Darwin deterministic stage was recreated at success",
+        )
 
 
 def _posix_publish_open_stage(
@@ -2467,13 +3479,32 @@ def _publish_validated_write_once_stage(
     try:
         if os.name == "nt":
             _windows_publish_locked_stage(stage, destination, raw)
+        elif sys.platform == "darwin":
+            _darwin_publish_open_stage(stage, destination, raw)
         else:
             _posix_publish_open_stage(stage, destination, raw)
     except FileExistsError:
         # A concurrent publisher may win the no-replace boundary.  Its final
         # file is acceptable only after single-link, byte-exact durability is
         # re-established; the deterministic local stage is then retired.
-        if not _write_once_existing_is_exact(
+        if sys.platform == "darwin":
+            authority, owned_authority = _darwin_current_parent_authority(
+                destination
+            )
+            try:
+                if not _darwin_existing_is_exact_at(
+                    authority,
+                    destination.name,
+                    raw,
+                    label="durable write-once destination",
+                    durable=True,
+                    destination=destination,
+                ):
+                    raise
+            finally:
+                if owned_authority:
+                    os.close(authority[0])
+        elif not _write_once_existing_is_exact(
             destination,
             raw,
             label="durable write-once destination",
@@ -2483,15 +3514,159 @@ def _publish_validated_write_once_stage(
         _retire_exact_write_once_stage(stage, destination, raw)
         return
 
-    if not _write_once_existing_is_exact(
+    if sys.platform == "darwin":
+        # _darwin_publish_open_stage owns the complete success postcondition:
+        # exact destination before/after the directory durability barrier,
+        # exact retained quarantine, and absent deterministic stage.  Replaying
+        # another full native validation here adds no independent boundary and
+        # substantially multiplies F_FULLFSYNC work on APFS.
+        return
+    exact = _write_once_existing_is_exact(
         destination,
         raw,
         label="durable write-once destination",
         durable=True,
-    ):
+    )
+    if not exact:
         raise RootedPathIOError(
             "durable write-once publication produced no destination"
         )
+
+
+def _darwin_durable_write_once_bytes(
+    authority: tuple[int, Path, tuple[int, int]],
+    destination: Path,
+    raw: bytes,
+) -> None:
+    """Run Darwin CAS entirely beneath one retained parent capability."""
+
+    if len(raw) > _DARWIN_CAS_MAX_PAYLOAD_BYTES:
+        raise RootedPathIOError("Darwin CAS helper payload exceeds its bound")
+    stage = _write_once_stage_path(destination, raw)
+    if _darwin_existing_is_exact_at(
+        authority,
+        destination.name,
+        raw,
+        label="durable write-once destination",
+        durable=True,
+        destination=destination,
+    ):
+        _retire_exact_write_once_stage(stage, destination, raw)
+        _darwin_validate_success(authority, stage, destination, raw)
+        return
+
+    quarantine = _darwin_cas_quarantine_path(stage)
+    if _darwin_exact_entry_exists(authority, quarantine.name):
+        _darwin_existing_is_exact_at(
+            authority,
+            quarantine.name,
+            raw,
+            label="Darwin retained exact stage quarantine",
+            stage=True,
+            durable=True,
+            destination=destination,
+        )
+        raise DurableWriteOnceDebtError(
+            stage=stage,
+            destination=destination,
+            expected=raw,
+            observed=raw,
+            cleanup_state="DARWIN_ORPHANED_QUARANTINE_PRESERVED",
+            detail=(
+                "Darwin retained stage quarantine exists without its exact "
+                "destination"
+            ),
+        )
+
+    if _darwin_exact_entry_exists(authority, stage.name):
+        _darwin_existing_is_exact_at(
+            authority,
+            stage.name,
+            raw,
+            label="durable write-once staging bytes",
+            stage=True,
+            durable=True,
+            destination=destination,
+        )
+        _publish_validated_write_once_stage(stage, destination, raw)
+        return
+
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(stage.name, flags, 0o600, dir_fd=authority[0])
+    except FileExistsError as exc:
+        raise RootedPathIOError(
+            "Darwin durable write-once staging name appeared concurrently"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        if not _darwin_exact_entry_exists(authority, stage.name):
+            raise RootedPathIOError(
+                "Darwin durable write-once created stage is unnamed"
+            )
+        named = os.stat(
+            stage.name,
+            dir_fd=authority[0],
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(named.st_mode)
+            or int(opened.st_nlink) != 1
+            or int(named.st_nlink) != 1
+            or not _same_inode(opened, named)
+            or int(opened.st_uid) != int(os.geteuid())
+            or stat.S_IMODE(opened.st_mode) != 0o600
+        ):
+            raise RootedPathIOError(
+                "Darwin durable write-once stage lacks private file authority"
+            )
+        view = memoryview(raw)
+        offset = 0
+        while offset < len(view):
+            written = os.write(descriptor, view[offset:])
+            if written <= 0 or written > len(view) - offset:
+                raise OSError(
+                    errno.EIO, "Darwin durable write-once short write"
+                )
+            offset += written
+        _fsync_file_descriptor(descriptor)
+    except BaseException as exc:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise DurableWriteOnceDebtError(
+            stage=stage,
+            destination=destination,
+            expected=raw,
+            observed=_darwin_best_effort_observed_at(authority, stage.name),
+            cleanup_state="PARTIAL_STAGE_PRESERVED",
+            detail=f"Darwin durable write-once stage creation failed: {exc}",
+        ) from exc
+    else:
+        os.close(descriptor)
+
+    _fsync_file_descriptor(authority[0])
+    if not _darwin_existing_is_exact_at(
+        authority,
+        stage.name,
+        raw,
+        label="durable write-once staging bytes",
+        stage=True,
+        durable=True,
+        destination=destination,
+    ):
+        raise RootedPathIOError(
+            "Darwin durable write-once completed stage disappeared"
+        )
+    _publish_validated_write_once_stage(stage, destination, raw)
 
 
 def durable_write_once_bytes(
@@ -2517,6 +3692,18 @@ def durable_write_once_bytes(
         destination_path.parent,
         label="durable write-once parent",
     )
+    if sys.platform == "darwin":
+        authority = _darwin_open_parent_authority(destination_path.parent)
+        token = _DARWIN_CAS_PARENT_AUTHORITY.set(authority)
+        try:
+            _darwin_durable_write_once_bytes(
+                authority, destination_path, raw
+            )
+            _darwin_assert_parent_authority(authority)
+        finally:
+            _DARWIN_CAS_PARENT_AUTHORITY.reset(token)
+            os.close(authority[0])
+        return
     stage = _write_once_stage_path(destination_path, raw)
 
     if _write_once_existing_is_exact(
@@ -2556,19 +3743,6 @@ def durable_write_once_bytes(
             ):
                 raise
         return
-    if os.name != "nt" and sys.platform == "darwin":
-        raise DurableWriteOnceDebtError(
-            stage=stage,
-            destination=destination_path,
-            expected=raw,
-            observed=None,
-            cleanup_state="DARWIN_IMMUTABLE_SNAPSHOT_UNAVAILABLE",
-            detail=(
-                "Darwin durable publication requires an immutable anonymous "
-                "snapshot and therefore fails closed"
-            ),
-        )
-
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= int(getattr(os, "O_BINARY", 0) or 0)
     flags |= int(getattr(os, "O_NOFOLLOW", 0) or 0)
@@ -2605,7 +3779,7 @@ def durable_write_once_bytes(
             if written <= 0 or written > len(view) - offset:
                 raise OSError(errno.EIO, "durable write-once short write")
             offset += written
-        os.fsync(descriptor)
+        _fsync_file_descriptor(descriptor)
     except BaseException as exc:
         try:
             os.close(descriptor)

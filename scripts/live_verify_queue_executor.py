@@ -19,6 +19,7 @@ import re
 from typing import Any, Callable, Mapping, Sequence
 
 import rooted_path_io as _rooted_io
+from portable_path_contract import assert_lexically_bounded_relative_path
 from phase_io_contracts import ConditionalOutputReceipt
 from verify_queue_phaseio_authority import (
     arm_transaction_unit,
@@ -81,6 +82,14 @@ def _stable_digest(value: Any) -> str:
 def _safe_relative(value: Any) -> str:
     text = str(value or "").strip().replace("\\", "/")
     path = PurePosixPath(text)
+    try:
+        assert_lexically_bounded_relative_path(
+            text, label="live verify-queue path"
+        )
+    except ValueError as exc:
+        raise LiveVerifyQueueError(
+            f"unsafe live verify-queue path: {value!r}"
+        ) from exc
     if (
         not text
         or path.is_absolute()

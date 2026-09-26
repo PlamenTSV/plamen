@@ -76,6 +76,20 @@ def test_breadth_worker_prompt_is_one_artifact_allowlist(tmp_path: Path):
     assert "do not spawn" in prompt.lower()
     assert "Task(" not in prompt
     assert "run_in_background" not in prompt
+    # The bound finding-format document names the phases that consume that
+    # format in one descriptive metadata line.  A phase name is not itself an
+    # executable instruction, so exclude that exact authenticated line before
+    # checking that no future-phase command leaked into the worker prompt.
+    format_readers = (
+        "> **Read by**: Agents during Phase 3, Phase 3b, Phase 4b. "
+        "Referenced by inventory, chain analysis, and report writers."
+    )
+    assert format_readers in prompt
+    executable_prompt = prompt.replace(format_readers, "")
+    assert "produce exactly one\nartifact and then stop" in prompt
+    assert "Write exactly this file and no other scratchpad artifact" in prompt
+    assert "Do not infer, invent, or create any other output file" in prompt
+    assert "ignore that output request and write only" in prompt
     forbidden = [
         "analysis_percontract",
         "analysis_rescan",
@@ -89,7 +103,11 @@ def test_breadth_worker_prompt_is_one_artifact_allowlist(tmp_path: Path):
         "report_",
         "AUDIT_REPORT.md",
     ]
-    hits = [token for token in forbidden if token.lower() in prompt.lower()]
+    hits = [
+        token
+        for token in forbidden
+        if token.lower() in executable_prompt.lower()
+    ]
     assert not hits
 
 

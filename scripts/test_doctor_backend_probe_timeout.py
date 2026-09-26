@@ -241,9 +241,20 @@ def test_slow_authority_replay_does_not_consume_member_deadline(
 ):
     front = _load_front()
     authority = _authority(tmp_path)
-    runtime = _Runtime(["selected-member"])
+    runtime = _Runtime([sys.executable, "-B", "-c", "pass"])
     _patch_authority(monkeypatch, front, authority, runtime)
     clock = {"now": 0.0}
+    launch = runtime.launch_generation_member
+
+    def elapsed_member_launch(*args, **kwargs):
+        process = launch(*args, **kwargs)
+        # Fifty seconds were spent replaying authority, then twenty in the
+        # member. A deadline incorrectly started before replay expires at 60;
+        # the member's independent budget correctly expires at 110.
+        clock["now"] = 70.0
+        return process
+
+    monkeypatch.setattr(runtime, "launch_generation_member", elapsed_member_launch)
 
     def selected(**_kwargs):
         clock["now"] = 50.0
@@ -260,8 +271,10 @@ def test_slow_authority_replay_does_not_consume_member_deadline(
     )
 
     assert result.returncode == 0
-    assert runtime.calls
-    assert _FakeScope.last.process.wait_timeouts == [0.05]
+    assert len(runtime.calls) == 1
+    assert clock["now"] == 70.0
+    if os.name == "nt":
+        assert _FakeScope.last.process.wait_timeouts == [0.05]
 
 
 def test_authority_replay_over_budget_never_spawns_and_is_not_backend_timeout(

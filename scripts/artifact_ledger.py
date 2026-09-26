@@ -30,6 +30,7 @@ from external_preimage_authority import (
     validate_external_preimage_receipt_integrity,
 )
 from phase_io_contracts import (
+    ArtifactSpec,
     canonical_artifact_identity,
     ConditionalOutputReceipt,
     DriverMergeEvent,
@@ -39,9 +40,11 @@ from phase_io_contracts import (
     LaunchSpec,
     PhaseIOContract,
     driver_successor_plan_from_dict,
+    registered_read_only_consumption,
     registered_projection_handoff,
     replay_driver_successor_plan_authority,
     replay_phase_io_authority_pair,
+    parse_report_body_attempt_work_unit,
 )
 
 
@@ -119,6 +122,7 @@ _COMMIT_TERMINAL_STATES = frozenset({
     "OUTPUT_COMMITTED", "OUTPUT_QUARANTINED", "OUTPUT_SUPERSEDED",
 })
 _INPUT_REBIND_HISTORY_SCHEMA = "plamen.artifact-input-rebind.v1"
+_INPUT_REBIND_HISTORY_EXTENSION_SCHEMA = "plamen.artifact-input-rebind.v2"
 _INPUT_REBIND_REASON_CODES = frozenset({
     "DYNAMIC_INPUT_DENOMINATOR_DRIFT_BEFORE_OUTPUT_COMMIT",
 })
@@ -135,6 +139,10 @@ _INPUT_REBIND_EVENT_FIELDS = frozenset({
     "added_identities",
     "removed_identities",
     "event_digest",
+})
+_INPUT_REBIND_EXTENSION_EVENT_FIELDS = _INPUT_REBIND_EVENT_FIELDS | frozenset({
+    "prior_preexecution_authority_digest",
+    "replacement_preexecution_authority_digest",
 })
 # Only these exact input-bound producer metadata fields may survive the
 # generic output commit normalization boundary.  Their producer-specific
@@ -389,6 +397,18 @@ def _replay_authority_pair(
         ) from exc
 
 
+def _ledger_transaction_lock_key(scratchpad: Path) -> str:
+    lock_path = rooted_io.absolute_path(
+        Path(scratchpad) / _LEDGER_LOCK_FILE
+    )
+    return os.path.normcase(os.path.normpath(os.fspath(lock_path)))
+
+
+def _ledger_transaction_lock_is_owned(scratchpad: Path) -> bool:
+    held = getattr(_PROCESS_LOCK_STATE, "held", {})
+    return bool(held.get(_ledger_transaction_lock_key(Path(scratchpad)), 0))
+
+
 @contextmanager
 def _ledger_transaction_lock(
     scratchpad: Path, *, timeout_s: float = 30.0,
@@ -408,7 +428,7 @@ def _ledger_transaction_lock(
     lock_path = rooted_io.absolute_path(root / _LEDGER_LOCK_FILE)
     # Persisted paths use ordinary spelling, but process lock identity must be
     # alias-stable and must never depend on Path.resolve() crossing MAX_PATH.
-    key = os.path.normcase(os.path.normpath(os.fspath(lock_path)))
+    key = _ledger_transaction_lock_key(root)
     held = getattr(_PROCESS_LOCK_STATE, "held", {})
     with _LEDGER_LOCK:
         if held.get(key, 0):
@@ -582,7 +602,9 @@ def _write_rooted_control_bytes(path: Path, payload: bytes) -> None:
             rooted_io.unlink(temporary)
 
 
-def read_artifact_ledger(scratchpad: Path) -> dict[str, Any]:
+def _read_artifact_ledger_unlocked(scratchpad: Path) -> dict[str, Any]:
+    """Read one ledger generation while the caller owns its transaction lock."""
+
     root = Path(os.path.abspath(os.fspath(scratchpad)))
     path = root / LEDGER_NAME
     if not rooted_io.lexists(path):
@@ -653,6 +675,23 @@ def read_artifact_ledger(scratchpad: Path) -> dict[str, Any]:
     return data
 
 
+def read_artifact_ledger(scratchpad: Path) -> dict[str, Any]:
+    """Return one stable ledger generation serialized with atomic publishers.
+
+    The ledger is replaced atomically.  Atomic replacement protects readers
+    from partial JSON, but it does not make an inode-stability check compatible
+    with a concurrent replacement: a reader can lstat the old generation and
+    open the new one, correctly tripping the no-follow descriptor guard.  That
+    is an ordinary publication race, not evidence tampering.  Readers and
+    writers therefore share the same transaction lock; nested callers remain
+    safe because the lock is re-entrant within the owning thread/process.
+    """
+
+    root = Path(os.path.abspath(os.fspath(scratchpad)))
+    with _ledger_transaction_lock(root):
+        return _read_artifact_ledger_unlocked(root)
+
+
 def write_artifact_ledger(scratchpad: Path, ledger: dict[str, Any]) -> None:
     root = Path(os.path.abspath(os.fspath(scratchpad)))
     try:
@@ -667,7 +706,8 @@ def write_artifact_ledger(scratchpad: Path, ledger: dict[str, Any]) -> None:
         ) from exc
     _lexical_no_follow_chain(root)
     path = root / LEDGER_NAME
-    if rooted_io.lexists(path):
+    existing = rooted_io.lexists(path)
+    if existing:
         _lexical_no_follow_chain(path)
         metadata = rooted_io.lstat(path)
         if (
@@ -679,8 +719,18 @@ def write_artifact_ledger(scratchpad: Path, ledger: dict[str, Any]) -> None:
                 "artifact ledger destination is not a single-link "
                 "no-follow regular file"
             )
-    payload = json.dumps(ledger, indent=2, sort_keys=True) + "\n"
-    _write_rooted_control_bytes(path, payload.encode("utf-8"))
+    payload = (json.dumps(ledger, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    # A replay is not a new physical generation.  Keep all destination checks
+    # above, and use the stable no-follow reader (not a hash or JSON equality)
+    # before preserving the existing inode and mtime.  CAS callers still run
+    # their authorization, candidate and committed-revision validation.
+    if (
+        existing
+        and int(metadata.st_size) == len(payload)
+        and _read_stable_regular_bytes(path, limit=len(payload)) == payload
+    ):
+        return
+    _write_rooted_control_bytes(path, payload)
     _lexical_no_follow_chain(path)
     metadata = rooted_io.lstat(path)
     if (
@@ -1645,7 +1695,11 @@ class _ArtifactValidationContext:
         self.scratchpad = Path(scratchpad)
         self.project_root = Path(project_root)
         source_ledger = (
-            read_artifact_ledger(self.scratchpad)
+            (
+                _read_artifact_ledger_unlocked(self.scratchpad)
+                if _ledger_transaction_lock_is_owned(self.scratchpad)
+                else read_artifact_ledger(self.scratchpad)
+            )
             if ledger is None
             else dict(ledger)
         )
@@ -1730,17 +1784,26 @@ class _ArtifactValidationContext:
         ] = {}
         # A producer receipt covers its complete output bundle.  Many exact
         # consumer inputs can therefore replay the same historical bundle in
-        # one validation epoch.  Resolving semantic-mutation exemptions walks
-        # and hashes that bundle, so cache the base result by the exact frozen
-        # producer authority and union the caller's already-verified identity
-        # below.  Every consulted path is also captured by ``snapshot`` and is
-        # rechecked by ``finish``; this is an epoch-local memo, never durable
-        # authority.
-        self.semantic_mutation_bundle_exemptions: dict[
+        # one validation epoch. Resolving exact semantic-mutation or registered
+        # successor exemptions walks and hashes that bundle, so cache the base
+        # result by the exact frozen producer authority and union the caller's
+        # already-verified identity below. Every consulted path is also
+        # captured by ``snapshot`` and rechecked by ``finish``; this is an
+        # epoch-local memo, never durable authority.
+        self.authenticated_bundle_live_byte_exemptions: dict[
             tuple[str, str, str, str, str], tuple[str, ...]
         ] = {}
         self._output_authority_journal: dict[str, Any] | None = None
         self._output_authority_cas: dict[str, dict[str, Any]] = {}
+        self._driver_successor_authority_journal: (
+            dict[str, Any] | None
+        ) = None
+        self._driver_successor_authority_cas: dict[
+            str, dict[str, Any]
+        ] = {}
+        self._driver_successor_progress_event_cas: dict[
+            str, dict[str, Any]
+        ] = {}
         self._immutable_control_paths: dict[
             str,
             tuple[Path, str, int, tuple[int, ...], str],
@@ -1956,6 +2019,107 @@ class _ArtifactValidationContext:
             self._output_authority_cas[authority_digest] = cached
         return copy.deepcopy(cached)
 
+    def _immutable_authority_cas(
+        self,
+        authority_digest: str,
+        *,
+        directory_name: str,
+        label: str,
+        cache: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Read one non-output authority CAS inside this validation epoch."""
+
+        if self._closed:
+            raise ArtifactLedgerError("artifact validation epoch is closed")
+        cached = cache.get(authority_digest)
+        if cached is None:
+            value = _read_authority_cas(
+                self.scratchpad,
+                authority_digest,
+                directory_name=directory_name,
+                label=label,
+            )
+            path = (
+                self.scratchpad
+                / directory_name
+                / f"{authority_digest}.json"
+            )
+            encoded = _canonical_json_bytes(value)
+            metadata = rooted_io.lstat(path)
+            if (
+                _metadata_is_reparse(metadata)
+                or not stat.S_ISREG(metadata.st_mode)
+                or int(metadata.st_size) != len(encoded)
+                or hashlib.sha256(encoded).hexdigest() != authority_digest
+            ):
+                raise ArtifactLedgerError(
+                    f"{label} CAS changed during validation read"
+                )
+            self._immutable_control_paths[self._path_key(path)] = (
+                path,
+                authority_digest,
+                len(encoded),
+                _metadata_identity(metadata),
+                "raw",
+            )
+            cached = copy.deepcopy(value)
+            cache[authority_digest] = cached
+        return copy.deepcopy(cached)
+
+    def driver_successor_authority_journal(self) -> dict[str, Any]:
+        """Read the successor journal once and terminally rejoin its bytes."""
+
+        if self._closed:
+            raise ArtifactLedgerError("artifact validation epoch is closed")
+        if self._driver_successor_authority_journal is None:
+            journal, encoded = (
+                _read_driver_successor_authority_ledger_with_raw(
+                    self.scratchpad
+                )
+            )
+            path = self.scratchpad / _DRIVER_SUCCESSOR_AUTHORITY_LEDGER_NAME
+            if encoded is not None:
+                metadata = rooted_io.lstat(path)
+                digest = hashlib.sha256(encoded).hexdigest()
+                if (
+                    _metadata_is_reparse(metadata)
+                    or not stat.S_ISREG(metadata.st_mode)
+                    or int(metadata.st_size) != len(encoded)
+                ):
+                    raise ArtifactLedgerError(
+                        "driver successor authority journal changed during "
+                        "validation read"
+                    )
+                self._immutable_control_paths[self._path_key(path)] = (
+                    path,
+                    digest,
+                    len(encoded),
+                    _metadata_identity(metadata),
+                    "raw",
+                )
+            self._driver_successor_authority_journal = copy.deepcopy(journal)
+        return copy.deepcopy(self._driver_successor_authority_journal)
+
+    def driver_successor_authority_cas(
+        self, authority_digest: str,
+    ) -> dict[str, Any]:
+        return self._immutable_authority_cas(
+            authority_digest,
+            directory_name=_DRIVER_SUCCESSOR_AUTHORITY_CAS_DIRECTORY,
+            label="driver successor authority",
+            cache=self._driver_successor_authority_cas,
+        )
+
+    def driver_successor_progress_event_cas(
+        self, event_digest: str,
+    ) -> dict[str, Any]:
+        return self._immutable_authority_cas(
+            event_digest,
+            directory_name=_DRIVER_SUCCESSOR_PROGRESS_EVENT_CAS_DIRECTORY,
+            label="driver successor progress event",
+            cache=self._driver_successor_progress_event_cas,
+        )
+
     def finish(self) -> list[str]:
         """Revalidate all observed paths and ledger immediately at return."""
 
@@ -2092,11 +2256,15 @@ class _ArtifactValidationContext:
                     raw = _read_stable_regular_bytes(
                         path, limit=32 * 1024 * 1024
                     )
-                else:
+                elif kind == "cas":
                     value = _read_output_authority_cas(
                         self.scratchpad, expected_digest
                     )
                     raw = _canonical_json_bytes(value)
+                else:
+                    raw = _read_stable_regular_bytes(
+                        path, limit=32 * 1024 * 1024
+                    )
                 final_metadata = rooted_io.lstat(path)
             except (ArtifactLedgerError, OSError) as exc:
                 issues.append(
@@ -2126,6 +2294,38 @@ class _ArtifactValidationContext:
             ):
                 issues.append("artifact ledger changed during validation epoch")
         return issues
+
+
+@contextmanager
+def _artifact_validation_epoch(
+    scratchpad: Path,
+    project_root: Path,
+    *,
+    ledger: Mapping[str, Any] | None = None,
+):
+    """Own one validation context and its ledger lock through final rejoin."""
+
+    with _ledger_transaction_lock(Path(scratchpad)):
+        context = _ArtifactValidationContext(
+            Path(scratchpad), Path(project_root), ledger=ledger
+        )
+        try:
+            yield context
+        except BaseException:
+            # The caller is already failing closed. Still close the epoch so
+            # cached filesystem state is never reusable after this lifetime.
+            if not context._closed:
+                try:
+                    context.finish()
+                except Exception:
+                    # Preserve the original failure; it already prevents any
+                    # authority from being accepted or published.
+                    pass
+            raise
+        else:
+            issues = context.finish()
+            if issues:
+                raise ArtifactLedgerError("; ".join(issues))
 
 
 def _read_stable_regular_bytes(
@@ -3118,6 +3318,29 @@ def _read_driver_successor_authority_ledger(
     )
 
 
+def _read_driver_successor_authority_ledger_with_raw(
+    scratchpad: Path,
+) -> tuple[dict[str, Any], bytes | None]:
+    path = Path(scratchpad) / _DRIVER_SUCCESSOR_AUTHORITY_LEDGER_NAME
+    if not rooted_io.lexists(path):
+        return (
+            {
+                "schema": _DRIVER_SUCCESSOR_AUTHORITY_LEDGER_SCHEMA,
+                "authorities": {},
+            },
+            None,
+        )
+    raw = _read_stable_regular_bytes(path, limit=32 * 1024 * 1024)
+    return (
+        _parse_authority_ledger_bytes(
+            raw,
+            schema=_DRIVER_SUCCESSOR_AUTHORITY_LEDGER_SCHEMA,
+            label="driver successor authority",
+        ),
+        raw,
+    )
+
+
 def _write_driver_successor_authority_ledger(
     scratchpad: Path, payload: Mapping[str, Any],
 ) -> None:
@@ -4078,6 +4301,8 @@ def _validated_unit_driver_successor_progress_events(
     scratchpad: Path,
     unit: Mapping[str, Any],
     authority: Mapping[str, Any],
+    *,
+    _validation_context: _ArtifactValidationContext | None = None,
 ) -> list[dict[str, Any]]:
     progress_authority = unit.get(
         "successor_progress_authority"
@@ -4144,7 +4369,7 @@ def _validated_unit_driver_successor_progress_events(
             for key, value in event.items()
             if key != "event_digest"
         }
-        if (
+        observed = (
             _read_authority_cas(
                 Path(scratchpad),
                 str(event["event_digest"]),
@@ -4153,8 +4378,12 @@ def _validated_unit_driver_successor_progress_events(
                 ),
                 label="driver successor progress event",
             )
-            != unsigned
-        ):
+            if _validation_context is None
+            else _validation_context.driver_successor_progress_event_cas(
+                str(event["event_digest"])
+            )
+        )
+        if observed != unsigned:
             raise ArtifactLedgerError(
                 "driver successor progress event CAS does not replay"
             )
@@ -4881,33 +5110,39 @@ def _replay_output_commit_authority_uncached(
             or observation.get("status") != "PRESENT"
         ):
             continue
+        # Durable producer authority is content- and provenance-addressed.
+        # Device/inode/mtime remain sealed inside the validation epoch below
+        # to detect a concurrent path swap, but they are not semantic identity
+        # across epochs: an exact regular single-link rematerialization cannot
+        # invalidate otherwise identical producer bytes.  Owner/run/contract
+        # transitions are authenticated independently by the ledger and
+        # successor journals above.
         try:
             path = _path_for_identity(
                 Path(scratchpad), Path(project_root), str(identity)
             )
             if _validation_context is None:
                 snapshot, error = _stable_artifact_snapshot(path)
-                physical = _physical_file_identity(path)
             else:
                 snapshot, error = _validation_context.snapshot(path)
-                physical = _validation_context.physical_identity(path)
+            live_metadata = rooted_io.lstat(path)
+            live_is_safe_single_link = bool(
+                stat.S_ISREG(live_metadata.st_mode)
+                and not _metadata_is_reparse(live_metadata)
+                and int(getattr(live_metadata, "st_nlink", 1) or 1) == 1
+            )
         except ArtifactLedgerError as exc:
+            issues.append(f"{identity}: output authority path unsafe: {exc}")
+            continue
+        except OSError as exc:
             issues.append(f"{identity}: output authority path unsafe: {exc}")
             continue
         if (
             snapshot is None
             or error
+            or not live_is_safe_single_link
             or snapshot.get("sha256") != observation.get("sha256")
             or snapshot.get("size") != observation.get("size")
-            or physical
-            != (
-                physical_overrides.get(
-                    identity,
-                    record.get("physical_identity")
-                    if physical_rebound
-                    else observation.get("physical_identity"),
-                )
-            )
         ):
             issues.append(
                 f"{identity}: live bytes differ from issued output authority"
@@ -7752,6 +7987,7 @@ def semantic_input_prebind_producer_authority_issues(
     identities: Sequence[str],
     *,
     run_id: str,
+    _validation_context: _ArtifactValidationContext | None = None,
 ) -> list[str]:
     """Validate strict current-run producer ancestry before consumer arm.
 
@@ -7770,19 +8006,38 @@ def semantic_input_prebind_producer_authority_issues(
     run = str(run_id or "").strip()
     if not run:
         return ["strict producer prebind run_id is absent"]
-    try:
-        ledger = read_artifact_ledger(Path(scratchpad))
-    except ArtifactLedgerError as exc:
-        return [f"strict producer prebind ledger is invalid: {exc}"]
+    if _validation_context is None:
+        try:
+            with _artifact_validation_epoch(
+                Path(scratchpad), Path(project_root)
+            ) as validation_context:
+                return semantic_input_prebind_producer_authority_issues(
+                    Path(scratchpad),
+                    Path(project_root),
+                    identities,
+                    run_id=run,
+                    _validation_context=validation_context,
+                )
+        except ArtifactLedgerError as exc:
+            return [f"strict producer prebind ledger is invalid: {exc}"]
+    else:
+        validation_context = _validation_context
+        if (
+            validation_context._path_key(validation_context.scratchpad)
+            != validation_context._path_key(Path(scratchpad))
+            or validation_context._path_key(validation_context.project_root)
+            != validation_context._path_key(Path(project_root))
+        ):
+            return ["strict producer prebind validation context roots differ"]
+        if not _ledger_transaction_lock_is_owned(Path(scratchpad)):
+            return [
+                "strict producer prebind validation context does not own "
+                "ledger transaction lock"
+            ]
+    validation_ledger = validation_context.ledger
     normalized = tuple(sorted({str(value or "").strip() for value in identities}))
     if not normalized or any(not value for value in normalized):
         return ["strict producer prebind identity denominator is empty or malformed"]
-    validation_context = _ArtifactValidationContext(
-        Path(scratchpad),
-        Path(project_root),
-        ledger=ledger,
-    )
-    validation_ledger = validation_context.ledger
     issues: list[str] = []
     for identity in normalized:
         record = _input_binding_record(
@@ -7839,8 +8094,105 @@ def semantic_input_prebind_producer_authority_issues(
             )
         if binding.get("writer") not in {"DRIVER", "MODEL"}:
             issues.append(f"{identity}: producer writer is invalid")
-    issues.extend(validation_context.finish())
     return list(dict.fromkeys(issues))
+
+
+def _committed_output_record_state_is_valid(
+    record: Mapping[str, Any],
+    output_spec: Mapping[str, Any],
+    *,
+    work_unit_key: str,
+    run_id: str,
+    contract_digest: str,
+    launch_digest: str,
+) -> bool:
+    """Validate the exact present/absent state of one committed output.
+
+    A committed CONDITIONAL output may be authoritatively absent.  Absence is
+    not a weak form of ACTIVE: it is a separate, receipt-bound state with no
+    bytes and no authority level.  Keeping this predicate shared by current
+    and historical commit replay prevents successor planning from accepting a
+    state that the historical replay path later rejects.
+    """
+
+    identity = str(output_spec.get("identity") or "")
+    artifact_class = str(output_spec.get("artifact_class") or "")
+    if (
+        not identity
+        or record.get("identity") != identity
+        or record.get("owner_key") != work_unit_key
+        or record.get("run_id") != run_id
+        or record.get("contract_digest") != contract_digest
+        or record.get("launch_digest") != launch_digest
+        or record.get("writer") not in {"DRIVER", "MODEL"}
+        or not _nested_output_records_have_exact_sizes({identity: record})
+    ):
+        return False
+
+    receipt_value = record.get("conditional_receipt")
+    receipt: ConditionalOutputReceipt | None = None
+    if artifact_class == "CONDITIONAL":
+        if not isinstance(receipt_value, Mapping) or set(receipt_value) != {
+            "receipt_version",
+            "work_unit_key",
+            "contract_digest",
+            "artifact_identity",
+            "condition_id",
+            "state",
+            "expected_denominator",
+            "produced_identities",
+            "failure_ids",
+        }:
+            return False
+        try:
+            receipt = ConditionalOutputReceipt(
+                work_unit_key=receipt_value.get("work_unit_key"),
+                contract_digest=receipt_value.get("contract_digest"),
+                artifact_identity=receipt_value.get("artifact_identity"),
+                condition_id=receipt_value.get("condition_id"),
+                state=receipt_value.get("state"),
+                expected_denominator=receipt_value.get("expected_denominator"),
+                produced_identities=receipt_value.get("produced_identities"),
+                failure_ids=receipt_value.get("failure_ids"),
+                receipt_version=receipt_value.get("receipt_version"),
+            )
+        except (TypeError, ValueError):
+            return False
+        if (
+            receipt.receipt_version != "plamen.conditional_output.v1"
+            or receipt.to_dict() != dict(receipt_value)
+            or receipt.work_unit_key != work_unit_key
+            or receipt.contract_digest != contract_digest
+            or receipt.artifact_identity != identity
+            or receipt.condition_id != output_spec.get("condition_id")
+        ):
+            return False
+    elif receipt_value is not None:
+        return False
+
+    status = record.get("status")
+    if status == "ACTIVE":
+        if (
+            record.get("authority_level") != "ACTIVE_AUTHORITY"
+            or not _is_digest(record.get("sha256"))
+        ):
+            return False
+        return bool(
+            receipt is None
+            or (
+                receipt.state == "PRODUCED"
+                and identity in set(receipt.produced_identities)
+            )
+        )
+    if status == "MISSING" and artifact_class == "CONDITIONAL":
+        return bool(
+            record.get("authority_level") == "NONE"
+            and record.get("sha256") == ""
+            and record.get("size") == 0
+            and receipt is not None
+            and receipt.state in {"NOT_TRIGGERED", "TRIGGERED_EMPTY"}
+        )
+    return False
 
 
 def active_committed_work_unit_authority_issues(
@@ -8053,21 +8405,25 @@ def active_committed_work_unit_authority_issues(
             )
             continue
         if (
-            artifact.get("status") != "ACTIVE"
-            or binding.get("status") != "ACTIVE"
-            or artifact.get("owner_key") != key
-            or binding.get("owner_key") != key
-            or artifact.get("run_id") != run
-            or binding.get("run_id") != run
-            or artifact.get("contract_digest")
-            != unit.get("contract_digest")
-            or binding.get("contract_digest")
-            != unit.get("contract_digest")
-            or artifact.get("launch_digest") != unit.get("launch_digest")
-            or binding.get("launch_digest") != unit.get("launch_digest")
+            not _committed_output_record_state_is_valid(
+                artifact,
+                output_spec,
+                work_unit_key=key,
+                run_id=run,
+                contract_digest=str(unit.get("contract_digest") or ""),
+                launch_digest=str(unit.get("launch_digest") or ""),
+            )
+            or not _committed_output_record_state_is_valid(
+                binding,
+                output_spec,
+                work_unit_key=key,
+                run_id=run,
+                contract_digest=str(unit.get("contract_digest") or ""),
+                launch_digest=str(unit.get("launch_digest") or ""),
+            )
             or any(
                 artifact.get(field) != binding.get(field)
-                for field in exact_fields
+                for field in (*exact_fields, "authority_level", "conditional_receipt")
             )
             or any(
                 artifact.get(field) != output_spec.get(field)
@@ -8244,11 +8600,13 @@ def stored_committed_work_unit_authority_issues(
             or raw.get("run_id") != run
             or raw.get("contract_digest") != unit.get("contract_digest")
             or raw.get("launch_digest") != unit.get("launch_digest")
-            or raw.get("status") != "ACTIVE"
-            or raw.get("writer") not in {"DRIVER", "MODEL"}
-            or not _is_digest(raw.get("sha256"))
-            or not _nested_output_records_have_exact_sizes(
-                {str(identity): raw}
+            or not _committed_output_record_state_is_valid(
+                raw,
+                output_spec,
+                work_unit_key=key,
+                run_id=run,
+                contract_digest=str(unit.get("contract_digest") or ""),
+                launch_digest=str(unit.get("launch_digest") or ""),
             )
             or any(
                 raw.get(field) != output_spec.get(field)
@@ -8537,6 +8895,1172 @@ def _driver_successor_prestate_matches_transition(
     )
 
 
+def _stored_successor_authority_pair(
+    unit: Mapping[str, Any],
+) -> tuple[PhaseIOContract, LaunchSpec]:
+    key = str(unit.get("work_unit_key") or "")
+    parts = key.split("/")
+    manifest = unit.get("contract_manifest")
+    launch_manifest = unit.get("launch_manifest")
+    if (
+        len(parts) != 6
+        or not isinstance(manifest, Mapping)
+        or not isinstance(launch_manifest, Mapping)
+    ):
+        raise ArtifactLedgerError(
+            "stored successor authority pair is absent"
+        )
+    try:
+        output_rows = manifest.get("outputs")
+        immutable = manifest.get("immutable_inputs")
+        bounded = manifest.get("bounded_lookup_inputs")
+        if (
+            not isinstance(output_rows, list)
+            or any(not isinstance(row, Mapping) for row in output_rows)
+            or not isinstance(immutable, list)
+            or not isinstance(bounded, list)
+        ):
+            raise ValueError("stored contract denominator differs")
+        outputs: list[ArtifactSpec] = []
+        for row in output_rows:
+            identity = str(row.get("identity") or "")
+            root_name, relative = identity.split(":", 1)
+            outputs.append(ArtifactSpec(
+                root=root_name,
+                path=relative,
+                owner_key=str(row.get("owner_key") or ""),
+                artifact_class=str(row.get("artifact_class") or ""),
+                writer=str(row.get("writer") or ""),
+                write_mode=str(row.get("write_mode") or ""),
+                schema_version=str(row.get("schema_version") or ""),
+                minimum_gate=str(row.get("minimum_gate") or ""),
+                consumers=tuple(row.get("consumers") or ()),
+                condition_id=str(row.get("condition_id") or ""),
+                external_preimage_validator=str(
+                    row.get("external_preimage_validator") or ""
+                ),
+            ))
+        raw_requirements = manifest.get("input_authority_requirements", ())
+        if not isinstance(raw_requirements, (list, tuple)):
+            raise ValueError("stored input authority denominator differs")
+        requirements = tuple(
+            InputAuthorityRequirement(**dict(row))
+            for row in raw_requirements
+            if isinstance(row, Mapping)
+        )
+        if len(requirements) != len(raw_requirements):
+            raise ValueError("stored input authority row is malformed")
+        contract = PhaseIOContract(
+            pipeline=parts[0],
+            mode=parts[1],
+            ecosystem=parts[2],
+            backend=parts[3],
+            phase=parts[4],
+            work_unit_id=parts[5],
+            outputs=tuple(outputs),
+            immutable_inputs=tuple(immutable),
+            bounded_lookup_inputs=tuple(bounded),
+            model_invoked=manifest.get("model_invoked"),
+            input_authority_requirements=requirements,
+            launch_profile=str(manifest.get("launch_profile") or ""),
+            required_commit_actor=str(
+                manifest.get("required_commit_actor") or ""
+            ),
+            contract_version=str(manifest.get("contract_version") or ""),
+        )
+        if set(launch_manifest) != {
+            "launch_version",
+            "work_unit_key",
+            "pipeline",
+            "mode",
+            "ecosystem",
+            "backend",
+            "model",
+            "timeout_s",
+            "exec_mode",
+            "tool_policy",
+        } or not isinstance(launch_manifest.get("tool_policy"), list):
+            raise ValueError("stored launch field denominator differs")
+        launch = LaunchSpec(
+            work_unit_key=str(launch_manifest["work_unit_key"]),
+            pipeline=str(launch_manifest["pipeline"]),
+            mode=str(launch_manifest["mode"]),
+            ecosystem=str(launch_manifest["ecosystem"]),
+            backend=str(launch_manifest["backend"]),
+            model=str(launch_manifest["model"]),
+            timeout_s=launch_manifest["timeout_s"],
+            exec_mode=str(launch_manifest["exec_mode"]),
+            tool_policy=tuple(launch_manifest["tool_policy"]),
+            launch_version=str(launch_manifest["launch_version"]),
+        )
+        contract, launch = _replay_authority_pair(contract, launch)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ArtifactLedgerError(
+            f"stored successor authority pair is invalid: {exc}"
+        ) from exc
+    if (
+        contract.to_dict() != dict(manifest)
+        or contract.digest != unit.get("contract_digest")
+        or launch.to_dict() != dict(launch_manifest)
+        or launch.digest != unit.get("launch_digest")
+    ):
+        raise ArtifactLedgerError(
+            "stored successor authority pair differs from the ledger"
+        )
+    return contract, launch
+
+
+def _replay_stored_completed_driver_successor_authority(
+    scratchpad: Path,
+    project_root: Path,
+    ledger: Mapping[str, Any],
+    unit: Mapping[str, Any],
+    *,
+    _validation_context: _ArtifactValidationContext | None = None,
+    _visited: frozenset[tuple[str, str]] = frozenset(),
+    _known_prefixes: Mapping[
+        tuple[str, str, str], tuple[dict[str, Any], ...]
+    ] | None = None,
+    _failure_reasons: list[str] | None = None,
+) -> tuple[dict[str, Any], Any, list[dict[str, Any]]]:
+    """Replay a committed successor from its immutable issuance facts.
+
+    Unlike live/resume replay, this deliberately does not rederive the old
+    authority against a later global binding head.  Later registered owners
+    are proved separately by the contiguous history walker.
+    """
+
+    contract, launch = _stored_successor_authority_pair(unit)
+    run_id = str(unit.get("run_id") or "")
+    authority = unit.get("successor_consumption_authority")
+    authority_fields = {
+        "schema", "authority_key", "state", "run_id", "work_unit_key",
+        "contract_digest", "launch_digest", "plan_digest", "plan",
+        "output_prestate_digest", "input_binding_base_digest",
+        "affected_input_identities", "producer_bundles",
+        "physical_policy", "authority_digest",
+    }
+    if (
+        not isinstance(authority, Mapping)
+        or set(authority) != authority_fields
+        or authority.get("schema") != _DRIVER_SUCCESSOR_AUTHORITY_SCHEMA
+        or authority.get("state") != "ACTIVE"
+        or authority.get("run_id") != run_id
+        or authority.get("work_unit_key") != contract.key
+        or authority.get("contract_digest") != contract.digest
+        or authority.get("launch_digest") != launch.digest
+        or authority.get("physical_policy") != _NO_FOLLOW_PHYSICAL_POLICY
+        or authority.get("authority_key") != _driver_successor_authority_key(
+            run_id=run_id, work_unit_key=contract.key
+        )
+        or authority.get("authority_digest") != _canonical_json_digest({
+            key: value for key, value in authority.items()
+            if key != "authority_digest"
+        })
+    ):
+        raise ArtifactLedgerError(
+            "stored driver successor authority is malformed"
+        )
+    digest = str(authority["authority_digest"])
+    unsigned = {
+        key: value for key, value in authority.items()
+        if key != "authority_digest"
+    }
+    cas_unsigned = (
+        _read_authority_cas(
+            Path(scratchpad), digest,
+            directory_name=_DRIVER_SUCCESSOR_AUTHORITY_CAS_DIRECTORY,
+            label="driver successor authority",
+        )
+        if _validation_context is None
+        else _validation_context.driver_successor_authority_cas(digest)
+    )
+    journal = (
+        _read_driver_successor_authority_ledger(Path(scratchpad))
+        if _validation_context is None
+        else _validation_context.driver_successor_authority_journal()
+    )
+    if (
+        cas_unsigned != unsigned
+        or journal.get("authorities", {}).get(authority["authority_key"])
+        != dict(authority)
+    ):
+        raise ArtifactLedgerError(
+            "stored driver successor authority CAS/journal differs"
+        )
+    try:
+        plan = driver_successor_plan_from_dict(
+            authority["plan"], contract=contract, launch=launch
+        )
+    except (TypeError, ValueError) as exc:
+        raise ArtifactLedgerError(
+            f"stored driver successor plan is invalid: {exc}"
+        ) from exc
+    input_records = unit.get("input_bindings")
+    prestates = unit.get("output_prestates")
+    affected = authority.get("affected_input_identities")
+    if (
+        plan.digest != authority.get("plan_digest")
+        or plan.to_dict() != authority.get("plan")
+        or not isinstance(input_records, Mapping)
+        or not isinstance(prestates, Mapping)
+        or _input_set_digest(dict(input_records)) != unit.get("input_set_digest")
+        or _input_set_digest(_successor_base_input_records(input_records))
+        != authority.get("input_binding_base_digest")
+        or _output_prestate_digest(dict(prestates))
+        != authority.get("output_prestate_digest")
+        or not isinstance(affected, list)
+        or affected != sorted(set(affected))
+        or any(identity not in input_records for identity in affected)
+    ):
+        raise ArtifactLedgerError(
+            "stored driver successor arm denominator differs"
+        )
+    events = _validated_unit_driver_successor_progress_events(
+        Path(scratchpad), unit, authority,
+        _validation_context=_validation_context,
+    )
+    transitions = _driver_successor_transition_rows(authority["plan"])
+    if (
+        len(events) != len(transitions) * 2
+        or not events
+        or events[-1].get("state") != "STEP_APPLIED"
+        or unit.get("commit_authority", {}).get(
+            "successor_consumption_authority_digest"
+        ) != digest
+    ):
+        raise ArtifactLedgerError(
+            "stored driver successor completion is incomplete"
+        )
+    bundles = authority.get("producer_bundles")
+    if not isinstance(bundles, list) or not bundles:
+        raise ArtifactLedgerError(
+            "stored driver successor producer denominator is malformed"
+        )
+    transition_by_identity = {
+        str(row["artifact_identity"]): row for row in transitions
+    }
+    base_records = _successor_base_input_records(input_records)
+    claimed_identities: list[str] = []
+    consumed_identities: list[str] = []
+    relative_consumer = f"{contract.phase}/{contract.work_unit_id}"
+    spec_by_identity = {
+        spec.identity: spec for spec in contract.outputs
+    }
+    for bundle in bundles:
+        producer_key = (
+            str(bundle.get("producer_work_unit_key") or "")
+            if isinstance(bundle, Mapping) else ""
+        )
+        producer = ledger.get("work_units", {}).get(producer_key)
+        artifacts = (
+            producer.get("artifacts")
+            if isinstance(producer, Mapping) else None
+        )
+        commit = (
+            producer.get("commit_authority")
+            if isinstance(producer, Mapping) else None
+        )
+        claimed = (
+            bundle.get("successor_output_identities")
+            if isinstance(bundle, Mapping) else None
+        )
+        consumed = (
+            bundle.get("consumed_input_identities")
+            if isinstance(bundle, Mapping) else None
+        )
+        semantic_authorities = (
+            bundle.get("semantic_predecessor_authorities", {})
+            if isinstance(bundle, Mapping) else None
+        )
+        if (
+            not producer_key
+            or not isinstance(artifacts, Mapping)
+            or not isinstance(commit, Mapping)
+            or not isinstance(claimed, list)
+            or claimed != sorted(set(claimed))
+            or not isinstance(consumed, list)
+            or consumed != sorted(set(consumed))
+            or not isinstance(semantic_authorities, Mapping)
+            or (not claimed and not consumed)
+            or stored_committed_work_unit_authority_issues(
+                ledger,
+                work_unit_key=producer_key,
+                run_id=run_id,
+                expected_artifact_identities=tuple(sorted(artifacts)),
+            )
+            or bundle.get("producer_run_id") != run_id
+            or bundle.get("producer_contract_digest")
+            != producer.get("contract_digest")
+            or bundle.get("producer_launch_digest")
+            != producer.get("launch_digest")
+            or bundle.get("producer_commit_receipt_digest")
+            != commit.get("receipt_digest")
+            or bundle.get("producer_output_authority_key")
+            != commit.get("output_authority_key")
+            or bundle.get("producer_output_authority_digest")
+            != commit.get("output_authority_digest")
+            or bundle.get("producer_output_records_digest")
+            != _canonical_json_digest(dict(artifacts))
+            or bundle.get("producer_output_identities") != sorted(artifacts)
+            or any(identity not in transition_by_identity for identity in claimed)
+            or _replay_output_commit_authority(
+                Path(scratchpad), Path(project_root), producer,
+                require_live_bytes=False,
+                _validation_context=_validation_context,
+            )
+        ):
+            raise ArtifactLedgerError(
+                "stored driver successor producer bundle does not replay"
+            )
+        expected_semantic = {
+            identity
+            for identity in claimed
+            if isinstance(prestates.get(identity), Mapping)
+            and prestates[identity].get("status")
+            == "ACTIVE_REGISTERED_SEMANTIC_PREDECESSOR"
+        }
+        if set(semantic_authorities) != expected_semantic:
+            raise ArtifactLedgerError(
+                "stored successor semantic predecessor denominator differs"
+            )
+        claimed_identities.extend(claimed)
+        consumed_identities.extend(consumed)
+        for identity in claimed:
+            transition = transition_by_identity[identity]
+            artifact = artifacts.get(identity)
+            semantic_authority = semantic_authorities.get(identity)
+            prestate = prestates.get(identity)
+            if (
+                not isinstance(artifact, Mapping)
+                or transition.get("before_status") != "ACTIVE"
+            ):
+                raise ArtifactLedgerError(
+                    f"{identity}: stored successor predecessor differs"
+                )
+            if semantic_authority is None:
+                if (
+                    transition.get("before_sha256") != artifact.get("sha256")
+                    or transition.get("before_size") != artifact.get("size")
+                ):
+                    raise ArtifactLedgerError(
+                        f"{identity}: stored successor predecessor differs"
+                    )
+                continue
+            if (
+                not isinstance(semantic_authority, Mapping)
+                or not isinstance(prestate, Mapping)
+                or prestate.get("semantic_predecessor_authority")
+                != semantic_authority
+                or prestate.get("sha256") != transition.get("before_sha256")
+                or prestate.get("size") != transition.get("before_size")
+                or semantic_authority.get("historical_owner_key")
+                != producer_key
+                or semantic_authority.get("historical_contract_digest")
+                != producer.get("contract_digest")
+                or semantic_authority.get("historical_launch_digest")
+                != producer.get("launch_digest")
+                or semantic_authority.get("historical_sha256")
+                != artifact.get("sha256")
+                or semantic_authority.get("historical_size")
+                != artifact.get("size")
+                or semantic_authority.get("run_id") != run_id
+                or _semantic_output_prestate_commit_issues(
+                    Path(scratchpad),
+                    Path(project_root),
+                    ledger,
+                    spec_by_identity[identity],
+                    prestate,
+                    run_id=run_id,
+                    merge_event=None,
+                    require_current_historical_binding=False,
+                )
+            ):
+                raise ArtifactLedgerError(
+                    f"{identity}: stored successor semantic predecessor differs"
+                )
+        for identity in consumed:
+            record = base_records.get(identity)
+            artifact = artifacts.get(identity)
+            try:
+                registered_consumer = bool(
+                    registered_projection_handoff(
+                        producer_key,
+                        contract.key,
+                        identity,
+                    )
+                    or registered_read_only_consumption(
+                        producer_key,
+                        contract.key,
+                        identity,
+                    )
+                )
+            except ValueError:
+                registered_consumer = False
+            if (
+                not isinstance(record, Mapping)
+                or not isinstance(artifact, Mapping)
+                or record.get("status") != "ACTIVE"
+                or artifact.get("identity") != identity
+                or artifact.get("status") != "ACTIVE"
+                or artifact.get("owner_key") != producer_key
+                or artifact.get("run_id") != run_id
+                or artifact.get("consumers") is None
+                or (
+                    relative_consumer
+                    not in set(artifact.get("consumers") or ())
+                    and not registered_consumer
+                )
+                or record.get("producer_work_unit_key") != producer_key
+                or record.get("producer_contract_digest")
+                != producer.get("contract_digest")
+                or record.get("producer_launch_digest")
+                != producer.get("launch_digest")
+                or record.get("producer_commit_receipt_digest")
+                != commit.get("receipt_digest")
+                or record.get("producer_run_id") != run_id
+                or record.get("producer_writer")
+                != artifact.get("writer")
+                or record.get("sha256") != artifact.get("sha256")
+                or record.get("size") != artifact.get("size")
+            ):
+                raise ArtifactLedgerError(
+                    f"{identity}: stored successor consumed-input differs"
+                )
+        frozen_chains = bundle.get("registered_successor_sibling_chains", {})
+        if not isinstance(frozen_chains, Mapping):
+            raise ArtifactLedgerError(
+                "stored successor sibling-chain denominator is malformed"
+            )
+        for sibling_identity, frozen in frozen_chains.items():
+            sibling = artifacts.get(sibling_identity)
+            if not isinstance(sibling, Mapping) or not isinstance(frozen, list):
+                raise ArtifactLedgerError(
+                    "stored successor sibling-chain row is malformed"
+                )
+            terminal_owner = str(
+                frozen[-1].get("successor_owner_key") or ""
+            ) if frozen and isinstance(frozen[-1], Mapping) else ""
+            prefix_key = (
+                str(sibling.get("owner_key") or ""),
+                str(sibling_identity),
+                terminal_owner,
+            )
+            known = (_known_prefixes or {}).get(prefix_key)
+            current_chain = known if known is not None else (
+                _registered_successor_bundle_member_authority_view(
+                    Path(scratchpad), Path(project_root), ledger, sibling,
+                    identity=str(sibling_identity), expected_record=sibling,
+                    _validation_context=_validation_context,
+                    _terminal_owner=terminal_owner,
+                    _require_terminal_live=False,
+                    _visited=_visited,
+                    _known_prefixes=_known_prefixes,
+                    _failure_reasons=_failure_reasons,
+                )
+            )
+            if list(current_chain) != frozen:
+                raise ArtifactLedgerError(
+                    f"{sibling_identity}: stored successor sibling prefix differs"
+                )
+    if (
+        not claimed_identities
+        or len(claimed_identities) != len(set(claimed_identities))
+        or len(consumed_identities) != len(set(consumed_identities))
+        or sorted(consumed_identities) != affected
+    ):
+        raise ArtifactLedgerError(
+            "stored driver successor producer claim denominator differs"
+        )
+    if _replay_output_commit_authority(
+        Path(scratchpad), Path(project_root), unit,
+        require_live_bytes=False,
+        _validation_context=_validation_context,
+    ):
+        raise ArtifactLedgerError(
+            "stored driver successor output commit does not replay"
+        )
+    return dict(authority), plan, events
+
+
+def _replay_registered_phaseio_successor_edge(
+    scratchpad: Path,
+    project_root: Path,
+    ledger: Mapping[str, Any],
+    predecessor_unit: Mapping[str, Any],
+    successor_unit: Mapping[str, Any],
+    predecessor: Mapping[str, Any],
+    successor: Mapping[str, Any],
+    *,
+    identity: str,
+    run_id: str,
+    _validation_context: _ArtifactValidationContext | None = None,
+) -> dict[str, Any]:
+    """Replay one ordinary, exact DRIVER-owned ownership transition.
+
+    Some deterministic PhaseIO publishers predate the specialized driver-
+    successor planner. Their armed output prestate and committed output receipt
+    are complete transition authority; MERGE additionally requires its digest-
+    bound merge event. Admit that older lane only for a resolver-registered
+    handoff whose full contract, preimage, and postimage replay exactly.
+    """
+
+    if "successor_consumption_authority" in successor_unit:
+        raise ArtifactLedgerError(
+            "ordinary PhaseIO fallback cannot replace successor authority"
+        )
+    contract, _launch = _stored_successor_authority_pair(successor_unit)
+    try:
+        spec = contract.output(identity)
+    except KeyError as exc:
+        raise ArtifactLedgerError(
+            f"{identity}: registered PhaseIO successor output is absent"
+        ) from exc
+    if (
+        successor_unit.get("execution_state") != "OUTPUT_COMMITTED"
+        or successor_unit.get("semantic_status") != "ACTIVE"
+        or successor_unit.get("run_id") != run_id
+        or spec.writer != "DRIVER"
+        or spec.write_mode not in {"MERGE", "REPLACE"}
+    ):
+        raise ArtifactLedgerError(
+            f"{identity}: registered PhaseIO successor is not committed DRIVER"
+        )
+    prestates = successor_unit.get("output_prestates")
+    prestate = prestates.get(identity) if isinstance(prestates, Mapping) else None
+    commit = successor_unit.get("commit_authority")
+    transitions = (
+        commit.get("read_modify_write_transitions")
+        if isinstance(commit, Mapping)
+        else None
+    )
+    transition = (
+        transitions.get(identity) if isinstance(transitions, Mapping) else None
+    )
+    artifacts = successor_unit.get("artifacts")
+    artifact = artifacts.get(identity) if isinstance(artifacts, Mapping) else None
+    predecessor_artifacts = predecessor_unit.get("artifacts")
+    predecessor_artifact = (
+        predecessor_artifacts.get(identity)
+        if isinstance(predecessor_artifacts, Mapping)
+        else None
+    )
+    if (
+        not isinstance(prestate, Mapping)
+        or not isinstance(artifact, Mapping)
+        or not isinstance(predecessor_artifact, Mapping)
+        or any(
+            predecessor_artifact.get(field) != predecessor.get(field)
+            for field in (
+                "identity",
+                "owner_key",
+                "run_id",
+                "contract_digest",
+                "launch_digest",
+                "sha256",
+                "size",
+            )
+        )
+        or not _output_prestate_is_clean(prestate)
+        or prestate.get("status") not in {
+            "ACTIVE_PREIMAGE",
+            "ACTIVE_REGISTERED_PREDECESSOR",
+        }
+        or prestate.get("existed") is not True
+        or prestate.get("write_mode") != spec.write_mode
+        or prestate.get("predecessor_owner_key")
+        != predecessor.get("owner_key")
+        or prestate.get("predecessor_contract_digest")
+        != predecessor.get("contract_digest")
+        or prestate.get("predecessor_launch_digest")
+        != predecessor.get("launch_digest")
+        or prestate.get("sha256") != predecessor.get("sha256")
+        or prestate.get("size") != predecessor.get("size")
+        or artifact.get("sha256") != successor.get("sha256")
+        or artifact.get("size") != successor.get("size")
+        or artifact.get("owner_key") != successor.get("owner_key")
+        or artifact.get("contract_digest") != successor.get("contract_digest")
+        or artifact.get("launch_digest") != successor.get("launch_digest")
+        or artifact.get("run_id") != run_id
+        or artifact.get("status") != "ACTIVE"
+    ):
+        raise ArtifactLedgerError(
+            f"{identity}: registered PhaseIO transition denominator differs"
+        )
+    progress_digest = ""
+    transition_kind = "COMMITTED_PHASE_IO_REPLACE"
+    if spec.write_mode == "MERGE":
+        expected_transition_fields = {
+            "write_mode",
+            "preimage_sha256",
+            "successor_sha256",
+            "merge_event_digest",
+            "identities_before",
+            "identities_after",
+            "source_identities",
+        }
+        if (
+            not isinstance(transition, Mapping)
+            or set(transition) != expected_transition_fields
+            or transition.get("write_mode") != "MERGE"
+            or transition.get("preimage_sha256")
+            != predecessor.get("sha256")
+            or transition.get("successor_sha256")
+            != successor.get("sha256")
+        ):
+            raise ArtifactLedgerError(
+                f"{identity}: registered merge transition denominator differs"
+            )
+        try:
+            event = DriverMergeEvent(
+                work_unit_key=contract.key,
+                contract_digest=contract.digest,
+                artifact_identity=identity,
+                before_sha256=str(transition["preimage_sha256"]),
+                after_sha256=str(transition["successor_sha256"]),
+                source_identities=tuple(transition["source_identities"]),
+                identities_before=tuple(transition["identities_before"]),
+                identities_after=tuple(transition["identities_after"]),
+            )
+            event.validate_against(contract)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ArtifactLedgerError(
+                f"{identity}: registered merge event does not replay"
+            ) from exc
+        if event.digest != transition.get("merge_event_digest"):
+            raise ArtifactLedgerError(
+                f"{identity}: registered merge event digest differs"
+            )
+        progress_digest = event.digest
+        transition_kind = "COMMITTED_PHASE_IO_MERGE"
+    elif isinstance(transitions, Mapping) and identity in transitions:
+        raise ArtifactLedgerError(
+            f"{identity}: registered replacement has a spurious RMW transition"
+        )
+    if _replay_output_commit_authority(
+            Path(scratchpad),
+            Path(project_root),
+            successor_unit,
+            require_live_bytes=False,
+            _validation_context=_validation_context,
+        ):
+        raise ArtifactLedgerError(
+            f"{identity}: registered PhaseIO output authority does not replay"
+        )
+    predecessor_commit = predecessor_unit.get("commit_authority")
+    if not isinstance(predecessor_commit, Mapping) or not isinstance(
+        commit, Mapping
+    ):
+        raise ArtifactLedgerError(
+            f"{identity}: registered PhaseIO commit authority is absent"
+        )
+    if not progress_digest:
+        progress_digest = str(commit.get("receipt_digest") or "")
+    return {
+        "artifact_identity": identity,
+        "predecessor_owner_key": str(predecessor.get("owner_key") or ""),
+        "predecessor_contract_digest": str(
+            predecessor.get("contract_digest") or ""
+        ),
+        "predecessor_launch_digest": str(
+            predecessor.get("launch_digest") or ""
+        ),
+        "before_sha256": str(predecessor.get("sha256") or ""),
+        "before_size": int(predecessor.get("size") or 0),
+        "successor_owner_key": str(successor.get("owner_key") or ""),
+        "successor_contract_digest": str(
+            successor.get("contract_digest") or ""
+        ),
+        "successor_launch_digest": str(
+            successor.get("launch_digest") or ""
+        ),
+        "after_sha256": str(successor.get("sha256") or ""),
+        "after_size": int(successor.get("size") or 0),
+        "successor_authority_digest": str(commit.get("receipt_digest") or ""),
+        "successor_plan_digest": str(
+            successor_unit.get("output_prestate_digest") or ""
+        ),
+        "successor_progress_head_digest": progress_digest,
+        "successor_commit_receipt_digest": str(
+            commit.get("receipt_digest") or ""
+        ),
+        "successor_output_authority_digest": str(
+            commit.get("output_authority_digest") or ""
+        ),
+        "transition_authority_kind": transition_kind,
+    }
+
+
+def _registered_successor_bundle_member_authority_view(
+    scratchpad: Path,
+    project_root: Path,
+    ledger: Mapping[str, Any],
+    historical_producer: Mapping[str, Any],
+    *,
+    identity: str,
+    expected_record: Mapping[str, Any],
+    _validation_context: _ArtifactValidationContext | None = None,
+    _terminal_owner: str = "",
+    _require_terminal_live: bool = True,
+    _visited: frozenset[tuple[str, str]] = frozenset(),
+    _known_prefixes: Mapping[
+        tuple[str, str, str], tuple[dict[str, Any], ...]
+    ] | None = None,
+    _authenticated_terminal_live_overrides: Mapping[
+        str, Mapping[str, Any]
+    ] | None = None,
+    _failure_reasons: list[str] | None = None,
+) -> tuple[dict[str, Any], ...]:
+    """Replay one exact, contiguous registered successor history."""
+
+    bindings = ledger.get("artifact_bindings")
+    units = ledger.get("work_units")
+    current = (
+        bindings.get(identity) if isinstance(bindings, Mapping) else None
+    )
+    historical_owner = str(historical_producer.get("owner_key") or "")
+    run_id = str(historical_producer.get("run_id") or "")
+    visit = (historical_owner, identity)
+    if (
+        visit in _visited
+        or not historical_owner
+        or not run_id
+        or not isinstance(units, Mapping)
+        or not isinstance(current, Mapping)
+        or current.get("status") != "ACTIVE"
+        or current.get("run_id") != run_id
+        or current.get("owner_key") == historical_owner
+        or historical_producer.get("identity") != identity
+        or historical_producer.get("status") != "ACTIVE"
+        or historical_producer.get("sha256")
+        != expected_record.get("sha256")
+        or historical_producer.get("size") != expected_record.get("size")
+    ):
+        return ()
+    history = current.get("history")
+    if (
+        not isinstance(history, list)
+        or not history
+        or any(not isinstance(row, Mapping) for row in history)
+    ):
+        return ()
+    historical_fields = (
+        "identity",
+        "owner_key",
+        "run_id",
+        "contract_digest",
+        "launch_digest",
+        "sha256",
+        "size",
+    )
+    starts = [
+        index
+        for index, row in enumerate(history)
+        if all(
+            row.get(field) == historical_producer.get(field)
+            for field in historical_fields
+        )
+        and row.get("status") == "SUPERSEDED"
+    ]
+    if len(starts) != 1:
+        return ()
+    nodes = [dict(row) for row in history[starts[0]:]] + [dict(current)]
+    if _terminal_owner:
+        terminal_matches = [
+            index for index, row in enumerate(nodes)
+            if row.get("owner_key") == _terminal_owner
+        ]
+        if len(terminal_matches) != 1 or terminal_matches[0] == 0:
+            return ()
+        nodes = nodes[:terminal_matches[0] + 1]
+    owners = [str(row.get("owner_key") or "") for row in nodes]
+    if (
+        len(nodes) < 2
+        or any(not owner for owner in owners)
+        or len(set(owners)) != len(owners)
+        or any(row.get("run_id") != run_id for row in nodes)
+    ):
+        return ()
+
+    evidence: list[dict[str, Any]] = []
+    visited = _visited | {visit}
+    known_prefixes = dict(_known_prefixes or {})
+    for predecessor, successor in zip(nodes, nodes[1:]):
+        predecessor_owner = str(predecessor["owner_key"])
+        successor_owner = str(successor["owner_key"])
+        if (
+            predecessor.get("status") != "SUPERSEDED"
+            or predecessor.get("superseded_by_owner_key")
+            != successor_owner
+            or successor.get("identity") != identity
+        ):
+            return ()
+        try:
+            if not registered_projection_handoff(
+                predecessor_owner, successor_owner, identity
+            ):
+                return ()
+        except ValueError:
+            return ()
+        predecessor_unit = units.get(predecessor_owner)
+        successor_unit = units.get(successor_owner)
+        if not isinstance(predecessor_unit, Mapping) or not isinstance(
+            successor_unit, Mapping
+        ):
+            return ()
+        expected_identities = tuple(
+            sorted(successor_unit.get("artifacts", {}))
+        ) if isinstance(successor_unit.get("artifacts"), Mapping) else ()
+        if stored_committed_work_unit_authority_issues(
+            ledger,
+            work_unit_key=successor_owner,
+            run_id=run_id,
+            expected_artifact_identities=expected_identities,
+        ):
+            return ()
+        if "successor_consumption_authority" not in successor_unit:
+            try:
+                edge = _replay_registered_phaseio_successor_edge(
+                    Path(scratchpad),
+                    Path(project_root),
+                    ledger,
+                    predecessor_unit,
+                    successor_unit,
+                    predecessor,
+                    successor,
+                    identity=identity,
+                    run_id=run_id,
+                    _validation_context=_validation_context,
+                )
+            except (ArtifactLedgerError, TypeError, ValueError) as exc:
+                if _failure_reasons is not None:
+                    detail = (
+                        str(exc)
+                        if isinstance(exc, ArtifactLedgerError)
+                        else type(exc).__name__
+                    )
+                    _failure_reasons.append(
+                        f"{identity}: stored PhaseIO successor "
+                        f"{successor_owner} replay failed: {detail}"
+                    )
+                return ()
+            evidence.append(edge)
+            authenticated_prefix = copy.deepcopy(evidence)
+            authenticated_prefix[-1][
+                "terminal_semantic_mutation_authority"
+            ] = None
+            known_prefixes[
+                (historical_owner, identity, successor_owner)
+            ] = tuple(authenticated_prefix)
+            continue
+        try:
+            authority, _plan, events = _replay_stored_completed_driver_successor_authority(
+                Path(scratchpad),
+                Path(project_root),
+                ledger,
+                successor_unit,
+                _validation_context=_validation_context,
+                _visited=visited,
+                _known_prefixes=known_prefixes,
+                _failure_reasons=_failure_reasons,
+            )
+        except (ArtifactLedgerError, TypeError, ValueError) as exc:
+            if _failure_reasons is not None:
+                detail = (
+                    str(exc)
+                    if isinstance(exc, ArtifactLedgerError)
+                    else type(exc).__name__
+                )
+                _failure_reasons.append(
+                    f"{identity}: stored successor {successor_owner} "
+                    f"replay failed: {detail}"
+                )
+            return ()
+        transitions = _driver_successor_transition_rows(authority["plan"])
+        transition = [
+            row for row in transitions
+            if row.get("artifact_identity") == identity
+        ]
+        if (
+            len(events) != len(transitions) * 2
+            or not events
+            or events[-1].get("state") != "STEP_APPLIED"
+            or len(transition) != 1
+        ):
+            return ()
+        row = transition[0]
+        producer_commit = predecessor_unit.get("commit_authority")
+        matching_bundles = [
+            bundle
+            for bundle in authority.get("producer_bundles", ())
+            if isinstance(bundle, Mapping)
+            and bundle.get("producer_work_unit_key") == predecessor_owner
+            and identity in set(
+                bundle.get("successor_output_identities") or ()
+            )
+        ]
+        semantic_predecessor = (
+            matching_bundles[0]
+            .get("semantic_predecessor_authorities", {})
+            .get(identity)
+            if len(matching_bundles) == 1
+            and isinstance(
+                matching_bundles[0].get(
+                    "semantic_predecessor_authorities", {}
+                ),
+                Mapping,
+            )
+            else None
+        )
+        direct_predecessor = bool(
+            semantic_predecessor is None
+            and row.get("before_sha256") == predecessor.get("sha256")
+            and row.get("before_size") == predecessor.get("size")
+        )
+        semantic_predecessor_matches = bool(
+            isinstance(semantic_predecessor, Mapping)
+            and semantic_predecessor.get("historical_owner_key")
+            == predecessor_owner
+            and semantic_predecessor.get("historical_contract_digest")
+            == predecessor.get("contract_digest")
+            and semantic_predecessor.get("historical_launch_digest")
+            == predecessor.get("launch_digest")
+            and semantic_predecessor.get("historical_sha256")
+            == predecessor.get("sha256")
+            and semantic_predecessor.get("historical_size")
+            == predecessor.get("size")
+            and semantic_predecessor.get("live_sha256")
+            == row.get("before_sha256")
+            and semantic_predecessor.get("live_size")
+            == row.get("before_size")
+            and semantic_predecessor.get("run_id") == run_id
+        )
+        if (
+            row.get("before_status") != "ACTIVE"
+            or not (direct_predecessor or semantic_predecessor_matches)
+            or row.get("after_sha256") != successor.get("sha256")
+            or row.get("after_size") != successor.get("size")
+        ):
+            return ()
+        if (
+            not isinstance(producer_commit, Mapping)
+            or len(matching_bundles) != 1
+            or matching_bundles[0].get("producer_run_id") != run_id
+            or matching_bundles[0].get("producer_contract_digest")
+            != predecessor.get("contract_digest")
+            or matching_bundles[0].get("producer_launch_digest")
+            != predecessor.get("launch_digest")
+            or matching_bundles[0].get("producer_commit_receipt_digest")
+            != producer_commit.get("receipt_digest")
+            or matching_bundles[0].get("producer_output_authority_key")
+            != producer_commit.get("output_authority_key")
+            or matching_bundles[0].get("producer_output_authority_digest")
+            != producer_commit.get("output_authority_digest")
+            or _replay_output_commit_authority(
+                Path(scratchpad),
+                Path(project_root),
+                successor_unit,
+                require_live_bytes=False,
+                _validation_context=_validation_context,
+            )
+        ):
+            return ()
+        successor_artifact = successor_unit.get("artifacts", {}).get(identity)
+        if not isinstance(successor_artifact, Mapping) or any(
+            successor_artifact.get(field) != successor.get(field)
+            for field in historical_fields
+        ):
+            return ()
+        evidence.append({
+            "artifact_identity": identity,
+            "predecessor_owner_key": predecessor_owner,
+            "predecessor_contract_digest": str(
+                predecessor.get("contract_digest") or ""
+            ),
+            "predecessor_launch_digest": str(
+                predecessor.get("launch_digest") or ""
+            ),
+            "before_sha256": str(row["before_sha256"]),
+            "before_size": int(row["before_size"]),
+            "successor_owner_key": successor_owner,
+            "successor_contract_digest": str(
+                successor.get("contract_digest") or ""
+            ),
+            "successor_launch_digest": str(
+                successor.get("launch_digest") or ""
+            ),
+            "after_sha256": str(row["after_sha256"]),
+            "after_size": int(row["after_size"]),
+            "successor_authority_digest": str(
+                authority["authority_digest"]
+            ),
+            "successor_plan_digest": str(authority["plan_digest"]),
+            "successor_progress_head_digest": str(
+                events[-1]["event_digest"]
+            ),
+            "successor_commit_receipt_digest": str(
+                successor_unit["commit_authority"]["receipt_digest"]
+            ),
+            "successor_output_authority_digest": str(
+                successor_unit["commit_authority"][
+                    "output_authority_digest"
+                ]
+            ),
+        })
+        if isinstance(semantic_predecessor, Mapping):
+            evidence[-1]["predecessor_semantic_mutation_authority"] = dict(
+                semantic_predecessor
+            )
+        authenticated_prefix = copy.deepcopy(evidence)
+        authenticated_prefix[-1][
+            "terminal_semantic_mutation_authority"
+        ] = None
+        known_prefixes[
+            (historical_owner, identity, successor_owner)
+        ] = tuple(authenticated_prefix)
+
+    evidence[-1]["terminal_semantic_mutation_authority"] = None
+    if not _require_terminal_live:
+        return tuple(copy.deepcopy(evidence))
+    known_prefixes[(historical_owner, identity, owners[-1])] = tuple(
+        copy.deepcopy(evidence)
+    )
+
+    terminal_unit = units.get(owners[-1])
+    if not isinstance(terminal_unit, Mapping) or not _producer_authority_is_active(
+        ledger, current, identity=identity, run_id=run_id
+    ):
+        return ()
+    terminal_exemptions: list[str] = []
+    terminal_artifacts = terminal_unit.get("artifacts")
+    if not isinstance(terminal_artifacts, Mapping):
+        return ()
+    try:
+        terminal_live = _semantic_artifact_state(
+            Path(scratchpad), Path(project_root), identity
+        )
+    except ArtifactLedgerError:
+        return ()
+    terminal_mutation = None
+    if not (
+        terminal_live.get("status") == "ACTIVE"
+        and terminal_live.get("sha256") == current.get("sha256")
+        and terminal_live.get("size") == current.get("size")
+    ):
+        override = (_authenticated_terminal_live_overrides or {}).get(
+            identity
+        )
+        if not (
+            isinstance(override, Mapping)
+            and terminal_live.get("status") == "ACTIVE"
+            and terminal_live.get("sha256") == override.get("sha256")
+            and terminal_live.get("size") == override.get("size")
+        ):
+            terminal_mutation = _semantic_mutation_producer_authority(
+                Path(scratchpad),
+                project_root=Path(project_root),
+                identity=identity,
+                producer=current,
+                live_state=terminal_live,
+            )
+            if terminal_mutation is None:
+                return ()
+        terminal_exemptions.append(identity)
+    for sibling_identity, sibling_record in terminal_artifacts.items():
+        sibling_binding = bindings.get(sibling_identity)
+        if not isinstance(sibling_binding, Mapping):
+            return ()
+        if sibling_binding.get("owner_key") == owners[-1]:
+            try:
+                sibling_live = _semantic_artifact_state(
+                    Path(scratchpad),
+                    Path(project_root),
+                    str(sibling_identity),
+                )
+            except ArtifactLedgerError:
+                return ()
+            if not (
+                sibling_live.get("status") == "ACTIVE"
+                and sibling_live.get("sha256")
+                == sibling_binding.get("sha256")
+                and sibling_live.get("size") == sibling_binding.get("size")
+            ):
+                override = (
+                    _authenticated_terminal_live_overrides or {}
+                ).get(str(sibling_identity))
+                if not (
+                    isinstance(override, Mapping)
+                    and sibling_live.get("status") == "ACTIVE"
+                    and sibling_live.get("sha256")
+                    == override.get("sha256")
+                    and sibling_live.get("size") == override.get("size")
+                ):
+                    if _semantic_mutation_producer_authority(
+                        Path(scratchpad),
+                        project_root=Path(project_root),
+                        identity=str(sibling_identity),
+                        producer=sibling_binding,
+                        live_state=sibling_live,
+                    ) is None:
+                        return ()
+                terminal_exemptions.append(str(sibling_identity))
+            continue
+        sibling_chain = _registered_successor_bundle_member_authority_view(
+            Path(scratchpad),
+            Path(project_root),
+            ledger,
+            sibling_record,
+            identity=str(sibling_identity),
+            expected_record=sibling_record,
+            _validation_context=_validation_context,
+            _visited=visited,
+            _known_prefixes=known_prefixes,
+            _authenticated_terminal_live_overrides=(
+                _authenticated_terminal_live_overrides
+            ),
+            _failure_reasons=_failure_reasons,
+        )
+        if not sibling_chain:
+            return ()
+        terminal_exemptions.append(str(sibling_identity))
+    if _replay_output_commit_authority(
+        Path(scratchpad),
+        Path(project_root),
+        terminal_unit,
+        require_live_bytes=True,
+        live_byte_exempt_identities=tuple(sorted(terminal_exemptions)),
+        _validation_context=_validation_context,
+    ):
+        return ()
+    try:
+        live_path = (
+            _validation_context.path_for_identity(identity)
+            if _validation_context is not None
+            else _path_for_identity(
+                Path(scratchpad), Path(project_root), identity
+            )
+        )
+        if _validation_context is None:
+            live, error = _stable_artifact_snapshot(live_path)
+        else:
+            live, error = _validation_context.snapshot(live_path)
+    except ArtifactLedgerError:
+        return ()
+    if (
+        live is None
+        or error
+        or live.get("sha256") != terminal_live.get("sha256")
+        or live.get("size") != terminal_live.get("size")
+    ):
+        return ()
+    evidence[-1]["terminal_semantic_mutation_authority"] = (
+        copy.deepcopy(terminal_mutation)
+        if terminal_mutation is not None
+        else None
+    )
+    return tuple(copy.deepcopy(evidence))
+
+
 def _derive_driver_successor_authority_unsigned(
     scratchpad: Path,
     project_root: Path,
@@ -8550,6 +10074,7 @@ def _derive_driver_successor_authority_unsigned(
     output_prestates: Mapping[str, Any],
     authenticated_progress_identities: Sequence[str] = (),
     authenticated_physical_rebinds: Mapping[str, str] | None = None,
+    _validation_context: _ArtifactValidationContext | None = None,
 ) -> tuple[dict[str, Any], tuple[str, ...]]:
     try:
         replayed_plan = replay_driver_successor_plan_authority(
@@ -8591,6 +10116,13 @@ def _derive_driver_successor_authority_unsigned(
         raise ArtifactLedgerError(
             "driver successor progress exemption denominator differs"
         )
+    authenticated_terminal_live_overrides = {
+        identity: {
+            "sha256": transition_by_identity[identity]["after_sha256"],
+            "size": transition_by_identity[identity]["after_size"],
+        }
+        for identity in sorted(progressed)
+    }
     rebound = dict(authenticated_physical_rebinds or {})
     if (
         any(
@@ -8668,8 +10200,18 @@ def _derive_driver_successor_authority_unsigned(
             artifacts, Mapping
         ):
             continue
-        intersection = sorted(set(artifacts) & consumer_outputs)
-        if not intersection:
+        historical_intersection = set(artifacts) & consumer_outputs
+        intersection = sorted(
+            identity
+            for identity in historical_intersection
+            if isinstance(output_prestates.get(identity), Mapping)
+            and output_prestates[identity].get(
+                "predecessor_owner_key"
+            ) == producer_key
+        )
+        if not intersection and not (
+            consumed and historical_intersection
+        ):
             continue
         producer_run = str(producer.get("run_id") or "")
         if producer_run != run_id:
@@ -8688,6 +10230,74 @@ def _derive_driver_successor_authority_unsigned(
                 "driver successor physical-rebind override is ambiguous"
             )
         consumed_rebounds.update(producer_rebounds)
+        transferred_sibling_chains: dict[
+            str, list[dict[str, Any]]
+        ] = {}
+        semantic_intersection: set[str] = set()
+        bindings = ledger.get("artifact_bindings")
+        if not isinstance(bindings, Mapping):
+            raise ArtifactLedgerError(
+                "driver successor global artifact bindings are absent"
+            )
+        for sibling_identity, sibling_artifact in artifacts.items():
+            if sibling_identity in intersection:
+                continue
+            sibling_binding = bindings.get(sibling_identity)
+            if (
+                isinstance(sibling_binding, Mapping)
+                and sibling_binding.get("owner_key") == producer_key
+            ):
+                continue
+            if not isinstance(sibling_artifact, Mapping):
+                raise ArtifactLedgerError(
+                    "driver successor producer artifact is malformed"
+                )
+            chain = _registered_successor_bundle_member_authority_view(
+                Path(scratchpad),
+                Path(project_root),
+                ledger,
+                sibling_artifact,
+                identity=str(sibling_identity),
+                expected_record=sibling_artifact,
+                _validation_context=_validation_context,
+                _authenticated_terminal_live_overrides=(
+                    authenticated_terminal_live_overrides
+                ),
+            )
+            if not chain:
+                raise ArtifactLedgerError(
+                    f"{sibling_identity}: historical producer sibling "
+                    "has no exact registered successor chain"
+                )
+            transferred_sibling_chains[str(sibling_identity)] = [
+                dict(row) for row in chain
+            ]
+        spec_by_identity = {
+            spec.identity: spec for spec in contract.outputs
+        }
+        for identity in intersection:
+            prestate = output_prestates[identity]
+            if (
+                prestate.get("status")
+                != "ACTIVE_REGISTERED_SEMANTIC_PREDECESSOR"
+            ):
+                continue
+            semantic_issues = _semantic_output_prestate_commit_issues(
+                Path(scratchpad),
+                Path(project_root),
+                ledger,
+                spec_by_identity[identity],
+                prestate,
+                run_id=run_id,
+                merge_event=None,
+            )
+            if semantic_issues:
+                raise ArtifactLedgerError(
+                    f"{identity}: driver successor semantic predecessor "
+                    "does not replay: "
+                    + "; ".join(sorted(semantic_issues))
+                )
+            semantic_intersection.add(identity)
         stored_issues.extend(
             _replay_output_commit_authority(
                 Path(scratchpad),
@@ -8700,12 +10310,17 @@ def _derive_driver_successor_authority_unsigned(
                 # ledger-bound CAS may differ; unrelated producer siblings
                 # remain live-byte checked.
                 live_byte_exempt_identities=tuple(
-                    sorted(progressed & set(artifacts))
+                    sorted(
+                        (progressed & set(artifacts))
+                        | set(transferred_sibling_chains)
+                        | semantic_intersection
+                    )
                 ),
                 live_physical_override_by_identity={
                     identity: rebound[identity]
                     for identity in sorted(producer_rebounds)
                 },
+                _validation_context=_validation_context,
             )
         )
         if stored_issues:
@@ -8729,10 +10344,17 @@ def _derive_driver_successor_authority_unsigned(
                 else None
             )
             try:
-                registered_consumer = registered_projection_handoff(
-                    producer_key,
-                    contract.key,
-                    identity,
+                registered_consumer = bool(
+                    registered_projection_handoff(
+                        producer_key,
+                        contract.key,
+                        identity,
+                    )
+                    or registered_read_only_consumption(
+                        producer_key,
+                        contract.key,
+                        identity,
+                    )
                 )
             except ValueError:
                 registered_consumer = False
@@ -8773,37 +10395,53 @@ def _derive_driver_successor_authority_unsigned(
                     f"{identity}: driver successor consumed-input "
                     "authority is invalid"
                 )
-        for identity in intersection:
-            artifact = artifacts.get(identity)
-            transition = transition_by_identity[identity]
-            prestate = output_prestates.get(identity)
-            try:
-                handoff = registered_projection_handoff(
-                    producer_key, contract.key, identity
-                )
-            except ValueError:
-                handoff = False
-            if (
-                not isinstance(artifact, Mapping)
-                or not isinstance(prestate, Mapping)
-                or (
-                    relative_consumer
-                    not in set(artifact.get("consumers") or ())
-                    and not handoff
-                )
-                or artifact.get("sha256")
-                != transition.get("before_sha256")
-                or artifact.get("size") != transition.get("before_size")
-                or prestate.get("predecessor_owner_key") != producer_key
-                or prestate.get("predecessor_contract_digest")
-                != producer.get("contract_digest")
-                or prestate.get("predecessor_launch_digest")
-                != producer.get("launch_digest")
-            ):
-                raise ArtifactLedgerError(
-                    f"{identity}: driver successor sibling handoff is "
-                    "not exact and registered"
-                )
+            for identity in intersection:
+                artifact = artifacts.get(identity)
+                transition = transition_by_identity[identity]
+                prestate = output_prestates.get(identity)
+                semantic_handoff = identity in semantic_intersection
+                try:
+                    handoff = registered_projection_handoff(
+                        producer_key, contract.key, identity
+                    )
+                except ValueError:
+                    handoff = False
+                if (
+                    not isinstance(artifact, Mapping)
+                    or not isinstance(prestate, Mapping)
+                    or (
+                        relative_consumer
+                        not in set(artifact.get("consumers") or ())
+                        and not handoff
+                    )
+                    or (
+                        not semantic_handoff
+                        and (
+                            artifact.get("sha256")
+                            != transition.get("before_sha256")
+                            or artifact.get("size")
+                            != transition.get("before_size")
+                        )
+                    )
+                    or (
+                        semantic_handoff
+                        and (
+                            prestate.get("sha256")
+                            != transition.get("before_sha256")
+                            or prestate.get("size")
+                            != transition.get("before_size")
+                        )
+                    )
+                    or prestate.get("predecessor_owner_key") != producer_key
+                    or prestate.get("predecessor_contract_digest")
+                    != producer.get("contract_digest")
+                    or prestate.get("predecessor_launch_digest")
+                    != producer.get("launch_digest")
+                ):
+                    raise ArtifactLedgerError(
+                        f"{identity}: driver successor sibling handoff is "
+                        "not exact and registered"
+                    )
         bundle = {
             "producer_work_unit_key": producer_key,
             "producer_run_id": producer_run,
@@ -8829,6 +10467,20 @@ def _derive_driver_successor_authority_unsigned(
             "consumed_input_identities": sorted(consumed),
             "successor_output_identities": intersection,
         }
+        if transferred_sibling_chains:
+            bundle["registered_successor_sibling_chains"] = {
+                identity: transferred_sibling_chains[identity]
+                for identity in sorted(transferred_sibling_chains)
+            }
+        if semantic_intersection:
+            bundle["semantic_predecessor_authorities"] = {
+                identity: dict(
+                    output_prestates[identity][
+                        "semantic_predecessor_authority"
+                    ]
+                )
+                for identity in sorted(semantic_intersection)
+            }
         bundles.append(bundle)
         affected_inputs.update(consumed)
     if consumed_rebounds != set(rebound):
@@ -9057,6 +10709,7 @@ def _replay_driver_successor_authority(
     launch: LaunchSpec,
     *,
     run_id: str,
+    _validation_context: _ArtifactValidationContext | None = None,
 ) -> tuple[dict[str, Any], Any]:
     authority = unit.get("successor_consumption_authority")
     authority_fields = {
@@ -9103,19 +10756,25 @@ def _replay_driver_successor_authority(
             "driver successor authority receipt is malformed"
         )
     digest = str(authority["authority_digest"])
-    cas_unsigned = _read_authority_cas(
-        Path(scratchpad),
-        digest,
-        directory_name=_DRIVER_SUCCESSOR_AUTHORITY_CAS_DIRECTORY,
-        label="driver successor authority",
+    cas_unsigned = (
+        _read_authority_cas(
+            Path(scratchpad),
+            digest,
+            directory_name=_DRIVER_SUCCESSOR_AUTHORITY_CAS_DIRECTORY,
+            label="driver successor authority",
+        )
+        if _validation_context is None
+        else _validation_context.driver_successor_authority_cas(digest)
     )
     unsigned = {
         key: value
         for key, value in authority.items()
         if key != "authority_digest"
     }
-    journal = _read_driver_successor_authority_ledger(
-        Path(scratchpad)
+    journal = (
+        _read_driver_successor_authority_ledger(Path(scratchpad))
+        if _validation_context is None
+        else _validation_context.driver_successor_authority_journal()
     )
     if (
         cas_unsigned != unsigned
@@ -9143,7 +10802,10 @@ def _replay_driver_successor_authority(
             "driver successor plan digest/manifest differs"
         )
     progress_events = _validated_unit_driver_successor_progress_events(
-        Path(scratchpad), unit, authority
+        Path(scratchpad),
+        unit,
+        authority,
+        _validation_context=_validation_context,
     )
     transition_rows = _driver_successor_transition_rows(
         authority["plan"]
@@ -9235,6 +10897,7 @@ def _replay_driver_successor_authority(
             output_prestates=prestates,
             authenticated_progress_identities=progressed_identities,
             authenticated_physical_rebinds=physical_overrides,
+            _validation_context=_validation_context,
         )
     )
     if (
@@ -9697,17 +11360,30 @@ def _validate_driver_successor_live_progress(
     authority: Mapping[str, Any],
     *,
     require_complete: bool,
+    allow_reconstructible_progress_projection_lag: bool = False,
 ) -> list[dict[str, Any]]:
+    if type(allow_reconstructible_progress_projection_lag) is not bool:
+        raise ArtifactLedgerError(
+            "driver successor projection-lag policy is invalid"
+        )
     events = _validated_unit_driver_successor_progress_events(
         Path(scratchpad), unit, authority
     )
-    progress = _read_driver_successor_progress(Path(scratchpad))
     expected_projection = (
         _driver_successor_progress_projection_from_ledger(
             Path(scratchpad), ledger
         )
     )
-    if progress != expected_projection:
+    try:
+        progress = _read_driver_successor_progress(Path(scratchpad))
+    except ArtifactLedgerError:
+        if not allow_reconstructible_progress_projection_lag:
+            raise
+        progress = None
+    if (
+        progress != expected_projection
+        and not allow_reconstructible_progress_projection_lag
+    ):
         raise ArtifactLedgerError(
             "driver successor progress projection differs from its "
             "ledger-bound head"
@@ -9729,12 +11405,23 @@ def _validate_driver_successor_live_progress(
         raise ArtifactLedgerError(
             "driver successor progress is not complete"
         )
+    authenticated_terminal_live_overrides = {
+        str(transition["artifact_identity"]): {
+            "sha256": transition["after_sha256"],
+            "size": transition["after_size"],
+        }
+        for transition in transitions
+        if (
+            int(transition["ordinal"]) <= applied
+            or int(transition["ordinal"]) == armed_ordinal
+        )
+    }
     prestates = unit.get("output_prestates")
     if not isinstance(prestates, Mapping):
         raise ArtifactLedgerError(
             "driver successor output prestates are absent"
         )
-    _rebind_history, accepted_physical = (
+    _rebind_history, _accepted_physical = (
         _validated_driver_successor_physical_rebind_history(
             Path(scratchpad),
             unit,
@@ -9766,25 +11453,11 @@ def _validate_driver_successor_live_progress(
                 f"{identity}: driver successor live state is outside "
                 "the ordered progress prefix"
             )
-        prestate = prestates.get(identity)
-        if (
-            _driver_successor_state_matches(live, before)
-            and before["status"] == "ACTIVE"
-            and (
-                not isinstance(prestate, Mapping)
-                or live.get("physical_identity")
-                != accepted_physical.get(
-                    identity,
-                    str(prestate.get("physical_identity") or "")
-                    if isinstance(prestate, Mapping)
-                    else "",
-                )
-            )
-        ):
-            raise ArtifactLedgerError(
-                f"{identity}: driver successor preimage physical "
-                "identity changed"
-            )
+        # A successor transition binds the exact preimage bytes and producer
+        # lineage.  Filesystem object identity is intentionally epoch-local:
+        # a byte-identical safe rematerialization between begin/apply/complete
+        # calls is not a semantic transition.  The stable read above rejects
+        # aliases and in-flight replacement within this validation call.
         live_by_identity[identity] = live
 
     bindings = ledger.get("artifact_bindings")
@@ -9831,6 +11504,20 @@ def _validate_driver_successor_live_progress(
         successor_outputs = set(
             bundle.get("successor_output_identities") or ()
         )
+        raw_sibling_chains = bundle.get(
+            "registered_successor_sibling_chains", {}
+        )
+        if (
+            not isinstance(raw_sibling_chains, Mapping)
+            or set(raw_sibling_chains) & successor_outputs
+            or any(
+                not isinstance(rows, list) or not rows
+                for rows in raw_sibling_chains.values()
+            )
+        ):
+            raise ArtifactLedgerError(
+                "driver successor sibling-chain denominator is malformed"
+            )
         for identity, artifact in artifacts.items():
             if not isinstance(artifact, Mapping):
                 raise ArtifactLedgerError(
@@ -9842,20 +11529,138 @@ def _validate_driver_successor_live_progress(
                     f"{identity}: driver successor binding is absent"
                 )
             if identity not in successor_outputs:
+                frozen_chain = raw_sibling_chains.get(identity)
+                if frozen_chain is not None:
+                    replayed_chain = (
+                        _registered_successor_bundle_member_authority_view(
+                            Path(scratchpad),
+                            Path(project_root),
+                            ledger,
+                            artifact,
+                            identity=str(identity),
+                            expected_record=artifact,
+                            _authenticated_terminal_live_overrides=(
+                                authenticated_terminal_live_overrides
+                            ),
+                        )
+                    )
+                    exact_chain = [dict(row) for row in replayed_chain]
+                    accepted_committed_extension = False
+                    transition = transition_by_identity.get(identity)
+                    if (
+                        successor_committed
+                        and isinstance(transition, Mapping)
+                        and frozen_chain
+                        and isinstance(frozen_chain[-1], Mapping)
+                    ):
+                        prefix_owner = str(
+                            frozen_chain[-1].get(
+                                "successor_owner_key"
+                            ) or ""
+                        )
+                        replayed_prefix = (
+                            _registered_successor_bundle_member_authority_view(
+                                Path(scratchpad),
+                                Path(project_root),
+                                ledger,
+                                artifact,
+                                identity=str(identity),
+                                expected_record=artifact,
+                                _terminal_owner=prefix_owner,
+                                _require_terminal_live=False,
+                            )
+                        )
+                        commit = unit.get("commit_authority")
+                        progress_authority = unit.get(
+                            "successor_progress_authority"
+                        )
+                        expected_extension = {
+                            "artifact_identity": str(identity),
+                            "predecessor_owner_key": prefix_owner,
+                            "predecessor_contract_digest": str(
+                                frozen_chain[-1].get(
+                                    "successor_contract_digest"
+                                ) or ""
+                            ),
+                            "predecessor_launch_digest": str(
+                                frozen_chain[-1].get(
+                                    "successor_launch_digest"
+                                ) or ""
+                            ),
+                            "before_sha256": str(
+                                transition.get("before_sha256") or ""
+                            ),
+                            "before_size": transition.get("before_size"),
+                            "successor_owner_key": str(
+                                authority.get("work_unit_key") or ""
+                            ),
+                            "successor_contract_digest": str(
+                                authority.get("contract_digest") or ""
+                            ),
+                            "successor_launch_digest": str(
+                                authority.get("launch_digest") or ""
+                            ),
+                            "after_sha256": str(
+                                transition.get("after_sha256") or ""
+                            ),
+                            "after_size": transition.get("after_size"),
+                            "successor_authority_digest": str(
+                                authority.get("authority_digest") or ""
+                            ),
+                            "successor_plan_digest": str(
+                                authority.get("plan_digest") or ""
+                            ),
+                            "successor_progress_head_digest": str(
+                                progress_authority.get(
+                                    "head_event_digest"
+                                ) or ""
+                            ) if isinstance(
+                                progress_authority, Mapping
+                            ) else "",
+                            "successor_commit_receipt_digest": str(
+                                commit.get("receipt_digest") or ""
+                            ) if isinstance(commit, Mapping) else "",
+                            "successor_output_authority_digest": str(
+                                commit.get("output_authority_digest") or ""
+                            ) if isinstance(commit, Mapping) else "",
+                            "terminal_semantic_mutation_authority": None,
+                        }
+                        accepted_committed_extension = bool(
+                            prefix_owner
+                            and [dict(row) for row in replayed_prefix]
+                            == frozen_chain
+                            and len(exact_chain) == len(frozen_chain) + 1
+                            and exact_chain[-1] == expected_extension
+                        )
+                    if (
+                        exact_chain != frozen_chain
+                        and not accepted_committed_extension
+                    ):
+                        raise ArtifactLedgerError(
+                            f"{identity}: registered producer sibling chain "
+                            "changed"
+                        )
+                    continue
                 live = _driver_successor_live_state(
                     Path(scratchpad), Path(project_root), identity
                 )
+                # Unrelated siblings remain part of the authenticated producer
+                # denominator.  Replay their exact committed state instead of
+                # collapsing every valid producer output into ACTIVE.  A
+                # CONDITIONAL output may be authoritatively absent (MISSING,
+                # zero bytes, empty digest) under its receipt; requiring ACTIVE
+                # here made that valid absence look like filesystem drift.
+                binding_record = {
+                    key: value
+                    for key, value in binding.items()
+                    if key != "history"
+                }
                 if (
-                    live.get("status") != "ACTIVE"
-                    or live.get("sha256") != artifact.get("sha256")
-                    or live.get("size") != artifact.get("size")
-                    or live.get("physical_identity")
-                    != artifact.get("physical_identity")
+                    not _driver_successor_state_matches(live, artifact)
+                    or binding_record != dict(artifact)
                     or binding.get("owner_key") != producer_key
                     or binding.get("run_id")
                     != bundle.get("producer_run_id")
-                    or binding.get("sha256") != artifact.get("sha256")
-                    or binding.get("size") != artifact.get("size")
                 ):
                     raise ArtifactLedgerError(
                         f"{identity}: unrelated producer sibling drifted"
@@ -9898,6 +11703,10 @@ def _validate_driver_successor_live_progress(
                 raise ArtifactLedgerError(
                     f"{identity}: precommit producer binding differs"
                 )
+        if set(raw_sibling_chains) - set(artifacts):
+            raise ArtifactLedgerError(
+                "driver successor sibling-chain output denominator differs"
+            )
     return events
 
 
@@ -9909,24 +11718,88 @@ def validate_driver_successor_transaction(
     *,
     run_id: str,
     require_complete: bool = False,
+    allow_reconstructible_progress_projection_lag: bool = False,
+    _validation_context: _ArtifactValidationContext | None = None,
 ) -> list[str]:
+    if _validation_context is None:
+        try:
+            with _artifact_validation_epoch(
+                Path(scratchpad), Path(project_root)
+            ) as validation_context:
+                return validate_driver_successor_transaction(
+                    Path(scratchpad),
+                    Path(project_root),
+                    contract,
+                    launch,
+                    run_id=run_id,
+                    require_complete=require_complete,
+                    allow_reconstructible_progress_projection_lag=(
+                        allow_reconstructible_progress_projection_lag
+                    ),
+                    _validation_context=validation_context,
+                )
+        except (
+            ArtifactLedgerError,
+            KeyError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            return [
+                f"{contract.key}: driver successor transaction invalid: "
+                f"{type(exc).__name__}: {exc}"
+            ]
+    if not _ledger_transaction_lock_is_owned(Path(scratchpad)):
+        return [
+            f"{contract.key}: driver successor transaction invalid: "
+            "ArtifactLedgerError: artifact validation context does not own "
+            "ledger transaction lock"
+        ]
+    context = _validation_context
     try:
         contract, launch = _replay_authority_pair(contract, launch)
-        ledger = read_artifact_ledger(Path(scratchpad))
+        ledger = context.ledger
         unit = ledger.get("work_units", {}).get(contract.key)
         if not isinstance(unit, Mapping):
             raise ArtifactLedgerError(
                 "driver successor armed work unit is absent"
             )
-        authority, _plan = _replay_driver_successor_authority(
-            Path(scratchpad),
-            Path(project_root),
-            ledger,
-            unit,
-            contract,
-            launch,
-            run_id=run_id,
+        committed = (
+            unit.get("execution_state") == "OUTPUT_COMMITTED"
+            and unit.get("semantic_status") == "ACTIVE"
         )
+        if committed:
+            if (
+                unit.get("run_id") != run_id
+                or unit.get("contract_manifest") != contract.to_dict()
+                or unit.get("contract_digest") != contract.digest
+                or unit.get("launch_manifest") != launch.to_dict()
+                or unit.get("launch_digest") != launch.digest
+            ):
+                raise ArtifactLedgerError(
+                    "committed driver successor caller authority differs"
+                )
+            unit = ledger["work_units"][contract.key]
+            authority, _plan, _events = (
+                _replay_stored_completed_driver_successor_authority(
+                    Path(scratchpad),
+                    Path(project_root),
+                    ledger,
+                    unit,
+                    _validation_context=context,
+                )
+            )
+        else:
+            authority, _plan = _replay_driver_successor_authority(
+                Path(scratchpad),
+                Path(project_root),
+                ledger,
+                unit,
+                contract,
+                launch,
+                run_id=run_id,
+                _validation_context=context,
+            )
         _validate_driver_successor_live_progress(
             Path(scratchpad),
             Path(project_root),
@@ -9934,6 +11807,9 @@ def validate_driver_successor_transaction(
             unit,
             authority,
             require_complete=require_complete,
+            allow_reconstructible_progress_projection_lag=(
+                allow_reconstructible_progress_projection_lag
+            ),
         )
     except (
         ArtifactLedgerError,
@@ -9945,6 +11821,164 @@ def validate_driver_successor_transaction(
         return [
             f"{contract.key}: driver successor transaction invalid: "
             f"{type(exc).__name__}: {exc}"
+        ]
+    return []
+
+
+def validate_historical_driver_successor_transaction(
+    scratchpad: Path,
+    project_root: Path,
+    contract: PhaseIOContract,
+    launch: LaunchSpec,
+    *,
+    run_id: str,
+    preexecution_authority: Mapping[str, Any] | None = None,
+    _validation_context: _ArtifactValidationContext | None = None,
+) -> list[str]:
+    """Replay a committed successor through exact registered later owners."""
+
+    if _validation_context is None:
+        try:
+            with _artifact_validation_epoch(
+                Path(scratchpad), Path(project_root)
+            ) as validation_context:
+                return validate_historical_driver_successor_transaction(
+                    Path(scratchpad),
+                    Path(project_root),
+                    contract,
+                    launch,
+                    run_id=run_id,
+                    preexecution_authority=preexecution_authority,
+                    _validation_context=validation_context,
+                )
+        except (
+            ArtifactLedgerError, KeyError, OSError, RuntimeError,
+            TypeError, ValueError,
+        ) as exc:
+            return [
+                f"{getattr(contract, 'key', '<unknown>')}: historical driver "
+                f"successor transaction invalid: {type(exc).__name__}: {exc}"
+            ]
+    if not _ledger_transaction_lock_is_owned(Path(scratchpad)):
+        return [
+            f"{getattr(contract, 'key', '<unknown>')}: historical driver "
+            "successor transaction invalid: ArtifactLedgerError: artifact "
+            "validation context does not own ledger transaction lock"
+        ]
+    context = _validation_context
+    try:
+        contract, launch = _replay_authority_pair(contract, launch)
+        ledger = context.ledger
+        unit = ledger.get("work_units", {}).get(contract.key)
+        artifacts = (
+            unit.get("artifacts") if isinstance(unit, Mapping) else None
+        )
+        if (
+            not isinstance(unit, Mapping)
+            or unit.get("run_id") != run_id
+            or unit.get("contract_manifest") != contract.to_dict()
+            or unit.get("contract_digest") != contract.digest
+            or unit.get("launch_manifest") != launch.to_dict()
+            or unit.get("launch_digest") != launch.digest
+            or not isinstance(artifacts, Mapping)
+            or stored_committed_work_unit_authority_issues(
+                ledger,
+                work_unit_key=contract.key,
+                run_id=run_id,
+                expected_artifact_identities=tuple(sorted(artifacts)),
+            )
+        ):
+            raise ArtifactLedgerError(
+                "historical driver successor stored authority differs"
+            )
+        _replay_stored_completed_driver_successor_authority(
+            Path(scratchpad), Path(project_root), ledger, unit,
+            _validation_context=context,
+        )
+        input_issues = validate_work_unit_inputs(
+            Path(scratchpad), Path(project_root), contract, launch,
+            run_id=run_id, preexecution_authority=preexecution_authority,
+            _validation_context=context,
+            _historical_completed_successor=True,
+        )
+        if input_issues:
+            raise ArtifactLedgerError("; ".join(input_issues))
+        bindings = ledger.get("artifact_bindings")
+        if not isinstance(bindings, Mapping):
+            raise ArtifactLedgerError(
+                "historical driver successor bindings are absent"
+            )
+        exemptions: set[str] = set()
+        exact_fields = (
+            "identity", "owner_key", "run_id", "contract_digest",
+            "launch_digest", "status", "size", "sha256", "writer",
+            "write_mode", "authority_level", "physical_identity",
+        )
+        for identity, artifact in artifacts.items():
+            if not isinstance(artifact, Mapping):
+                raise ArtifactLedgerError(
+                    "historical driver successor artifact is malformed"
+                )
+            binding = bindings.get(identity)
+            if not isinstance(binding, Mapping):
+                raise ArtifactLedgerError(
+                    f"{identity}: historical successor binding is absent"
+                )
+            if binding.get("owner_key") == contract.key:
+                if (
+                    binding.get("status") != "ACTIVE"
+                    or any(binding.get(field) != artifact.get(field)
+                           for field in exact_fields)
+                    or not _producer_authority_is_active(
+                        ledger, binding, identity=str(identity), run_id=run_id,
+                    )
+                ):
+                    raise ArtifactLedgerError(
+                        f"{identity}: historical successor current tuple differs"
+                    )
+                live, error = context.snapshot(context.path_for_identity(str(identity)))
+                if (
+                    live is None or error
+                    or live.get("sha256") != binding.get("sha256")
+                    or live.get("size") != binding.get("size")
+                ):
+                    raise ArtifactLedgerError(
+                        f"{identity}: historical successor live bytes differ"
+                    )
+                continue
+            failure_reasons: list[str] = []
+            chain = _registered_successor_bundle_member_authority_view(
+                Path(scratchpad), Path(project_root), ledger, artifact,
+                identity=str(identity), expected_record=artifact,
+                _validation_context=context,
+                _failure_reasons=failure_reasons,
+            )
+            if not chain:
+                detail = (
+                    f": {failure_reasons[-1]}"
+                    if failure_reasons
+                    else ""
+                )
+                raise ArtifactLedgerError(
+                    f"{identity}: historical successor chain is invalid"
+                    f"{detail}"
+                )
+            exemptions.add(str(identity))
+        replay_issues = _replay_output_commit_authority(
+            Path(scratchpad), Path(project_root), unit,
+            require_live_bytes=True,
+            live_byte_exempt_identities=tuple(sorted(exemptions)),
+            _validation_context=context,
+        )
+        if replay_issues:
+            raise ArtifactLedgerError("; ".join(replay_issues))
+    except (
+        ArtifactLedgerError, KeyError, OSError, RuntimeError,
+        TypeError, ValueError,
+    ) as exc:
+        return [
+            f"{getattr(contract, 'key', '<unknown>')}: historical driver "
+            f"successor transaction invalid: {type(exc).__name__}: {exc}"
         ]
     return []
 
@@ -10836,6 +12870,7 @@ def _semantic_output_prestate_commit_issues(
     *,
     run_id: str,
     merge_event: DriverMergeEvent | None = None,
+    require_current_historical_binding: bool = True,
 ) -> set[str]:
     """Revalidate a mutation-current REPLACE prestate at commit time.
 
@@ -10906,7 +12941,7 @@ def _semantic_output_prestate_commit_issues(
         if isinstance(ledger.get("artifact_bindings"), Mapping)
         else None
     )
-    if not (
+    historical_binding_valid = bool(
         isinstance(binding, Mapping)
         and binding.get("owner_key")
         == authority.get("historical_owner_key")
@@ -10920,7 +12955,36 @@ def _semantic_output_prestate_commit_issues(
         and _producer_authority_is_active(
             ledger, binding, identity=identity, run_id=run_id
         )
-        and _registered_projection_handoff(binding, spec)
+    )
+    if not require_current_historical_binding:
+        historical_unit = ledger.get("work_units", {}).get(
+            str(authority.get("historical_owner_key") or "")
+        )
+        historical_artifact = (
+            historical_unit.get("artifacts", {}).get(identity)
+            if isinstance(historical_unit, Mapping)
+            and isinstance(historical_unit.get("artifacts"), Mapping)
+            else None
+        )
+        historical_binding_valid = bool(
+            isinstance(historical_artifact, Mapping)
+            and historical_artifact.get("owner_key")
+            == authority.get("historical_owner_key")
+            and historical_artifact.get("contract_digest")
+            == authority.get("historical_contract_digest")
+            and historical_artifact.get("launch_digest")
+            == authority.get("historical_launch_digest")
+            and historical_artifact.get("sha256")
+            == authority.get("historical_sha256")
+            and historical_artifact.get("size")
+            == authority.get("historical_size")
+            and historical_artifact.get("run_id") == run_id
+        )
+    if not (
+        historical_binding_valid
+        and _registered_projection_handoff(
+            {"owner_key": authority.get("historical_owner_key")}, spec
+        )
     ):
         codes.add("SEMANTIC_OUTPUT_PRESTATE_HISTORICAL_PRODUCER_CHANGED")
         return codes
@@ -11356,6 +13420,10 @@ def _record_work_unit_artifacts_unlocked(
     place and are recorded proposal-only at the work-unit, typed binding, and
     legacy projection levels.
     """
+    if not _ledger_transaction_lock_is_owned(Path(scratchpad)):
+        raise ArtifactLedgerError(
+            "unlocked artifact commit requires the ledger transaction lock"
+        )
     if not isinstance(contract, PhaseIOContract):
         raise ArtifactLedgerError("contract must be a PhaseIOContract")
     if not isinstance(launch, LaunchSpec):
@@ -12510,6 +14578,76 @@ def record_work_unit_artifacts(
         )
 
 
+RUN_BINDING_PROJECTION_SCHEMA = "plamen.run_binding_projection.v1"
+RUN_CONTROL_STATE_IDENTITY = "scratchpad:_v2_checkpoint.json"
+_RUN_CONTROL_STATE_READ_LIMIT = 64 * 1024 * 1024
+
+
+def run_binding_projection_bytes(checkpoint_bytes: bytes) -> bytes | None:
+    """Project the mutable run checkpoint onto its immutable identity fields.
+
+    ``_v2_checkpoint.json`` is control-plane state: its ``completed`` list,
+    ``rate_limited_at`` marker, phase commits, and acknowledgements change at
+    every phase boundary and on every pause/resume by design.  A work unit
+    that binds the checkpoint needs only the run identity (``run_id``) and the
+    admitted audit-input snapshot digests.  Hashing the raw bytes therefore
+    manufactured guaranteed drift on every resume.  This projection is the
+    typed replacement: it is canonical JSON over exactly the identity fields,
+    so the recorded receipt survives control-plane churn and still changes
+    when the run or its audited inputs change.
+    """
+
+    try:
+        payload = json.loads(bytes(checkpoint_bytes).decode("utf-8-sig"))
+    except (UnicodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    snapshot = payload.get("audit_snapshot")
+    component_digests: dict[str, str] = {}
+    snapshot_schema = ""
+    snapshot_digest = ""
+    if isinstance(snapshot, Mapping):
+        snapshot_schema = str(snapshot.get("schema") or "")
+        snapshot_digest = str(snapshot.get("snapshot_digest") or "")
+        raw_components = snapshot.get("components")
+        if isinstance(raw_components, Mapping):
+            for name, component in sorted(raw_components.items()):
+                digest = (
+                    component.get("digest")
+                    if isinstance(component, Mapping)
+                    else None
+                )
+                component_digests[str(name)] = str(digest or "")
+    projection = {
+        "schema": RUN_BINDING_PROJECTION_SCHEMA,
+        "run_id": str(payload.get("run_id") or ""),
+        "audit_snapshot_schema": snapshot_schema,
+        "audit_snapshot_digest": snapshot_digest,
+        "audit_snapshot_component_digests": component_digests,
+    }
+    return json.dumps(
+        projection, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+
+
+def _run_control_state_projection_bytes(path: Path) -> bytes | None:
+    """Read the live checkpoint and return its run-binding projection.
+
+    ``None`` means the file is not a readable JSON object; the caller then
+    keeps the raw-byte receipt so an unreadable checkpoint is never silently
+    blessed as a stable identity.
+    """
+
+    try:
+        raw = _read_stable_regular_bytes(
+            Path(path), limit=_RUN_CONTROL_STATE_READ_LIMIT
+        )
+    except (ArtifactLedgerError, OSError):
+        return None
+    return run_binding_projection_bytes(raw)
+
+
 def _input_binding_record_uncached(
     scratchpad: Path,
     project_root: Path,
@@ -12611,6 +14749,21 @@ def _input_binding_record_uncached(
                 "sha256": live_sha256,
             }
         )
+        if identity == RUN_CONTROL_STATE_IDENTITY:
+            # The checkpoint is never a content-hashed exact input.  Bind the
+            # typed run-binding projection (run_id + admitted snapshot digests)
+            # so control-plane churn cannot masquerade as semantic drift while
+            # a different run or different audited inputs still change it.
+            projected = _run_control_state_projection_bytes(path)
+            if projected is not None:
+                live_sha256 = hashlib.sha256(projected).hexdigest()
+                record.update(
+                    {
+                        "size": len(projected),
+                        "sha256": live_sha256,
+                        "content_authority": RUN_BINDING_PROJECTION_SCHEMA,
+                    }
+                )
         semantic_predecessor_verified = False
         if (
             isinstance(producer, dict)
@@ -12717,7 +14870,7 @@ def _input_binding_record_uncached(
             if producer_key and not producer_key.startswith("semantic-mutation:"):
                 producer_unit = ledger.get("work_units", {}).get(producer_key)
                 live_byte_exemptions = (
-                    _semantic_mutation_bundle_live_byte_exemptions(
+                    _authenticated_bundle_live_byte_exemptions(
                         Path(scratchpad),
                         Path(project_root),
                         ledger,
@@ -12927,7 +15080,7 @@ def _semantic_mutation_producer_authority(
     }
 
 
-def _semantic_mutation_bundle_live_byte_exemptions(
+def _authenticated_bundle_live_byte_exemptions(
     scratchpad: Path,
     project_root: Path,
     ledger: Mapping[str, Any],
@@ -12937,19 +15090,17 @@ def _semantic_mutation_bundle_live_byte_exemptions(
     verified_identity: str,
     _validation_context: _ArtifactValidationContext | None = None,
 ) -> tuple[str, ...]:
-    """Resolve every mutated sibling through its own exact lineage.
+    """Resolve every changed sibling through exact authenticated lineage.
 
     Output-authority replay covers a historical producer's complete bundle.
-    Coupled canonical roots can legitimately advance together through separate
-    arm-before-write events, so replaying an inventory input while exempting
-    only that one root incorrectly rejects its equally authenticated record
-    and ID-ledger siblings.
+    A selected unchanged member remains usable when another member advanced
+    through either an authenticated semantic-mutation chain or an exact,
+    contiguous registered DRIVER-successor chain. The selected member itself
+    is never exempted here unless the caller already authenticated its exact
+    semantic-predecessor authority.
 
-    A sibling is exempted only when its active binding is the exact same
-    historical producer snapshot and a same-run, contiguous, terminal semantic
-    mutation chain reaches its current bytes.  Any unjournaled, cross-run,
-    branching, or partially published sibling remains unexempted, causing the
-    ordinary bundle replay to fail closed.
+    Any unjournaled, cross-run, branching, skipped, or partially published
+    sibling remains unexempted, causing ordinary bundle replay to fail closed.
     """
 
     verified = str(verified_identity or "")
@@ -12965,8 +15116,10 @@ def _semantic_mutation_bundle_live_byte_exemptions(
             str(producer.get("launch_digest") or ""),
             str(producer.get("run_id") or ""),
         )
-        cached = _validation_context.semantic_mutation_bundle_exemptions.get(
-            cache_key
+        cached = (
+            _validation_context.authenticated_bundle_live_byte_exemptions.get(
+                cache_key
+            )
         )
         if cached is not None:
             return tuple(sorted({*cached, *([verified] if verified else [])}))
@@ -12981,8 +15134,13 @@ def _semantic_mutation_bundle_live_byte_exemptions(
         if isinstance(commit, Mapping)
         else None
     )
+    historical_artifacts = producer_unit.get("artifacts")
     bindings = ledger.get("artifact_bindings")
-    if not isinstance(expected, Mapping) or not isinstance(bindings, Mapping):
+    if (
+        not isinstance(expected, Mapping)
+        or not isinstance(historical_artifacts, Mapping)
+        or not isinstance(bindings, Mapping)
+    ):
         return tuple(sorted(exemptions))
 
     historical_fields = (
@@ -12992,20 +15150,22 @@ def _semantic_mutation_bundle_live_byte_exemptions(
         identity = str(raw_identity or "")
         if identity in exemptions or not isinstance(raw_expected, Mapping):
             continue
+        historical = historical_artifacts.get(identity)
         sibling = bindings.get(identity)
-        if not isinstance(sibling, dict):
+        if not isinstance(historical, Mapping) or not isinstance(sibling, dict):
             continue
         if any(
-            sibling.get(field) != producer.get(field)
+            sibling.get(field) != historical.get(field)
             for field in historical_fields
         ):
             if _registered_successor_bundle_member_authority(
                 Path(scratchpad),
                 Path(project_root),
                 ledger,
-                producer,
+                historical,
                 identity=identity,
                 expected_record=raw_expected,
+                _validation_context=_validation_context,
             ):
                 exemptions.add(identity)
             continue
@@ -13058,9 +15218,23 @@ def _semantic_mutation_bundle_live_byte_exemptions(
             live_state=live_state,
         ) is not None:
             exemptions.add(identity)
+            continue
+        if _registered_active_successor_bundle_member_authority(
+            Path(scratchpad),
+            Path(project_root),
+            ledger,
+            historical,
+            identity=identity,
+            expected_record=raw_expected,
+            live_state=live_state,
+            _validation_context=_validation_context,
+        ):
+            exemptions.add(identity)
     base = tuple(sorted(exemptions))
     if cache_key is not None:
-        _validation_context.semantic_mutation_bundle_exemptions[cache_key] = base
+        _validation_context.authenticated_bundle_live_byte_exemptions[
+            cache_key
+        ] = base
     return tuple(sorted({*base, *([verified] if verified else [])}))
 
 
@@ -13072,134 +15246,168 @@ def _registered_successor_bundle_member_authority(
     *,
     identity: str,
     expected_record: Mapping[str, Any],
+    _validation_context: _ArtifactValidationContext | None = None,
 ) -> bool:
-    """Prove one historical bundle sibling moved to a registered successor.
+    """Return whether an exact contiguous registered chain replays."""
 
-    A multi-output producer can retain immutable receipts after some canonical
-    roots move through a resolver-declared successor (for example inventory
-    aggregate -> additive re-emission).  The retained receipt must not become
-    unreadable merely because those siblings advanced, but an arbitrary new
-    owner must never excuse historical output drift.
-    """
-
-    bindings = ledger.get("artifact_bindings")
-    units = ledger.get("work_units")
-    if not isinstance(bindings, Mapping) or not isinstance(units, Mapping):
-        return False
-    current = bindings.get(identity)
-    if not (
-        isinstance(current, dict)
-        and current.get("status") == "ACTIVE"
-        and current.get("run_id") == historical_producer.get("run_id")
-        and str(current.get("owner_key") or "")
-        and current.get("owner_key") != historical_producer.get("owner_key")
-        and registered_projection_handoff(
-            str(historical_producer.get("owner_key") or ""),
-            str(current.get("owner_key") or ""),
-            identity,
-        )
-    ):
-        return False
-    history = current.get("history")
-    matches = [
-        row
-        for row in history if isinstance(row, Mapping)
-        and row.get("owner_key") == historical_producer.get("owner_key")
-        and row.get("contract_digest")
-        == historical_producer.get("contract_digest")
-        and row.get("launch_digest")
-        == historical_producer.get("launch_digest")
-        and row.get("run_id") == historical_producer.get("run_id")
-        and row.get("sha256") == expected_record.get("sha256")
-        and row.get("size") == expected_record.get("size")
-        and row.get("status") == "SUPERSEDED"
-        and row.get("superseded_by_owner_key") == current.get("owner_key")
-    ] if isinstance(history, list) else []
-    if len(matches) != 1:
-        return False
-    current_unit = units.get(str(current["owner_key"]))
-    if not (
-        isinstance(current_unit, Mapping)
-        and _producer_authority_is_active(
-            ledger,
-            current,
-            identity=identity,
-            run_id=str(current.get("run_id") or ""),
-        )
-    ):
-        return False
     try:
-        live = _semantic_artifact_state(
-            Path(scratchpad), Path(project_root), identity,
-        )
-    except ArtifactLedgerError:
-        return False
-    mutated_identity = not (
-        live.get("status") == "ACTIVE"
-        and live.get("size") == current.get("size")
-        and live.get("sha256") == current.get("sha256")
-    )
-    if mutated_identity and _semantic_mutation_producer_authority(
-        Path(scratchpad),
-        project_root=Path(project_root),
-        identity=identity,
-        producer=current,
-        live_state=live,
-    ) is None:
-        return False
-
-    # Validate only same-owner siblings here.  This keeps the proof bounded to
-    # one registered handoff and prevents recursive successor cycles.
-    exemptions = {identity} if mutated_identity else set()
-    commit = current_unit.get("commit_authority")
-    current_expected = (
-        commit.get("expected_output_records")
-        if isinstance(commit, Mapping)
-        else None
-    )
-    if not isinstance(current_expected, Mapping):
-        return False
-    for sibling_identity in current_expected:
-        sibling = bindings.get(sibling_identity)
-        if not (
-            isinstance(sibling, dict)
-            and sibling.get("owner_key") == current.get("owner_key")
-            and sibling.get("contract_digest") == current.get("contract_digest")
-            and sibling.get("launch_digest") == current.get("launch_digest")
-            and sibling.get("run_id") == current.get("run_id")
-        ):
-            continue
-        try:
-            sibling_live = _semantic_artifact_state(
-                Path(scratchpad), Path(project_root), str(sibling_identity),
-            )
-        except ArtifactLedgerError:
-            continue
-        if (
-            sibling_live.get("status") == "ACTIVE"
-            and (
-                sibling_live.get("size") != sibling.get("size")
-                or sibling_live.get("sha256") != sibling.get("sha256")
-            )
-            and _semantic_mutation_producer_authority(
-                Path(scratchpad),
-                project_root=Path(project_root),
-                identity=str(sibling_identity),
-                producer=sibling,
-                live_state=sibling_live,
-            ) is not None
-        ):
-            exemptions.add(str(sibling_identity))
-    try:
-        return not _replay_output_commit_authority(
+        return bool(_registered_successor_bundle_member_authority_view(
             Path(scratchpad),
             Path(project_root),
-            current_unit,
-            require_live_bytes=True,
-            live_byte_exempt_identities=tuple(sorted(exemptions)),
-        )
+            ledger,
+            historical_producer,
+            identity=identity,
+            expected_record=expected_record,
+            _validation_context=_validation_context,
+        ))
     except (ArtifactLedgerError, OSError, RuntimeError, TypeError, ValueError):
         return False
+
+
+def _registered_active_successor_bundle_member_authority(
+    scratchpad: Path,
+    project_root: Path,
+    ledger: Mapping[str, Any],
+    historical_producer: Mapping[str, Any],
+    *,
+    identity: str,
+    expected_record: Mapping[str, Any],
+    live_state: Mapping[str, Any],
+    _validation_context: _ArtifactValidationContext | None = None,
+    _failure_reasons: list[str] | None = None,
+) -> bool:
+    """Authenticate one exact published-but-uncommitted successor output."""
+
+    def reject(reason: str) -> bool:
+        if _failure_reasons is not None:
+            _failure_reasons.append(reason)
+        return False
+
+    owner = str(historical_producer.get("owner_key") or "")
+    run_id = str(historical_producer.get("run_id") or "")
+    units = ledger.get("work_units")
+    if (
+        not owner
+        or not run_id
+        or not isinstance(units, Mapping)
+        or historical_producer.get("identity") != identity
+        or historical_producer.get("status") != "ACTIVE"
+        or historical_producer.get("owner_key") != owner
+        or historical_producer.get("run_id") != run_id
+        or expected_record.get("sha256")
+        != historical_producer.get("sha256")
+        or expected_record.get("size") != historical_producer.get("size")
+        or live_state.get("status") != "ACTIVE"
+        or not _is_digest(live_state.get("sha256"))
+        or not _is_nonnegative_exact_int(live_state.get("size"))
+    ):
+        return reject("active successor historical/live precondition differs")
+
+    admitted = 0
+    for successor_key, unit in units.items():
+        if not isinstance(unit, Mapping):
+            continue
+        authority = unit.get("successor_consumption_authority")
+        if not isinstance(authority, Mapping):
+            continue
+        try:
+            registered = registered_projection_handoff(
+                owner, str(successor_key), identity,
+            )
+        except ValueError:
+            registered = False
+        raw_plan = authority.get("plan")
+        raw_transitions = (
+            raw_plan.get("transitions")
+            if isinstance(raw_plan, Mapping)
+            else None
+        )
+        claims_identity = bool(
+            isinstance(raw_transitions, list)
+            and any(
+                isinstance(row, Mapping)
+                and row.get("artifact_identity") == identity
+                for row in raw_transitions
+            )
+        )
+        if not registered or not claims_identity:
+            continue
+        if (
+            unit.get("work_unit_key") != successor_key
+            or unit.get("run_id") != run_id
+            or unit.get("execution_state")
+            != "INPUTS_BOUND_PREEXECUTION"
+            or unit.get("semantic_status") != "INPUTS_BOUND"
+        ):
+            return reject("active successor armed unit state differs")
+        try:
+            contract, launch = _stored_successor_authority_pair(unit)
+            replayed, _plan = _replay_driver_successor_authority(
+                Path(scratchpad),
+                Path(project_root),
+                ledger,
+                unit,
+                contract,
+                launch,
+                run_id=run_id,
+                _validation_context=_validation_context,
+            )
+            events = _validated_unit_driver_successor_progress_events(
+                Path(scratchpad),
+                unit,
+                replayed,
+                _validation_context=_validation_context,
+            )
+            transitions = _driver_successor_transition_rows(
+                replayed["plan"]
+            )
+        except (ArtifactLedgerError, KeyError, TypeError, ValueError) as exc:
+            return reject(
+                "active successor authority replay failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+        rows = [
+            row for row in transitions
+            if row.get("artifact_identity") == identity
+        ]
+        bundles = [
+            row for row in replayed.get("producer_bundles", ())
+            if isinstance(row, Mapping)
+            and row.get("producer_work_unit_key") == owner
+            and identity in set(
+                row.get("successor_output_identities") or ()
+            )
+        ]
+        if len(rows) != 1 or len(bundles) != 1:
+            return reject("active successor transition/bundle differs")
+        transition = rows[0]
+        ordinal = int(transition["ordinal"])
+        published = bool(
+            any(
+                event.get("ordinal") == ordinal
+                and event.get("state") == "STEP_APPLIED"
+                for event in events
+            )
+            or (
+                events
+                and events[-1].get("ordinal") == ordinal
+                and events[-1].get("state") == "STEP_ARMED"
+            )
+        )
+        if (
+            not published
+            or transition.get("before_status") != "ACTIVE"
+            or transition.get("before_sha256")
+            != expected_record.get("sha256")
+            or transition.get("before_size") != expected_record.get("size")
+            or transition.get("after_sha256") != live_state.get("sha256")
+            or transition.get("after_size") != live_state.get("size")
+        ):
+            return reject("active successor progress/postimage differs")
+        admitted += 1
+    if admitted != 1:
+        return reject("active successor admission denominator differs")
+    return True
 
 
 def _input_set_digest(records: dict[str, dict[str, Any]]) -> str:
@@ -13809,6 +16017,113 @@ def _authorized_report_index_generation_predecessor(
     return False
 
 
+def _report_body_retry_prestate_chain_replays(
+    ledger: Mapping[str, Any],
+    prestate: Mapping[str, Any],
+    *,
+    identity: str,
+    run_id: str,
+    key_prefix: str,
+    shard: str,
+    upper_ordinal: int,
+) -> bool:
+    """Authenticate one exact chain of failed, never-committed MODEL attempts."""
+
+    bindings = ledger.get("artifact_bindings")
+    if not isinstance(bindings, Mapping):
+        return False
+    work_units = ledger.get("work_units")
+    if not isinstance(work_units, Mapping):
+        return False
+    current = prestate
+    ordinal = upper_ordinal
+    visited: set[str] = set()
+    # Each continuation must reduce the closed positive ordinal by exactly
+    # one, so the public maximum of 9999 also bounds this loop.
+    while 1 <= ordinal <= 9999:
+        status = str(current.get("status") or "")
+        binding = bindings.get(identity)
+        if status == "ABSENT":
+            return bool(ordinal == 1 and binding is None)
+        owner = str(current.get("predecessor_owner_key") or "")
+        if not owner.startswith(key_prefix + "/"):
+            return False
+        parsed = parse_report_body_attempt_work_unit(owner.rsplit("/", 1)[-1])
+        if (
+            parsed is None
+            or parsed[1] != shard
+            or parsed[2] != ordinal - 1
+        ):
+            return False
+        if status in {
+            "ACTIVE_REGISTERED_PREDECESSOR",
+            "ACTIVE_PREIMAGE",
+            "ACTIVE_REGISTERED_SEMANTIC_PREDECESSOR",
+        }:
+            return bool(
+                isinstance(binding, Mapping)
+                and all(
+                    current.get(prestate_field) == binding.get(binding_field)
+                    for prestate_field, binding_field in (
+                        ("predecessor_owner_key", "owner_key"),
+                        ("predecessor_contract_digest", "contract_digest"),
+                        ("predecessor_launch_digest", "launch_digest"),
+                        ("sha256", "sha256"),
+                        ("size", "size"),
+                    )
+                )
+                and _producer_authority_is_active(
+                    ledger, binding, identity=identity, run_id=run_id,
+                )
+            )
+        if (
+            status != "AUTHORIZED_MODEL_RETRY_PRESTATE"
+            or parsed[0] != "model"
+            or owner in visited
+        ):
+            return False
+        visited.add(owner)
+        prior = work_units.get(owner)
+        prior_prestates = (
+            prior.get("output_prestates")
+            if isinstance(prior, Mapping)
+            else None
+        )
+        nested = (
+            prior_prestates.get(identity)
+            if isinstance(prior_prestates, Mapping)
+            else None
+        )
+        if (
+            not isinstance(prior, Mapping)
+            or prior.get("schema") != "plamen.artifact-work-unit.v2"
+            or prior.get("work_unit_key") != owner
+            or prior.get("run_id") != run_id
+            or prior.get("semantic_status") != "INPUTS_BOUND"
+            or prior.get("execution_state") != "INPUTS_BOUND_PREEXECUTION"
+            or prior.get("artifacts") != {}
+            or prior.get("contract_digest")
+            != current.get("predecessor_contract_digest")
+            or not isinstance(prior.get("contract_manifest"), dict)
+            or _contract_manifest_digest(prior["contract_manifest"])
+            != prior.get("contract_digest")
+            or prior.get("launch_digest")
+            != current.get("predecessor_launch_digest")
+            or not _launch_manifest_is_valid(
+                prior.get("launch_manifest"),
+                expected_digest=prior.get("launch_digest"),
+            )
+            or not isinstance(prior_prestates, Mapping)
+            or _output_prestate_digest(dict(prior_prestates))
+            != prior.get("output_prestate_digest")
+            or not isinstance(nested, Mapping)
+        ):
+            return False
+        current = nested
+        ordinal -= 1
+    return False
+
+
 def _authorized_model_retry_predecessor(
     scratchpad: Path,
     project_root: Path,
@@ -13842,8 +16157,24 @@ def _authorized_model_retry_predecessor(
     registered_report_index_model = bool(
         contract.phase == "report_index" and base == "model"
     )
+    parsed_report_body_retry = (
+        parse_report_body_attempt_work_unit(unit)
+        if contract.phase == "report_body"
+        else None
+    )
+    registered_report_body_model = bool(
+        parsed_report_body_retry is not None
+        and parsed_report_body_retry[0] == "model"
+        and parsed_report_body_retry[1] == base.removeprefix("model.")
+        and parse_report_body_attempt_work_unit(base)
+        == ("model", base.removeprefix("model."), 1)
+    )
     if (
-        (not base.startswith("worker.") and not registered_report_index_model)
+        (
+            not base.startswith("worker.")
+            and not registered_report_index_model
+            and not registered_report_body_model
+        )
         or ".attempt-" in base
         or len(raw_ordinal) != 4
         or not raw_ordinal.isdigit()
@@ -13906,6 +16237,21 @@ def _authorized_model_retry_predecessor(
         )
     ):
         return None
+    if registered_report_body_model:
+        shard = base.removeprefix("model.")
+        if not all(
+            _report_body_retry_prestate_chain_replays(
+                ledger,
+                prestate,
+                identity=output_identity,
+                run_id=run_id,
+                key_prefix=key_prefix,
+                shard=shard,
+                upper_ordinal=ordinal - 1,
+            )
+            for output_identity, prestate in prior_prestates.items()
+        ):
+            return None
 
     current_inputs: dict[str, dict[str, Any]] = {}
     for input_identity in contract.immutable_inputs:
@@ -14087,6 +16433,33 @@ def _output_prestate_records(
         predecessor = (
             bindings.get(identity) if isinstance(bindings, Mapping) else None
         )
+        report_body_retry_predecessor = (
+            _authorized_model_retry_predecessor(
+                scratchpad,
+                project_root,
+                contract,
+                ledger,
+                identity=identity,
+                run_id=run_id,
+            )
+            if contract.phase == "report_body"
+            else None
+        )
+        if report_body_retry_predecessor is not None:
+            row.update({
+                "predecessor_owner_key": (
+                    report_body_retry_predecessor["owner_key"]
+                ),
+                "predecessor_contract_digest": (
+                    report_body_retry_predecessor["contract_digest"]
+                ),
+                "predecessor_launch_digest": (
+                    report_body_retry_predecessor["launch_digest"]
+                ),
+                "status": "AUTHORIZED_MODEL_RETRY_PRESTATE",
+            })
+            records[identity] = row
+            continue
         if not isinstance(predecessor, Mapping):
             retry_predecessor = _authorized_model_retry_predecessor(
                 scratchpad,
@@ -14635,15 +17008,71 @@ def _validated_input_rebind_history(
         raise ArtifactLedgerError("input rebind history is malformed or unbounded")
     validated: list[dict[str, Any]] = []
     prior_replacement_contract = ""
+    if not raw:
+        return []
+    current_extension = unit.get("preexecution_authority")
+    reconstructed_extension_digests: dict[str, str] = {}
+    if current_extension is not None:
+        if not isinstance(current_extension, dict):
+            raise ArtifactLedgerError("input rebind current authority is malformed")
+        extension_fields = {
+            "schema_version", "run_context", "work_unit_key",
+            "contract_digest", "launch_digest", "run_id",
+            "authority_sha256",
+        }
+        if (
+            set(current_extension) != extension_fields
+            or current_extension.get("schema_version")
+            != "plamen.security-obligation-phaseio-context.v1"
+        ):
+            raise ArtifactLedgerError("input rebind current authority is unsupported")
+
+        def _reconstructed_extension_digest(contract_digest: object) -> str:
+            selected = str(contract_digest or "")
+            if not _is_digest(selected):
+                raise ArtifactLedgerError(
+                    "input rebind history authority contract digest is invalid"
+                )
+            cached = reconstructed_extension_digests.get(selected)
+            if cached is not None:
+                return cached
+            unsigned = {
+                key: value
+                for key, value in current_extension.items()
+                if key != "authority_sha256"
+            }
+            unsigned["contract_digest"] = selected
+            authority_sha256 = hashlib.sha256(json.dumps(
+                unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+            ).encode("utf-8")).hexdigest()
+            reconstructed = {**unsigned, "authority_sha256": authority_sha256}
+            _canonical, digest = _canonical_preexecution_authority_extension(
+                reconstructed
+            )
+            reconstructed_extension_digests[selected] = digest
+            return digest
+
     prior_replacement_inputs = ""
+    prior_replacement_extension = ""
+    history_schema = ""
     for ordinal, event in enumerate(raw, start=1):
-        if not isinstance(event, dict) or set(event) != _INPUT_REBIND_EVENT_FIELDS:
+        if not isinstance(event, dict):
             raise ArtifactLedgerError("input rebind history event schema is malformed")
+        schema = event.get("schema")
+        fields = (
+            _INPUT_REBIND_EXTENSION_EVENT_FIELDS
+            if schema == _INPUT_REBIND_HISTORY_EXTENSION_SCHEMA
+            else _INPUT_REBIND_EVENT_FIELDS
+            if schema == _INPUT_REBIND_HISTORY_SCHEMA
+            else frozenset()
+        )
+        if set(event) != fields or (history_schema and schema != history_schema):
+            raise ArtifactLedgerError("input rebind history event schema is malformed")
+        history_schema = str(schema)
         added = event.get("added_identities")
         removed = event.get("removed_identities")
         if (
-            event.get("schema") != _INPUT_REBIND_HISTORY_SCHEMA
-            or event.get("reason_code") not in _INPUT_REBIND_REASON_CODES
+            event.get("reason_code") not in _INPUT_REBIND_REASON_CODES
             or event.get("run_id") != run_id
             or event.get("work_unit_key") != work_unit_key
             or event.get("ordinal") != ordinal
@@ -14654,6 +17083,27 @@ def _validated_input_rebind_history(
                     "replacement_contract_digest",
                     "prior_input_set_digest",
                     "replacement_input_set_digest",
+                )
+            )
+            or (
+                schema == _INPUT_REBIND_HISTORY_EXTENSION_SCHEMA
+                and not all(_is_digest(event.get(field)) for field in (
+                    "prior_preexecution_authority_digest",
+                    "replacement_preexecution_authority_digest",
+                ))
+            )
+            or (
+                schema == _INPUT_REBIND_HISTORY_EXTENSION_SCHEMA
+                and (
+                    current_extension is None
+                    or event.get("prior_preexecution_authority_digest")
+                    != _reconstructed_extension_digest(
+                        event.get("prior_contract_digest")
+                    )
+                    or event.get("replacement_preexecution_authority_digest")
+                    != _reconstructed_extension_digest(
+                        event.get("replacement_contract_digest")
+                    )
                 )
             )
             or not isinstance(added, list)
@@ -14671,16 +17121,33 @@ def _validated_input_rebind_history(
         if ordinal > 1 and (
             event.get("prior_contract_digest") != prior_replacement_contract
             or event.get("prior_input_set_digest") != prior_replacement_inputs
+            or (
+                schema == _INPUT_REBIND_HISTORY_EXTENSION_SCHEMA
+                and event.get("prior_preexecution_authority_digest")
+                != prior_replacement_extension
+            )
         ):
             raise ArtifactLedgerError("input rebind history chain is discontinuous")
         prior_replacement_contract = str(event["replacement_contract_digest"])
         prior_replacement_inputs = str(event["replacement_input_set_digest"])
+        prior_replacement_extension = str(
+            event.get("replacement_preexecution_authority_digest") or ""
+        )
         validated.append(dict(event))
     if validated and (
         prior_replacement_contract != str(unit.get("contract_digest") or "")
         or prior_replacement_inputs != str(unit.get("input_set_digest") or "")
     ):
         raise ArtifactLedgerError("input rebind history does not bind current unit")
+    stored_extension_digest = unit.get("preexecution_authority_digest")
+    if validated and (
+        (history_schema == _INPUT_REBIND_HISTORY_SCHEMA and stored_extension_digest is not None)
+        or (
+            history_schema == _INPUT_REBIND_HISTORY_EXTENSION_SCHEMA
+            and prior_replacement_extension != stored_extension_digest
+        )
+    ):
+        raise ArtifactLedgerError("input rebind history does not bind current authority")
     return validated
 
 
@@ -14710,6 +17177,8 @@ def replace_uncommitted_driver_input_denominator(
     run_id: str,
     expected_prior_input_set_digest: str,
     reason_code: str,
+    expected_prior_preexecution_authority: Mapping[str, Any] | None = None,
+    replacement_preexecution_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """CAS-replace one driver-only input receipt before any output commit.
 
@@ -14789,6 +17258,65 @@ def replace_uncommitted_driver_input_denominator(
             or _input_set_digest(prior_inputs) != expected_prior
         ):
             raise ArtifactLedgerError("input rebind prior denominator is malformed")
+        stored_extension = prior.get("preexecution_authority")
+        stored_extension_digest = prior.get("preexecution_authority_digest")
+        stored_extended = stored_extension is not None or stored_extension_digest is not None
+        caller_extended = (
+            expected_prior_preexecution_authority is not None
+            or replacement_preexecution_authority is not None
+        )
+        prior_extension_digest = ""
+        replacement_extension: dict[str, Any] | None = None
+        replacement_extension_digest = ""
+        if stored_extended:
+            if (
+                stored_extension is None
+                or stored_extension_digest is None
+                or expected_prior_preexecution_authority is None
+                or replacement_preexecution_authority is None
+            ):
+                raise ArtifactLedgerError("input rebind requires exact prior and replacement preexecution authority")
+            replayed_stored, prior_extension_digest = _canonical_preexecution_authority_extension(stored_extension)
+            replayed_expected, expected_extension_digest = _canonical_preexecution_authority_extension(expected_prior_preexecution_authority)
+            replacement_extension, replacement_extension_digest = _canonical_preexecution_authority_extension(replacement_preexecution_authority)
+            if (
+                prior_extension_digest != stored_extension_digest
+                or replayed_stored != replayed_expected
+                or prior_extension_digest != expected_extension_digest
+            ):
+                raise ArtifactLedgerError(
+                    "input rebind prior preexecution authority mismatch"
+                )
+            extension_fields = {
+                "schema_version", "run_context", "work_unit_key",
+                "contract_digest", "launch_digest", "run_id",
+                "authority_sha256",
+            }
+            if (
+                set(replayed_expected) != extension_fields
+                or set(replacement_extension) != extension_fields
+                or replayed_expected.get("schema_version")
+                != "plamen.security-obligation-phaseio-context.v1"
+                or replacement_extension.get("schema_version")
+                != "plamen.security-obligation-phaseio-context.v1"
+                or replayed_expected.get("run_context")
+                != replacement_extension.get("run_context")
+                or replayed_expected.get("work_unit_key") != prior_contract.key
+                or replacement_extension.get("work_unit_key")
+                != replacement_contract.key
+                or replayed_expected.get("contract_digest") != prior_contract.digest
+                or replacement_extension.get("contract_digest")
+                != replacement_contract.digest
+                or replayed_expected.get("launch_digest") != launch.digest
+                or replacement_extension.get("launch_digest") != launch.digest
+                or replayed_expected.get("run_id") != run
+                or replacement_extension.get("run_id") != run
+            ):
+                raise ArtifactLedgerError(
+                    "input rebind preexecution authority transition is unsupported"
+                )
+        elif caller_extended:
+            raise ArtifactLedgerError("input rebind cannot add authority to a legacy arm")
         history = _validated_input_rebind_history(
             prior, work_unit_key=prior_contract.key, run_id=run
         )
@@ -14814,6 +17342,8 @@ def replace_uncommitted_driver_input_denominator(
             replacement_contract.digest == prior_contract.digest
             and replacement_input_digest == expected_prior
         ):
+            if stored_extended and replacement_extension_digest != prior_extension_digest:
+                raise ArtifactLedgerError("input rebind authority changed without denominator drift")
             # Crash recovery may rediscover a provisional receipt whose live
             # denominator never changed.  Preserve it byte-for-byte and do not
             # invent a history event for a no-op compare-and-swap.
@@ -14821,7 +17351,10 @@ def replace_uncommitted_driver_input_denominator(
         prior_identities = set(prior.get("input_bindings", {}))
         replacement_identities = set(records)
         event: dict[str, Any] = {
-            "schema": _INPUT_REBIND_HISTORY_SCHEMA,
+            "schema": (
+                _INPUT_REBIND_HISTORY_EXTENSION_SCHEMA
+                if stored_extended else _INPUT_REBIND_HISTORY_SCHEMA
+            ),
             "reason_code": reason,
             "run_id": run,
             "work_unit_key": prior_contract.key,
@@ -14833,6 +17366,9 @@ def replace_uncommitted_driver_input_denominator(
             "added_identities": sorted(replacement_identities - prior_identities),
             "removed_identities": sorted(prior_identities - replacement_identities),
         }
+        if stored_extended:
+            event["prior_preexecution_authority_digest"] = prior_extension_digest
+            event["replacement_preexecution_authority_digest"] = replacement_extension_digest
         event["event_digest"] = _input_rebind_event_digest(event)
         history.append(event)
         now = datetime.now(timezone.utc).isoformat()
@@ -14865,6 +17401,9 @@ def replace_uncommitted_driver_input_denominator(
             ),
             "artifacts": {},
         }
+        if replacement_extension is not None:
+            work_unit["preexecution_authority"] = replacement_extension
+            work_unit["preexecution_authority_digest"] = replacement_extension_digest
         ledger["work_units"][replacement_contract.key] = work_unit
         write_artifact_ledger(Path(scratchpad), ledger)
         return work_unit
@@ -14878,6 +17417,7 @@ def recover_uncommitted_driver_input_denominator(
     *,
     run_id: str,
     reason_code: str,
+    replacement_preexecution_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Recover a crash-persisted provisional DRIVER input receipt.
 
@@ -14974,6 +17514,12 @@ def recover_uncommitted_driver_input_denominator(
                 prior.get("input_set_digest") or ""
             ),
             reason_code=reason_code,
+            expected_prior_preexecution_authority=(
+                prior.get("preexecution_authority")
+                if isinstance(prior.get("preexecution_authority"), Mapping)
+                else None
+            ),
+            replacement_preexecution_authority=replacement_preexecution_authority,
         )
 
 
@@ -15227,7 +17773,7 @@ def record_work_unit_inputs(
         )
         records: dict[str, dict[str, Any]] = {}
         for identity in contract.immutable_inputs:
-            records[identity] = _input_binding_record(
+            record = _input_binding_record(
                 Path(scratchpad),
                 Path(project_root),
                 identity,
@@ -15235,13 +17781,14 @@ def record_work_unit_inputs(
                 validation_ledger,
                 _validation_context=validation_context,
             )
+            records[identity] = record
         for identity in contract.bounded_lookup_inputs:
             input_class = (
                 "IMMUTABLE_AND_BOUNDED_LOOKUP"
                 if identity in records
                 else "BOUNDED_LOOKUP"
             )
-            records[identity] = _input_binding_record(
+            record = _input_binding_record(
                 Path(scratchpad),
                 Path(project_root),
                 identity,
@@ -15249,6 +17796,7 @@ def record_work_unit_inputs(
                 validation_ledger,
                 _validation_context=validation_context,
             )
+            records[identity] = record
         if contract.input_authority_requirements:
             for requirement in contract.input_authority_requirements:
                 record = records[requirement.identity]
@@ -15560,6 +18108,344 @@ def record_work_unit_inputs(
         return work_unit
 
 
+def _historical_successor_consumed_input_issues(
+    scratchpad: Path,
+    project_root: Path,
+    ledger: Mapping[str, Any],
+    record: Mapping[str, Any],
+    *,
+    identity: str,
+    run_id: str,
+    validation_context: _ArtifactValidationContext,
+) -> list[str]:
+    """Replay one successor-consumed input to its registered live owner."""
+
+    producer_key = str(record.get("producer_work_unit_key") or "")
+    producer = (
+        ledger.get("work_units", {}).get(producer_key)
+        if isinstance(ledger.get("work_units"), Mapping)
+        else None
+    )
+    artifact = (
+        producer.get("artifacts", {}).get(identity)
+        if isinstance(producer, Mapping)
+        and isinstance(producer.get("artifacts"), Mapping)
+        else None
+    )
+    commit = (
+        producer.get("commit_authority")
+        if isinstance(producer, Mapping)
+        else None
+    )
+    if (
+        not producer_key
+        or producer_key.startswith("semantic-mutation:")
+        or not isinstance(producer, Mapping)
+        or not isinstance(artifact, Mapping)
+        or not isinstance(commit, Mapping)
+        or artifact.get("identity") != identity
+        or artifact.get("status") != "ACTIVE"
+        or artifact.get("owner_key") != producer_key
+        or artifact.get("run_id") != run_id
+        or record.get("status") != "ACTIVE"
+        or record.get("producer_run_id") != run_id
+        or record.get("producer_contract_digest")
+        != producer.get("contract_digest")
+        or record.get("producer_launch_digest")
+        != producer.get("launch_digest")
+        or record.get("producer_commit_receipt_digest")
+        != commit.get("receipt_digest")
+        or record.get("sha256") != artifact.get("sha256")
+        or record.get("size") != artifact.get("size")
+    ):
+        return [f"{identity}: historical consumed-input authority differs"]
+    binding = (
+        ledger.get("artifact_bindings", {}).get(identity)
+        if isinstance(ledger.get("artifact_bindings"), Mapping)
+        else None
+    )
+    if not isinstance(binding, Mapping):
+        return [f"{identity}: historical consumed-input binding is absent"]
+    if binding.get("owner_key") != producer_key:
+        chain = _registered_successor_bundle_member_authority_view(
+            Path(scratchpad),
+            Path(project_root),
+            ledger,
+            artifact,
+            identity=identity,
+            expected_record=artifact,
+            _validation_context=validation_context,
+        )
+        return [] if chain else [
+            f"{identity}: historical consumed-input successor chain is invalid"
+        ]
+    exact_fields = (
+        "identity", "owner_key", "run_id", "contract_digest",
+        "launch_digest", "status", "size", "sha256", "writer",
+        "write_mode", "authority_level", "physical_identity",
+    )
+    if (
+        any(binding.get(field) != artifact.get(field) for field in exact_fields)
+        or not _producer_authority_is_active(
+            ledger, binding, identity=identity, run_id=run_id,
+        )
+    ):
+        return [f"{identity}: historical consumed-input owner differs"]
+    live, error = validation_context.snapshot(
+        validation_context.path_for_identity(identity)
+    )
+    if (
+        live is None
+        or error
+        or live.get("sha256") != binding.get("sha256")
+        or live.get("size") != binding.get("size")
+    ):
+        return [f"{identity}: historical consumed-input bytes differ"]
+    return []
+
+
+def _historical_generation_unit_outputs_replay(
+    scratchpad: Path,
+    project_root: Path,
+    ledger: Mapping[str, Any],
+    *,
+    work_unit_key: str,
+    run_id: str,
+    validation_context: _ArtifactValidationContext,
+    cache: dict[str, bool],
+) -> bool:
+    """Authenticate one committed unit's complete historical output bundle."""
+
+    cached = cache.get(work_unit_key)
+    if cached is not None:
+        return cached
+    cache[work_unit_key] = False
+    unit = (
+        ledger.get("work_units", {}).get(work_unit_key)
+        if isinstance(ledger.get("work_units"), Mapping)
+        else None
+    )
+    artifacts = (
+        unit.get("artifacts") if isinstance(unit, Mapping) else None
+    )
+    if (
+        not isinstance(unit, Mapping)
+        or unit.get("run_id") != run_id
+        or unit.get("execution_state") != "OUTPUT_COMMITTED"
+        or unit.get("semantic_status") != "ACTIVE"
+        or not isinstance(artifacts, Mapping)
+        or not artifacts
+        or stored_committed_work_unit_authority_issues(
+            ledger,
+            work_unit_key=work_unit_key,
+            run_id=run_id,
+            expected_artifact_identities=tuple(sorted(artifacts)),
+        )
+    ):
+        return False
+    first = next(iter(artifacts.values()))
+    if not isinstance(first, Mapping):
+        return False
+    exemptions = _authenticated_bundle_live_byte_exemptions(
+        Path(scratchpad),
+        Path(project_root),
+        ledger,
+        first,
+        unit,
+        verified_identity="",
+        _validation_context=validation_context,
+    )
+    if _replay_output_commit_authority(
+        Path(scratchpad),
+        Path(project_root),
+        unit,
+        require_live_bytes=True,
+        live_byte_exempt_identities=exemptions,
+        _validation_context=validation_context,
+    ):
+        return False
+    cache[work_unit_key] = True
+    return True
+
+
+def _historical_generation_edge_replays(
+    scratchpad: Path,
+    project_root: Path,
+    ledger: Mapping[str, Any],
+    *,
+    producer_key: str,
+    consumer_key: str,
+    run_id: str,
+    validation_context: _ArtifactValidationContext,
+) -> bool:
+    """Authenticate at least one exact stored producer-to-consumer edge."""
+
+    units = ledger.get("work_units")
+    producer = units.get(producer_key) if isinstance(units, Mapping) else None
+    consumer = units.get(consumer_key) if isinstance(units, Mapping) else None
+    artifacts = (
+        producer.get("artifacts")
+        if isinstance(producer, Mapping) else None
+    )
+    records = (
+        consumer.get("input_bindings")
+        if isinstance(consumer, Mapping) else None
+    )
+    consumer_parts = consumer_key.split("/")
+    if (
+        not isinstance(producer, Mapping)
+        or not isinstance(consumer, Mapping)
+        or producer.get("run_id") != run_id
+        or consumer.get("run_id") != run_id
+        or not isinstance(artifacts, Mapping)
+        or not isinstance(records, Mapping)
+        or len(consumer_parts) != 6
+    ):
+        return False
+    relative_consumer = "/".join(consumer_parts[-2:])
+    for identity, record in records.items():
+        artifact = artifacts.get(identity)
+        if (
+            not isinstance(identity, str)
+            or not isinstance(record, Mapping)
+            or not isinstance(artifact, Mapping)
+            or record.get("producer_work_unit_key") != producer_key
+        ):
+            continue
+        try:
+            registered_consumer = bool(
+                registered_projection_handoff(
+                    producer_key, consumer_key, identity
+                )
+                or registered_read_only_consumption(
+                    producer_key, consumer_key, identity
+                )
+            )
+        except ValueError:
+            registered_consumer = False
+        if (
+            relative_consumer not in set(artifact.get("consumers") or ())
+            and not registered_consumer
+        ):
+            continue
+        if not _historical_successor_consumed_input_issues(
+            Path(scratchpad),
+            Path(project_root),
+            ledger,
+            record,
+            identity=identity,
+            run_id=run_id,
+            validation_context=validation_context,
+        ):
+            return True
+    return False
+
+
+def _historical_generation_fresh_input(
+    scratchpad: Path,
+    project_root: Path,
+    ledger: Mapping[str, Any],
+    unit: Mapping[str, Any],
+    record: Mapping[str, Any],
+    *,
+    identity: str,
+    run_id: str,
+    validation_context: _ArtifactValidationContext,
+    successor_cache: list[tuple[dict[str, set[str]], set[str], str]],
+    unit_output_cache: dict[str, bool],
+    ancestry_cache: dict[str, set[str]],
+) -> bool:
+    """Prove that a recorded generation belongs to a completed successor path."""
+
+    unit_key = str(unit.get("contract_manifest", {}).get("key") or "")
+    if (
+        not unit_key
+        or record.get("status") != "ACTIVE"
+        or _historical_successor_consumed_input_issues(
+            Path(scratchpad),
+            Path(project_root),
+            ledger,
+            record,
+            identity=identity,
+            run_id=run_id,
+            validation_context=validation_context,
+        )
+    ):
+        return False
+    units = ledger.get("work_units")
+    if not isinstance(units, Mapping):
+        return False
+    recorded_producer = str(record.get("producer_work_unit_key") or "")
+    for involved, direct_producers, successor_key in successor_cache:
+        identity_producers = involved.get(identity)
+        if not identity_producers or recorded_producer not in identity_producers:
+            continue
+        ancestors = ancestry_cache.get(successor_key)
+        if ancestors is None:
+            ancestors = set()
+            # A successor's ordinary immutable inputs carry its prepare/model
+            # ancestry, while its sealed producer bundles carry replaced
+            # outputs that deliberately are not ordinary inputs.  Both are
+            # required to reconstruct the complete historical transaction.
+            frontier = [successor_key, *sorted(direct_producers)]
+            while frontier:
+                candidate = frontier.pop()
+                if candidate in ancestors:
+                    continue
+                if not _historical_generation_unit_outputs_replay(
+                    Path(scratchpad),
+                    Path(project_root),
+                    ledger,
+                    work_unit_key=candidate,
+                    run_id=run_id,
+                    validation_context=validation_context,
+                    cache=unit_output_cache,
+                ):
+                    continue
+                ancestors.add(candidate)
+                candidate_unit = units.get(candidate)
+                candidate_inputs = (
+                    candidate_unit.get("input_bindings")
+                    if isinstance(candidate_unit, Mapping) else None
+                )
+                if not isinstance(candidate_inputs, Mapping):
+                    continue
+                parent_keys = sorted({
+                    str(raw.get("producer_work_unit_key") or "")
+                    for raw in candidate_inputs.values()
+                    if isinstance(raw, Mapping)
+                    and str(raw.get("producer_work_unit_key") or "")
+                    and not str(raw.get("producer_work_unit_key") or "").startswith(
+                        "semantic-mutation:"
+                    )
+                })
+                for parent in parent_keys:
+                    if parent in ancestors:
+                        continue
+                    if _historical_generation_edge_replays(
+                        Path(scratchpad),
+                        Path(project_root),
+                        ledger,
+                        producer_key=parent,
+                        consumer_key=candidate,
+                        run_id=run_id,
+                        validation_context=validation_context,
+                    ):
+                        frontier.append(parent)
+            ancestry_cache[successor_key] = ancestors
+        if unit_key in ancestors and _historical_generation_unit_outputs_replay(
+            Path(scratchpad),
+            Path(project_root),
+            ledger,
+            work_unit_key=unit_key,
+            run_id=run_id,
+            validation_context=validation_context,
+            cache=unit_output_cache,
+        ):
+            return True
+    return False
+
+
 def validate_work_unit_inputs(
     scratchpad: Path,
     project_root: Path,
@@ -15569,27 +18455,38 @@ def validate_work_unit_inputs(
     run_id: str,
     preexecution_authority: Mapping[str, Any] | None = None,
     _validation_context: _ArtifactValidationContext | None = None,
+    _historical_completed_successor: bool = False,
 ) -> list[str]:
     """Compare live semantic inputs with the exact pre-execution receipt."""
 
     if _validation_context is None:
         try:
-            validation_context = _ArtifactValidationContext(
+            with _artifact_validation_epoch(
                 Path(scratchpad), Path(project_root)
-            )
+            ) as validation_context:
+                return validate_work_unit_inputs(
+                    Path(scratchpad),
+                    Path(project_root),
+                    contract,
+                    launch,
+                    run_id=run_id,
+                    preexecution_authority=preexecution_authority,
+                    _validation_context=validation_context,
+                    _historical_completed_successor=(
+                        _historical_completed_successor
+                    ),
+                )
         except ArtifactLedgerError as exc:
             return [str(exc)]
-        issues = validate_work_unit_inputs(
-            Path(scratchpad),
-            Path(project_root),
-            contract,
-            launch,
-            run_id=run_id,
-            preexecution_authority=preexecution_authority,
-            _validation_context=validation_context,
-        )
-        issues.extend(validation_context.finish())
-        return list(dict.fromkeys(issues))
+    if (
+        _validation_context._path_key(_validation_context.scratchpad)
+        != _validation_context._path_key(Path(scratchpad))
+        or _validation_context._path_key(_validation_context.project_root)
+        != _validation_context._path_key(Path(project_root))
+    ):
+        return ["artifact validation context roots differ"]
+    if not _ledger_transaction_lock_is_owned(Path(scratchpad)):
+        return ["artifact validation context does not own ledger transaction lock"]
 
     try:
         contract, launch = _replay_authority_pair(contract, launch)
@@ -15680,25 +18577,38 @@ def validate_work_unit_inputs(
     successor_valid = False
     if "successor_consumption_authority" in unit:
         try:
-            authority, _stored_plan = (
-                _replay_driver_successor_authority(
+            committed_successor_replay = (
+                _historical_completed_successor
+                or (
+                    unit.get("execution_state") == "OUTPUT_COMMITTED"
+                    and unit.get("semantic_status") == "ACTIVE"
+                )
+            )
+            if committed_successor_replay:
+                if unit.get("execution_state") != "OUTPUT_COMMITTED":
+                    raise ArtifactLedgerError(
+                        "historical input replay requires committed successor"
+                    )
+                authority, _stored_plan, _events = (
+                    _replay_stored_completed_driver_successor_authority(
+                        Path(scratchpad), Path(project_root), ledger, unit,
+                        _validation_context=_validation_context,
+                    )
+                )
+            else:
+                authority, _stored_plan = _replay_driver_successor_authority(
+                    Path(scratchpad), Path(project_root), ledger, unit,
+                    contract, launch, run_id=run_id,
+                    _validation_context=_validation_context,
+                )
+                _validate_driver_successor_live_progress(
                     Path(scratchpad),
                     Path(project_root),
                     ledger,
                     unit,
-                    contract,
-                    launch,
-                    run_id=run_id,
+                    authority,
+                    require_complete=False,
                 )
-            )
-            _validate_driver_successor_live_progress(
-                Path(scratchpad),
-                Path(project_root),
-                ledger,
-                unit,
-                authority,
-                require_complete=False,
-            )
             successor_affected = set(
                 authority["affected_input_identities"]
             )
@@ -15732,6 +18642,18 @@ def validate_work_unit_inputs(
             )
             continue
         if successor_valid and identity in successor_affected:
+            if committed_successor_replay:
+                issues.extend(
+                    _historical_successor_consumed_input_issues(
+                        Path(scratchpad),
+                        Path(project_root),
+                        ledger,
+                        record,
+                        identity=identity,
+                        run_id=run_id,
+                        validation_context=_validation_context,
+                    )
+                )
             if contract.input_authority_requirements:
                 try:
                     requirement = contract.input_authority(identity)
@@ -15817,6 +18739,7 @@ def detect_semantic_input_drift(
     project_root: Path,
     *,
     run_id: str,
+    _validation_context: _ArtifactValidationContext | None = None,
 ) -> dict[str, Any]:
     """Inspect every stored input receipt without reconstructing its contract.
 
@@ -15830,7 +18753,22 @@ def detect_semantic_input_drift(
     run = str(run_id or "").strip()
     if not run:
         raise ArtifactLedgerError("semantic drift detection run_id is empty")
-    ledger = read_artifact_ledger(Path(scratchpad))
+    if _validation_context is None:
+        with _artifact_validation_epoch(
+            Path(scratchpad), Path(project_root)
+        ) as validation_context:
+            return detect_semantic_input_drift(
+                Path(scratchpad),
+                Path(project_root),
+                run_id=run,
+                _validation_context=validation_context,
+            )
+    if not _ledger_transaction_lock_is_owned(Path(scratchpad)):
+        raise ArtifactLedgerError(
+            "artifact validation context does not own ledger transaction lock"
+        )
+    validation_context = _validation_context
+    ledger = validation_context.ledger
     work_units = ledger.get("work_units")
     if not isinstance(work_units, dict):
         raise ArtifactLedgerError("artifact ledger work_units are malformed")
@@ -15839,19 +18777,79 @@ def detect_semantic_input_drift(
     # consumer binding.  Without this context, N consumers of the same typed
     # artifact each re-hash and replay the producer's complete output bundle,
     # turning a linear resume scan into an accidental quadratic hot path.
-    validation_context = _ArtifactValidationContext(
-        Path(scratchpad),
-        Path(project_root),
-        ledger=ledger,
-    )
-
     changed: set[str] = set()
     stale_units: set[str] = set()
     cross_run: set[str] = set()
     rows: list[dict[str, Any]] = []
+    # Per-identity live/recorded producer detail for stale rows.  Kept out of
+    # ``rows`` so the exact legacy row shape is unchanged; resume
+    # classification (``classify_resume_semantic_drift``) reads it to tell an
+    # intra-run by-design supersession from external tamper.
+    identity_states: dict[str, dict[str, dict[str, Any]]] = {}
+    work_unit_states: dict[str, dict[str, str]] = {}
     allowed_classes = {
         "IMMUTABLE", "BOUNDED_LOOKUP", "IMMUTABLE_AND_BOUNDED_LOOKUP",
     }
+    # Replay each completed deterministic successor once for this immutable
+    # scan epoch.  The sealed bundle denominator is the only authority for
+    # deciding which historical generations belong to that transaction.
+    successor_cache: list[
+        tuple[dict[str, set[str]], set[str], str]
+    ] = []
+    unit_output_cache: dict[str, bool] = {}
+    ancestry_cache: dict[str, set[str]] = {}
+    for successor_key, successor_unit in sorted(work_units.items()):
+        if (
+            not isinstance(successor_unit, Mapping)
+            or successor_unit.get("run_id") != run
+            or successor_unit.get("execution_state") != "OUTPUT_COMMITTED"
+            or successor_unit.get("semantic_status") != "ACTIVE"
+            or "successor_consumption_authority" not in successor_unit
+        ):
+            continue
+        try:
+            authority, _plan, _events = (
+                _replay_stored_completed_driver_successor_authority(
+                    Path(scratchpad),
+                    Path(project_root),
+                    ledger,
+                    successor_unit,
+                    _validation_context=validation_context,
+                )
+            )
+        except (
+            ArtifactLedgerError, KeyError, OSError, RuntimeError,
+            TypeError, ValueError,
+        ):
+            continue
+        involved: dict[str, set[str]] = {}
+        direct_producers: set[str] = set()
+        bundles = authority.get("producer_bundles")
+        if not isinstance(bundles, list):
+            continue
+        malformed = False
+        for bundle in bundles:
+            if not isinstance(bundle, Mapping):
+                malformed = True
+                break
+            producer_key = str(bundle.get("producer_work_unit_key") or "")
+            claimed = bundle.get("successor_output_identities")
+            consumed = bundle.get("consumed_input_identities")
+            if (
+                not producer_key
+                or not isinstance(claimed, list)
+                or not isinstance(consumed, list)
+                or any(not isinstance(value, str) for value in (*claimed, *consumed))
+            ):
+                malformed = True
+                break
+            for identity in (*claimed, *consumed):
+                involved.setdefault(identity, set()).add(producer_key)
+            direct_producers.add(producer_key)
+        if not malformed and involved:
+            successor_cache.append(
+                (involved, direct_producers, successor_key)
+            )
 
     for key, unit in sorted(work_units.items()):
         if not isinstance(key, str) or not key or not isinstance(unit, dict):
@@ -15889,6 +18887,8 @@ def detect_semantic_input_drift(
 
         unit_reasons: set[str] = set()
         unit_identities: set[str] = set()
+        changed_identities: set[str] = set()
+        unit_identity_states: dict[str, dict[str, Any]] = {}
         try:
             receipt_digest = _input_set_digest(bindings)
         except Exception as exc:
@@ -15897,6 +18897,9 @@ def detect_semantic_input_drift(
             ) from exc
         if unit.get("input_set_digest") != receipt_digest:
             unit_reasons.add("RECEIPT_DIGEST_MISMATCH")
+            # A corrupt receipt cannot establish which part of its denominator
+            # is trustworthy. Retain conservative invalidation for this case.
+            changed_identities.update(bindings)
 
         for identity, recorded in sorted(bindings.items()):
             if (
@@ -15916,24 +18919,84 @@ def detect_semantic_input_drift(
                 _validation_context=validation_context,
             )
             recorded_status = recorded.get("status")
+            identity_reasons: set[str] = set()
             if recorded_status == "MISSING":
-                unit_reasons.add("MISSING_AT_BINDING")
+                identity_reasons.add("MISSING_AT_BINDING")
             elif recorded_status != "ACTIVE":
-                unit_reasons.add("INVALID_RECORDED_STATUS")
+                identity_reasons.add("INVALID_RECORDED_STATUS")
             elif current.get("status") == "PRODUCER_AUTHORITY_MISMATCH":
-                unit_reasons.add("PRODUCER_AUTHORITY_MISMATCH")
+                identity_reasons.add("PRODUCER_AUTHORITY_MISMATCH")
             elif current.get("status") != "ACTIVE":
-                unit_reasons.add("INPUT_MISSING")
+                identity_reasons.add("INPUT_MISSING")
             elif recorded.get("sha256") != current.get("sha256"):
-                unit_reasons.add("CONTENT_HASH_CHANGED")
+                identity_reasons.add("CONTENT_HASH_CHANGED")
 
             if (
                 recorded.get("producer_work_unit_key", "")
                 != current.get("producer_work_unit_key", "")
                 or recorded.get("producer_contract_digest", "")
                 != current.get("producer_contract_digest", "")
+                or recorded.get("producer_launch_digest", "")
+                != current.get("producer_launch_digest", "")
+                or recorded.get("producer_commit_receipt_digest", "")
+                != current.get("producer_commit_receipt_digest", "")
             ):
-                unit_reasons.add("PRODUCER_AUTHORITY_CHANGED")
+                identity_reasons.add("PRODUCER_AUTHORITY_CHANGED")
+            if (
+                identity_reasons
+                and identity_reasons <= {
+                    "PRODUCER_AUTHORITY_MISMATCH",
+                    "CONTENT_HASH_CHANGED",
+                    "PRODUCER_AUTHORITY_CHANGED",
+                }
+                and _historical_generation_fresh_input(
+                    Path(scratchpad),
+                    Path(project_root),
+                    ledger,
+                    unit,
+                    recorded,
+                    identity=identity,
+                    run_id=run,
+                    validation_context=validation_context,
+                    successor_cache=successor_cache,
+                    unit_output_cache=unit_output_cache,
+                    ancestry_cache=ancestry_cache,
+                )
+            ):
+                identity_reasons.clear()
+            if identity_reasons:
+                unit_reasons.update(identity_reasons)
+                changed_identities.add(identity)
+            recorded_sha256 = str(recorded.get("sha256") or "")
+            current_sha256 = str(current.get("sha256") or "")
+            unit_identity_states[identity] = {
+                "reasons": sorted(identity_reasons),
+                # The consumer's OWN byte comparison, always computed.  The
+                # reason branch above short-circuits on
+                # PRODUCER_AUTHORITY_MISMATCH and therefore cannot tell a
+                # caller whether the consumed bytes actually moved.
+                "recorded_sha256": recorded_sha256,
+                "current_sha256": current_sha256,
+                "content_equal": bool(
+                    recorded_sha256
+                    and current_sha256
+                    and recorded_sha256 == current_sha256
+                ),
+                "recorded_status": str(recorded_status or ""),
+                "recorded_producer_work_unit_key": str(
+                    recorded.get("producer_work_unit_key") or ""
+                ),
+                "recorded_producer_run_id": str(
+                    recorded.get("producer_run_id") or ""
+                ),
+                "current_status": str(current.get("status") or ""),
+                "current_producer_work_unit_key": str(
+                    current.get("producer_work_unit_key") or ""
+                ),
+                "current_producer_run_id": str(
+                    current.get("producer_run_id") or ""
+                ),
+            }
 
         if unit.get("semantic_status") == "STALE_INPUT":
             unit_reasons.add("ALREADY_INVALIDATED")
@@ -15942,15 +19005,33 @@ def detect_semantic_input_drift(
                 for identity in prior.get("changed_input_identities", []):
                     if isinstance(identity, str) and ":" in identity:
                         unit_identities.add(identity)
+                        changed_identities.add(identity)
+            if not changed_identities:
+                # Legacy/corrupt stale rows with no usable cause do not prove
+                # independence. Do not treat them as a clean resume.
+                changed_identities.update(unit_identities)
 
         if unit_reasons:
             stale_units.add(key)
-            changed.update(unit_identities)
+            # A unit's unchanged co-input is not itself a drift root. Promoting
+            # the complete denominator here invalidates independent siblings
+            # (and can propagate backwards through shared upstream inputs).
+            changed.update(changed_identities)
             rows.append({
                 "work_unit_key": key,
                 "input_identities": sorted(unit_identities),
+                "changed_input_identities": sorted(changed_identities),
                 "reasons": sorted(unit_reasons),
             })
+            identity_states[key] = {
+                identity: unit_identity_states[identity]
+                for identity in sorted(changed_identities)
+                if identity in unit_identity_states
+            }
+            work_unit_states[key] = {
+                "execution_state": str(unit.get("execution_state") or ""),
+                "semantic_status": str(unit.get("semantic_status") or ""),
+            }
 
     return {
         "schema": "plamen.semantic_input_drift.v1",
@@ -15959,6 +19040,549 @@ def detect_semantic_input_drift(
         "stale_work_unit_keys": sorted(stale_units),
         "cross_run_work_unit_keys": sorted(cross_run),
         "rows": rows,
+        "identity_states": identity_states,
+        "work_unit_states": work_unit_states,
+    }
+
+
+RESUME_SEMANTIC_DRIFT_SCHEMA = "plamen.resume_semantic_drift.v1"
+RESUME_DRIFT_CLASSIFICATION_SCHEMA = (
+    "plamen.resume_semantic_drift_classification.v1"
+)
+COMMITTED_OUTPUT_TAMPER_SCHEMA = "plamen.committed_output_tamper.v1"
+
+# Drift classes that prove EXTERNAL drift of a completed phase's own committed
+# state and therefore may invalidate that phase and its typed descendants.
+EXTERNAL_RESUME_DRIFT_CLASSES = frozenset({
+    "EXTERNAL_COMMITTED_OUTPUT_TAMPER",
+    "EXTERNAL_COMMITTED_OUTPUT_MISSING",
+    "EXTERNAL_FOREIGN_PRODUCER",
+    "EXTERNAL_LEDGER_RECEIPT_INTEGRITY",
+    "EXTERNAL_PRIOR_INVALIDATION",
+    "EXTERNAL_UNCLASSIFIED",
+})
+# Drift classes that describe byte changes the run made by design (or control
+# state the run may never gate on).  They are recorded as visible context and
+# never rewind a completed phase.
+INTRA_RUN_RESUME_DRIFT_CLASSES = frozenset({
+    "UNARMED_WORK_UNIT",
+    "RUN_CONTROL_STATE",
+    "INTRA_RUN_SUPERSESSION",
+    "INTRA_RUN_PRODUCER_RECEIPT_CASCADE",
+    "UNATTRIBUTED_CONTROL_INPUT",
+    "UNATTRIBUTED_CONTROL_INPUT_MISSING",
+    "ABSENT_AT_BINDING_STILL_ABSENT",
+})
+
+# These legacy driver controls were intentionally mutable before they acquired
+# explicit producer ownership.  They are the narrow compatibility exception to
+# the normal rule that a changed, unowned semantic input is external drift.
+# Treating *every* unowned input as control state hid real changes to semantic
+# queues (for example methodology_skeptic_queue_*.json) and could bless stale
+# completed descendants after a restart.
+_LEGACY_MUTABLE_RUN_CONTROL_INPUTS = frozenset({
+    "scratchpad:rescan_manifest.md",
+    "scratchpad:skill_dispatch.json",
+})
+
+
+def _is_legacy_mutable_run_control_input(identity: str) -> bool:
+    return str(identity or "") in _LEGACY_MUTABLE_RUN_CONTROL_INPUTS
+
+
+def work_unit_phase_name(work_unit_key: str) -> str:
+    """Return the phase component of a canonical six-part work-unit key."""
+
+    parts = str(work_unit_key or "").split("/")
+    return parts[4] if len(parts) == 6 else ""
+
+
+def detect_committed_output_tamper(
+    scratchpad: Path,
+    project_root: Path,
+    *,
+    run_id: str,
+    _validation_context: _ArtifactValidationContext | None = None,
+) -> dict[str, Any]:
+    """Seal check for every currently-owned committed output of this run.
+
+    This is the property the resume decision gates on: a completed phase's
+    committed output was modified (or removed) AFTER the run committed it and
+    no durable arm-before-write mutation chain explains the new bytes.  Only
+    the CURRENT owner binding is checked, so an earlier generation that a
+    later same-run producer deliberately replaced is never reported.  The
+    scan is read-only.
+    """
+
+    run = str(run_id or "").strip()
+    if not run:
+        raise ArtifactLedgerError("committed output tamper scan run_id is empty")
+    if _validation_context is None:
+        with _artifact_validation_epoch(
+            Path(scratchpad), Path(project_root)
+        ) as validation_context:
+            return detect_committed_output_tamper(
+                Path(scratchpad),
+                Path(project_root),
+                run_id=run,
+                _validation_context=validation_context,
+            )
+    if not _ledger_transaction_lock_is_owned(Path(scratchpad)):
+        raise ArtifactLedgerError(
+            "artifact validation context does not own ledger transaction lock"
+        )
+    ledger = _validation_context.ledger
+    work_units = ledger.get("work_units")
+    bindings = ledger.get("artifact_bindings")
+    if not isinstance(work_units, dict) or not isinstance(bindings, dict):
+        raise ArtifactLedgerError("artifact ledger work_units are malformed")
+    rows: list[dict[str, Any]] = []
+    for identity, binding in sorted(bindings.items()):
+        if (
+            not isinstance(identity, str)
+            or ":" not in identity
+            or not isinstance(binding, Mapping)
+            or binding.get("run_id") != run
+            or str(binding.get("status") or "") != "ACTIVE"
+        ):
+            continue
+        owner = str(binding.get("owner_key") or "")
+        if not owner or owner.startswith("semantic-mutation:"):
+            continue
+        unit = work_units.get(owner)
+        if (
+            not isinstance(unit, Mapping)
+            or unit.get("run_id") != run
+            or unit.get("semantic_status") != "ACTIVE"
+        ):
+            continue
+        recorded_sha256 = str(binding.get("sha256") or "")
+        recorded_size = binding.get("size")
+        try:
+            path = _validation_context.path_for_identity(identity)
+        except ArtifactLedgerError as exc:
+            rows.append({
+                "identity": identity,
+                "owner_work_unit_key": owner,
+                "owner_phase": work_unit_phase_name(owner),
+                "recorded_sha256": recorded_sha256,
+                "live_status": "UNSAFE_PHYSICAL_PATH",
+                "live_sha256": "",
+                "detail": str(exc),
+            })
+            continue
+        snapshot, error = _validation_context.snapshot(path)
+        if snapshot is None:
+            live_status = (
+                "MISSING" if not rooted_io.lexists(path) else (error or "UNSTABLE")
+            )
+            rows.append({
+                "identity": identity,
+                "owner_work_unit_key": owner,
+                "owner_phase": work_unit_phase_name(owner),
+                "recorded_sha256": recorded_sha256,
+                "live_status": live_status,
+                "live_sha256": "",
+                "detail": error,
+            })
+            continue
+        live_sha256 = str(snapshot.get("sha256") or "")
+        if (
+            live_sha256 == recorded_sha256
+            and snapshot.get("size") == recorded_size
+        ):
+            continue
+        # Changed bytes are only tamper when no durable, same-run,
+        # arm-before-write mutation chain owns the live generation.
+        mutation_authority = _semantic_mutation_producer_authority(
+            Path(scratchpad),
+            project_root=Path(project_root),
+            identity=identity,
+            producer=dict(binding),
+            live_state={
+                "status": "ACTIVE",
+                "size": snapshot.get("size"),
+                "sha256": live_sha256,
+            },
+        )
+        if mutation_authority is not None:
+            continue
+        rows.append({
+            "identity": identity,
+            "owner_work_unit_key": owner,
+            "owner_phase": work_unit_phase_name(owner),
+            "recorded_sha256": recorded_sha256,
+            "live_status": "CONTENT_CHANGED",
+            "live_sha256": live_sha256,
+            "detail": "committed output bytes differ from the current owner's commit record",
+        })
+    return {
+        "schema": COMMITTED_OUTPUT_TAMPER_SCHEMA,
+        "run_id": run,
+        "rows": rows,
+        "tampered_identities": sorted({row["identity"] for row in rows}),
+        "tampered_owner_work_unit_keys": sorted({
+            row["owner_work_unit_key"] for row in rows
+        }),
+    }
+
+
+def _current_owner_is_live_same_run(
+    bindings: Mapping[str, Any], identity: str, run_id: str
+) -> bool:
+    """True when this run currently owns ``identity`` under an ACTIVE binding.
+
+    The ledger keeps exactly one current owner per artifact identity.  A
+    consumer that bound an earlier generation of an artifact this run later
+    replaced is therefore reading a superseded generation by design, not
+    evidence of outside interference -- provided the committed-output seal
+    scan separately confirms the current generation still matches its owner's
+    commit record.
+    """
+
+    binding = bindings.get(identity) if isinstance(bindings, Mapping) else None
+    return (
+        isinstance(binding, Mapping)
+        and str(binding.get("status") or "") == "ACTIVE"
+        and str(binding.get("run_id") or "") == str(run_id)
+        and bool(str(binding.get("owner_key") or ""))
+    )
+
+
+def _classify_resume_drift_identity(
+    identity: str,
+    *,
+    run_id: str,
+    identity_reasons: set[str],
+    unit_reasons: set[str],
+    state: Mapping[str, Any],
+    bindings: Mapping[str, Any],
+    tampered_identities: frozenset[str] | set[str],
+) -> str:
+    if identity in tampered_identities:
+        # The committed-output seal scan is the tamper authority.  Whatever
+        # else explains the consumer-side row, an artifact whose CURRENT owner
+        # binding no longer matches its bytes was changed from outside the
+        # run, and that outranks every by-design explanation below.
+        return "EXTERNAL_COMMITTED_OUTPUT_TAMPER"
+    if identity == RUN_CONTROL_STATE_IDENTITY:
+        return "RUN_CONTROL_STATE"
+    if (
+        "RECEIPT_DIGEST_MISMATCH" in unit_reasons
+        or "INVALID_RECORDED_STATUS" in identity_reasons
+    ):
+        return "EXTERNAL_LEDGER_RECEIPT_INTEGRITY"
+    if "ALREADY_INVALIDATED" in unit_reasons:
+        return "EXTERNAL_PRIOR_INVALIDATION"
+    current_status = str(state.get("current_status") or "")
+    current_key = str(state.get("current_producer_work_unit_key") or "")
+    current_run = str(state.get("current_producer_run_id") or "")
+    recorded_key = str(state.get("recorded_producer_work_unit_key") or "")
+    if (
+        "PRODUCER_AUTHORITY_MISMATCH" in identity_reasons
+        or current_status == "PRODUCER_AUTHORITY_MISMATCH"
+    ):
+        # The producer WORK UNIT's whole-output commit replay failed.  That is
+        # not this consumer's property.  A consumer is up to date iff the
+        # bytes it bound are still the bytes on disk -- its immediate inputs,
+        # not its producer's siblings.  When one output of a multi-output
+        # producer is legitimately replaced by a later same-run unit (recon
+        # prepass -> canonical merge, rescan manifest, depth rewriting
+        # skill_dispatch.json), that producer's receipt stops replaying and
+        # every consumer of its UNTOUCHED outputs was being reported as drift:
+        # 746 of 787 rows on the real DODO run46/run47 ledgers had
+        # byte-identical inputs.  Those cascades rewound whole audits.
+        # "A committed output was edited from outside the run" is covered
+        # independently and per identity by detect_committed_output_tamper,
+        # which is the authority this resume decision gates on.
+        if state.get("content_equal") is True:
+            return "INTRA_RUN_PRODUCER_RECEIPT_CASCADE"
+        # The consumed bytes did move.  That is a superseded generation, not
+        # tamper, when this run still owns the identity under an ACTIVE
+        # binding and the seal scan found the current generation intact
+        # (recon prepass -> canonical merge; inventory aggregate -> additive
+        # re-emit).  Anything else is external and fails closed.
+        if current_run and current_run != run_id:
+            return "EXTERNAL_FOREIGN_PRODUCER"
+        if (
+            identity not in tampered_identities
+            and _current_owner_is_live_same_run(bindings, identity, run_id)
+        ):
+            return "INTRA_RUN_SUPERSESSION"
+        return "EXTERNAL_COMMITTED_OUTPUT_TAMPER"
+    if "INPUT_MISSING" in identity_reasons:
+        # ACTIVE at binding, absent now.  A file the consumer really read and
+        # that has since VANISHED is external drift whether or not the ledger
+        # carries a producer binding for it: nothing the run does by design
+        # removes an input it already consumed (by-design replacement keeps
+        # the identity ACTIVE and is classified as supersession above, and an
+        # input that never existed is ABSENT_AT_BINDING_STILL_ABSENT).
+        return "EXTERNAL_COMMITTED_OUTPUT_MISSING"
+    if identity_reasons == {"MISSING_AT_BINDING"} and current_status == "MISSING":
+        return "ABSENT_AT_BINDING_STILL_ABSENT"
+    if (
+        identity_reasons <= {
+            "CONTENT_HASH_CHANGED",
+            "PRODUCER_AUTHORITY_CHANGED",
+            "MISSING_AT_BINDING",
+        }
+        and current_status == "ACTIVE"
+    ):
+        if current_key:
+            if current_run == run_id:
+                # A later work unit of the SAME run committed the current
+                # bytes by design (recon prepass -> canonical merge).  The
+                # earlier consumer legitimately saw the earlier generation.
+                return "INTRA_RUN_SUPERSESSION"
+            # An OBSERVED foreign producer of the live bytes is external drift
+            # and always outranks whatever the ledger's binding row claims.
+            return "EXTERNAL_FOREIGN_PRODUCER"
+        if (
+            identity not in tampered_identities
+            and _current_owner_is_live_same_run(bindings, identity, run_id)
+        ):
+            return "INTRA_RUN_SUPERSESSION"
+        # No registered producer at binding time and none now.  Only an exact,
+        # declared legacy driver-control identity is allowed to drift without
+        # invalidation.  Unknown identities are semantic by default and fail
+        # closed; absence of producer metadata cannot become authority to bless
+        # stale completed work.
+        if _is_legacy_mutable_run_control_input(identity):
+            return "UNATTRIBUTED_CONTROL_INPUT"
+        return "EXTERNAL_UNCLASSIFIED"
+    return "EXTERNAL_UNCLASSIFIED"
+
+
+def classify_resume_semantic_drift(
+    ledger: Mapping[str, Any],
+    drift: Mapping[str, Any],
+    tamper: Mapping[str, Any] | None,
+    *,
+    run_id: str,
+    completed_phases: Sequence[str],
+) -> dict[str, Any]:
+    """Partition drift rows into external drift versus by-design rewrites.
+
+    Gate on the property, never on the representation: a completed phase is
+    invalidated only when its own committed state (or a committed output it
+    consumed) was changed from outside the run.  Byte changes the run made by
+    design -- a later same-run producer replacing an artifact, a driver
+    control file rewritten mid-run, the mutable checkpoint -- and work units
+    of the phase that was still in progress at pause time are classified as
+    non-external and re-armed instead of rewound.
+    """
+
+    run = str(run_id or "").strip()
+    units = ledger.get("work_units") if isinstance(ledger, Mapping) else None
+    if not isinstance(units, Mapping):
+        raise ArtifactLedgerError("artifact ledger work_units are malformed")
+    completed = {str(name) for name in completed_phases}
+    identity_states = drift.get("identity_states") or {}
+    artifact_bindings = ledger.get("artifact_bindings")
+    if not isinstance(artifact_bindings, Mapping):
+        artifact_bindings = {}
+    tampered_identities = {
+        str(value)
+        for value in (
+            (tamper or {}).get("tampered_identities") or ()
+            if isinstance(tamper, Mapping) else ()
+        )
+        if str(value)
+    }
+    rows: list[dict[str, Any]] = []
+    external_identities: set[str] = set()
+    external_units: set[str] = set()
+    external_phases: set[str] = set()
+    unarmed_units: set[str] = set()
+    intra_run_identities: set[str] = set()
+    cascade_identities: set[str] = set()
+    unattributed_identities: set[str] = set()
+    control_identities: set[str] = set()
+    for row in drift.get("rows") or ():
+        if not isinstance(row, Mapping):
+            continue
+        key = str(row.get("work_unit_key") or "")
+        phase = work_unit_phase_name(key)
+        unit_reasons = {str(item) for item in (row.get("reasons") or ())}
+        if phase and phase not in completed:
+            # The phase was in progress at pause time.  Its work units are
+            # simply re-armed / re-executed by the ordinary phase runner;
+            # not-yet-produced inputs are not drift.
+            unarmed_units.add(key)
+            rows.append({
+                "work_unit_key": key,
+                "phase": phase,
+                "identity": "*",
+                "reasons": sorted(unit_reasons),
+                "drift_class": "UNARMED_WORK_UNIT",
+            })
+            continue
+        states = identity_states.get(key) or {}
+        for identity in row.get("changed_input_identities") or ():
+            identity = str(identity)
+            state = states.get(identity) or {}
+            identity_reasons = {
+                str(item) for item in (state.get("reasons") or ())
+            }
+            drift_class = _classify_resume_drift_identity(
+                identity,
+                run_id=run,
+                identity_reasons=identity_reasons,
+                unit_reasons=unit_reasons,
+                state=state,
+                bindings=artifact_bindings,
+                tampered_identities=tampered_identities,
+            )
+            rows.append({
+                "work_unit_key": key,
+                "phase": phase,
+                "identity": identity,
+                "reasons": sorted(identity_reasons or unit_reasons),
+                "drift_class": drift_class,
+                "current_producer_work_unit_key": str(
+                    state.get("current_producer_work_unit_key") or ""
+                ),
+                "recorded_producer_work_unit_key": str(
+                    state.get("recorded_producer_work_unit_key") or ""
+                ),
+            })
+            if drift_class in EXTERNAL_RESUME_DRIFT_CLASSES:
+                external_identities.add(identity)
+                external_units.add(key)
+                if phase:
+                    external_phases.add(phase)
+            elif drift_class in {
+                "INTRA_RUN_SUPERSESSION",
+                "INTRA_RUN_PRODUCER_RECEIPT_CASCADE",
+            }:
+                intra_run_identities.add(identity)
+                if drift_class == "INTRA_RUN_PRODUCER_RECEIPT_CASCADE":
+                    cascade_identities.add(identity)
+            elif drift_class == "RUN_CONTROL_STATE":
+                control_identities.add(identity)
+            elif drift_class in {
+                "UNATTRIBUTED_CONTROL_INPUT",
+                "UNATTRIBUTED_CONTROL_INPUT_MISSING",
+            }:
+                unattributed_identities.add(identity)
+    tamper_rows = (
+        tamper.get("rows") if isinstance(tamper, Mapping) else None
+    ) or ()
+    for tamper_row in tamper_rows:
+        if not isinstance(tamper_row, Mapping):
+            continue
+        identity = str(tamper_row.get("identity") or "")
+        owner = str(tamper_row.get("owner_work_unit_key") or "")
+        phase = work_unit_phase_name(owner)
+        rows.append({
+            "work_unit_key": owner,
+            "phase": phase,
+            "identity": identity,
+            "reasons": [str(tamper_row.get("live_status") or "")],
+            "drift_class": "EXTERNAL_COMMITTED_OUTPUT_TAMPER",
+            "current_producer_work_unit_key": owner,
+            "recorded_producer_work_unit_key": owner,
+        })
+        if identity:
+            external_identities.add(identity)
+        if owner:
+            external_units.add(owner)
+        if phase:
+            external_phases.add(phase)
+    # An identity the seal scan proved external can never also be reported as
+    # by-design: the two loops above key on the consumer binding and on the
+    # owner binding respectively, so the same artifact can reach both.
+    # External wins, and the by-design sets are the caller's evidence that a
+    # change needs no invalidation -- they must not contain it.
+    intra_run_identities -= external_identities
+    cascade_identities -= external_identities
+    control_identities -= external_identities
+    unattributed_identities -= external_identities
+    return {
+        "schema": RESUME_DRIFT_CLASSIFICATION_SCHEMA,
+        "run_id": run,
+        "rows": rows,
+        "external_changed_input_identities": sorted(external_identities),
+        "external_work_unit_keys": sorted(external_units),
+        "external_phases": sorted(external_phases),
+        "unarmed_work_unit_keys": sorted(unarmed_units),
+        "intra_run_superseded_identities": sorted(intra_run_identities),
+        "producer_receipt_cascade_identities": sorted(cascade_identities),
+        "run_control_state_identities": sorted(control_identities),
+        "unattributed_control_input_identities": sorted(
+            unattributed_identities
+        ),
+    }
+
+
+def ledger_has_typed_run_work_units(
+    ledger: Mapping[str, Any], *, run_id: str
+) -> bool:
+    """True when the ledger carries at least one exact input receipt for the run.
+
+    A ledger without any typed same-run receipt has no dependency knowledge and
+    cannot prove which completed phases are independent of a change.
+    """
+
+    units = ledger.get("work_units") if isinstance(ledger, Mapping) else None
+    if not isinstance(units, Mapping):
+        return False
+    run = str(run_id or "").strip()
+    for unit in units.values():
+        if (
+            isinstance(unit, Mapping)
+            and unit.get("run_id") == run
+            and isinstance(unit.get("input_bindings"), Mapping)
+            and unit.get("input_bindings")
+        ):
+            return True
+    return False
+
+
+def detect_resume_semantic_drift(
+    scratchpad: Path,
+    project_root: Path,
+    *,
+    run_id: str,
+    completed_phases: Sequence[str],
+) -> dict[str, Any]:
+    """One read-only epoch: input drift + output seal + typed classification."""
+
+    run = str(run_id or "").strip()
+    if not run:
+        raise ArtifactLedgerError("resume semantic drift run_id is empty")
+    with _artifact_validation_epoch(
+        Path(scratchpad), Path(project_root)
+    ) as validation_context:
+        drift = detect_semantic_input_drift(
+            Path(scratchpad),
+            Path(project_root),
+            run_id=run,
+            _validation_context=validation_context,
+        )
+        tamper = detect_committed_output_tamper(
+            Path(scratchpad),
+            Path(project_root),
+            run_id=run,
+            _validation_context=validation_context,
+        )
+        classification = classify_resume_semantic_drift(
+            validation_context.ledger,
+            drift,
+            tamper,
+            run_id=run,
+            completed_phases=completed_phases,
+        )
+        typed_units = ledger_has_typed_run_work_units(
+            validation_context.ledger, run_id=run
+        )
+    return {
+        "schema": RESUME_SEMANTIC_DRIFT_SCHEMA,
+        "run_id": run,
+        "input_drift": drift,
+        "output_tamper": tamper,
+        "classification": classification,
+        "ledger_has_typed_run_work_units": typed_units,
     }
 
 
@@ -16935,6 +20559,8 @@ def recover_quarantined_deterministic_work_unit_prestate(
                 "input_receipt_kind",
                 "explicit_absence_authority",
                 "input_rebind_history",
+                "preexecution_authority",
+                "preexecution_authority_digest",
             }
         }
         reset.update(
@@ -17094,6 +20720,63 @@ def _semantic_transition_authority(
     }
 
 
+def _require_semantic_mutation_predecessor_authority(
+    scratchpad: Path,
+    project_root: Path,
+    identity: str,
+    *,
+    run_id: str,
+    before: Mapping[str, Any],
+) -> None:
+    """Reject an arm over active bytes without current producer authority.
+
+    A semantic event can extend an exact PhaseIO producer or an already
+    authenticated, same-run contiguous semantic-mutation successor.  It must
+    not turn a STALE_INPUT binding, raw file, or producer mismatch into a new
+    virtual producer merely because the caller observed and hashed those
+    bytes before writing.  Missing-to-active mutations have no predecessor
+    bytes and retain their existing invalidation-only use case.
+    """
+
+    if before.get("status") != "ACTIVE":
+        return
+    ledger = read_artifact_ledger(Path(scratchpad))
+    record = _input_binding_record(
+        Path(scratchpad),
+        Path(project_root),
+        str(identity),
+        "IMMUTABLE",
+        ledger,
+    )
+    observed = {
+        "status": record.get("status"),
+        "size": record.get("size"),
+        "sha256": record.get("sha256"),
+    }
+    issues: list[str] = []
+    if observed != dict(before):
+        issues.append(
+            f"{identity}: semantic mutation predecessor changed during arm"
+        )
+    issues.extend(
+        semantic_input_producer_authority_issues(
+            ledger,
+            record,
+            run_id=str(run_id),
+        )
+    )
+    if str(record.get("producer_run_id") or "") != str(run_id):
+        issues.append(
+            f"{identity}: semantic mutation predecessor is not current-run"
+        )
+    if issues:
+        raise ArtifactLedgerError(
+            "semantic mutation predecessor lacks active current-run producer "
+            "authority: "
+            + "; ".join(dict.fromkeys(issues))
+        )
+
+
 def arm_semantic_mutation(
     scratchpad: Path,
     project_root: Path,
@@ -17108,10 +20791,17 @@ def arm_semantic_mutation(
     kind = str(mutation_kind or "").strip().upper()
     if not run or not kind:
         raise ArtifactLedgerError("semantic mutation run/kind is empty")
-    before = _semantic_artifact_state(
-        Path(scratchpad), Path(project_root), artifact_identity
-    )
     with _ledger_transaction_lock(scratchpad):
+        before = _semantic_artifact_state(
+            Path(scratchpad), Path(project_root), artifact_identity
+        )
+        _require_semantic_mutation_predecessor_authority(
+            Path(scratchpad),
+            Path(project_root),
+            artifact_identity,
+            run_id=run,
+            before=before,
+        )
         payload = _read_semantic_mutations(Path(scratchpad))
         for event in payload["events"]:
             if (
@@ -17144,6 +20834,114 @@ def arm_semantic_mutation(
         payload["events"].append(event)
         _write_semantic_mutations(Path(scratchpad), payload)
         return dict(event)
+
+
+def arm_semantic_mutation_batch(
+    scratchpad: Path,
+    project_root: Path,
+    *,
+    mutations: Sequence[tuple[str, str]],
+    run_id: str,
+) -> list[dict[str, Any]]:
+    """Atomically arm a coupled artifact bundle from one authority epoch.
+
+    Sequentially arming outputs owned by the same committed work unit is
+    self-defeating: the first visible ``ARMED`` event intentionally makes that
+    bundle non-terminal, so replay of a sibling predecessor fails closed.  A
+    coupled mutation must therefore preflight every predecessor before any arm
+    is published, then persist all arms in one ledger replacement.
+    """
+
+    run = str(run_id or "").strip()
+    normalized = [
+        (str(identity or "").strip(), str(kind or "").strip().upper())
+        for identity, kind in mutations
+    ]
+    if (
+        not run
+        or not normalized
+        or any(not identity or not kind for identity, kind in normalized)
+        or len({identity for identity, _kind in normalized}) != len(normalized)
+        or len(set(normalized)) != len(normalized)
+    ):
+        raise ArtifactLedgerError(
+            "semantic mutation batch run/mutations are empty or ambiguous"
+        )
+
+    root = Path(scratchpad)
+    project = Path(project_root)
+    with _ledger_transaction_lock(root):
+        payload = _read_semantic_mutations(root)
+        requested = set(normalized)
+        matching = [
+            event
+            for event in payload["events"]
+            if event.get("status") == "ARMED"
+            and event.get("run_id") == run
+            and (
+                str(event.get("artifact_identity") or ""),
+                str(event.get("mutation_kind") or ""),
+            )
+            in requested
+        ]
+        if matching:
+            keys = [
+                (
+                    str(event.get("artifact_identity") or ""),
+                    str(event.get("mutation_kind") or ""),
+                )
+                for event in matching
+            ]
+            if (
+                len(matching) != len(requested)
+                or len(set(keys)) != len(keys)
+                or set(keys) != requested
+            ):
+                raise ArtifactLedgerError(
+                    "semantic mutation batch has a partial or duplicate prior arm"
+                )
+            by_key = {key: event for key, event in zip(keys, matching)}
+            return [dict(by_key[key]) for key in normalized]
+
+        snapshots: dict[tuple[str, str], dict[str, Any]] = {}
+        # No mutation-ledger bytes change during this loop.  Every predecessor
+        # is checked against the same terminal producer epoch.
+        for identity, kind in normalized:
+            before = _semantic_artifact_state(root, project, identity)
+            _require_semantic_mutation_predecessor_authority(
+                root,
+                project,
+                identity,
+                run_id=run,
+                before=before,
+            )
+            snapshots[(identity, kind)] = before
+
+        events: list[dict[str, Any]] = []
+        for identity, kind in normalized:
+            ordinal = len(payload["events"]) + 1
+            event: dict[str, Any] = {
+                "schema": "plamen.semantic_mutation.v1",
+                "event_id": "",
+                "run_id": run,
+                "mutation_kind": kind,
+                "artifact_identity": identity,
+                "status": "ARMED",
+                "before": snapshots[(identity, kind)],
+                "after": {},
+                "transition_authority": {},
+                "affected_record_ids": [],
+                "invalidated_work_unit_keys": [],
+                "plan_digest": "",
+                "checkpoint_reconciled": False,
+                "reconciled_by_run_id": "",
+            }
+            event["event_id"] = _semantic_mutation_event_id(event, ordinal)
+            event["event_digest"] = _mutation_event_digest(event)
+            payload["events"].append(event)
+            events.append(dict(event))
+        _write_semantic_mutations(root, payload)
+        return events
 
 
 def find_semantic_mutation_event(
@@ -17532,24 +21330,31 @@ def validate_work_unit_artifacts(
     """
     if _validation_context is None:
         try:
-            validation_context = _ArtifactValidationContext(
+            with _artifact_validation_epoch(
                 Path(scratchpad), Path(project_root)
-            )
+            ) as validation_context:
+                return validate_work_unit_artifacts(
+                    Path(scratchpad),
+                    Path(project_root),
+                    contract,
+                    launch,
+                    run_id=run_id,
+                    actor=actor,
+                    require_live_input_authority=require_live_input_authority,
+                    preexecution_authority=preexecution_authority,
+                    _validation_context=validation_context,
+                )
         except ArtifactLedgerError as exc:
             return [str(exc)]
-        issues = validate_work_unit_artifacts(
-            Path(scratchpad),
-            Path(project_root),
-            contract,
-            launch,
-            run_id=run_id,
-            actor=actor,
-            require_live_input_authority=require_live_input_authority,
-            preexecution_authority=preexecution_authority,
-            _validation_context=validation_context,
-        )
-        issues.extend(validation_context.finish())
-        return list(dict.fromkeys(issues))
+    if (
+        _validation_context._path_key(_validation_context.scratchpad)
+        != _validation_context._path_key(Path(scratchpad))
+        or _validation_context._path_key(_validation_context.project_root)
+        != _validation_context._path_key(Path(project_root))
+    ):
+        return ["artifact validation context roots differ"]
+    if not _ledger_transaction_lock_is_owned(Path(scratchpad)):
+        return ["artifact validation context does not own ledger transaction lock"]
     try:
         contract, launch = _replay_authority_pair(contract, launch)
         ledger = (
@@ -17685,17 +21490,40 @@ def validate_work_unit_artifacts(
         successor = unit.get("successor_consumption_authority")
         if isinstance(successor, Mapping):
             try:
-                replayed_successor, replayed_plan = (
-                    _replay_driver_successor_authority(
+                if (
+                    unit.get("execution_state") == "OUTPUT_COMMITTED"
+                    and unit.get("semantic_status") == "ACTIVE"
+                ):
+                    replayed_successor, replayed_plan, _events = (
+                        _replay_stored_completed_driver_successor_authority(
+                            Path(scratchpad),
+                            Path(project_root),
+                            ledger,
+                            unit,
+                            _validation_context=_validation_context,
+                        )
+                    )
+                    _validate_driver_successor_live_progress(
                         Path(scratchpad),
                         Path(project_root),
                         ledger,
                         unit,
-                        contract,
-                        launch,
-                        run_id=run_id,
+                        replayed_successor,
+                        require_complete=True,
                     )
-                )
+                else:
+                    replayed_successor, replayed_plan = (
+                        _replay_driver_successor_authority(
+                            Path(scratchpad),
+                            Path(project_root),
+                            ledger,
+                            unit,
+                            contract,
+                            launch,
+                            run_id=run_id,
+                            _validation_context=_validation_context,
+                        )
+                    )
                 expected_merge_digests = {
                     transition.artifact_identity: (
                         transition.merge_event.digest
@@ -17944,24 +21772,16 @@ def validate_work_unit_artifacts(
             )
             continue
         current = str(snapshot["sha256"])
-        try:
-            current_physical = (
-                _physical_file_identity(path)
-                if _validation_context is None
-                else _validation_context.physical_identity(path)
-            )
-        except OSError as exc:
-            issues.append(
-                f"{spec.identity}: physical identity unavailable: "
-                f"{type(exc).__name__}"
-            )
-            current_physical = ""
         if record.get("status") != "ACTIVE":
             issues.append(f"{spec.identity}: status={record.get('status')}")
         if record.get("sha256") != current:
             issues.append(f"{spec.identity}: content hash changed since work-unit record")
-        if record.get("physical_identity") != current_physical:
-            issues.append(f"{spec.identity}: physical file identity changed")
+        # The persisted physical identity is issuance telemetry, not durable
+        # semantic identity.  A safe, single-link regular file with the same
+        # digest and size may have been rematerialized between validation
+        # epochs.  ``_ArtifactValidationContext`` still seals the live inode
+        # for this invocation and rejects any path swap while validation is in
+        # flight; producer/owner/run authority is replayed independently.
         if record.get("owner_key") != contract.key:
             issues.append(f"{spec.identity}: owner work-unit mismatch")
         binding = ledger.get("artifact_bindings", {}).get(spec.identity)
@@ -18117,6 +21937,7 @@ __all__ = [
     "acknowledge_semantic_mutations",
     "arm_exact_committed_output_repair",
     "arm_semantic_mutation",
+    "arm_semantic_mutation_batch",
     "artifact_ledger_digest",
     "ArtifactLedgerError",
     "ArtifactLedgerCASMismatch",

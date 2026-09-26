@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 import methodology_application as A
 import plamen_driver as D
 import finding_producer_registry as R
@@ -108,6 +110,22 @@ def test_no_gap_does_not_spawn_repair(tmp_path: Path, monkeypatch):
     assert not (sp / "report_semantic_methodology_application_breadth.md").exists()
 
 
+def test_original_methodology_worker_prompt_uses_shared_source_evidence_contract():
+    block = D._skill_dispatch_prompt_block(
+        [{
+            "skill": "RESCAN_METHOD",
+            "path": "/bound/phase3b-rescan.md",
+            "sha256": "a" * 64,
+            "top_level_checklist_step_ids": ["RS-X"],
+        }],
+        agent_kind="rescan",
+    )
+
+    assert A.REPAIR_POSITIVE_EVIDENCE_REQUIREMENT in block
+    assert "Executed=no/unknown" in block
+    assert "visible methodology debt" in block
+
+
 def test_gap_spawns_one_exact_targeted_repair_and_reuses_normal_finding_path(
     tmp_path: Path, monkeypatch,
 ):
@@ -137,12 +155,26 @@ def test_gap_spawns_one_exact_targeted_repair_and_reuses_normal_finding_path(
             "step": "2",
             "executed": "yes",
             "evidence": "src/Oracle.sol:L2",
-            "result": "traced the exact state dependency and its consumers",
+            "result": (
+                plan["entry"]["methodologies"][0]
+                ["source_gap_obligations"][0]["obligation_id"]
+                + ": traced the exact state dependency and its consumers"
+            ),
         }
         (sp / D._METHODOLOGY_REPAIR_OUTPUT).write_text(
             markers
-            + "\n\n# Repair\n\n## Finding [REPAIR-1]: Candidate for normal verification\n\n"
-            "Specific candidate remains subject to inventory and verify.\n\n"
+            + "\n\n# Repair\n\n## Finding [MAB-1]: Candidate for normal verification\n\n"
+            "**Verdict**: PARTIAL\n"
+            "**Step Execution**: ORACLE_ANALYSIS step 2 executed\n"
+            "**Rules Applied**: Oracle trace rule applied\n"
+            "**Preferred Tag**: CODE-TRACE\n"
+            "**Severity**: Medium\n"
+            "**Location**: src/Oracle.sol:L2\n"
+            "**Root Cause**: The state dependency lacks its paired update.\n"
+            "**Description**: Consumers can observe a stale oracle basis.\n"
+            "**Impact**: Accounting can use a stale value.\n"
+            "**Material Harm** (MANDATORY): Users can receive an incorrect accounting result.\n"
+            "**Evidence**: src/Oracle.sol:L2 traces the stale dependency.\n\n"
             "## Step Execution Trace\n\n"
             + A.TRACE_JSON_BEGIN
             + "\n"
@@ -161,7 +193,8 @@ def test_gap_spawns_one_exact_targeted_repair_and_reuses_normal_finding_path(
 
     assert first["status"] == second["status"] == "ATTESTED"
     assert len(calls) == 1
-    assert "## Finding [REPAIR-1]" in (sp / D._METHODOLOGY_REPAIR_OUTPUT).read_text()
+    assert A.REPAIR_POSITIVE_EVIDENCE_REQUIREMENT in calls[0]
+    assert "## Finding [MAB-1]" in (sp / D._METHODOLOGY_REPAIR_OUTPUT).read_text()
     source_receipt = json.loads(
         (sp / "skill_application_receipt_breadth.json").read_text()
     )
@@ -173,6 +206,354 @@ def test_gap_spawns_one_exact_targeted_repair_and_reuses_normal_finding_path(
     assert not (sp / "report_semantic_methodology_application_breadth.md").exists()
     attempt = json.loads((sp / D._METHODOLOGY_REPAIR_ATTEMPT).read_text())
     assert attempt["state"] == "FINISHED" and attempt["return_code"] == 0
+    assert attempt["format_correction_attempted"] is False
+    assert not (sp / "_quarantine" / "methodology_repair_format").exists()
+
+
+def test_run8_unlabeled_findings_receive_one_bounded_format_correction(
+    tmp_path: Path, monkeypatch,
+):
+    home, _project, sp, config = _setup(tmp_path, missing_step=True)
+    monkeypatch.setattr(D, "plamen_home", lambda: home)
+    calls: list[int] = []
+
+    def fake_runner(*, plan, attempt=1, **_kwargs):
+        calls.append(attempt)
+        (sp / (
+            "_prompt_breadth_repair_worker_"
+            "METHODOLOGY_APPLICATION_REPAIR_BREADTH."
+            f"attempt{attempt}.md"
+        )).write_text(plan["prompt"], encoding="utf-8", newline="\n")
+        entry = plan["entry"]
+        markers = A.worker_dispatch_markers(
+            "breadth_repair",
+            entry["worker_id"],
+            entry["output"],
+            entry["dispatch_contract_sha256"],
+        )
+        row = {
+            "skill": "ORACLE_ANALYSIS",
+            "step": "2",
+            "executed": "yes",
+            "evidence": "src/Oracle.sol:L2",
+            "result": (
+                plan["entry"]["methodologies"][0]
+                ["source_gap_obligations"][0]["obligation_id"]
+                + ": traced the exact state dependency and its consumers"
+            ),
+        }
+        if attempt == 1:
+            # Run8's failure shape: plausible prose under valid headings, but
+            # no explicit Root Cause / Description / Impact fields.
+            findings = "".join(
+                f"## Finding [MAB-{number}]: Run8-shaped candidate {number}\n\n"
+                "The traced flow may leave a stale dependency and should be "
+                "reviewed by inventory.\n\n"
+                for number in range(1, 4)
+            )
+        else:
+            assert "attempt 2 of 2" in plan["prompt"]
+            assert "literal nonempty" in plan["prompt"]
+            findings = (
+                "## Finding [MAB-1]: Fully shaped repair candidate\n\n"
+                "**Verdict**: PARTIAL\n"
+                "**Step Execution**: ORACLE_ANALYSIS step 2 executed\n"
+                "**Rules Applied**: Oracle trace rule applied\n"
+                "**Preferred Tag**: CODE-TRACE\n"
+                "**Severity**: Medium\n"
+                "**Location**: src/Oracle.sol:L2\n"
+                "**Root Cause**: The state dependency lacks its paired update.\n"
+                "**Description**: Consumers can observe a stale oracle basis.\n"
+                "**Impact**: Accounting can use a stale value.\n"
+                "**Material Harm** (MANDATORY): Users can receive an incorrect accounting result.\n"
+                "**Evidence**: src/Oracle.sol:L2 traces the stale dependency.\n\n"
+            )
+        (sp / D._METHODOLOGY_REPAIR_OUTPUT).write_text(
+            markers
+            + "\n\n# Repair\n\n"
+            + findings
+            + "## Step Execution Trace\n\n"
+            + A.TRACE_JSON_BEGIN
+            + "\n"
+            + json.dumps({"schema_version": 1, "rows": [row]})
+            + "\n"
+            + A.TRACE_JSON_END
+            + "\n\n<!-- PLAMEN_STATUS: COMPLETE -->\n",
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr(D, "_run_methodology_repair_producer", fake_runner)
+
+    result = D._run_methodology_application_boundary(_phase(), config, sp)
+
+    assert result["status"] == "ATTESTED"
+    assert calls == [1, 2]
+    final_output = (sp / D._METHODOLOGY_REPAIR_OUTPUT).read_text()
+    assert "## Finding [MAB-1]" in final_output
+    assert "**Root Cause**:" in final_output
+    quarantined = (
+        sp
+        / "_quarantine"
+        / "methodology_repair_format"
+        / "attempt-1"
+        / D._METHODOLOGY_REPAIR_OUTPUT
+    ).read_text()
+    assert "## Finding [MAB-3]" in quarantined
+    assert "**Impact**:" not in quarantined
+    attempt = json.loads((sp / D._METHODOLOGY_REPAIR_ATTEMPT).read_text())
+    assert attempt["return_code"] == 0
+    assert attempt["format_correction_attempted"] is True
+    assert any("Root Cause" in issue for issue in attempt["format_issues"])
+
+
+def test_run9_mixed_findings_and_negative_account_preserves_13_obligations():
+    obligations = [
+        ("MAO-10D90511A27587389C53", "CROSS_VM_SERIALIZATION_CONFORMANCE", "0"),
+        ("MAO-15C8686F2E1966428D20", "SEMI_TRUSTED_ROLES", "6b"),
+        ("MAO-1E9B1F312633BB849732", "CROSS_VM_SERIALIZATION_CONFORMANCE", "5"),
+        ("MAO-2FC3701579D3A5E83D2A", "SEMI_TRUSTED_ROLES", "6b"),
+        ("MAO-41FAB70B98E6FDFAAE6D", "CROSS_VM_SERIALIZATION_CONFORMANCE", "4"),
+        ("MAO-53803D0DA29A668C8190", "ECONOMIC_DESIGN_AUDIT", "5"),
+        ("MAO-5AFCAE465C862845233B", "ECONOMIC_DESIGN_AUDIT", "5"),
+        ("MAO-648B6453A2F034500F92", "ECONOMIC_DESIGN_AUDIT", "5"),
+        ("MAO-75625FAF13288BD345DB", "SEMI_TRUSTED_ROLES", "6b"),
+        ("MAO-88150D60973CFF80527A", "CROSS_VM_SERIALIZATION_CONFORMANCE", "4"),
+        ("MAO-A89752E9B291B8A11F1E", "SEMI_TRUSTED_ROLES", "6b"),
+        ("MAO-BC2EEACD9ED27581981D", "ECONOMIC_DESIGN_AUDIT", "5"),
+        ("MAO-CA3551D7E0A007D45566", "CROSS_VM_SERIALIZATION_CONFORMANCE", "5"),
+    ]
+    output = D._METHODOLOGY_REPAIR_OUTPUT
+    worker = "METHODOLOGY_APPLICATION_REPAIR_BREADTH"
+    digest = "d" * 64
+    context = {
+        "schema": D._METHODOLOGY_REPAIR_STAGED_GATE_SCHEMA,
+        "output_identity": f"scratchpad:{output}",
+        "source_phase": "breadth",
+        "finding_id_prefix": "MAB",
+        "worker_id": worker,
+        "dispatch_contract_sha256": digest,
+        "expected_obligations": [
+            {"obligation_id": oid, "skill": skill, "step": step}
+            for oid, skill, step in obligations
+        ],
+    }
+    trace_rows = [
+        {
+            "skill": skill,
+            "step": step,
+            "executed": "yes",
+            "evidence": "contracts/Gateway.sol:L42",
+            "result": f"{oid}: exact obligation-specific result",
+        }
+        for oid, skill, step in obligations
+    ]
+    markers = A.worker_dispatch_markers(
+        "breadth_repair", worker, output, digest
+    )
+
+    def artifact(rows):
+        return (
+            markers
+            + "\n\n## Finding [MAB-1]: Cross-VM encoding candidate\n\n"
+            "**Verdict**: PARTIAL\n"
+            "**Step Execution**: exact assigned obligation executed\n"
+            "**Rules Applied**: serialization scheme gate applied\n"
+            "**Preferred Tag**: CODE-TRACE\n"
+            "**Severity**: Medium\n"
+            "**Location**: contracts/Gateway.sol:L42\n"
+            "**Root Cause**: The foreign payload uses the local ABI encoding.\n"
+            "**Description**: The destination may expect a different wire scheme.\n"
+            "**Impact**: The destination can reject the cross-chain operation.\n"
+            "**Material Harm** (MANDATORY): A user's transfer can lose execution liveness.\n"
+            "**Evidence**: contracts/Gateway.sol:L42 forwards the encoded payload.\n\n"
+            "## No Findings\n\n"
+            "The remaining exact obligations produced negative, not-applicable, "
+            "or unresolved results and no additional complete candidate. Each "
+            "result remains independently reviewable in the trace below.\n\n"
+            "## Step Execution Trace\n\n"
+            + A.TRACE_JSON_BEGIN
+            + "\n"
+            + json.dumps({"schema_version": 1, "rows": rows})
+            + "\n"
+            + A.TRACE_JSON_END
+            + "\n\n<!-- PLAMEN_STATUS: COMPLETE -->\n"
+        ).encode()
+
+    identity = f"scratchpad:{output}"
+    assert D._staged_methodology_repair_output_validator(
+        {identity: artifact(trace_rows)}, context
+    ) == []
+
+    missing = D._staged_methodology_repair_output_validator(
+        {identity: artifact(trace_rows[:-1])}, context
+    )
+    assert missing == [
+        "repair step trace differs from the exact GAP-obligation multiset"
+    ]
+
+    wrong_identity = [dict(row) for row in trace_rows]
+    wrong_identity[-1]["result"] = trace_rows[0]["result"]
+    assert "repair step trace differs from the exact GAP-obligation multiset" in (
+        D._staged_methodology_repair_output_validator(
+            {identity: artifact(wrong_identity)}, context
+        )
+    )
+
+
+def _one_obligation_repair_gate_fixture():
+    output = D._METHODOLOGY_REPAIR_OUTPUT
+    worker = "METHODOLOGY_APPLICATION_REPAIR_BREADTH"
+    digest = "e" * 64
+    obligation_id = "MAO-0123456789ABCDEF0123"
+    context = {
+        "schema": D._METHODOLOGY_REPAIR_STAGED_GATE_SCHEMA,
+        "output_identity": f"scratchpad:{output}",
+        "source_phase": "breadth",
+        "finding_id_prefix": "MAB",
+        "worker_id": worker,
+        "dispatch_contract_sha256": digest,
+        "expected_obligations": [
+            {
+                "obligation_id": obligation_id,
+                "skill": "ORACLE_ANALYSIS",
+                "step": "2",
+            }
+        ],
+    }
+    trace = (
+        "## Step Execution Trace\n\n"
+        + A.TRACE_JSON_BEGIN
+        + "\n"
+        + json.dumps(
+            {
+                "schema_version": 1,
+                "rows": [
+                    {
+                        "skill": "ORACLE_ANALYSIS",
+                        "step": "2",
+                        "executed": "yes",
+                        "evidence": "src/Oracle.sol:L2",
+                        "result": f"{obligation_id}: exact result",
+                    }
+                ],
+            }
+        )
+        + "\n"
+        + A.TRACE_JSON_END
+        + "\n\n<!-- PLAMEN_STATUS: COMPLETE -->\n"
+    )
+    markers = A.worker_dispatch_markers(
+        "breadth_repair", worker, output, digest
+    )
+    return context, markers, trace
+
+
+def test_repair_staged_gate_rejects_scratchpad_artifact_as_positive_evidence(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    scratchpad = project / ".scratchpad"
+    (project / "src").mkdir(parents=True)
+    scratchpad.mkdir()
+    (project / "src" / "Oracle.sol").write_text(
+        "one\ntwo\n", encoding="utf-8"
+    )
+    (scratchpad / "analysis_cross_chain_message_flow.md").write_text(
+        "\n" * 30, encoding="utf-8"
+    )
+    context, markers, trace = _one_obligation_repair_gate_fixture()
+    context.update(project_root=str(project), scratchpad=str(scratchpad))
+    trace = trace.replace(
+        "src/Oracle.sol:L2", "analysis_cross_chain_message_flow.md:L28"
+    )
+    raw = (
+        markers
+        + "\n\n## No Findings\n\nA substantive unresolved account preserves "
+        "this exact obligation for independent review.\n\n"
+        + trace
+    ).encode()
+
+    issues = D._staged_methodology_repair_output_validator(
+        {context["output_identity"]: raw}, context
+    )
+
+    assert any(
+        A.REPAIR_POSITIVE_EVIDENCE_REQUIREMENT in issue for issue in issues
+    )
+
+
+def test_repair_finding_fields_cannot_leak_across_no_findings_heading():
+    context, markers, trace = _one_obligation_repair_gate_fixture()
+    finding_without_impact = (
+        "## Finding [MAB-1]: Missing local impact\n\n"
+        "**Verdict**: PARTIAL\n"
+        "**Step Execution**: ORACLE_ANALYSIS step 2 executed\n"
+        "**Rules Applied**: Oracle trace rule applied\n"
+        "**Preferred Tag**: CODE-TRACE\n"
+        "**Severity**: Medium\n"
+        "**Location**: src/Oracle.sol:L2\n"
+        "**Root Cause**: The update is absent.\n"
+        "**Description**: Consumers can observe stale state.\n"
+        "**Material Harm** (MANDATORY): Users can receive stale accounting.\n"
+        "**Evidence**: src/Oracle.sol:L2 shows the absent update.\n\n"
+    )
+    later_negative = (
+        "## No Findings\n\n"
+        "No additional complete candidate exists for the remaining assigned "
+        "obligation after the evidence-backed negative review.\n\n"
+        "**Impact**: This belongs to the negative section, not MAB-1.\n\n"
+    )
+    raw = (markers + "\n\n" + finding_without_impact + later_negative + trace).encode()
+
+    issues = D._staged_methodology_repair_output_validator(
+        {context["output_identity"]: raw}, context
+    )
+
+    assert any(
+        "finding MAB-1 lacks explicit nonempty Impact" in issue
+        for issue in issues
+    )
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "## Finding No Findings",
+        "## Finding [MAB-1]: No Findings",
+        "## No Findings for assigned obligations",
+        "### No Findings",
+        "## No\n Findings",
+    ],
+)
+def test_repair_negative_marker_requires_exact_same_line_h2(heading: str):
+    context, markers, trace = _one_obligation_repair_gate_fixture()
+    rationale = (
+        "The assigned obligation produced a specific evidence-backed negative "
+        "result that remains subject to independent skeptical review.\n\n"
+    )
+    raw = (markers + "\n\n" + heading + "\n\n" + rationale + trace).encode()
+
+    issues = D._staged_methodology_repair_output_validator(
+        {context["output_identity"]: raw}, context
+    )
+
+    assert issues
+
+
+def test_repair_negative_marker_accepts_exact_same_line_h2():
+    context, markers, trace = _one_obligation_repair_gate_fixture()
+    raw = (
+        markers
+        + "\n\n  ##\tNo\tFindings  \n\n"
+        + "The assigned obligation produced a specific evidence-backed negative "
+        "result that remains subject to independent skeptical review.\n\n"
+        + trace
+    ).encode()
+
+    assert D._staged_methodology_repair_output_validator(
+        {context["output_identity"]: raw}, context
+    ) == []
 
 
 def test_failed_repair_is_haltless_and_report_visible(tmp_path: Path, monkeypatch):
@@ -263,6 +644,65 @@ def test_depth_repair_plan_binds_depth_snapshot_and_phase_language(
     assert "<!-- PLAMEN_PHASE: depth_repair -->" in plan["prompt"]
 
 
+@pytest.mark.parametrize(
+    ("validation_issues", "disposition", "repair_expected"),
+    (
+        ([], "EXCLUDED_UNAVAILABLE", False),
+        (["RESULT_INDEX_SEMANTICS_INVALID"], "EXCLUDED_UNAVAILABLE", True),
+        ([], "ELIGIBLE_UNSCORED", True),
+    ),
+)
+def test_depth_repair_plan_withholds_only_authenticated_unavailable_fuzz_rows(
+    tmp_path: Path,
+    monkeypatch,
+    validation_issues: list[str],
+    disposition: str,
+    repair_expected: bool,
+):
+    home, _project, sp, config = _setup(tmp_path, missing_step=True)
+    monkeypatch.setattr(D, "plamen_home", lambda: home)
+    source = A.validate_phase_application(
+        sp,
+        Path(config["project_root"]),
+        phase="breadth",
+        trusted_methodology_roots=[home],
+    )
+    gap = dict(next(
+        row
+        for row in source["rows"]
+        if row["application_completeness"] == "MISSING"
+    ))
+    gap["worker_id"] = "invariant-fuzz"
+    gap["output"] = "invariant_fuzz_results.md"
+    source = {"rows": [gap]}
+    index_path = sp / D.fuzz_workspace_authority.RESULT_INDEX_FILE
+    index_bytes = json.dumps({
+        "rows": [{
+            "job_id": "invariant-fuzz",
+            "output": "invariant_fuzz_results.md",
+            "model_repair_disposition": disposition,
+        }],
+    }).encode("utf-8")
+    index_path.write_bytes(index_bytes)
+    monkeypatch.setattr(
+        D.fuzz_workspace_authority,
+        "validate_fuzz_workspace_result_index",
+        lambda _path: list(validation_issues),
+    )
+
+    plan = D._build_methodology_repair_plan(
+        scratchpad=sp,
+        project_root=config["project_root"],
+        config=config,
+        source_result=source,
+        source_phase="depth",
+    )
+
+    assert (plan is not None) is repair_expected
+    assert index_path.read_bytes() == index_bytes
+    assert source["rows"] == [gap]
+
+
 def test_repair_runner_uses_source_phase_label_on_both_backends(
     tmp_path: Path, monkeypatch,
 ):
@@ -285,10 +725,26 @@ def test_repair_runner_uses_source_phase_label_on_both_backends(
     seen: list[tuple[str, str]] = []
 
     def fake_claude(**kwargs):
+        # The PUBLICATION decision uses the typed gate: it returns issues
+        # only for a FAIL_CLOSED identity defect, and records every
+        # presentational defect as visible debt instead of discarding a
+        # completed repair analysis.
+        assert kwargs["staged_output_validator"] is (
+            D._staged_methodology_repair_publication_validator
+        )
+        assert kwargs["staged_output_context"]["source_phase"] == "depth"
         seen.append(("claude", kwargs["label_prefix"]))
         return 0
 
     def fake_codex(**kwargs):
+        # The PUBLICATION decision uses the typed gate: it returns issues
+        # only for a FAIL_CLOSED identity defect, and records every
+        # presentational defect as visible debt instead of discarding a
+        # completed repair analysis.
+        assert kwargs["staged_output_validator"] is (
+            D._staged_methodology_repair_publication_validator
+        )
+        assert kwargs["staged_output_context"]["source_phase"] == "depth"
         seen.append(("codex", kwargs["label"]))
         return 0
 

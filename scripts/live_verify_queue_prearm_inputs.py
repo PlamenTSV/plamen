@@ -28,6 +28,7 @@ from artifact_ledger import (
 )
 from bounded_artifact_io import read_bounded_regular_bytes
 import p0af_v2_queue_adapter as _p0af
+from portable_path_contract import assert_lexically_bounded_relative_path
 from phase_io_contracts import (
     ArtifactSpec,
     ConditionalOutputReceipt,
@@ -98,6 +99,12 @@ def _sha(raw: bytes) -> str:
 def _safe_relative(value: Any) -> str:
     text = str(value or "").strip().replace("\\", "/")
     path = PurePosixPath(text)
+    try:
+        assert_lexically_bounded_relative_path(
+            text, label="prearm source artifact"
+        )
+    except ValueError as exc:
+        raise ValueError(f"unsafe prearm source artifact: {value!r}") from exc
     if (
         not text
         or path.is_absolute()

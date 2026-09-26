@@ -33,10 +33,12 @@ import plamen_driver as DRIVER
 from plamen_types import SC_PHASES, Phase
 from test_axis_driver_transaction_red_p0_i import (
     RUN_ID,
+    _commit_canonical_predecessor,
     _one_item_authority,
     _sidecar,
     _source_clear,
 )
+from test_axis_disposition_v2_core_red import _axis_ci
 
 
 def _axis_phase() -> Phase:
@@ -55,6 +57,15 @@ def _canonical(value: object) -> bytes:
 
 def _write_json(path: Path, value: object) -> None:
     path.write_bytes(_canonical(value))
+
+
+def _replace_canonical_inventory(scratchpad: Path, text: str) -> None:
+    canonical = DRIVER._axis_coupled_canonical_postimages(
+        inventory_raw=text.encode("utf-8"),
+        ledger_raw=(scratchpad / "_id_ledger.json").read_bytes(),
+    )
+    for name, raw in canonical.items():
+        (scratchpad / name).write_bytes(raw)
 
 
 def _action(item: Mapping[str, Any], *, title: str = "bound axis candidate") -> str:
@@ -82,6 +93,7 @@ def _base_rows(
                     "disposition": "FINDING",
                     "action_id": item["required_action_id"],
                     "evidence": [],
+                    "invariant_commitment": None,
                     "rationale": "candidate requires independent verification",
                 }
             )
@@ -92,6 +104,9 @@ def _base_rows(
                     "disposition": "CLEAR",
                     "action_id": "",
                     "evidence": [_source_clear(item)],
+                    "invariant_commitment": _axis_ci(
+                        item, [_source_clear(item)]
+                    ),
                     "rationale": "exact bound source locus closes this cell",
                 }
             )
@@ -254,6 +269,8 @@ def _install_driver_transaction_seam(
     merge_events: list[Any] | None = None,
 ) -> None:
     committed: set[tuple[str, str]] = set()
+    armed_successors: set[tuple[str, str]] = set()
+    successor_plans: dict[tuple[str, str], Any] = {}
     committed_contracts: dict[tuple[str, str], tuple[Any, Any]] = {}
     seeded_units: dict[tuple[str, str], dict[str, Any]] = {}
     if scratchpad is not None:
@@ -308,6 +325,8 @@ def _install_driver_transaction_seam(
             str(Path(kwargs["scratchpad"]).resolve()),
             str(kwargs["contract"].key),
         )
+        if kwargs.get("successor_plan") is not None:
+            armed_successors.add(identity)
         return identity not in committed, []
 
     monkeypatch.setattr(
@@ -319,6 +338,66 @@ def _install_driver_transaction_seam(
         DRIVER,
         "validate_work_unit_inputs",
         lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        DRIVER,
+        "validate_work_unit_artifacts",
+        lambda *_args, **_kwargs: [],
+    )
+
+    def plan_successor(
+        root: Path,
+        _project: Path,
+        contract: Any,
+        _launch: Any,
+        *,
+        planned_output_bytes: Mapping[str, bytes],
+        merge_events: Mapping[str, Any],
+        **_kwargs: Any,
+    ) -> Any:
+        identity = (str(Path(root).resolve()), str(contract.key))
+        transitions = tuple(
+            SimpleNamespace(
+                ordinal=index,
+                artifact_identity=artifact_identity,
+                merge_event=merge_events.get(artifact_identity),
+            )
+            for index, artifact_identity in enumerate(
+                planned_output_bytes, start=1
+            )
+        )
+        plan = SimpleNamespace(
+            transitions=transitions,
+            expected_output_records={
+                artifact_identity: {
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                    "size": len(raw),
+                }
+                for artifact_identity, raw in planned_output_bytes.items()
+            },
+        )
+        successor_plans[identity] = plan
+        return plan
+
+    monkeypatch.setattr(
+        DRIVER, "plan_driver_successor_transaction", plan_successor
+    )
+    monkeypatch.setattr(
+        DRIVER,
+        "load_driver_successor_plan",
+        lambda root, _project, contract, _launch, **_kwargs: successor_plans[
+            (str(Path(root).resolve()), str(contract.key))
+        ],
+    )
+    monkeypatch.setattr(
+        DRIVER,
+        "begin_driver_successor_step",
+        lambda *_args, **_kwargs: {"state": "STEP_PENDING"},
+    )
+    monkeypatch.setattr(
+        DRIVER,
+        "complete_driver_successor_step",
+        lambda *_args, **_kwargs: None,
     )
 
     def commit(**kwargs: Any) -> list[str]:
@@ -366,7 +445,7 @@ def _install_driver_transaction_seam(
             else b""
         )
         units: dict[str, Any] = {}
-        for fixture_root, key in committed:
+        for fixture_root, key in committed | armed_successors:
             if fixture_root != resolved:
                 continue
             unit_name = str(key).rsplit("/", 1)[-1]
@@ -420,6 +499,16 @@ def _install_driver_transaction_seam(
                     ).hexdigest()
                 ),
                 "artifacts": artifacts,
+                "execution_state": (
+                    "OUTPUT_COMMITTED"
+                    if (fixture_root, key) in committed
+                    else "INPUTS_BOUND_PREEXECUTION"
+                ),
+                **(
+                    {"successor_consumption_authority": {"fixture": True}}
+                    if (fixture_root, key) in armed_successors
+                    else {}
+                ),
             }
         return {
             "_fixture_root": resolved,
@@ -460,7 +549,7 @@ def _install_repair_model_seam(
         monkeypatch,
         scratchpad=scratchpad,
     )
-    validation_calls = 0
+    repair_validation_calls = 0
 
     monkeypatch.setattr(
         DRIVER,
@@ -479,9 +568,12 @@ def _install_repair_model_seam(
     )
 
     def validate_artifacts(*_args: Any, **_kwargs: Any) -> list[str]:
-        nonlocal validation_calls
-        validation_calls += 1
-        if validation_calls == 1:
+        nonlocal repair_validation_calls
+        contract = _args[2] if len(_args) > 2 else None
+        if getattr(contract, "work_unit_id", "") != "repair.worker.0001":
+            return []
+        repair_validation_calls += 1
+        if repair_validation_calls == 1:
             return ["repair outputs are not committed"]
         if output_case == "partial":
             return ["paired repair outputs are incomplete"]
@@ -569,6 +661,9 @@ def test_bad_repair_is_typed_failed_but_base_finding_still_promotes(
         evidence=evidence,
         findings_raw=findings_raw,
         repair_execution=repair,
+    )
+    _commit_canonical_predecessor(
+        project, scratchpad, backend=str(config["cli_backend"])
     )
     promotion, promotion_issues = DRIVER._promote_axis_disposition_actions(
         phase=_axis_phase(),
@@ -703,27 +798,15 @@ def test_inventory_append_receipt_crash_replays_without_duplicate_or_loss(
         monkeypatch,
         scratchpad=scratchpad,
     )
-    original_atomic_json = DRIVER._atomic_driver_json
-    crash_once = True
-
-    def crash_after_append(path: Path, value: Mapping[str, Any]) -> None:
-        nonlocal crash_once
-        if (
-            Path(path).name == "axis_coverage_promotion_receipt.json"
-            and crash_once
-        ):
-            crash_once = False
-            raise RuntimeError("fixture crash after inventory append")
-        original_atomic_json(path, value)
-
-    monkeypatch.setattr(DRIVER, "_atomic_driver_json", crash_after_append)
-    with pytest.raises(RuntimeError, match="after inventory append"):
+    config["_axis_promotion_failpoint"] = "after_findings_inventory.md"
+    with pytest.raises(RuntimeError, match="axis promotion injected failpoint"):
         DRIVER._promote_axis_disposition_actions(
             phase=_axis_phase(),
             config=config,
             scratchpad=scratchpad,
             application_receipt=application,
         )
+    config.pop("_axis_promotion_failpoint")
 
     inventory_path = scratchpad / "findings_inventory.md"
     after_crash = inventory_path.read_bytes()
@@ -783,9 +866,7 @@ def test_crlf_and_lf_inventory_preimages_have_equal_logical_identities(
             scratchpad=scratchpad,
             merge_events=events,
         )
-        (scratchpad / "findings_inventory.md").write_bytes(
-            preimage.encode("utf-8")
-        )
+        _replace_canonical_inventory(scratchpad, preimage)
         promotion, issues = DRIVER._promote_axis_disposition_actions(
             phase=_axis_phase(),
             config=config,
@@ -803,13 +884,22 @@ def test_crlf_and_lf_inventory_preimages_have_equal_logical_identities(
         assert replay == promotion
         assert replay_issues == []
 
-    assert len(events) == 2
-    assert events[0].identities_before == ("INV-007",)
-    assert events[1].identities_before == ("INV-007",)
-    assert events[0].identities_before == events[1].identities_before
-    assert events[0].before_sha256 != events[1].before_sha256
+    inventory_events = [
+        event
+        for event in events
+        if event.artifact_identity == "scratchpad:findings_inventory.md"
+    ]
+    assert len(events) == 6
+    assert len(inventory_events) == 2
+    assert inventory_events[0].identities_before == ("INV-007",)
+    assert inventory_events[1].identities_before == ("INV-007",)
+    assert (
+        inventory_events[0].identities_before
+        == inventory_events[1].identities_before
+    )
+    assert inventory_events[0].before_sha256 != inventory_events[1].before_sha256
     assert hashlib.sha256(preimage_lf.encode("utf-8")).hexdigest() == (
-        events[0].before_sha256
+        inventory_events[0].before_sha256
     )
 
 
@@ -835,10 +925,7 @@ def test_unrelated_preexisting_axisgap_claim_is_not_accepted_but_real_action_del
         "**Description**: content unrelated to the authorized axis action\n"
         "**Impact**: unrelated impact\n"
     )
-    (scratchpad / "findings_inventory.md").write_text(
-        unrelated,
-        encoding="utf-8",
-    )
+    _replace_canonical_inventory(scratchpad, unrelated)
 
     promotion, issues = DRIVER._promote_axis_disposition_actions(
         phase=_axis_phase(),

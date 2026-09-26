@@ -31,6 +31,7 @@ from severity_decision_ledger import (
     project_retention_severity,
     severity_adjudicator_input_digest,
     severity_assessor_input_digest,
+    severity_proposal_authority_digest,
     write_severity_decision_ledger,
 )
 from trust_evidence_provider import constrain_trust_sensitive_report_projection
@@ -87,6 +88,12 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
         sort_keys=True,
         separators=(",", ":"),
     )
+    if path.is_file() and not path.is_symlink():
+        try:
+            if path.read_text(encoding="utf-8", errors="strict") == content:
+                return
+        except (OSError, UnicodeError):
+            pass
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(
         dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
@@ -400,7 +407,7 @@ def bind_shadow_severity_for_shard(
                 "backend": backend,
                 "launch_manifest_sha256": launch_digest,
                 "input_sha256": input_sha256,
-                "output_sha256": _digest(proposal),
+                "output_sha256": severity_proposal_authority_digest(proposal),
             }
             decision = bind_severity_proposal(
                 proposal,
@@ -1140,6 +1147,8 @@ def _legacy_report_index_rows(scratchpad: Path) -> list[dict[str, str]]:
         values = dict(zip(headers, cells))
         candidate_cell = (
             values.get("source findings")
+            or values.get("internal hypothesis")
+            or values.get("internal hypothesis id")
             or values.get("internal")
             or values.get("finding id")
             or ""

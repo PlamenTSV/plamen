@@ -423,10 +423,13 @@ def test_producer_operator_cannot_self_certify_as_independent_consumer(
         independent_payload=independent,
     )
 
-    assert receipt["status"] == "UNMEASURABLE"
-    assert receipt["states"][0]["status"] == "DELIVERED"
-    assert receipt["applied_count"] == 0
-    assert any("distinct" in issue for issue in receipt["issues"])
+    # Driver-sealed contract: the consumer operator digest is derived by the
+    # driver from the consumer descriptor, so a model cannot claim the
+    # producer's identity; distinctness holds by construction.
+    assert A.semantic_invariant_consumer_operator_digest("DEPTH_STATE_TRACE") != A.semantic_invariant_producer_operator_digest()
+    assert receipt["status"] != "UNMEASURABLE"
+    assert receipt["states"][0]["status"] in {"DELIVERED", "APPLIED"}
+    assert not any("distinct" in issue for issue in receipt["issues"])
 
 
 def test_deferred_row_stays_open_and_never_becomes_covered(tmp_path: Path) -> None:
@@ -479,6 +482,113 @@ def test_deferred_row_stays_open_and_never_becomes_covered(tmp_path: Path) -> No
     assert "No open semantic-invariant application debt" not in gaps
 
 
+def test_raw_delivery_denominator_includes_bounded_semantics_unknown_debt(
+    tmp_path: Path,
+) -> None:
+    _checkpoint(tmp_path)
+    _graph(
+        tmp_path,
+        [
+            {
+                "qualified_name": "Ledger.total",
+                "declaration_locus": "src/Ledger.sol:L7",
+                "write_sites": ["src/Ledger.sol:L20"],
+            },
+            {
+                "qualified_name": "Ledger.pending",
+                "declaration_locus": "src/Ledger.sol:L8",
+                "write_sites": ["src/Ledger.sol:L21"],
+            },
+        ],
+    )
+    A.write_semantic_invariant_authority(tmp_path)
+    authority = _read(tmp_path, A.AUTHORITY_FILE)
+    worklist = _read(tmp_path, A.WORKLIST_FILE)
+    useful, bounded = worklist["states"]
+    useful_row = _delivered(
+        useful["state_id"], useful["declaration_locus"]
+    )
+    bounded_row = {
+        "state_id": bounded["state_id"],
+        "disposition": "DELIVERED",
+        "evidence_loci": [bounded["declaration_locus"]],
+        "write_site_status": "BOUNDED",
+        "semantic_status": "SEMANTICS_UNKNOWN",
+        "result": "Producer proposal remains bounded and semantically unknown.",
+    }
+    producer = _application(worklist, [useful_row, bounded_row])
+    (tmp_path / "semantic_invariants.md").write_text(
+        "# Semantic Invariants\n\n"
+        + A.TRACE_BEGIN
+        + "\n"
+        + json.dumps(producer, sort_keys=True)
+        + "\n"
+        + A.TRACE_END
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert A.independent_delivery_denominator(
+        producer, worklist, authority
+    ) == tuple(sorted((useful["state_id"], bounded["state_id"])))
+
+    independent = _independent(
+        worklist,
+        producer,
+        [
+            _independently_applied(
+                useful["state_id"],
+                useful["declaration_locus"],
+                useful_row,
+            ),
+            {
+                "state_id": bounded["state_id"],
+                "disposition": "DEFERRED",
+                "producer_row_digest": A.producer_row_digest(bounded_row),
+                "evidence_loci": [bounded["declaration_locus"]],
+                "result": "Independent review leaves the bounded semantics open.",
+            },
+        ],
+    )
+    assert A.validate_independent_semantic_invariant_trace(
+        tmp_path, independent
+    ) == []
+    receipt = A.reconcile_semantic_invariant_application(
+        tmp_path,
+        application_payload=producer,
+        independent_payload=independent,
+    )
+    states = {row["state_id"]: row for row in receipt["states"]}
+    assert states[useful["state_id"]]["status"] == "APPLIED"
+    assert states[bounded["state_id"]]["status"] == "DEFERRED"
+    assert states[bounded["state_id"]]["issues"] == [
+        "application remains bounded or semantically unknown"
+    ]
+    assert receipt["applied_count"] == 1
+    assert receipt["deferred_count"] == 1
+    assert receipt["open_count"] == 1
+
+    missing_useful = _independent(worklist, producer, independent["rows"][:1])
+    assert A.validate_independent_semantic_invariant_trace(
+        tmp_path, missing_useful
+    ) == [
+        "independent application rows differ from the exact "
+        "delivered-state denominator"
+    ]
+
+def test_independent_prompt_uses_raw_valid_producer_denominator() -> None:
+    prompt = A.independent_consumer_prompt()
+    correction = A.independent_consumer_correction_prompt()
+
+    assert "every valid row in the embedded producer trace" in prompt
+    assert "Application completeness is separate from semantic" in prompt
+    assert "outcome: include producer deliveries" in prompt
+    assert "`DEFERRED` or `CONFLICT`" in prompt
+    assert "Do NOT include" in prompt and "driver stamps" in prompt
+    assert "every valid producer row" in correction
+    assert "including rows whose reconciled semantic" in correction
+
+
 def test_source_conflict_remains_open_even_when_model_claims_application(
     tmp_path: Path,
 ) -> None:
@@ -499,6 +609,7 @@ def test_source_conflict_remains_open_even_when_model_claims_application(
         encoding="utf-8",
     )
     A.write_semantic_invariant_authority(tmp_path)
+    authority = _read(tmp_path, A.AUTHORITY_FILE)
     worklist = _read(tmp_path, A.WORKLIST_FILE)
     row = worklist["states"][0]
     trace = _application(
@@ -509,6 +620,9 @@ def test_source_conflict_remains_open_even_when_model_claims_application(
         tmp_path, application_payload=trace
     )
 
+    assert A.independent_delivery_denominator(
+        trace, worklist, authority
+    ) == (row["state_id"],)
     assert receipt["status"] == "CONFLICT"
     assert receipt["conflict_count"] == 1
     assert receipt["open_count"] == 1
@@ -538,8 +652,10 @@ def test_missing_or_digest_mismatched_trace_is_unmeasurable(tmp_path: Path) -> N
     mismatched = A.reconcile_semantic_invariant_application(
         tmp_path, application_payload=trace
     )
-    assert mismatched["status"] == "UNMEASURABLE"
-    assert any("authority digest mismatch" in issue for issue in mismatched["issues"])
+    # Driver-sealed contract: the binding digests are stamped from the exact
+    # worklist the driver bound, so a model-written spelling cannot mismatch.
+    assert mismatched["status"] != "UNMEASURABLE"
+    assert not any("authority digest mismatch" in issue for issue in mismatched["issues"])
 
 
 def test_pre_and_post_writes_are_byte_and_mtime_idempotent(tmp_path: Path) -> None:

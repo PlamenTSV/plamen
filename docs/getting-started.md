@@ -30,7 +30,7 @@
 | **Config** | Merges backend settings and managed MCP configuration; audit subprocesses apply stricter phase-local isolation | Done |
 | **Orchestrator rules** | Injected `~/.claude/CLAUDE.md` (Claude Code) or `~/.codex/AGENTS.md` (Codex CLI) — the orchestrator's top-level instructions | Done |
 | **Core Python deps** | `rich`, `InquirerPy` (wrapper UI) | Done |
-| **Managed JS runtime** | Exact Node.js 24.20.0/npm 11.19.0 plus Claude Code 2.1.252, Codex 0.152.0, and locked MCP payloads | Done |
+| **Managed JS runtime** | Exact Node.js 24.20.0/npm 11.19.0 and locked MCP payloads; Claude Code/Codex resolve authenticated upstream latest once per install/update and are then frozen exactly | Done |
 | **Chain toolchains** | Foundry, Solana CLI, Anchor, Aptos, Sui, etc. | Only if you selected them |
 | **RAG database** | Vulnerability knowledge base (PyTorch + embeddings) | **Not installed** — separate step |
 
@@ -198,7 +198,7 @@ server-health row:
   │                                                           │
   │    python  git                                        ok │
   │  Managed   Node 24.20.0/npm 11.19.0                  ok │
-  │  Backend   Claude 2.1.252  Codex 0.152.0             ok │
+  │  Backend   Claude/Codex signed install generations  ok │
   ├───────────────────────────────────────────────────────────┤
   │  EVM        ✓forge ✓anvil ✓cast ✓slither ○medusa      4/5 │
   │  Solana     ○solana ○anchor ○cargo ○trident ○scout    0/5 │

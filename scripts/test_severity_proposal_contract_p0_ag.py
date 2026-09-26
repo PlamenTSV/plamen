@@ -20,6 +20,7 @@ from severity_decision_ledger import (
     project_retention_severity,
     severity_adjudicator_input_digest,
     severity_assessor_input_digest,
+    severity_proposal_authority_digest,
     write_severity_decision_ledger,
 )
 
@@ -182,6 +183,71 @@ def test_driver_binds_identity_run_source_and_evidence_not_the_model():
     assert assessment["assessor_identity"] == "verifier-worker"
     assert assessment["evidence_capabilities_required"] is True
     assert assessment["evidence_receipts_attested"] is True
+
+
+def test_assessor_receipt_uses_same_semantic_digest_as_decision_builder():
+    proposal = _proposal()
+    proposal["impact"]["evidence_ids"] = ["Z-TRACE", "A-TRACE"]
+    evidence = _evidence() + [
+        {
+            **_evidence()[0],
+            "evidence_id": evidence_id,
+            "premise_ids": ["PREM-IMPACT"],
+        }
+        for evidence_id in ("Z-TRACE", "A-TRACE")
+    ]
+    receipt = {
+        "schema_version": "plamen.severity_launch_receipt.v2",
+        "role": "ASSESSOR",
+        "run_id": RUN_ID,
+        "candidate_id": "HYP-1",
+        "constituent_ids": ["HYP-1"],
+        "worker_identity": "verifier-worker",
+        "invocation_id": "verify-invocation-1",
+        "backend": "codex",
+        "launch_manifest_sha256": "3" * 64,
+        "input_sha256": severity_assessor_input_digest(
+            candidate_id="HYP-1", constituent_ids=["HYP-1"],
+            upstream_severity="High", run_id=RUN_ID,
+            source_receipt_digest=SOURCE_DIGEST, evidence_receipts=evidence,
+        ),
+        "output_sha256": severity_proposal_authority_digest(proposal),
+    }
+    decision = bind_severity_proposal(
+        proposal, candidate_id="HYP-1", constituent_ids=["HYP-1"],
+        upstream_severity="High", assessor_identity="verifier-worker",
+        assessor_invocation_id="verify-invocation-1", run_id=RUN_ID,
+        source_receipt_digest=SOURCE_DIGEST, evidence_receipts=evidence,
+        assessor_launch_receipt=receipt,
+    )
+    assert decision["assessment"]["producer_authority_binding"]["status"] == "EXACT"
+    assert severity_proposal_authority_digest(proposal) == (
+        severity_proposal_authority_digest(
+            {**proposal, "impact": {**proposal["impact"],
+              "evidence_ids": ["A-TRACE", "Z-TRACE"]}}
+        )
+    )
+
+
+def test_modifier_only_evidence_receipt_can_have_no_axis_premise():
+    proposal = _proposal(modifiers=[{
+        "kind": "FULLY_TRUSTED_ACTOR", "applies": False,
+        "applicability_predicate": "Caller is public.",
+        "evidence_ids": ["EVID-MODIFIER"],
+        "proof_scope": "IN_SCOPE_EXECUTION",
+    }])
+    evidence = _evidence() + [{
+        **_evidence()[0],
+        "evidence_id": "EVID-MODIFIER",
+        "premise_ids": [],
+        "capabilities": ["MECHANISM"],
+    }]
+    decision = _bind(proposal, evidence=evidence)
+    modifier_receipt = next(
+        row for row in decision["assessment"]["evidence_receipts"]
+        if row["evidence_id"] == "EVID-MODIFIER"
+    )
+    assert modifier_receipt["premise_ids"] == []
 
 
 def test_sidecar_identity_mismatch_fails_instead_of_rebinding_silently():

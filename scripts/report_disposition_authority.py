@@ -16,6 +16,7 @@ import re
 import tempfile
 from typing import Any, Iterable, Mapping
 
+import artifact_surface
 from finding_lifecycle_authority import (
     build_finding_lifecycle,
     candidate_content_sha256,
@@ -50,6 +51,7 @@ from post_verify_candidate_delta import (
 from recovery_execution_authority import (
     load_late_verification_authority,
 )
+from artifact_ledger import read_artifact_ledger
 from semantic_dedup_authority import (
     DedupAuthorityError,
     PRIMARY_RECEIPT_NAME,
@@ -60,6 +62,9 @@ from verifier_work_roster import (
     VerifierLaunchSpec,
     VerifierUnitReceipt,
     VerifierWorkRoster,
+)
+from verifier_model_execution_authority import (
+    replay_verifier_gate_model_execution_authority,
 )
 from report_mutation_transaction import (
     ReportMutationTransactionError,
@@ -125,6 +130,15 @@ def _digest(value: Any) -> str:
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _strict_gate_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate verifier gate key: {key}")
+        value[key] = item
+    return value
 
 
 def _norm_id(value: str) -> str:
@@ -264,6 +278,7 @@ def _current_verifier_launch_binding(
     item: QueueWorkItem,
     *,
     plan_digest: str,
+    expected_run_id: str,
 ) -> tuple[str, str]:
     """Return the provider-observed launch bound to current queue authority.
 
@@ -325,12 +340,60 @@ def _current_verifier_launch_binding(
     gate_path = unit_dir / "gate_receipt.json"
     if unit_receipt.gate_receipt_digests != (_sha(gate_path.read_bytes()),):
         raise ValueError("verifier unit gate receipt changed")
+    plan = read_queue_work_plan(scratchpad)
+    if plan.digest != plan_digest:
+        raise ValueError("current QueueWorkPlan changed during verifier replay")
+    owner_shards = [
+        shard
+        for shard in plan.shards
+        if item.work_item_id in shard.ordered_work_item_ids
+    ]
+    if len(owner_shards) != 1:
+        raise ValueError("verifier work item has no unique QueueWorkPlan shard")
+    gate = json.loads(
+        gate_path.read_text(encoding="utf-8", errors="strict"),
+        object_pairs_hook=_strict_gate_object,
+    )
+    if (
+        gate.get("state") != "CLEAN"
+        or gate.get("work_unit_id") != unit.work_unit_id
+        or gate.get("work_unit_resume_digest") != unit.resume_digest
+        or gate.get("roster_digest") != roster.digest
+        or gate.get("launch_spec_digest") != spec.digest
+        or gate.get("ordered_work_item_ids")
+        != list(unit.ordered_work_item_ids)
+    ):
+        raise ValueError("current verifier gate binding is stale")
+    replay_verifier_gate_model_execution_authority(
+        scratchpad,
+        gate,
+        selected_output_identity=f"scratchpad:{item.expected_output_file}",
+        expected_run_id=expected_run_id,
+        expected_owner_suffix=(
+            f"/{owner_shards[0].shard_id}/method_model.{unit.work_unit_id}"
+        ),
+    )
+    ledger = read_artifact_ledger(scratchpad)
+    expected_gate_outputs = {
+        name: str(
+            (
+                ledger.get("artifact_bindings", {}).get(f"scratchpad:{name}")
+                or {}
+            ).get("sha256")
+            or ""
+        )
+        for name in unit.expected_output_files
+    }
+    if gate.get("output_sha256") != expected_gate_outputs:
+        raise ValueError("current verifier gate output binding is stale")
     return spec.digest, spec.backend
 
 
 def _validated_verifier(
     scratchpad: Path,
     item: QueueWorkItem,
+    *,
+    run_id: str,
 ) -> tuple[str, VerifierOutputReceipt, bytes] | tuple[None, None, None]:
     output_path = scratchpad / item.expected_output_file
     receipt_path = scratchpad / f"verify_{item.work_item_id}.receipt.json"
@@ -350,11 +413,24 @@ def _validated_verifier(
             scratchpad,
             item,
             plan_digest=plan.digest,
+            expected_run_id=run_id,
         )
+        verifier_output = output
+        successor_path = (
+            scratchpad
+            / f"verify_{item.work_item_id}.mechanical_successor.receipt.json"
+        )
+        if successor_path.is_file():
+            from mechanical_successor_receipts import MechanicalSuccessorReceipt
+
+            successor = MechanicalSuccessorReceipt.from_json(
+                successor_path.read_text(encoding="utf-8", errors="strict")
+            )
+            verifier_output = output[:successor.original_output_size_bytes]
         receipt.validate_against(
             item,
             plan,
-            output,
+            verifier_output,
             severity_proposal=proposal,
             launch_digest=launch_digest,
             verifier_backend=verifier_backend,
@@ -366,18 +442,18 @@ def _validated_verifier(
         or identity.queue_record_digest != item.digest
         or identity.expected_output_file != item.expected_output_file
         or identity.expected_output_identity != item.expected_output_identity
-        or receipt.output_sha256 != _sha(output)
-        or receipt.output_size_bytes != len(output)
+        or receipt.output_sha256 != _sha(verifier_output)
+        or receipt.output_size_bytes != len(verifier_output)
         or receipt.severity_proposal_file != proposal_path.name
         or receipt.severity_proposal_sha256 != _sha(proposal)
         or receipt.severity_proposal_size_bytes != len(proposal)
     ):
         return None, None, None
     try:
-        text = output.decode("utf-8", errors="strict")
+        text = verifier_output.decode("utf-8", errors="strict")
     except UnicodeError:
         return None, None, None
-    return _verifier_status_from_text(text), receipt, output
+    return _verifier_status_from_text(text), receipt, verifier_output
 
 
 def _decision(
@@ -686,7 +762,7 @@ def build_report_disposition_authority(
     excluded_index_ids = _first_column_ids(
         _section(index_text, r"Excluded\s+Findings")
     )
-    consolidated_index_ids = _first_column_ids(
+    consolidated_index_ids = _consolidation_subject_ids(
         _section(
             index_text,
             r"(?:Consolidation\s+Map|Consolidated\s+Findings)",
@@ -723,7 +799,11 @@ def build_report_disposition_authority(
         candidates.append(candidate)
         late_status = late_statuses.get(item.work_item_id)
         if bound.source_kind == "BASE_VERIFICATION_QUEUE":
-            status, receipt, output = _validated_verifier(root, item)
+            status, receipt, output = _validated_verifier(
+                root,
+                item,
+                run_id=run_id,
+            )
         elif late_status is not None:
             status = str(late_status.verifier_status or "UNRESOLVED")
             receipt = None
@@ -1092,12 +1172,105 @@ def authorized_nonbody_internal_ids(
 
 
 def _section(text: str, heading: str) -> str:
-    match = re.search(rf"(?ims)^##\s+{heading}\b.*?(?=^##\s|\Z)", text or "")
-    return match.group(0) if match else ""
+    r"""Return the RAW bytes of a named section. Heading-level agnostic.
+
+    Property: `completion.named_section_lookup` -> DEBT. The old gate anchored
+    `^##\s+<heading>\b` at column zero at EXACTLY level 2 and terminated at the
+    next `^##`. `### Excluded Findings` or `## **Excluded Findings**` — the
+    same section, one rendering difference — returned the EMPTY string, and the
+    empty string is indistinguishable from "this report has no exclusions".
+    The section now starts at any heading level whose text matches, and ends at
+    the next heading of equal-or-shallower depth.
+    """
+    body = text or ""
+    if not body:
+        return ""
+    try:
+        pattern = re.compile(rf"(?i)^\s*{heading}\b")
+    except re.error:  # pragma: no cover - defensive totality
+        return ""
+    lines = body.split("\n")
+    surf = artifact_surface.surface(body)
+    headings = [l for l in surf.lines if l.kind == artifact_surface.HEADING
+                and not l.in_fence]
+    for pos, line in enumerate(headings):
+        title = artifact_surface.strip_decoration(line.heading_text or "")
+        if not pattern.search(title):
+            continue
+        start = max(0, line.physical_start - 1)
+        end = len(lines)
+        for later in headings[pos + 1:]:
+            if later.heading_level <= line.heading_level:
+                end = max(start, later.physical_start - 1)
+                break
+        return "\n".join(lines[start:end])
+    return ""
 
 
 def _ids(text: str) -> set[str]:
     return {_norm_id(match.group(1)) for match in _ID_RE.finditer(text or "") if _norm_id(match.group(1))}
+
+
+_CONSOLIDATION_SURVIVOR_HEADERS = frozenset({
+    "report id", "survivor", "survivor id", "merged into", "absorbing id",
+})
+_CONSOLIDATION_SUBJECT_HEADERS = frozenset({
+    "consolidated from", "absorbed", "absorbed from", "absorbed ids",
+    "constituents", "internal", "internal ids", "internal hypothesis",
+    "internal hypotheses", "source ids", "merged from",
+})
+
+
+def _consolidation_subject_ids(section: str) -> set[str]:
+    """Disposition subjects in a Consolidation Map, by COLUMN ROLE.
+
+    The map's first column is the SURVIVOR report ID -- the finding that stays
+    in the body -- and the absorbed internal IDs live in `Consolidated From`.
+    Reading the first column as the subject asked for typed non-body authority
+    for the survivor itself, which no authority will ever grant, so any merge
+    at all halted report_index (STEP 1.5 consolidation is mandatory in the
+    prompt, so this fires on every real report).  A survivor is never a
+    subject; when the headers are absent or ambiguous every internal ID in the
+    row is treated as a subject, which is the conservative reading.
+    """
+
+    rows: list[list[str]] = []
+    for line in (section or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if not cells or all(
+            not cell or set(cell) <= {"-", ":", " "} for cell in cells
+        ):
+            continue
+        rows.append(cells)
+    if not rows:
+        return set()
+    header = [cell.casefold().strip("* ") for cell in rows[0]]
+    subject_cols = [
+        index for index, name in enumerate(header)
+        if name in _CONSOLIDATION_SUBJECT_HEADERS
+    ]
+    survivor_cols = {
+        index for index, name in enumerate(header)
+        if name in _CONSOLIDATION_SURVIVOR_HEADERS
+    }
+    body = rows[1:] if (subject_cols or survivor_cols) else rows
+    result: set[str] = set()
+    for cells in body:
+        if subject_cols:
+            for index in subject_cols:
+                if index < len(cells):
+                    result.update(_ids(cells[index]))
+            continue
+        # No recognized subject column: every ID in the row is a subject,
+        # except any cell in a recognized survivor column.
+        for index, cell in enumerate(cells):
+            if index in survivor_cols:
+                continue
+            result.update(_ids(cell))
+    return result
 
 
 def _first_column_ids(section: str) -> set[str]:
@@ -1163,7 +1336,7 @@ def validate_index_dispositions(
     # target/reason citations must never manufacture another disposition.
     master_ids = set(_report_id_map(root))
     excluded_ids = _first_column_ids(_section(index, r"Excluded\s+Findings"))
-    consolidation_ids = _first_column_ids(
+    consolidation_ids = _consolidation_subject_ids(
         _section(index, r"(?:Consolidation\s+Map|Consolidated\s+Findings)")
     )
     issues: list[str] = []
@@ -1264,19 +1437,47 @@ def _section_fields(report_id: str, section: str) -> dict[str, str]:
 
 
 def _appendix_detail_section(report_text: str, report_id: str) -> str:
-    match = re.search(
-        rf"(?ims)^###\s+Appendix\s+observation\s+\[{re.escape(report_id)}\][^\n]*\n"
-        r".*?(?=^#{2,3}\s|\Z)",
-        report_text or "",
-    )
-    return match.group(0) if match else ""
+    """Raw bytes of one appendix observation. Depth- and bracket-agnostic.
+
+    Property: `identity.appendix_observation_section` -> FAIL_CLOSED. The
+    conservative rule is unchanged: the section must be the one whose heading
+    NAMES this exact report ID. What changed is that the ID is compared on the
+    normalized identity (`[L-07]`, `L-07`, `` `L-07` `` and `**[L-07]**` are one
+    identity) at any heading depth, instead of requiring a byte-exact
+    `### Appendix observation [L-07]`.
+    """
+    body = report_text or ""
+    if not body:
+        return ""
+    wanted = artifact_surface.candidate_identity(report_id)
+    wanted_key = wanted.key if wanted else (report_id or "").upper()
+    lines = body.split("\n")
+    surf = artifact_surface.surface(body)
+    headings = [l for l in surf.lines if l.kind == artifact_surface.HEADING
+                and not l.in_fence]
+    for pos, line in enumerate(headings):
+        title = artifact_surface.strip_decoration(line.heading_text or "")
+        if not re.search(r"(?i)\bappendix\s+observation\b", title):
+            continue
+        found = artifact_surface.candidate_identity(title)
+        if found is None or found.key != wanted_key:
+            continue
+        start = max(0, line.physical_start - 1)
+        end = len(lines)
+        for later in headings[pos + 1:]:
+            if later.heading_level <= line.heading_level:
+                end = max(start, later.physical_start - 1)
+                break
+        return "\n".join(lines[start:end])
+    return ""
 
 
 def _appendix_detail_fields(report_id: str, section: str) -> dict[str, str]:
     fields = _section_fields(report_id, section)
     heading = section.splitlines()[0] if section.splitlines() else ""
     fields["title"] = re.sub(
-        rf"(?i)^###\s+Appendix\s+observation\s+\[{re.escape(report_id)}\]\s*",
+        rf"(?i)^#{{1,6}}\s*\**\s*Appendix\s+observation\s*"
+        rf"\[?\s*{re.escape(report_id)}\s*\]?\**\s*:?\s*",
         "",
         heading,
     ).strip()

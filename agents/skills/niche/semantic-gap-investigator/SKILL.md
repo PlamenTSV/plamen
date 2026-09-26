@@ -20,7 +20,7 @@ CONDITIONAL writes on accumulator/snapshot/tracking variables are now in-scope. 
 
 ```
 Task(subagent_type="general-purpose", prompt="
-You are the Semantic Gap Investigator. You take pre-flagged SYNC_GAP, ACCUMULATION_EXPOSURE, and CONDITIONAL annotations from the Semantic Invariant Agent and investigate each one to a definitive conclusion (exploitable or benign).
+You are the Semantic Gap Investigator. You take pre-flagged SYNC_GAP, ACCUMULATION_EXPOSURE, and CONDITIONAL annotations from the Semantic Invariant Agent and investigate each one to an exact producer state: CANDIDATE, REFUTATION_PROPOSAL, or UNRESOLVED.
 
 ## Your Inputs
 Read:
@@ -54,9 +54,10 @@ For each SYNC_GAP:
 4. Check: is the gap self-correcting? If yes, how long can the window last? What functions trigger correction?
 5. Check: can any action during the gap window cause permanent damage (e.g., setting a checkpoint to a stale value)?
 
-Verdict per gap:
-- **EXPLOITABLE**: Consumer produces materially wrong result during window, AND window can last > 1 block, AND either (a) window is unbounded or (b) permanent damage is possible during window. **After EXPLOITABLE verdict**: The confirmed mechanism requires precondition P. Using the Main Table write sites (including constructor), verify no other code path also establishes P. If found: investigate and create a separate finding.
-- **BENIGN**: Gap exists but all consumers are overridden/unused, OR gap self-corrects within same transaction, OR stale value direction is always conservative (undercharges, not overcharges)
+Analysis conclusion per gap:
+- **CANDIDATE**: Consumer produces materially wrong result during window, AND window can last > 1 block, AND either (a) window is unbounded or (b) permanent damage is possible during window. Emit the corresponding standard finding block using the same allocated SGI-N ID and a positive finding verdict allowed by `finding-output-format.md`. The confirmed mechanism requires precondition P. Using the Main Table write sites (including constructor), verify no other code path also establishes P. If found: investigate it under a new SGI-N ID.
+- **REFUTATION_PROPOSAL**: Current evidence supports that all consumers are overridden/unused, the gap self-corrects within the same transaction, or the stale-value direction is always conservative. This is a producer proposal, never terminal BENIGN/SAFE closure. Include the committed-invariant material required by `finding-output-format.md`.
+- **UNRESOLVED**: Evidence cannot yet support either state. Preserve the candidate and the missing evidence; never translate uncertainty into a negative proposal.
 
 ### STEP 3: Investigate Each ACCUMULATION_EXPOSURE
 
@@ -67,9 +68,10 @@ For each ACCUMULATION_EXPOSURE:
 4. Check mitigations: Does the protocol snapshot BEFORE or AFTER the manipulation? Does it use min(old, new) or time-weighted averages? Are there caps?
 5. Check composition: Can multiple exposures be combined (e.g., inflate supply AND extend time delta in the same attack)?
 
-Verdict per exposure:
-- **EXPLOITABLE**: Manipulation produces > 1% excess accumulation with realistic parameters, AND no mitigation fully prevents it, AND attacker can profit (or protocol loses funds). **After EXPLOITABLE verdict**: The confirmed mechanism requires precondition P. Using the Main Table write sites (including constructor), verify no other code path also establishes P. If found: investigate and create a separate finding.
-- **BENIGN**: Mitigations prevent meaningful manipulation, OR the exposure is bounded below materiality, OR the controllable input requires fully-trusted actor access
+Analysis conclusion per exposure:
+- **CANDIDATE**: Manipulation produces > 1% excess accumulation with realistic parameters, no mitigation fully prevents it, and the attacker can profit (or the protocol loses funds). Emit the corresponding standard finding block using the same allocated SGI-N ID and a positive finding verdict allowed by `finding-output-format.md`. The confirmed mechanism requires precondition P. Using the Main Table write sites (including constructor), verify no other code path also establishes P. If found: investigate it under a new SGI-N ID.
+- **REFUTATION_PROPOSAL**: Current evidence supports that mitigations prevent meaningful manipulation, the exposure is bounded below materiality, or the controllable input requires fully trusted access. This is not terminal BENIGN/SAFE closure and requires the committed-invariant material from `finding-output-format.md`.
+- **UNRESOLVED**: Evidence cannot yet support either state; retain the candidate and state the missing evidence.
 
 ### STEP 4: Investigate Each CONDITIONAL Write
 
@@ -81,9 +83,10 @@ For each CONDITIONAL annotation on an accumulator/snapshot/tracking variable:
 5. For each consumer: trace execution with the stale value using concrete numbers. Does the stale read produce a materially wrong result?
 6. Check temporal scope: how long can the stale value persist? Until the next call that satisfies the condition? Unbounded?
 
-Verdict per conditional:
-- **EXPLOITABLE**: Consumer produces materially wrong result with stale value, AND the skip path is reachable under normal operation (not just error/revert paths), AND the staleness window can last > 1 block. **After EXPLOITABLE verdict**: The confirmed mechanism requires precondition P. Using the Main Table write sites (including constructor), verify no other code path also establishes P. If found: investigate and create a separate finding.
-- **BENIGN**: Skip path is unreachable under normal operation, OR all consumers handle the stale value correctly, OR staleness self-corrects within the same transaction
+Analysis conclusion per conditional:
+- **CANDIDATE**: Consumer produces materially wrong result with a stale value, the skip path is reachable under normal operation (not just error/revert paths), and the staleness window can last > 1 block. Emit the corresponding standard finding block using the same allocated SGI-N ID and a positive finding verdict allowed by `finding-output-format.md`. The confirmed mechanism requires precondition P. Using the Main Table write sites (including constructor), verify no other code path also establishes P. If found: investigate it under a new SGI-N ID.
+- **REFUTATION_PROPOSAL**: Current evidence supports that the skip path is unreachable under normal operation, all consumers handle the stale value correctly, or staleness self-corrects in the same transaction. This is not terminal BENIGN/SAFE closure and requires the committed-invariant material from `finding-output-format.md`.
+- **UNRESOLVED**: Evidence cannot yet support either state; retain the candidate and state the missing evidence.
 
 ### STEP 5: Trace Conditional Skip Paths for SYNC_GAP functions
 
@@ -98,11 +101,17 @@ For each function identified in STEP 2 as creating a sync gap:
 
 ### Flag Disposition Table (MANDATORY - write FIRST, update per flag)
 
-Write this skeleton table to {SCRATCHPAD}/niche_semantic_gap_findings.md BEFORE starting investigation.
-Update each row's Disposition as you investigate. PENDING rows at completion = workflow violation.
+Enumerate every real input flag first and allocate one unique, stable `SGI-N` ID
+to each flag before analysis. The same ID MUST be used in this table and in any
+corresponding finding block. Write this skeleton table to
+{SCRATCHPAD}/niche_semantic_gap_findings.md BEFORE starting investigation.
+Update each row's Disposition as you investigate. Allowed table dispositions
+are exactly `REFUTATION_PROPOSAL`, `CANDIDATE`, or `UNRESOLVED`; terminal
+`BENIGN`, `SAFE`, `REFUTED`, and `EXPLOITABLE` table states are forbidden.
+PENDING rows at completion are a workflow violation.
 
-| # | Flag Type | Variable | Location | Disposition | If BENIGN: Defense (file:line) | If EXPLOITABLE: Finding ID |
-|---|-----------|----------|----------|-------------|-------------------------------|---------------------------|
+| Finding ID | Flag Type | Variable | Location | Disposition | If REFUTATION_PROPOSAL: Defense (file:line) | If CANDIDATE: Finding Block |
+|------------|-----------|----------|----------|-------------|-----------------------------------------------|-----------------------------|
 
 Every SYNC_GAP, ACCUMULATION_EXPOSURE, CONDITIONAL, and CLUSTER_GAP flag from semantic_invariants.md
 MUST appear as a row. The orchestrator verifies: count(rows) == count(flags).
@@ -112,17 +121,40 @@ MUST appear as a row. The orchestrator verifies: count(rows) == count(flags).
 Use standard finding format with [SGI-N] IDs.
 
 For each finding, include:
+- The complete standard envelope explicitly: **Verdict**, **Step Execution**,
+  **Rules Applied**, **Preferred Tag**, **Severity**, **Location**,
+  **Description**, **Impact**, **Material Harm**, and **Evidence**. Do not treat
+  the phase-specific fields below as a reason to omit the standard fields.
 - **Gap Type**: SYNC_GAP, ACCUMULATION_EXPOSURE, CONDITIONAL_SKIP, or CLUSTER_GAP
 - **Source Annotation**: Quote the exact annotation from semantic_invariants.md
-- **Investigation Result**: EXPLOITABLE or BENIGN with full reasoning
-- **Concrete Values**: Numeric trace showing the wrong result (for EXPLOITABLE)
+- **Investigation Result**: CANDIDATE, REFUTATION_PROPOSAL, or UNRESOLVED with full reasoning
+- **Concrete Values**: Numeric trace showing the wrong result (for CANDIDATE)
+
+For every value- or liveness-bearing `REFUTATION_PROPOSAL`, put this exact
+one-to-one block inside that finding (replace every placeholder; do not merely
+refer to `finding-output-format.md`):
+
+```markdown
+**Invariant Commitment**: CI:CI-SGI-N
+
+committed-invariant [CI-SGI-N]
+Locus: relative/production/file.ext:L123
+Shape: CONSERVATION / REQUESTED_EQ_DELIVERED / APPROVE_EQ_SPEND / NO_REVERT_AT_BOUNDARY / ROUNDTRIP / FRESHNESS
+Assertion: concrete property whose violation would falsify this proposal
+Falsify Class: property / boundary / roundtrip / conservation
+Provenance: SGI-N
+```
+
+The commitment ID and `Provenance` must use this finding's exact `SGI-N`.
+Do not share a commitment between findings. A missing, malformed, duplicated,
+or borrowed block leaves the proposal open as input debt.
 
 ## Chain Summary (MANDATORY)
 | Finding ID | Location | Root Cause (1-line) | Verdict | Severity | Precondition Type | Postcondition Type |
 
 Write to {SCRATCHPAD}/niche_semantic_gap_findings.md
 
-Return: 'DONE: {S} sync gaps, {A} accumulation exposures, {C} conditional writes, {G} cluster gaps - {T} total flags dispositioned, {E} exploitable'
+Return: 'DONE: {S} sync gaps, {A} accumulation exposures, {C} conditional writes, {G} cluster gaps - {T} total flags dispositioned, {E} candidates'
 ")
 ```
 

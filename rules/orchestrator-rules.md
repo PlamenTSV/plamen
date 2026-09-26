@@ -15,7 +15,7 @@
 > | `/plamen` | V2 — routes to the same Python driver as `/plamen-wizard` (`commands/plamen.md` Step -1 redirects all interactive invocations) | **Yes** (auto-checkpoint) | Default |
 > | `/plamen-wizard` | V2 — Python outer loop, one `claude -p` subprocess per phase | **Yes** (auto-checkpoint) | Rewritten 2026-04-20 |
 >
-> **`/plamen*` (default)**: `/plamen light`, `/plamen core`, `/plamen thorough`, `/plamen compare` all route through Step -1 of `commands/plamen.md` to the V2 driver — there is no standalone single-conversation V1 path left.
+> **`/plamen*` (default)**: `/plamen light`, `/plamen core`, `/plamen thorough` all route through Step -1 of `commands/plamen.md` to the V2 driver — there is no standalone single-conversation V1 path left.
 > **V2 (resumable)**: `/plamen-wizard` — interactive setup, then launches `plamen_driver.py`. Same prompt (`commands/plamen.md` or `commands/plamen-l1.md`) is executed one phase at a time, each in a fresh `claude -p` context. This prevents the legacy single-conversation "context saturation → phase skipping" failure mode while reusing the same orchestrator logic verbatim. Python's job: outer loop, checkpoint, gate-check, retry-once-then-degrade, rate-limit pause + resume.
 >
 > If usage runs out mid-audit, re-run: `python3 ~/.claude/scripts/plamen_driver.py {project}/.scratchpad/config.json` — auto-resumes from last successful phase.

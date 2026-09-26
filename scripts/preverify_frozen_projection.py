@@ -30,6 +30,7 @@ from artifact_ledger import (
     validate_work_unit_inputs,
 )
 from bounded_artifact_io import read_bounded_regular_bytes
+from portable_path_contract import assert_lexically_bounded_relative_path
 from chain_candidate_inventory_union import (
     ChainCandidateDeltaError,
     DELTA_DERIVATION_ALGORITHM,
@@ -49,11 +50,14 @@ from phase_io_contracts import (
     canonical_work_unit_key,
 )
 import plamen_mechanical as _mechanical
+from operational_markdown import operational_markdown_view
 from preverify_chain_pair_projection import (
+    IDENTITY_UNIVERSE_LOGICAL,
     PAIR_DERIVATION_ALGORITHM,
     PAIR_DERIVATION_CONFORMANCE_SHA256,
     RECEIPT_SCHEMA as PAIR_RECEIPT_SCHEMA,
     derive_preverify_chain_pair_relation,
+    derive_preverify_chain_source_identity_universe,
     validate_preverify_chain_pair_derivation_conformance,
 )
 
@@ -85,6 +89,7 @@ FROZEN_SOURCE_PREIMAGE_LEAVES = {
     "chain_candidate_source_pair_receipt": "d_p.json",
     "chain_candidate_source_enabler_results": "d_e.bin",
     "chain_candidate_source_auto_map_receipt": "d_a.json",
+    "chain_candidate_source_source_identity_universe": "d_i.json",
     "semantic_mutations": "s.json",
 }
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
@@ -127,6 +132,12 @@ def _digest(value: Mapping[str, Any]) -> str:
 def _safe_relative(value: object, *, label: str) -> str:
     text = str(value or "")
     path = PurePosixPath(text)
+    try:
+        assert_lexically_bounded_relative_path(text, label=label)
+    except ValueError as exc:
+        raise PreverifyFrozenProjectionError(
+            f"{label} is not a canonical relative POSIX path"
+        ) from exc
     if (
         not text
         or "\\" in text
@@ -144,6 +155,19 @@ def _binding(raw: bytes) -> dict[str, Any]:
     return {"sha256": _sha(raw), "size": len(raw)}
 
 
+def _operational_finding_view(
+    text: str,
+) -> tuple[str, list[re.Match[str]]]:
+    """Return the offset-stable live view and its finding headings.
+
+    The operational view masks fenced/code/HTML blocks without moving source
+    offsets, so callers can still slice and bind the exact original bytes.
+    """
+
+    operational = operational_markdown_view(text)
+    return operational, list(_FINDING_HEADING.finditer(operational))
+
+
 def _records_bytes(inventory_raw: bytes) -> bytes:
     try:
         text = inventory_raw.decode("utf-8", errors="strict")
@@ -151,9 +175,18 @@ def _records_bytes(inventory_raw: bytes) -> bytes:
         raise PreverifyFrozenProjectionError(
             "final inventory is not strict UTF-8"
         ) from exc
-    records = _mechanical._records_from_inventory_text(text)
+    operational, heading_matches = _operational_finding_view(text)
+    # Operational Markdown authenticates which headings are live, while the
+    # records projection must preserve values from the exact authored bytes.
+    # Feeding the masked view itself into the field parser erased natural
+    # inline-code values such as `contracts/Vault.sol:L42` and repeated the
+    # same structure/value type confusion previously fixed at axis delivery.
+    records = _mechanical._records_from_inventory_text(
+        text,
+        structural_text=operational,
+    )
     heading_ids = {
-        match.group(1).upper() for match in _FINDING_HEADING.finditer(text)
+        match.group(1).upper() for match in heading_matches
     }
     record_ids = {
         str(row.get("inventory_id") or "").upper()
@@ -182,7 +215,7 @@ def derive_preverify_finding_records_bytes(inventory_raw: bytes) -> bytes:
 
 
 def _inventory_sections(text: str) -> dict[str, str]:
-    matches = list(_FINDING_HEADING.finditer(text))
+    _operational, matches = _operational_finding_view(text)
     sections: dict[str, str] = {}
     for index, match in enumerate(matches):
         end = (
@@ -323,7 +356,11 @@ def _validated_chain_candidate_delta(
         "pair_receipt",
         "enabler_results",
     }
-    allowed_roles = {*required_roles, "auto_map_receipt"}
+    allowed_roles = {
+        *required_roles,
+        "auto_map_receipt",
+        "source_identity_universe",
+    }
     if (
         not isinstance(preimage_bindings, Mapping)
         or not required_roles.issubset(set(preimage_bindings))
@@ -544,6 +581,23 @@ def _validated_chain_candidate_delta(
         raise PreverifyFrozenProjectionError(
             "chain candidate pair receipt preimage is malformed"
         ) from exc
+    identity_raw = source_preimages.get("source_identity_universe")
+    identity_universe = (
+        derive_preverify_chain_source_identity_universe(identity_raw)
+        if identity_raw is not None
+        else None
+    )
+    expected_pair_sources = {
+        "hypotheses.md": _binding(source_preimages["hypotheses"]),
+        "finding_mapping.md": _binding(
+            source_preimages["finding_mapping"]
+        ),
+        **(
+            {IDENTITY_UNIVERSE_LOGICAL: _binding(identity_raw)}
+            if identity_raw is not None
+            else {}
+        ),
+    }
     if (
         not isinstance(pair_receipt, Mapping)
         or pair_receipt.get("schema_version") != PAIR_RECEIPT_SCHEMA
@@ -555,16 +609,9 @@ def _validated_chain_candidate_delta(
         != derive_preverify_chain_pair_relation(
             source_preimages["hypotheses"],
             source_preimages["finding_mapping"],
+            allowed_source_ids=identity_universe,
         )
-        or pair_receipt.get("sources")
-        != {
-            "hypotheses.md": _binding(
-                source_preimages["hypotheses"]
-            ),
-            "finding_mapping.md": _binding(
-                source_preimages["finding_mapping"]
-            ),
-        }
+        or pair_receipt.get("sources") != expected_pair_sources
     ):
         raise PreverifyFrozenProjectionError(
             "chain candidate pair preimage is not the versioned relation "

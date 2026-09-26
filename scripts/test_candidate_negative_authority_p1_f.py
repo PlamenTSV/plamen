@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 import candidate_negative_authority as N
+import plamen_validators as V
+from plamen_types import SC_PHASES
 
 
 def _sha(data: bytes) -> str:
@@ -267,8 +269,12 @@ def test_harvests_attention_table_and_strict_dismissal_receipt(tmp_path: Path) -
         ("NOT EXPLOITABLE", "REFUTATION_PROPOSAL"),
         ("UNREACHABLE", "REFUTATION_PROPOSAL"),
         ("BY DESIGN", "REFUTATION_PROPOSAL"),
-        ("DUPLICATE", "REFUTATION_PROPOSAL"),
-        ("ABSORBED", "REFUTATION_PROPOSAL"),
+        # An identity alias ("same bug, other ID") carries no falsifiable
+        # claim about the code, so it is UNRESOLVED (fail-closed: the
+        # adjudicator cannot close a producer-unresolved candidate), never a
+        # refutation owing a committed invariant.
+        ("DUPLICATE", "UNRESOLVED"),
+        ("ABSORBED", "UNRESOLVED"),
         ("NOT_APPLICABLE", "NOT_APPLICABLE_PROPOSAL"),
     ],
 )
@@ -568,3 +574,37 @@ def test_compliant_generator_proposal_enum_is_harvested(
     )
     assert ledger["event_count"] == 1
     assert ledger["events"][0]["proposed_disposition"] == proposal
+
+
+def test_application_skeptic_gate_accepts_only_authenticated_planning_debt(
+    tmp_path: Path,
+) -> None:
+    phase = next(row for row in SC_PHASES if row.name == "application_skeptic")
+    for name in phase.expected_artifacts:
+        if name == N.CANDIDATE_PLAN_FILE:
+            continue
+        (tmp_path / name).write_text("substantive\n" * 40, encoding="utf-8")
+    debt = N.candidate_negative_planning_debt_bytes(
+        run_id="run-planning-debt",
+        plan_digest="a" * 64,
+        planning_contract_digest="b" * 64,
+        issues=["planning authority mismatch: " + "x" * 300],
+    )
+    debt_path = tmp_path / N.CANDIDATE_PLANNING_DEBT_FILE
+    debt_path.write_bytes(debt)
+
+    assert N.validate_candidate_negative_planning_debt(debt)[
+        "authority_class"
+    ] == "NON_EVIDENCE_PLANNING_DEBT"
+    passed, missing = V.gate_passes(tmp_path, str(tmp_path), phase)
+    assert passed, missing
+
+    payload = json.loads(debt)
+    payload["issues"].append("tampered")
+    debt_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    passed, missing = V.gate_passes(tmp_path, str(tmp_path), phase)
+    assert passed is False
+    assert N.CANDIDATE_PLAN_FILE in missing

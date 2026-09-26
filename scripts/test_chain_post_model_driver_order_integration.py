@@ -29,7 +29,9 @@ import pytest
 from artifact_ledger import (
     read_artifact_ledger,
     semantic_import_authority,
+    semantic_input_prebind_producer_authority_issues,
     semantic_mutation_events,
+    validate_work_unit_artifacts,
 )
 from chain_pair_auto_map_transaction import (
     PENDING,
@@ -141,6 +143,7 @@ def _accepted_chain_model(
     *,
     include_enabler: bool,
     base_inventory_extra: str = "",
+    coupled_id_ledger: bool = False,
 ) -> tuple[Path, Path, dict[str, Any], DRIVER.Checkpoint]:
     project, scratchpad = CHAIN_FIXTURE._root(tmp_path)
     checkpoint = DRIVER.Checkpoint(run_id=CHAIN_FIXTURE.RUN_ID)
@@ -171,10 +174,19 @@ def _accepted_chain_model(
         "**Impact**: Requires verification.\n\n"
         "## Chain Summary\n\n- DA-2 affects a security-relevant transition.\n",
     )
+    if coupled_id_ledger:
+        CHAIN_FIXTURE._write(
+            scratchpad / "_id_ledger.json",
+            '{"schema_version":"plamen.id_ledger.v1","allocations":[]}\n',
+        )
     CHAIN_FIXTURE._claim_depth_sources(
         project,
         scratchpad,
-        ("findings_inventory.md", "depth_alpha_findings.md"),
+        (
+            "findings_inventory.md",
+            "depth_alpha_findings.md",
+            *(("_id_ledger.json",) if coupled_id_ledger else ()),
+        ),
     )
     config = CHAIN_FIXTURE._config(project)
     assert DRIVER._run_chain_summary_compaction_transaction(
@@ -212,6 +224,61 @@ def _accepted_chain_model(
         assert authority["authority_kind"] == "EXACT_PHASE_IO_PRODUCER"
         assert authority["producer_work_unit_key"].endswith("/chain/model")
     return project, scratchpad, config, checkpoint
+
+
+def test_chain_id_registration_keeps_coupled_inventory_and_model_authority(
+    tmp_path: Path,
+) -> None:
+    """Run51: a direct ID-ledger write invalidated two otherwise exact roots."""
+
+    project, scratchpad, config, checkpoint = _accepted_chain_model(
+        tmp_path,
+        include_enabler=False,
+        coupled_id_ledger=True,
+    )
+    phase = CHAIN_FIXTURE._chain_phase()
+    collisions, authority_issues = (
+        DRIVER._run_chain_id_ledger_collision_boundary(
+            phase=phase,
+            scratchpad=scratchpad,
+            config=config,
+            checkpoint=checkpoint,
+            attempt=1,
+        )
+    )
+
+    assert collisions == []
+    assert authority_issues == []
+    ledger_payload = json.loads(
+        (scratchpad / "_id_ledger.json").read_text(encoding="utf-8")
+    )
+    assert [row["id"] for row in ledger_payload["allocations"]] == ["H-1"]
+    events = semantic_mutation_events(scratchpad)
+    assert len(events) == 1
+    assert events[0]["artifact_identity"] == "scratchpad:_id_ledger.json"
+    assert events[0]["mutation_kind"] == "CHAIN_ID_LEDGER_REGISTRATION"
+    assert events[0]["status"] == "INVALIDATION_APPLIED"
+    assert events[0]["checkpoint_reconciled"] is True
+    assert checkpoint.semantic_mutation_acks[events[0]["event_id"]]
+
+    assert semantic_input_prebind_producer_authority_issues(
+        scratchpad,
+        project,
+        ("scratchpad:findings_inventory.md",),
+        run_id=CHAIN_FIXTURE.RUN_ID,
+    ) == []
+    contract, launch = DRIVER._typed_model_phase_contract_and_launch(
+        phase, scratchpad, config
+    )
+    assert contract is not None and launch is not None
+    assert validate_work_unit_artifacts(
+        scratchpad,
+        project,
+        contract,
+        launch,
+        run_id=CHAIN_FIXTURE.RUN_ID,
+        actor="MODEL",
+    ) == []
 
 
 def _additive_pair_deriver(
@@ -295,6 +362,27 @@ def test_real_main_orders_model_receipt_then_paired_auto_map_without_root_union(
     assert not _calls(validator_tree, "run_chain_pair_auto_map_transaction")
     validator_source = inspect.getsource(DRIVER._run_phase_validators)
     assert 'config["_chain_post_model_auto_map_issues"]' in validator_source
+
+    prevalidation_call = validator_source.index(
+        "model_prevalidation_issues.extend("
+    )
+    for successor_call in (
+        "_run_skeptic_challenge_sidecar_transaction(",
+        "_route_post_verify_late_candidates(config)",
+        "_write_crossbatch_manifest(scratchpad)",
+        "_run_chain_id_ledger_collision_boundary(",
+    ):
+        assert prevalidation_call < validator_source.index(successor_call), (
+            "raw MODEL attribution must precede every later semantic "
+            f"successor boundary: {successor_call}"
+        )
+    for phase_name in (
+        "chain_agent2",
+        "post_verify_extract",
+        "skeptic",
+        "crossbatch",
+    ):
+        assert f'"{phase_name}"' in validator_source
 
     main_source = inspect.getsource(DRIVER.main)
     assert '"CHAIN_FINAL_PAIR_MUTATION_DEBT"' in main_source

@@ -49,6 +49,8 @@ _RUNTIME_ENTRYPOINTS = (
     "scripts/artifact_ledger.py",
     "scripts/ci_dependency_authority.py",
     "scripts/phase_io_contracts.py",
+    "scripts/js_toolchain_authority.py",
+    "scripts/runtime_image_materializer.py",
     "scripts/plamen_mcp_runtime.py",
     "scripts/program_facts_bake.py",
     "scripts/program_facts_evm_provider.py",
@@ -69,8 +71,12 @@ _RUNTIME_CLOSURE_PATH = Path(
 _RUNTIME_DENIED_BASENAMES = {
     "claude_test_launch_authority.py",
 }
-_MAX_RUNTIME_SOURCE_BYTES = 4 * 1024 * 1024
-_MAX_RUNTIME_ASSET_BYTES = 16 * 1024 * 1024
+# The generated orchestrator intentionally remains one bounded source member.
+# V3's coupled phase-authority logic has outgrown the original 4 MiB ceiling;
+# keep a fixed, reviewable upper bound without rejecting the current 4.01 MiB
+# driver before its hash/size can enter the authenticated runtime closure.
+_MAX_RUNTIME_SOURCE_BYTES = 8 * 1024 * 1024
+_MAX_RUNTIME_ASSET_BYTES = 64 * 1024 * 1024
 _MAX_RUNTIME_TREE_FILES = 512
 _MAX_RUNTIME_LOCAL_MODULE_FILES = 1024
 TOOLCHAIN_RUNTIME_REQUIRED_FILES: tuple[str, ...]
@@ -84,11 +90,41 @@ class ToolchainControlError(ValueError):
     """The local reviewed control pair is unreadable or semantically invalid."""
 
 
+SNAPSHOT_BOUND_LOCAL = "SNAPSHOT_BOUND_LOCAL"
+SNAPSHOT_BOUND_LOCAL_TRUST_ASSUMPTION = "OPERATOR_LOCAL_TOOL_INSTALL"
+SNAPSHOT_BOUND_LOCAL_EVIDENCE_CEILING = (
+    "POSITIVE_FINDINGS_AND_HEURISTIC_COVERAGE_ONLY"
+)
+
+
+@dataclass(frozen=True)
+class SnapshotBoundLocalPolicy:
+    """Closed policy projection for locally installed analysis tools.
+
+    This tier authorizes only a stable, sandboxed execution of the exact bytes
+    captured in an audit snapshot.  It deliberately does not claim that those
+    bytes are an authentic upstream release and can never support a clean-audit
+    conclusion by itself.
+    """
+
+    tool_id: str
+    identity_kind: str
+    authority_tier: str
+    execution_authority: bool
+    authentic_content_authority: bool
+    can_certify_clean: bool
+    evidence_ceiling: str
+    trust_assumption: str
+    governance_state: str
+    governance_sha256: str
+    version_lock_sha256: str
+
+
 @dataclass(frozen=True)
 class _RuntimeDirectoryEntry:
     name: str
     casefolded_name: str
-    identity: tuple[int, int, int, int, int]
+    identity: tuple[int, ...]
     is_regular: bool
     is_directory: bool
     is_alias: bool
@@ -96,7 +132,7 @@ class _RuntimeDirectoryEntry:
 
 @dataclass(frozen=True)
 class _RuntimeDirectoryState:
-    identity: tuple[int, int, int, int, int]
+    identity: tuple[int, int, int]
     entries: tuple[_RuntimeDirectoryEntry, ...]
 
 
@@ -126,6 +162,13 @@ class _RuntimePathIndex:
             folded: dict[str, str] = {}
             with os.scandir(directory) as entries:
                 for entry in entries:
+                    # Bytecode caches are interpreter-owned, mutable byproducts
+                    # and are never admitted to the reviewed runtime closure.
+                    # Tracking their directory entry made a first import race
+                    # the final path-index replay even though no governed
+                    # source or runtime asset had changed.
+                    if entry.name.casefold() == "__pycache__":
+                        continue
                     info = entry.stat(follow_symlinks=False)
                     attributes = int(
                         getattr(info, "st_file_attributes", 0)
@@ -148,24 +191,29 @@ class _RuntimePathIndex:
                             f"{prior} versus {entry.name}"
                         )
                     folded[key] = entry.name
+                    is_directory = stat.S_ISDIR(info.st_mode)
                     rows.append(
                         _RuntimeDirectoryEntry(
                             name=entry.name,
                             casefolded_name=key,
-                            identity=_identity(info),
+                            identity=(
+                                _directory_identity(info)
+                                if is_directory
+                                else _identity(info)
+                            ),
                             is_regular=stat.S_ISREG(info.st_mode),
-                            is_directory=stat.S_ISDIR(info.st_mode),
+                            is_directory=is_directory,
                             is_alias=alias,
                         )
                     )
             after = directory.lstat()
             _reject_alias_ancestry(directory, label)
-            if _identity(before) != _identity(after):
+            if _directory_identity(before) != _directory_identity(after):
                 raise ToolchainControlError(
                     f"{label} parent changed while indexed"
                 )
             return _RuntimeDirectoryState(
-                identity=_identity(after),
+                identity=_directory_identity(after),
                 entries=tuple(sorted(rows, key=lambda row: row.name)),
             )
         except ToolchainControlError:
@@ -320,7 +368,7 @@ def _runtime_module_map(
             recursive=False,
             label="runtime local module map",
             admit=lambda path: (
-                not path.name.startswith("test_")
+                not path.name.casefold().startswith("test_")
                 and path.name not in _RUNTIME_DENIED_BASENAMES
             ),
         ):
@@ -333,7 +381,7 @@ def _runtime_module_map(
             "plamen_l1",
             recursive=True,
             label="runtime local module map",
-            admit=lambda path: not path.name.startswith("test_"),
+            admit=lambda path: not path.name.casefold().startswith("test_"),
         ):
             path = root / relative
             relative_path = Path(relative)
@@ -754,7 +802,7 @@ def derive_runtime_dependency_closure(root: Path) -> tuple[str, ...]:
         if relative in visited:
             continue
         path = root / relative
-        if path.name.startswith("test_") or path.name in (
+        if path.name.casefold().startswith("test_") or path.name in (
             _RUNTIME_DENIED_BASENAMES
         ):
             raise ToolchainControlError(
@@ -948,10 +996,17 @@ def load_runtime_closure_manifest(root: Path) -> dict[str, Any]:
     files = payload.get("files")
     assets = payload.get("assets")
     manifest_control = payload.get("manifest_control")
+    asset_paths = (
+        [row.get("path") for row in assets]
+        if isinstance(assets, list)
+        and all(isinstance(row, dict) for row in assets)
+        else []
+    )
     if (
         payload.get("schema") != _RUNTIME_CLOSURE_SCHEMA
         or payload.get("derivation") != "python-ast-typed-runtime-closure-v2"
         or payload.get("entrypoints") != list(_RUNTIME_ENTRYPOINTS)
+        or len(_RUNTIME_ENTRYPOINTS) != len(set(_RUNTIME_ENTRYPOINTS))
         or not isinstance(files, list)
         or files != sorted(set(files))
         or any(
@@ -965,6 +1020,7 @@ def load_runtime_closure_manifest(root: Path) -> dict[str, Any]:
         or not isinstance(assets, list)
         or assets != sorted(assets, key=lambda row: row.get("path", ""))
         or len(assets) != len(files) - 1
+        or len(asset_paths) != len(set(asset_paths))
         or any(
             not isinstance(row, dict)
             or set(row) != {
@@ -987,9 +1043,20 @@ def load_runtime_closure_manifest(root: Path) -> dict[str, Any]:
             "kind": "control",
             "path": _RUNTIME_CLOSURE_PATH.as_posix(),
         }
+        or _RUNTIME_CLOSURE_PATH.as_posix() not in files
+        or not set(_RUNTIME_ENTRYPOINTS).issubset(files)
+        or set(asset_paths)
+        != set(files) - {_RUNTIME_CLOSURE_PATH.as_posix()}
     ):
         raise ToolchainControlError(
             "toolchain runtime closure manifest is invalid"
+        )
+    derived_files = derive_runtime_dependency_closure(Path(root))
+    derived_assets = _runtime_asset_rows_for_files(Path(root), derived_files)
+    if files != list(derived_files) or assets != list(derived_assets):
+        raise ToolchainControlError(
+            "toolchain runtime closure manifest does not match the "
+            "independently derived runtime closure"
         )
     return dict(payload)
 
@@ -1049,6 +1116,22 @@ class ToolchainControls:
     governance_path: Path
 
 
+def _control_semantic_digest(value: Mapping[str, Any]) -> str:
+    try:
+        raw = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise ToolchainControlError(
+            "toolchain controls changed after validation"
+        ) from exc
+    return hashlib.sha256(raw).hexdigest()
+
+
 # Identity names, providers, probes, and acquisition specifications are closed
 # control semantics.  Keeping this denominator in one shared module ensures a
 # data-only edit cannot redirect setup and runtime together to another package.
@@ -1085,6 +1168,18 @@ _IDENTITY_CONTRACTS: dict[str, dict[str, Any]] = {
     },
 }
 
+# Local snapshot-bound execution is a deliberately weaker authority than a
+# reviewed-content match.  The closed roster and its current governance state
+# live beside the sole control-pair parser so consumers cannot independently
+# reinterpret governance debt as upstream authenticity.
+_SNAPSHOT_BOUND_LOCAL_CONTRACTS: dict[str, tuple[str, str]] = {
+    "forge": ("command", "GOVERNED_DEBT"),
+    "opengrep": ("command", "GOVERNED_DEBT"),
+    "semgrep": ("command", "GOVERNED_DEBT"),
+    "slither": ("python_distribution", "REVIEWED_VERSION_OBSERVED_CONTENT"),
+    "solc": ("command", "EXTERNAL_TOOLCHAIN_MANAGER"),
+}
+
 _LOCKED_CONTENT_AUTHORITY = {
     "mode": "OBSERVED_NONAUTHORITATIVE",
     "reviewed_content_sha256": [],
@@ -1102,6 +1197,23 @@ _PROTOBUF_REVIEWED_KINDS = (
     "module",
     "generated_module",
 )
+_MEDUSA_NATIVE_VERSION_POLICY = "exact native v1.5.1 signed image member"
+_MEDUSA_NATIVE_INTEGRITY_POLICY = (
+    "Sigstore-authenticated release executable SHA-256 plus signed exact "
+    "guest-member receipt"
+)
+_MEDUSA_NATIVE_UPDATE_POLICY = {
+    "state": "REVIEWED_NATIVE_SIGNED_CONTENT",
+    "acquisition_scope": "SETUP_ONLY",
+    "policy_path": "verification_policy/medusa_acquisition.v1.json",
+    "policy_sha256": (
+        "4112703567b4c398207eaf09c75503840704be44b663a43e82fae42aa32a0208"
+    ),
+    "signed_receipt_contract": "PLAMEN_NATIVE_IMAGE_MEMBER_RECEIPT_V2",
+    "next_required_authority": (
+        "PLAMEN_NATIVE_SOURCE_BOOTSTRAP_COORDINATOR_RECEIPT_V1"
+    ),
+}
 _RUNTIME_STATUSES = {
     "MATCH",
     "MISMATCH",
@@ -1130,6 +1242,21 @@ def _identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
         int(stat.S_IFMT(info.st_mode)),
         int(info.st_size),
         int(info.st_mtime_ns),
+    )
+
+
+def _directory_identity(info: os.stat_result) -> tuple[int, int, int]:
+    """Bind a directory object without treating derived entry churn as input.
+
+    The exact non-cache entry roster and each entry identity are replayed
+    separately.  Directory size/mtime merely repeat roster metadata and also
+    change when an ignored interpreter cache is created.
+    """
+
+    return (
+        int(getattr(info, "st_dev", 0)),
+        int(getattr(info, "st_ino", 0)),
+        int(stat.S_IFMT(info.st_mode)),
     )
 
 
@@ -1640,6 +1767,21 @@ def _validate_governance(
             )
             if reference:
                 references.setdefault(reference, []).append(tool_id)
+        elif state == "REVIEWED_NATIVE_SIGNED_CONTENT":
+            semantic_match = (
+                tool_id == "medusa"
+                and row.get("version_policy") == _MEDUSA_NATIVE_VERSION_POLICY
+                and row.get("integrity_policy") == _MEDUSA_NATIVE_INTEGRITY_POLICY
+                and update == _MEDUSA_NATIVE_UPDATE_POLICY
+                and authority
+                == {
+                    "identity_status": "MATCH",
+                    "deterministic_provider_authority": True,
+                    "mismatch_effect": (
+                        "REVOKE_ON_SIGNED_IMAGE_MEMBER_MISMATCH"
+                    ),
+                }
+            )
         elif state == "GOVERNED_DEBT":
             semantic_match = (
                 scope == "SETUP_ONLY"
@@ -1742,6 +1884,110 @@ def load_toolchain_controls(
         governance_sha256=governance_digest,
         lock_path=lock_path,
         governance_path=governance_path,
+    )
+
+
+def snapshot_bound_local_policies(
+    controls: ToolchainControls,
+) -> tuple[SnapshotBoundLocalPolicy, ...]:
+    """Derive the exact local-execution tier from one validated control pair.
+
+    Callers must pass the object returned by :func:`load_toolchain_controls`;
+    raw governance dictionaries are intentionally not accepted.  A governance
+    transition therefore fails closed until this shared authority is reviewed
+    instead of silently changing the meaning of local execution.
+    """
+
+    expected_governance_path = (
+        _MODULE_ROOT / "verification_policy" / TOOLCHAIN_GOVERNANCE_FILENAME
+    )
+    expected_lock_path = (
+        _MODULE_ROOT / "verification_policy" / TOOLCHAIN_VERSION_LOCK_FILENAME
+    )
+    if (
+        not isinstance(controls, ToolchainControls)
+        or controls.governance_path != expected_governance_path
+        or controls.lock_path != expected_lock_path
+    ):
+        raise ToolchainControlError(
+            "snapshot-bound local policy requires validated toolchain controls"
+        )
+    current = load_toolchain_controls(
+        expected_governance_path,
+        expected_lock_path,
+    )
+    if any(
+        (
+            controls.lock_sha256 != current.lock_sha256,
+            controls.governance_sha256 != current.governance_sha256,
+            _control_semantic_digest(controls.lock)
+            != _control_semantic_digest(current.lock),
+            _control_semantic_digest(controls.governance)
+            != _control_semantic_digest(current.governance),
+            _control_semantic_digest(controls.locked)
+            != _control_semantic_digest(current.locked),
+            _control_semantic_digest(controls.governed)
+            != _control_semantic_digest(current.governed),
+        )
+    ):
+        raise ToolchainControlError(
+            "snapshot-bound local controls differ from the reviewed repository pair"
+        )
+    if (
+        _HEX_64.fullmatch(controls.lock_sha256) is None
+        or _HEX_64.fullmatch(controls.governance_sha256) is None
+    ):
+        raise ToolchainControlError(
+            "snapshot-bound local policy control digests are invalid"
+        )
+    policies: list[SnapshotBoundLocalPolicy] = []
+    for tool_id, (identity_kind, expected_state) in sorted(
+        _SNAPSHOT_BOUND_LOCAL_CONTRACTS.items()
+    ):
+        governed = controls.governed.get(tool_id)
+        update = governed.get("update_policy") if isinstance(governed, Mapping) else None
+        state = str(update.get("state") or "") if isinstance(update, Mapping) else ""
+        if state != expected_state:
+            raise ToolchainControlError(
+                "snapshot-bound local governance state is invalid: "
+                f"{tool_id}"
+            )
+        if identity_kind == "python_distribution":
+            locked = controls.locked.get(tool_id)
+            if (
+                not isinstance(locked, Mapping)
+                or locked.get("identity_kind") != identity_kind
+            ):
+                raise ToolchainControlError(
+                    "snapshot-bound local Python closure control is invalid: "
+                    f"{tool_id}"
+                )
+        policies.append(
+            SnapshotBoundLocalPolicy(
+                tool_id=tool_id,
+                identity_kind=identity_kind,
+                authority_tier=SNAPSHOT_BOUND_LOCAL,
+                execution_authority=True,
+                authentic_content_authority=False,
+                can_certify_clean=False,
+                evidence_ceiling=SNAPSHOT_BOUND_LOCAL_EVIDENCE_CEILING,
+                trust_assumption=SNAPSHOT_BOUND_LOCAL_TRUST_ASSUMPTION,
+                governance_state=state,
+                governance_sha256=controls.governance_sha256,
+                version_lock_sha256=controls.lock_sha256,
+            )
+        )
+    return tuple(policies)
+
+
+def load_snapshot_bound_local_policies(
+    governance_path: Path,
+    lock_path: Path | None = None,
+) -> tuple[SnapshotBoundLocalPolicy, ...]:
+    """Load the control pair once and return its local-execution projection."""
+
+    return snapshot_bound_local_policies(
+        load_toolchain_controls(governance_path, lock_path)
     )
 
 

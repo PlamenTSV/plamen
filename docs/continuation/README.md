@@ -1,3 +1,5 @@
+- **[HANDOFF 2026-09-21](HANDOFF_2026-09-21.md) — READ FIRST: interrupted normalization migration, Codex continuation, measured conformance results and remaining work.**
+- [HANDOFF 2026-09-19](HANDOFF_2026-09-19.md) — prior run history and architecture context.
 # Plamen-v3 continuation index
 
 This directory is the public, privacy-safe handoff for finishing Plamen-v3.
@@ -29,6 +31,17 @@ It is an active engineering record, not a release-completion claim.
    backend, and lifecycle decisions.
 4. [NEXT_ACTIONS.md](NEXT_ACTIONS.md) — dependency-ordered execution plan and
    current checkpoint.
+4a. [../design/gate-repair-architecture.md](../design/gate-repair-architecture.md)
+   — **read before changing any phase gate, validator, parser, or adding a
+   deterministic repair.** Binding principle (unusable vs mechanically
+   repairable), the required normalise-then-gate ordering, the three repair
+   laws, the eleven-defect history with root causes, and the research basis.
+   Section 6 is an explicitly OPEN rollout question with stated falsifiers —
+   do not generalise it without the evidence listed there.
+4b. [TYPED_ARTIFACT_BOUNDARY_DECISION_2026-09-23.md](TYPED_ARTIFACT_BOUNDARY_DECISION_2026-09-23.md)
+   — accepted direction for retiring model-authored Markdown as inter-phase
+   authority. It preserves strict identity/provenance gates while moving
+   presentation out of the semantic protocol.
 5. [E2E_RUNBOOK.md](E2E_RUNBOOK.md) — pinned DODO Codex/Claude release-candidate
    audit procedure, status, resume rules, logs, checkpoints, and acceptance.
 6. [EVIDENCE_INDEX.json](EVIDENCE_INDEX.json) — scoped evidence and explicit
@@ -58,3 +71,4 @@ For Apple Silicon source development, continue with
 [machine-migration guide](../development/machine-migration.md). Real audits
 must use a supported, authenticated Windows installation until the POSIX
 runtime acceptance gates are proven.
+- [Prompt trends & discovery reality check (2026-09)](../research/PROMPT_TRENDS_REALITY_CHECK_2026-09.md) — registries (Pashov/Forefy/QuillShield/ToB), 2026 benchmarks, where Plamen's discovery prompts lag, ranked recommendations

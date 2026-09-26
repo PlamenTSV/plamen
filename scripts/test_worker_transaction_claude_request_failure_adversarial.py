@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,13 @@ from test_worker_work_plan_v2_roster_binding_p0_am import (
 )
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason=(
+        "this legacy Claude request/materialization fixture is Windows-qualified; "
+        "POSIX request compilation requires sealed outer-supervisor authority"
+    ),
+)
 def test_typed_request_compile_failure_terminalizes_active_attempt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

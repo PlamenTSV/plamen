@@ -66,7 +66,6 @@ description: "Launch the V2 deterministic Smart Contract audit pipeline (same as
 - If MODE, PROJECT_PATH, DOCS_PATH (or nodocs), AND `proven-only:` are all resolved but NO `wrapper-launch`, skip the wizard " jump to "Step 0d: Cost Estimate + Launch Confirmation".
 - If MODE, PROJECT_PATH, and DOCS_PATH (or nodocs) are resolved but `scope:` and `proven-only:` are NOT specified, skip to Step 0c.5 (scope selection).
 - If MODE is set but docs status is unknown (no `docs:` and no `nodocs`), skip to Step 0c only.
-- If `$ARGUMENTS` contains "compare", jump directly to the compare flow (Step 0e). If it also contains `report:` followed by a file path, set `REPORT_PATH`. If it contains `ground_truth:` followed by a file path, set `GROUND_TRUTH_PATH`. If both are set, skip the interactive file selection in Step 0e and proceed directly.
 - If `$ARGUMENTS` is empty, run the full interactive wizard starting at Step 0a.
 
 ### Step 0a: Banner + Toolchain Check + Mode Selection
@@ -82,7 +81,7 @@ First, output the banner as text (no tool calls):
 â•šâ•â•     â•šâ•â•â•â•â•â•â•â•šâ•â•  â•šâ•â•â•šâ•â•     â•šâ•â•â•šâ•â•â•â•â•â•â•â•šâ•â•  â•šâ•â•â•â•
 ```
 
-**Web3 Security Auditor** v2.2.4
+**Web3 Security Auditor** v3.0.0
 
 ### Version Check (MANDATORY " run before toolchain probe)
 
@@ -92,7 +91,7 @@ Read the VERSION file and compare against the version in your CLAUDE.md context:
 cat ~/.claude/VERSION 2>/dev/null || cat ~/.plamen/VERSION 2>/dev/null || echo "unknown"
 ```
 
-The VERSION file should say `2.2.4`. Compare this against the version in the header of this prompt (`v2.2.4`). If they differ, warn the user:
+The VERSION file should say `3.0.0`. Compare this against the version in the header of this prompt (`v3.0.0`). If they differ, warn the user:
 
 > **Version mismatch detected.** Your CLAUDE.md rules are from v{your version} but the repo is at v{VERSION file}. Run `cd ~/.plamen && git pull && plamen install` to update. Proceeding with stale rules may cause wrong agent counts or skipped pipeline steps.
 
@@ -154,17 +153,12 @@ AskUserQuestion(questions=[{
       label: "Thorough",
       description: "Deep audit " iterative depth, fuzz variants, re-scan",
       preview: "~40-100 agents (requires Max plan)\n\nPipeline:\n  Breadth (5-9) â†’ Re-scan (2 iters) â†’ Per-contract\n  â†’ Inventory â†’ Depth (1-3 iters, Devil's Advocate)\n  â†’ Niche agents (up to 8) â†’ Chains\n  â†’ Verify ALL severities (with fuzz)\n  â†’ Skeptic-Judge for HIGH/CRIT\n\nIncludes:\n  · Breadth re-scan + per-contract analysis\n  · Invariant fuzz campaign (EVM)\n  · Medusa stateful fuzzing (EVM, if installed)\n  · Design stress testing (unconditional)\n  · Skeptic-Judge adversarial verification (HIGH/CRIT)\n  · Fuzz variants in verification\n  · Low/Info findings verified\n  · Cross-batch consistency check\n\nScoring: 4-axis (Evidence, Consensus, Quality, RAG)"
-    },
-    {
-      label: "Compare",
-      description: "Diff a past Plamen report against a ground truth report",
-      preview: "Post-audit improvement mode\n\nYou provide:\n  · Your Plamen audit report\n  · A ground truth / reference report\n\nOutputs:\n  · Finding alignment matrix\n  · Recall & precision metrics\n  · Root cause classification\n  · Targeted methodology improvements"
     }
   ]
 }])
 ```
 
-Set `MODE` based on the user's selection. If "Compare" is selected, jump to Step 0e.
+Set `MODE` based on the user's selection.
 
 ### Step 0b: Target Project
 
@@ -368,17 +362,6 @@ AskUserQuestion(questions=[{
 - If "Yes, launch" â†’ proceed to Step 1.
 - If "Go back" â†’ return to Step 0c.6 (Proven-Only).
 - If "Cancel" â†’ stop, output `Cancelled.` and do not proceed.
-
-### Step 0e: Compare Flow
-
-If the user selected "Compare":
-1. If `REPORT_PATH` and `GROUND_TRUTH_PATH` are both set from `$ARGUMENTS`, skip to step 3.
-2. Otherwise, use `AskUserQuestion` to ask for both report paths (both must be `.md` files " PDFs cannot be diffed).
-3. Read both files and follow the Post-Audit Improvement Protocol from `~/.claude/rules/post-audit-improvement-protocol.md`.
-
-Do NOT proceed to Step 1.
-
----
 
 ## Step 0.5: Network Resolution (EVM only)
 

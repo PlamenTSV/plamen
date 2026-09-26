@@ -101,8 +101,25 @@ def _write_candidates(scratchpad: Path, *, only: int | None = None) -> None:
     if only is not None:
         names = names[:only]
     for name in names:
+        if name == "constraint_variables.md":
+            body = (
+                "# Constraint Variables\n\n## Constraint Variables\n\n"
+                "| Variable | Source Location | Bound / Enforcement | Setter | Status |\n"
+                "|---|---|---|---|---|\n"
+                "| fee | src/Protocol.sol:1 | fee <= 100 | setFee | ENFORCED |\n"
+            )
+        elif name == "modifiers.md":
+            body = (
+                "# Modifier and Guard Application Map\n\n"
+                "## Modifier Application Map\n\n"
+                "| Function | Source Location | Modifier / Guard | Status |\n"
+                "|---|---|---|---|\n"
+                "| Protocol.setFee | src/Protocol.sol:1 | onlyOwner | GUARDED |\n"
+            )
+        else:
+            body = f"# Authenticated retry {name}\n\n" + ("candidate evidence\n" * 20)
         (scratchpad / name).write_text(
-            f"# Authenticated retry {name}\n\n" + ("candidate evidence\n" * 20),
+            body,
             encoding="utf-8",
         )
 

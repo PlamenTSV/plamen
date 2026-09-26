@@ -10,9 +10,11 @@ EXTERNAL assumption ("reverts on insufficiency", "atomic", "out of scope",
 Fix (depth analogue of the Phase 3c per-contract net):
 - GATE: _validate_depth_self_exclusion flags absorbed candidates that (a) cite no
   concrete in-scope referent OR (b) rest on an unverified external assumption.
-- DRIVER: _reemit_depth_self_exclusions mints `### Finding [DXRE-k]` blocks
-  only for content-bearing rows; content-less rows become source-bound
-  `Review Disposition [DXRE-k]` methodology debt.
+- DRIVER: _run_depth_self_exclusion_reemit publishes the re-emit artifact as a
+  PhaseIO work unit, rendering `### Finding [DXRE-k]` blocks only for
+  content-bearing rows; content-less rows become source-bound
+  `Review Disposition [DXRE-k]` methodology debt. (The rendering half is
+  `_reemit_depth_self_exclusions`, now a pure `(recovered) -> bytes` helper.)
 
 Counterplan narrowing: legitimately-refuted candidates that cite a concrete
 in-scope refutation (a real file:Lnnn, no external assumption) are NOT
@@ -31,11 +33,42 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import plamen_driver as D  # noqa: E402
+from depth_self_exclusion_publication import OUTPUT_NAME  # noqa: E402
 from plamen_validators import _validate_depth_self_exclusion  # noqa: E402
 
 
 def _write(sp: Path, name: str, text: str) -> None:
     (sp / name).write_text(text, encoding="utf-8")
+
+
+def _publish(sp: Path) -> Path | None:
+    """Run the driver's real depth self-exclusion re-emit publication.
+
+    ``_reemit_depth_self_exclusions`` was narrowed to a pure
+    ``(recovered) -> bytes`` renderer when the re-emit became a PhaseIO-owned
+    published work unit; the on-disk artifact is now minted by
+    ``_run_depth_self_exclusion_reemit``.  Driving the real phase here keeps
+    this suite end-to-end against what the pipeline actually executes instead
+    of asserting against a signature the driver no longer offers.
+
+    Returns the published artifact, or ``None`` when nothing was recovered and
+    the phase correctly published nothing.
+    """
+
+    phase = next(item for item in D.SC_PHASES if item.name == "depth")
+    config = {
+        "pipeline": "sc",
+        "mode": "thorough",
+        "language": "evm",
+        "cli_backend": "claude",
+        "scratchpad": str(sp),
+        "project_root": str(Path(sp).parent),
+        "_run_id": "a" * 32,
+    }
+    issues = D._run_depth_self_exclusion_reemit(phase, config, sp)
+    assert issues == [], f"re-emit publication reported issues: {issues}"
+    out = sp / OUTPUT_NAME
+    return out if out.exists() else None
 
 
 # A first-pass breadth finding the depth agent could legitimately cite as a
@@ -78,7 +111,7 @@ def test_drop_reproduction_external_assumption_no_referent_flagged_and_reemitted
 
     # This source row has no concrete location, so it is retained as review
     # debt rather than fabricated into a vulnerability finding.
-    out = D._reemit_depth_self_exclusions(tmp_path, recovered)
+    out = _publish(tmp_path)
     assert out is not None and out.exists()
     assert out.name == "depth_selfexcl_reemit_findings.md"
     body = out.read_text(encoding="utf-8")
@@ -167,7 +200,7 @@ def test_contentless_reemit_routes_to_appendix_not_body(tmp_path):
     assert recovered
     assert recovered[0]["content_bearing"] is False
 
-    out = D._reemit_depth_self_exclusions(tmp_path, recovered)
+    out = _publish(tmp_path)
     body = out.read_text(encoding="utf-8")
     assert "**Severity**:" not in body
     assert "CONTENT_LESS_HUMAN_REVIEW" in body
@@ -193,7 +226,7 @@ def test_contentbearing_reemit_keeps_severity_at_low_confidence(tmp_path):
     assert recovered
     assert recovered[0]["content_bearing"] is True
 
-    out = D._reemit_depth_self_exclusions(tmp_path, recovered)
+    out = _publish(tmp_path)
     body = out.read_text(encoding="utf-8")
     assert "**Severity**: High" in body  # own severity preserved, not downgraded
     assert "**Severity**: Informational" not in body
@@ -237,8 +270,12 @@ def test_recall_safe_unparseable_depth_file(tmp_path):
 
 
 def test_reemit_noop_on_empty_recovered(tmp_path):
-    assert D._reemit_depth_self_exclusions(tmp_path, []) is None
-    assert not (tmp_path / "depth_selfexcl_reemit_findings.md").exists()
+    # Nothing recovered -> the publication phase must mint no artifact at all.
+    # Asserted against the real phase, not a renderer, so a future regression
+    # that publishes an empty re-emit shell is caught.
+    assert _validate_depth_self_exclusion(tmp_path) == ([], [])
+    assert _publish(tmp_path) is None
+    assert not (tmp_path / OUTPUT_NAME).exists()
 
 
 # --------------------------------------------------------------------------
@@ -316,7 +353,7 @@ def test_multiline_absorbed_bullet_location_on_continuation_is_content_bearing(t
     # _norm_referent_location lowercases + drops the leading "L" on the line no.
     assert "vault.sol:412" in cand["location"].lower()
 
-    out = D._reemit_depth_self_exclusions(tmp_path, recovered)
+    out = _publish(tmp_path)
     body = out.read_text(encoding="utf-8")
     # Own severity preserved (content-bearing), NOT downgraded to appendix.
     assert "**Severity**: High" in body

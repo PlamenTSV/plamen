@@ -569,11 +569,11 @@ def test_bytecode_suppressed_read_only_import_preserves_census(tmp_path) -> None
 def test_public_and_audit_launchers_suppress_bytecode_writes() -> None:
     front = _load_front()
     windows = front._windows_plamen_command_bytes(sys.executable, ROOT / "plamen.py")
-    assert b' -B "' in windows
+    assert b" -I -B -c " in windows
     assert " -B " in inspect.getsource(front._ensure_posix_plamen_command)
-    assert 'bytecode_flag = " -B"' in inspect.getsource(
-        front._backend_shim_bytes
-    )
+    backend_source = inspect.getsource(front._backend_shim_bytes)
+    assert "_windows_bound_source_command" in backend_source
+    assert 'command_items.append("-B")' in backend_source
     assert '[str(python), "-B", *arguments]' in inspect.getsource(
         front._mcp_server_launches
     )

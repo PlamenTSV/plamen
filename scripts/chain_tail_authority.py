@@ -20,6 +20,8 @@ import stat
 import time
 from typing import Any, Callable, Iterable, Mapping
 
+from portable_path_contract import assert_lexically_bounded_relative_path
+
 
 MANIFEST_NAME = "chain_candidate_pairs_iter2.json"
 LEDGER_NAME = "chain_tail_disposition_ledger.json"
@@ -288,6 +290,10 @@ def _safe_relative_path(
     required_prefix: str = "",
 ) -> tuple[str, Path]:
     normalized = str(raw or "").replace("\\", "/").strip("/")
+    try:
+        assert_lexically_bounded_relative_path(normalized, label=field)
+    except ValueError as exc:
+        raise ChainTailAuthorityError(f"invalid {field}: {raw!r}") from exc
     candidate = Path(normalized)
     if (
         not normalized
@@ -304,7 +310,10 @@ def _safe_relative_path(
     ):
         raise ChainTailAuthorityError(f"{field} escapes its authority namespace")
     root_resolved = Path(root).resolve()
-    resolved = (root_resolved / candidate).resolve()
+    try:
+        resolved = (root_resolved / candidate).resolve()
+    except OSError as exc:
+        raise ChainTailAuthorityError(f"invalid {field}: {raw!r}") from exc
     try:
         resolved.relative_to(root_resolved)
     except ValueError as exc:
@@ -2361,6 +2370,7 @@ def load_isolated_chain_tail_work_unit(
     isolated: Mapping[str, Any],
     *,
     expected_source_names: Iterable[str] | None = None,
+    require_live_authority: bool = True,
 ) -> dict[str, Any]:
     """Load a shard work definition only after proving every byte binding.
 
@@ -2368,6 +2378,13 @@ def load_isolated_chain_tail_work_unit(
     shared pre-arm boundary used by MODEL, DRIVER disposition, resume, and final
     reconciliation.  Rehashing a forged private copy or changing an original
     after materialization cannot manufacture a valid launch denominator.
+
+    After an authorized terminal MERGE, the root source is expected to be a
+    registered successor of the bytes captured for each shard.  Post-merge
+    reconciliation may therefore set ``require_live_authority=False`` and
+    replay the immutable private copy against its recorded authority digest;
+    the caller must independently validate the live successor transaction.
+    Pre-arm and resume callers retain the strict default.
     """
 
     root = Path(scratchpad)
@@ -2516,10 +2533,16 @@ def load_isolated_chain_tail_work_unit(
         source_sha = _sha256_bytes(source_bytes)
         copy_sha = _sha256_bytes(copy_bytes)
         if (
-            source_sha != binding.get("authority_sha256")
-            or copy_sha != binding.get("copy_sha256")
-            or source_sha != copy_sha
-            or source_bytes != copy_bytes
+            copy_sha != binding.get("copy_sha256")
+            or copy_sha != binding.get("authority_sha256")
+            or (
+                require_live_authority
+                and (
+                    source_sha != binding.get("authority_sha256")
+                    or source_sha != copy_sha
+                    or source_bytes != copy_bytes
+                )
+            )
         ):
             raise ChainTailAuthorityError("isolated source/copy byte binding mismatch")
     return work

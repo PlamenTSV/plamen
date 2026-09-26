@@ -19,6 +19,9 @@ The fix changes two things in both EVM Medusa prompt files
   3. Add a STEP 3a dedup directive so the agent collapses multiple
      witnesses of the same root cause into a single MEDUSA-N finding
      instead of emitting one per counterexample.
+  4. Compile the exact generated harness before campaign launch and permit
+     three bounded, targeted harness-only compiler repairs. A one-shot
+     compile policy wasted real campaigns on repairable Solidity type errors.
 
 These tests lock in the prompt contract. Drift in either file
 (forgetting `stopOnFailedTest: false`, regressing back to 900s, or
@@ -115,4 +118,32 @@ def test_medusa_prompts_have_dedup_directive():
             "with stopOnFailedTest: false the agent will produce one "
             "MEDUSA-N per counterexample rather than per root cause, "
             "inflating the report"
+        )
+
+
+def test_medusa_prompts_preflight_exact_generated_harness_with_bounded_repairs():
+    """A repairable generated-harness compiler error must not erase a campaign.
+
+    The production root can compile while the newly generated test does not,
+    so both prompt surfaces require the same build-info path used by Medusa's
+    crytic-compile adapter and a small, explicit retry budget.
+    """
+
+    for p in MEDUSA_PROMPTS:
+        text = _read(p)
+        low = text.lower()
+        assert "forge build --build-info .medusa-tests" in text, (
+            f"{p.name}: exact generated-harness compile preflight missing"
+        )
+        assert "3 total generated-harness compile attempts" in low, (
+            f"{p.name}: generated-harness repair budget is not explicit"
+        )
+        assert "do not delete" in low and "weaken" in low, (
+            f"{p.name}: compile recovery could silently weaken an oracle"
+        )
+        assert "payable(address(instance))" in text, (
+            f"{p.name}: Solidity payable target conversion guidance missing"
+        )
+        assert "do not retry past the first compilation failure" not in low, (
+            f"{p.name}: stale one-shot compilation policy remains"
         )

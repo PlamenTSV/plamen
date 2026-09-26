@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 from typing import Any, Mapping, Sequence
 
@@ -27,6 +27,12 @@ SHARD_THRESHOLD = 10
 # monolithic model turn.  Exact 6-10 row leaves remain the only execution
 # shape; inputs beyond this much higher administrative bound stay loud debt.
 MAX_ROWS = 16_384
+PATH_RECEIPT_CONTRACT = (
+    "For every source-path target, copy the portable queue Target verbatim "
+    "into Evidence and append :L<line>; basename and suffix aliases are not "
+    "receipts. Use NEEDS_HUMAN when exact line evidence is unavailable. "
+    "A source-path-authority-debt row must remain NEEDS_HUMAN."
+)
 
 
 class AttentionRepairShardError(ValueError):
@@ -47,6 +53,12 @@ def _canonical_json(payload: Mapping[str, Any]) -> bytes:
 
 
 def _split_table_row(raw: str) -> list[str]:
+    def cell_text(characters: Sequence[str]) -> str:
+        text = "".join(characters).strip()
+        if len(text) >= 2 and text.startswith("`") and text.endswith("`"):
+            return text[1:-1]
+        return text
+
     body = raw.strip()
     if body.startswith("|"):
         body = body[1:]
@@ -62,17 +74,29 @@ def _split_table_row(raw: str) -> list[str]:
         elif char == "\\":
             escaped = True
         elif char == "|":
-            cells.append("".join(current).strip().strip("`"))
+            cells.append(cell_text(current))
             current = []
         else:
             current.append(char)
-    cells.append("".join(current).strip().strip("`"))
+    cells.append(cell_text(current))
     return cells
 
 
 def _escape_cell(value: object, *, code: bool = False) -> str:
     text = str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
     return f"`{text}`" if code else text
+
+
+def _portable_source_target(value: str) -> bool:
+    """True only for a canonical repository-relative POSIX source path."""
+
+    if not value or "\\" in value or ":" in value or value.startswith("/"):
+        return False
+    path = PurePosixPath(value)
+    return (
+        path.as_posix() == value
+        and all(part not in {"", ".", ".."} for part in path.parts)
+    )
 
 
 def parse_bound_queue_bytes(data: bytes) -> tuple[str, list[dict[str, object]]]:
@@ -112,6 +136,14 @@ def parse_bound_queue_bytes(data: bytes) -> tuple[str, list[dict[str, object]]]:
                 "evidence": cells[5],
             }
         )
+        target = cells[2]
+        if (
+            Path(target).suffix.lower() in ALL_AUDIT_SOURCE_SUFFIXES
+            and not _portable_source_target(target)
+        ):
+            raise AttentionRepairShardError(
+                "attention queue source target is not a portable relative path"
+            )
     if not rows or [row["row"] for row in rows] != list(range(1, len(rows) + 1)):
         raise AttentionRepairShardError(
             "attention queue rows are missing, duplicated, or non-sequential"
@@ -176,10 +208,12 @@ def render_shard_input(plan: Mapping[str, Any], shard: Mapping[str, Any]) -> byt
         "",
         "This is one exact, bounded subset of the parent attention queue.",
         "Analyze every row below and no other queue row.",
+        PATH_RECEIPT_CONTRACT,
         "",
-        "PARENT_QUEUE_BINDING_SHA256: "
-        + str(plan["parent_queue_binding_sha256"]),
-        "SHARD_BINDING_SHA256: " + str(shard["row_binding_sha256"]),
+        "The driver binds this input and output route to the parent queue and "
+        "shard plan out of band. Do not copy or reconstruct hash bindings in "
+        "the worker receipt; emit only the semantic receipt table and any "
+        "confirmed finding blocks.",
         "",
         "| # | Kind | Target | Reason | Source | Evidence hint |",
         "|---|------|--------|--------|--------|---------------|",
@@ -198,13 +232,300 @@ def render_shard_input(plan: Mapping[str, Any], shard: Mapping[str, Any]) -> byt
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+def _closed_plan_rows(
+    plan: Mapping[str, Any],
+) -> tuple[list[dict[str, object]], list[str]]:
+    """Validate a shard plan without consulting mutable filesystem state."""
+
+    issues: list[str] = []
+    expected_fields = {
+        "schema",
+        "queue_path",
+        "queue_file_sha256",
+        "parent_queue_binding_sha256",
+        "row_count",
+        "shard_size",
+        "shard_count",
+        "shards",
+        "plan_sha256",
+    }
+    if not isinstance(plan, Mapping) or set(plan) != expected_fields:
+        return [], ["attention shard plan shape is invalid"]
+    if plan.get("schema") != PLAN_SCHEMA:
+        return [], ["attention shard plan schema is invalid"]
+    supplied = plan.get("plan_sha256")
+    unsigned = dict(plan)
+    unsigned.pop("plan_sha256", None)
+    if (
+        not isinstance(supplied, str)
+        or not re.fullmatch(r"[a-f0-9]{64}", supplied)
+        or supplied != _sha256(_canonical_json(unsigned))
+    ):
+        issues.append("attention shard plan self-hash mismatch")
+    if plan.get("queue_path") != "attention_repair_queue.md":
+        issues.append("attention shard plan queue path is invalid")
+    for field in ("queue_file_sha256", "parent_queue_binding_sha256"):
+        if not isinstance(plan.get(field), str) or not re.fullmatch(
+            r"[a-f0-9]{64}", str(plan.get(field) or "")
+        ):
+            issues.append(f"attention shard plan {field} is invalid")
+    row_count = plan.get("row_count")
+    shard_size = plan.get("shard_size")
+    shard_count = plan.get("shard_count")
+    if (
+        type(row_count) is not int
+        or row_count < 1
+        or row_count > MAX_ROWS
+    ):
+        issues.append("attention shard plan row denominator is invalid")
+    if (
+        type(shard_size) is not int
+        or not MIN_SHARD_SIZE <= shard_size <= MAX_SHARD_SIZE
+    ):
+        issues.append("attention shard plan shard size is invalid")
+    shards = plan.get("shards")
+    if (
+        type(shard_count) is not int
+        or shard_count < 1
+        or not isinstance(shards, list)
+        or len(shards) != shard_count
+    ):
+        issues.append("attention shard plan roster is invalid")
+        return [], issues
+    if (
+        type(row_count) is int
+        and row_count >= 1
+        and type(shard_size) is int
+        and shard_size >= 1
+        and shard_count != (row_count + shard_size - 1) // shard_size
+    ):
+        issues.append("attention shard plan shard denominator is invalid")
+
+    flattened: list[dict[str, object]] = []
+    names: set[str] = set()
+    expected_shard_fields = {
+        "ordinal",
+        "shard_id",
+        "input_path",
+        "output_path",
+        "row_numbers",
+        "row_binding_sha256",
+        "rows",
+    }
+    expected_row_fields = {"row", "kind", "target", "reason", "source", "evidence"}
+    for ordinal, shard in enumerate(shards, 1):
+        if not isinstance(shard, Mapping) or set(shard) != expected_shard_fields:
+            issues.append(f"attention shard {ordinal} shape is invalid")
+            continue
+        input_name = shard.get("input_path")
+        output_name = shard.get("output_path")
+        raw_row_numbers = shard.get("row_numbers")
+        if (
+            type(shard.get("ordinal")) is not int
+            or shard.get("ordinal") != ordinal
+            or shard.get("shard_id") != f"attention-{ordinal:04d}"
+            or input_name != f"_attention_repair_shards/shard_{ordinal:04d}.input.md"
+            or output_name != f"attention_repair_rows_{ordinal:04d}.md"
+            or input_name in names
+            or output_name in names
+        ):
+            issues.append(f"attention shard {ordinal} identity is invalid")
+        if isinstance(input_name, str):
+            names.add(input_name)
+        if isinstance(output_name, str):
+            names.add(output_name)
+        shard_rows = shard.get("rows")
+        if (
+            not isinstance(shard_rows, list)
+            or not shard_rows
+            or len(shard_rows) > MAX_SHARD_SIZE
+        ):
+            issues.append(f"attention shard {ordinal} row denominator is invalid")
+            continue
+        if type(row_count) is int and type(shard_size) is int:
+            expected_length = min(
+                shard_size,
+                max(0, row_count - (ordinal - 1) * shard_size),
+            )
+            if len(shard_rows) != expected_length:
+                issues.append(
+                    f"attention shard {ordinal} row partition is non-canonical"
+                )
+        normalized_rows: list[dict[str, object]] = []
+        for raw_row in shard_rows:
+            if not isinstance(raw_row, Mapping) or set(raw_row) != expected_row_fields:
+                issues.append(f"attention shard {ordinal} contains a malformed row")
+                continue
+            row = dict(raw_row)
+            if type(row.get("row")) is not int:
+                issues.append(f"attention shard {ordinal} row identity is invalid")
+                continue
+            if any(
+                type(row.get(field)) is not str
+                or "\x00" in row[field]
+                or "\r" in row[field]
+                or "\n" in row[field]
+                for field in ("kind", "target", "reason", "source", "evidence")
+            ):
+                issues.append(f"attention shard {ordinal} row text is invalid")
+                continue
+            if not row["kind"] or not row["target"]:
+                issues.append(f"attention shard {ordinal} row identity is empty")
+                continue
+            normalized_rows.append(row)
+        row_numbers = [row["row"] for row in normalized_rows]
+        if (
+            not isinstance(raw_row_numbers, list)
+            or any(type(value) is not int for value in raw_row_numbers)
+            or row_numbers != raw_row_numbers
+        ):
+            issues.append(f"attention shard {ordinal} row-number drift")
+        if (
+            normalized_rows != shard_rows
+            or attention_queue_binding_sha256(normalized_rows)
+            != shard.get("row_binding_sha256")
+        ):
+            issues.append(f"attention shard {ordinal} semantic binding mismatch")
+        flattened.extend(normalized_rows)
+    if (
+        type(row_count) is int
+        and [row["row"] for row in flattened] != list(range(1, row_count + 1))
+    ):
+        issues.append("attention shard union is not the exact parent denominator")
+    if type(row_count) is int and len(flattened) != row_count:
+        issues.append("attention shard plan row denominator mismatch")
+    if (
+        flattened
+        and attention_queue_binding_sha256(flattened)
+        != plan.get("parent_queue_binding_sha256")
+    ):
+        issues.append("attention shard plan parent semantic binding drift")
+    return flattened, list(dict.fromkeys(issues))
+
+
+def validate_plan_mapping(plan: Mapping[str, Any]) -> list[str]:
+    """Validate the complete typed plan using only its signed mapping."""
+
+    _rows, issues = _closed_plan_rows(plan)
+    return issues
+
+
+def validate_application_receipt_mapping(
+    plan: Mapping[str, Any], receipt: Mapping[str, Any]
+) -> list[str]:
+    """Replay the typed attention application receipt against its exact plan."""
+
+    plan_rows, issues = _closed_plan_rows(plan)
+    if issues:
+        return issues
+    expected_fields = {
+        "schema",
+        "status",
+        "queue_binding_sha256",
+        "queue_file_sha256",
+        "rows",
+        "accepted_paths",
+        "unresolved_paths",
+    }
+    if not isinstance(receipt, Mapping) or set(receipt) != expected_fields:
+        return ["attention repair application receipt shape is invalid"]
+    if receipt.get("schema") != "plamen.attention-repair-application.v1":
+        issues.append("attention repair application receipt schema is invalid")
+    if receipt.get("queue_binding_sha256") != plan["parent_queue_binding_sha256"]:
+        issues.append("attention repair application receipt queue binding drift")
+    if receipt.get("queue_file_sha256") != plan["queue_file_sha256"]:
+        issues.append("attention repair application receipt queue-file binding drift")
+    receipt_rows = receipt.get("rows")
+    if not isinstance(receipt_rows, list) or len(receipt_rows) != len(plan_rows):
+        issues.append("attention repair application receipt denominator mismatch")
+        return list(dict.fromkeys(issues))
+
+    expected_row_fields = {
+        "row",
+        "kind",
+        "target",
+        "verdict",
+        "evidence",
+        "notes",
+        "coverage_accepted",
+    }
+    accepted_paths: list[str] = []
+    unresolved_paths: list[str] = []
+    allowed = {"SAFE", "CONFIRMED", "NO_FINDING", "NEEDS_HUMAN"}
+    for expected, raw_row in zip(plan_rows, receipt_rows):
+        row_no = expected["row"]
+        if not isinstance(raw_row, Mapping) or set(raw_row) != expected_row_fields:
+            issues.append(f"attention repair application row {row_no} shape is invalid")
+            continue
+        row = dict(raw_row)
+        if (
+            type(row.get("row")) is not int
+            or row.get("row") != row_no
+            or row.get("kind") != expected["kind"]
+            or row.get("target") != expected["target"]
+        ):
+            issues.append(f"attention repair application row {row_no} identity drift")
+        if any(
+            type(row.get(field)) is not str
+            or "\x00" in row[field]
+            or "\r" in row[field]
+            or "\n" in row[field]
+            for field in ("kind", "target", "verdict", "evidence", "notes")
+        ):
+            issues.append(f"attention repair application row {row_no} text is invalid")
+            continue
+        verdict = row["verdict"]
+        if verdict not in allowed:
+            issues.append(f"attention repair application row {row_no} verdict is invalid")
+            continue
+        if (
+            expected["kind"] == "source-path-authority-debt"
+            and verdict != "NEEDS_HUMAN"
+        ):
+            issues.append(
+                f"attention repair application row {row_no} closes source-path authority debt"
+            )
+        target = str(expected["target"])
+        path_target = Path(target).suffix.lower() in ALL_AUDIT_SOURCE_SUFFIXES
+        coverage_accepted = (
+            path_target and verdict in {"SAFE", "CONFIRMED", "NO_FINDING"}
+        )
+        if row.get("coverage_accepted") is not coverage_accepted:
+            issues.append(f"attention repair application row {row_no} coverage drift")
+        if path_target and not _path_literal_present(row["evidence"], target):
+            issues.append(f"attention repair application row {row_no} target evidence is absent")
+        if (
+            path_target
+            and verdict != "NEEDS_HUMAN"
+            and not _path_line_literal_present(row["evidence"], target)
+        ):
+            issues.append(f"attention repair application row {row_no} line evidence is absent")
+        if coverage_accepted:
+            accepted_paths.append(target)
+        if (
+            verdict == "NEEDS_HUMAN"
+            and (path_target or expected["kind"] == "source-path-authority-debt")
+        ):
+            unresolved_paths.append(target)
+    expected_accepted = sorted(set(accepted_paths))
+    expected_unresolved = sorted(set(unresolved_paths))
+    if receipt.get("accepted_paths") != expected_accepted:
+        issues.append("attention repair application accepted-path projection drift")
+    if receipt.get("unresolved_paths") != expected_unresolved:
+        issues.append("attention repair application unresolved-path projection drift")
+    expected_status = "INCOMPLETE" if expected_unresolved else "COMPLETE"
+    if receipt.get("status") != expected_status:
+        issues.append("attention repair application status drift")
+    return list(dict.fromkeys(issues))
+
+
 def validate_plan(
     root: Path,
     plan: Mapping[str, Any],
 ) -> list[str]:
-    issues: list[str] = []
-    if plan.get("schema") != PLAN_SCHEMA:
-        return ["attention shard plan schema is invalid"]
+    issues = validate_plan_mapping(plan)
+    if issues:
+        return issues
     supplied = str(plan.get("plan_sha256") or "")
     unsigned = dict(plan)
     unsigned.pop("plan_sha256", None)
@@ -275,20 +596,24 @@ def validate_plan(
 
 
 def _path_literal_present(text: str, path: str) -> bool:
+    """Match one verbatim path target, never a basename/suffix alias."""
+
     if f"`{path}`" in text:
         return True
-    # Queue targets may be basenames while workers are required to cite the
-    # more useful project-relative path.  A separator immediately before a
-    # basename is therefore a valid boundary.  Already-qualified targets must
-    # still match as complete paths, not arbitrary suffixes of other paths.
-    boundary = (
-        r"A-Za-z0-9_@.\-"
-        if Path(path).name == path
-        else r"A-Za-z0-9_@./\\-"
-    )
+    boundary = r"A-Za-z0-9_@./\\-"
     return bool(
         re.search(
             rf"(?<![{boundary}]){re.escape(path)}(?![{boundary}])",
+            text,
+        )
+    )
+
+
+def _path_line_literal_present(text: str, path: str) -> bool:
+    boundary = r"A-Za-z0-9_@./\\-"
+    return bool(
+        re.search(
+            rf"(?<![{boundary}]){re.escape(path)}:L\d+\b",
             text,
         )
     )
@@ -301,18 +626,14 @@ def parse_shard_output(
     shard: Mapping[str, Any],
 ) -> tuple[list[list[str]], list[str]]:
     issues: list[str] = []
-    parent = str(plan["parent_queue_binding_sha256"])
-    binding = str(shard["row_binding_sha256"])
-    if not re.search(
-        rf"(?im)^\s*PARENT_QUEUE_BINDING_SHA256:\s*{parent}\s*$",
-        text,
-    ):
-        issues.append("parent queue binding is missing or stale")
-    if not re.search(
-        rf"(?im)^\s*SHARD_BINDING_SHA256:\s*{binding}\s*$",
-        text,
-    ):
-        issues.append("shard binding is missing or stale")
+    # Queue/shard identity is already fail-closed in the DRIVER-owned plan,
+    # PhaseIO launch, exact input bindings, output route, and staged-gate
+    # context. Requiring the model to transcribe those hashes into its Markdown
+    # duplicated authority without adding any security property: one omitted
+    # character rejected otherwise valid semantic rows in real Run71. Treat
+    # any legacy hash lines as inert presentation and validate only the model-
+    # owned claims below. The aggregate remains DRIVER-derived from the bound
+    # plan and exact committed shard outputs.
     received: dict[int, list[str]] = {}
     for line in text.splitlines():
         if not re.match(r"^\|\s*\d+\s*\|", line.strip()):
@@ -346,6 +667,13 @@ def parse_shard_output(
         if verdict not in allowed:
             issues.append(f"worker receipt row {row_no} verdict is unsupported")
             continue
+        if (
+            str(row["kind"]) == "source-path-authority-debt"
+            and verdict != "NEEDS_HUMAN"
+        ):
+            issues.append(
+                f"worker receipt row {row_no} cannot close source-path authority debt"
+            )
         target = str(row["target"])
         path_target = Path(target).suffix.lower() in ALL_AUDIT_SOURCE_SUFFIXES
         if path_target and not _path_literal_present(cells[4], target):
@@ -353,9 +681,11 @@ def parse_shard_output(
         if (
             path_target
             and verdict != "NEEDS_HUMAN"
-            and not re.search(rf"{re.escape(target)}:L?\d+\b", cells[4])
+            and not _path_line_literal_present(cells[4], target)
         ):
-            issues.append(f"worker receipt row {row_no} lacks file:line evidence")
+            issues.append(
+                f"worker receipt row {row_no} lacks verbatim target:Lline evidence"
+            )
         if verdict == "CONFIRMED" and not re.search(
             rf"(?im)^###\s+(?:Finding\s+)?\[ATT-{row_no}\]"
             r"(?=\s*(?::|$))[^\r\n]*$",

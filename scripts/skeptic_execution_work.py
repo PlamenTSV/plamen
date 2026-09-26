@@ -385,6 +385,8 @@ def _write_immutable(path: Path, raw: bytes) -> None:
 def _atomic_bytes(path: Path, raw: bytes) -> None:
     """Replace one driver-owned file without exposing partial bytes."""
 
+    if path.is_file() and not path.is_symlink() and path.read_bytes() == raw:
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
@@ -874,10 +876,11 @@ def validate_skeptic_context_queue_bindings(
 ) -> tuple[dict[str, Any], ...]:
     """Replay every queue byte embedded in an application-skeptic packet.
 
-    The context builder embeds content, size, and digest.  Replaying all three
-    immediately before preparation, launch, and publication closes the former
-    path-read/hash-read TOCTOU seam.  Contexts without queue rows remain valid
-    for unit fixtures and candidate sources which have no source queue.
+    The context builder embeds size and digest plus the exact current-shard
+    work-item projection. Replaying the source queue bytes immediately before
+    preparation, launch, and publication closes the former path-read/hash-read
+    TOCTOU seam without copying a multi-megabyte unrelated queue into every
+    provider packet. Legacy v1 contexts may additionally carry exact content.
     """
 
     root = Path(scratchpad).resolve(strict=True)
@@ -911,7 +914,10 @@ def validate_skeptic_context_queue_bindings(
         if (
             len(raw) != expected_size
             or _digest_bytes(raw) != expected_sha
-            or row.get("content_utf8") != text
+            or (
+                "content_utf8" in row
+                and row.get("content_utf8") != text
+            )
         ):
             raise SkepticExecutionWorkError(
                 f"bound source queue {name} changed after context capture"

@@ -323,8 +323,11 @@ def test_p1h_depth_replay_is_byte_idempotent(tmp_path: Path):
     )
     second = _validate_depth_self_exclusion(tmp_path)
     assert second == first
-    out = D._reemit_depth_self_exclusions(tmp_path, first[1])
-    assert out is not None
-    before = out.read_bytes()
-    out2 = D._reemit_depth_self_exclusions(tmp_path, second[1])
-    assert out2 == out and out.read_bytes() == before
+    # `_reemit_depth_self_exclusions` is now the pure `(recovered) -> bytes`
+    # renderer behind the PhaseIO-published re-emit; byte idempotence across a
+    # replay is therefore asserted on the rendered bytes for identical
+    # recovered rows, which is exactly the property the old on-disk comparison
+    # was standing in for.
+    before = D._reemit_depth_self_exclusions(first[1])
+    assert before
+    assert D._reemit_depth_self_exclusions(second[1]) == before

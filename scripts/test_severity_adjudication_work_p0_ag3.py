@@ -165,7 +165,7 @@ def _methodology(tmp_path: Path) -> dict[str, Path]:
     return {"severity-methodology": path}
 
 
-def _prepare(tmp_path: Path, **overrides):
+def _prepare_arguments(tmp_path: Path, **overrides):
     arguments = {
         "run_id": RUN_ID,
         "audit_snapshot_digest": AUDIT_DIGEST,
@@ -182,7 +182,13 @@ def _prepare(tmp_path: Path, **overrides):
         "timeout_seconds_per_worker": 30,
     }
     arguments.update(overrides)
-    return W.prepare_adjudication_work(tmp_path, **arguments)
+    return arguments
+
+
+def _prepare(tmp_path: Path, **overrides):
+    return W.prepare_adjudication_work(
+        tmp_path, **_prepare_arguments(tmp_path, **overrides)
+    )
 
 
 def _adjudication_proposal(candidate_id: str) -> dict:
@@ -304,6 +310,65 @@ def _receipt_first_payload(
         "launch_receipt": launch,
     }
     return {**unsigned, "receipt_digest": _digest(unsigned)}
+
+
+@pytest.mark.parametrize(("count", "overrides"), (
+    (0, {}),
+    (1, {}),
+    (5, {}),
+    (1, {"max_context_bytes_per_worker": 128}),
+))
+def test_read_only_derivation_matches_every_legacy_publication_byte(
+    tmp_path: Path, count: int, overrides: dict,
+):
+    _write_state(tmp_path, [_decision(f"H-{i}") for i in range(count)])
+    arguments = _prepare_arguments(tmp_path, **overrides)
+
+    def observed_files():
+        return {
+            path.relative_to(tmp_path).as_posix(): (
+                path.read_bytes(), path.stat().st_mtime_ns,
+            )
+            for path in tmp_path.rglob("*") if path.is_file()
+        }
+
+    before = observed_files()
+    manifest, plan, outputs = W.derive_adjudication_work(tmp_path, **arguments)
+    assert observed_files() == before, "derivation must not publish or rewrite inputs"
+    assert manifest["denominator_count"] == count
+    assert set(outputs) == {
+        W.MANIFEST_NAME, W.WORK_PLAN_NAME,
+        *(str(shard[field]) for shard in plan["shards"] for field in (
+            "context_file", "prompt_file", "tool_policy_file", "launch_intent_file",
+        )),
+    }
+    assert all(isinstance(raw, bytes) for raw in outputs.values())
+    assert W.prepare_adjudication_work(tmp_path, **arguments) == plan
+    assert {name: (tmp_path / name).read_bytes() for name in outputs} == outputs
+    assert json.loads(outputs[W.MANIFEST_NAME]) == manifest
+    assert W.validate_prepared_work(tmp_path) == []
+    after_publication = observed_files()
+    assert W.derive_adjudication_work(tmp_path, **arguments) == (manifest, plan, outputs)
+    assert observed_files() == after_publication
+
+
+def test_reconciliation_derivation_and_validation_never_publish_or_repair(
+    tmp_path: Path,
+):
+    _write_state(tmp_path, [])
+    _prepare(tmp_path)
+    path = tmp_path / W.RECONCILIATION_NAME
+    derived = W.build_adjudication_work_reconciliation(tmp_path)
+    assert not path.exists()
+    assert derived["denominator_count"] == 0 and derived["all_resolved"]
+    assert W.reconcile_adjudication_work(tmp_path) == derived
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+    assert W.validate_reconciliation(tmp_path) == []
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+    path.write_bytes(b"{}\n")
+    damaged = (path.read_bytes(), path.stat().st_mtime_ns)
+    assert W.validate_reconciliation(tmp_path)
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == damaged
 
 
 def test_zero_denominator_writes_no_context_prompt_or_launch_intent(tmp_path: Path):

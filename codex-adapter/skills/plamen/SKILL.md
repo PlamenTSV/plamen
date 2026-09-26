@@ -72,5 +72,5 @@ plamen start-config "{NEW_CONFIG_PATH}"
 ```
 
 These public commands are mandatory: the installer-generated `plamen`
-launcher supplies the locked Python/tool runtime. Never invoke the installed
-driver with ambient `python`.
+launcher supplies the locked Python/tool runtime and dispatches to
+`plamen_driver.py`. Never invoke the installed driver with ambient `python`.

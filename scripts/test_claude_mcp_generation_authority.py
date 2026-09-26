@@ -331,42 +331,20 @@ def test_materialization_replays_exact_generation_launcher_before_lease() -> Non
 def test_driver_admission_requires_canonical_authenticated_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    selection = _selection()
-    calls: list[list[str]] = []
     monkeypatch.setattr(
         D, "_assert_direct_claude_projection_current", lambda: None
     )
-
-    def completed(command, **_kwargs):
-        calls.append(list(command))
-        return type("Completed", (), {
-            "returncode": 0,
-            "stdout": _canonical_line(selection),
-            "stderr": b"",
-        })()
-
-    monkeypatch.setattr(D.subprocess, "run", completed)
-    D._admit_direct_driver_projection({"cli_backend": "claude"})
-
-    assert D._DIRECT_CLAUDE_MCP_SELECTION == selection
-    assert calls == [[
-        os.fspath(D._installed_mcp_public_front_path()),
-        "mcp-selection",
-        "--json",
-        "--backend",
-        "claude",
-    ]]
-
     monkeypatch.setattr(
         D.subprocess,
         "run",
-        lambda *_args, **_kwargs: type("Completed", (), {
-            "returncode": 0,
-            "stdout": _canonical_line(selection) + b"\n",
-            "stderr": b"",
-        })(),
+        lambda *_args, **_kwargs: pytest.fail("raw subprocess.run was reached"),
     )
-    with pytest.raises(D.DirectDriverProjectionAdmissionError):
+    with pytest.raises(
+        D.InstalledFrontProcessAuthorityUnavailable,
+        match="NATIVE_INSTALLED_FRONT_COMPLETION_AUTHORITY_REQUIRED",
+    ):
+        D._admit_direct_driver_projection({"cli_backend": "claude"})
+    with pytest.raises(D.InstalledFrontProcessAuthorityUnavailable):
         D._assert_claude_mcp_selection_current()
 
 

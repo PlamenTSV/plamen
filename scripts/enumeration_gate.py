@@ -152,6 +152,10 @@ _GRAPH_LOCATION_RESOLUTION_MIN_RATIO_ENV = (
     "PLAMEN_GRAPH_LOCATION_RESOLUTION_MIN_RATIO"
 )
 _GRAPH_HEALTH_FALLBACK_NAME = "report_semantic_enumeration_graph_health.md"
+_EVM_ANALYSIS_WORKSPACE_GRAPH_FIELD = "evm_analysis_workspace"
+_EVM_ANALYSIS_WORKSPACE_RECEIPT_NAME = (
+    "evm_analysis_workspace_receipt.v1.json"
+)
 _SC_PRODUCTION_SOURCE_SUFFIXES = frozenset({
     ".sol", ".vy", ".rs", ".go", ".move", ".daml",
 })
@@ -1701,6 +1705,211 @@ def _iter_functions(root: Path):
                     continue
 
 
+def _iter_scoped_solidity_functions(root: Path):
+    """Yield direct Solidity functions with their lexical contract identity.
+
+    This is intentionally narrower than ``_iter_functions``: the critical-asset
+    mover relation is contract-scoped, so a file-only function row is not enough
+    authority.  The shared recon parser supplies complete direct scopes and the
+    offset-preserving mask; malformed scopes are omitted rather than guessed.
+    ``inherits`` records only that an inheritance clause exists.  It never
+    asserts which inherited declaration a name resolves to.
+    """
+    try:
+        from recon_prepass import (  # type: ignore
+            _SOL_STATE_SCOPE_RE,
+            _line_of,
+            _production_source_files,
+            _read_text,
+            _rel,
+            _sol_contract_scopes,
+            _sol_find_body,
+            _strip_solidity_comments_and_strings,
+        )
+    except Exception:
+        return
+    try:
+        files = _production_source_files(root, (".sol",))
+    except Exception:
+        return
+    fn_re = _LANG["sol"]["fn_re"]
+    for source_file in files:
+        text = _read_text(source_file)
+        if not text:
+            continue
+        masked = _strip_solidity_comments_and_strings(text)
+        scopes = _sol_contract_scopes(masked)
+        scope_headers: dict[tuple[int, int, str], bool] = {}
+        for declaration in _SOL_STATE_SCOPE_RE.finditer(masked):
+            if declaration.group("kind") == "interface":
+                continue
+            body_start, body_end = _sol_find_body(masked, declaration.end())
+            if body_start is None or body_end is None:
+                continue
+            header_tail = masked[declaration.end():body_start]
+            scope_headers[(body_start, body_end, declaration.group("name"))] = bool(
+                re.search(r"\bis\b", header_tail)
+            )
+        relative = _rel(source_file, root)
+        for scope in scopes:
+            body_start = int(scope["body_start"])
+            body_end = int(scope["body_end"])
+            contract = str(scope["name"])
+            inherits = scope_headers.get((body_start, body_end, contract), False)
+            for match in fn_re.finditer(masked, body_start + 1, body_end - 1):
+                function_body_start, function_body_end = _sol_find_body(
+                    masked, match.end()
+                )
+                if (
+                    function_body_start is None
+                    or function_body_end is None
+                    or function_body_start < body_start
+                    or function_body_end > body_end
+                ):
+                    continue
+                try:
+                    yield (
+                        "sol",
+                        relative,
+                        contract,
+                        match.group(1),
+                        match.group(2) or "",
+                        masked[function_body_start:function_body_end],
+                        _line_of(text, match.start()),
+                        match.start() - text.rfind("\n", 0, match.start()),
+                        inherits,
+                    )
+                except Exception:
+                    continue
+
+
+def _evm_direct_state_declarations(root: Path) -> dict[str, dict]:
+    """Return exact file+contract+member rows from the shared lexical parser."""
+    try:
+        from recon_prepass import (  # type: ignore
+            _production_source_files,
+            _read_text,
+            _rel,
+            _sol_state_declarations,
+        )
+    except Exception:
+        return {}
+    rows: dict[str, dict] = {}
+    try:
+        files = _production_source_files(root, (".sol",))
+    except Exception:
+        return rows
+    for source_file in files:
+        text = _read_text(source_file)
+        if not text:
+            continue
+        relative = _rel(source_file, root)
+        for declaration in _sol_state_declarations(text, source_path=relative):
+            identity = str(declaration.get("qualified_name") or "")
+            if identity:
+                rows[identity] = dict(declaration)
+    return rows
+
+
+def _resolve_evm_critical_state_scope(
+    state_key: str,
+    bare: str,
+    declaration_locus: str,
+    declarations: dict[str, dict],
+) -> tuple[dict | None, str]:
+    """Resolve a graph state row to one direct lexical declaration.
+
+    Modern source graphs already use ``file::Contract.member``.  Precise/legacy
+    graphs may use ``Contract.member``; those are accepted only when the shared
+    declaration inventory yields one unique matching production declaration.
+    A lexical occurrence is never treated as declaration authority.
+    """
+    exact = declarations.get(state_key)
+    if exact is not None:
+        locus_rows = _production_source_locations(declaration_locus)
+        exact_locus_rows = _production_source_locations(
+            str(exact.get("declaration_locus") or "")
+        )
+        if declaration_locus and (
+            len(locus_rows) != 1
+            or len(exact_locus_rows) != 1
+            or locus_rows[0].normalized_path != exact_locus_rows[0].normalized_path
+            or locus_rows[0].line != exact_locus_rows[0].line
+        ):
+            return None, "DECLARATION_LOCUS_MISMATCH"
+        return exact, "EXACT_QUALIFIED_IDENTITY"
+
+    # A modern qualified key already asserts its file identity.  If that exact
+    # declaration is absent, falling back to a same-named member elsewhere
+    # would erase the very authority this repair is preserving.
+    if "::" in state_key:
+        return None, "QUALIFIED_DECLARATION_NOT_FOUND"
+
+    contract = ""
+    suffix = state_key
+    if "." in suffix:
+        contract, key_bare = suffix.rsplit(".", 1)
+        if key_bare != bare:
+            return None, "STATE_IDENTITY_BARE_MISMATCH"
+    matches = [
+        row for row in declarations.values()
+        if str(row.get("bare") or "") == bare
+        and (not contract or str(row.get("contract_name") or "") == contract)
+    ]
+    locus_rows = _production_source_locations(declaration_locus)
+    if locus_rows:
+        matches = [
+            row for row in matches
+            if any(
+                candidate.normalized_path == locus_rows[0].normalized_path
+                for candidate in _production_source_locations(
+                    str(row.get("declaration_locus") or "")
+                )
+            )
+        ]
+    if len(matches) != 1:
+        return None, "DECLARATION_SCOPE_AMBIGUOUS"
+    return matches[0], "UNIQUE_DIRECT_DECLARATION"
+
+
+def _critical_asset_mover_result(
+    scratchpad: Path,
+    producer: str,
+    candidates: list,
+    uncertainty_rows: list[dict],
+) -> list:
+    """Bound candidates while retaining scope uncertainty in the control plane."""
+    emitted = _emitted_candidate_keys(scratchpad)
+    unseen: list[dict] = []
+    unseen_keys: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate.get("key", ""))
+        if not key or key in emitted or key in unseen_keys:
+            continue
+        unseen_keys.add(key)
+        unseen.append(candidate)
+    rows = list(uncertainty_rows)
+    if len(unseen) > _MAX_PER_DERIVER:
+        rows.append(shortfall(
+            producer=producer,
+            scope="source-candidate-scan",
+            cap="MAX_PER_DERIVER",
+            limit=_MAX_PER_DERIVER,
+            observed=len(unseen),
+            retained=_MAX_PER_DERIVER,
+            exact=False,
+            samples=[c.get("key", "") for c in unseen[_MAX_PER_DERIVER:]],
+            detail=("source scan stopped after the first overflow candidate; "
+                    "retained rows were selected for return, not yet durably "
+                    "persisted, and additional candidates may exist"),
+        ))
+    try:
+        replace_producer_shortfalls(scratchpad, producer, rows)
+    except Exception:
+        pass
+    return unseen[:_MAX_PER_DERIVER]
+
+
 def _emit_candidates_unlocked(scratchpad: Path, candidates: list, cap: int,
                               source_id: str = "ENUMGAP", producer: str = "") -> int:
     """Shared ENUMGAP emitter for every deriver. `candidates` are dicts with:
@@ -1896,10 +2105,11 @@ def _emit_candidates(scratchpad: Path, candidates: list, cap: int,
 def compute_critical_asset_mover_candidates(scratchpad: Path) -> list:
     """L-04 class (sol/rust/move). A protocol-critical singleton asset handle (a
     state/storage var named like an asset id, depended on by >=2 functions) that a
-    SAME-FILE generic asset-mover can move WITHOUT excluding it → the mover can
+    same direct contract's generic asset-mover can move WITHOUT excluding it → the mover can
     strand every function that depends on that asset. Generic across ecosystems
-    that hold movable assets; bounded to the declaring file. Go node-clients and
-    DAML have no such shape and are skipped (no `mover` in their lang spec)."""
+    that hold movable assets. EVM candidates preserve exact file+contract+member
+    identity; non-EVM providers retain their declaring-file bound. Go node-clients
+    and DAML have no such shape and are skipped (no `mover` in their lang spec)."""
     producer = "enumeration.deriver.critical_asset_mover.scan"
     try:
         graph = _load_graph(scratchpad)
@@ -1929,36 +2139,109 @@ def compute_critical_asset_mover_candidates(scratchpad: Path) -> list:
             handle_res = [spec["asset_handle"] for spec in _LANG.values()
                           if "asset_handle" in spec]
         var_refs = graph.get("var_refs", {})
-        crit: dict = {}    # bare -> [dependent fns]
+        graph_source = str(graph.get("source") or "").casefold()
+        evm_graph = graph_source in {"evm-source", "slither"}
+        evm_declarations = _evm_direct_state_declarations(root) if evm_graph else {}
+        uncertainty_samples: dict[str, set[str]] = {
+            "DECLARATION_SCOPE_UNKNOWN": set(),
+            "INHERITED_STATE_SCOPE_UNRESOLVED": set(),
+        }
+        crit: dict[str, dict] = {}  # qualified state identity -> scoped facts
         for vk, vd in var_refs.items():
-            bare = vd.get("bare", vk.split(".")[-1])
+            state_key = str(vk)
+            bare = str(vd.get("bare", state_key.split(".")[-1]))
             refs = vd.get("refs", [])
             if (any(r.search(bare) for r in handle_res)
                     and 2 <= len(refs) <= _SKIP_VAR_REF_THRESHOLD):
-                crit[bare] = sorted({_bare_from_descriptor(d) for d in refs})
+                facts = {
+                    "state_key": state_key,
+                    "bare": bare,
+                    "fns": sorted({_bare_from_descriptor(d) for d in refs}),
+                    "declaration_file": "",
+                    "declaration_contract": "",
+                }
+                if evm_graph:
+                    declaration, _status = _resolve_evm_critical_state_scope(
+                        state_key,
+                        bare,
+                        str(vd.get("declaration_locus") or ""),
+                        evm_declarations,
+                    )
+                    if declaration is None:
+                        uncertainty_samples["DECLARATION_SCOPE_UNKNOWN"].add(
+                            state_key
+                        )
+                        continue
+                    declaration_locations = _production_source_locations(
+                        str(declaration.get("declaration_locus") or "")
+                    )
+                    if len(declaration_locations) != 1:
+                        uncertainty_samples["DECLARATION_SCOPE_UNKNOWN"].add(
+                            state_key
+                        )
+                        continue
+                    facts["declaration_file"] = declaration_locations[0].normalized_path
+                    facts["declaration_contract"] = str(
+                        declaration.get("contract_name") or ""
+                    )
+                # EVM repair preserves the graph's qualified state identity.
+                # Other providers historically collapsed this deriver by bare
+                # name; retain that behavior and its durable candidate keys.
+                crit[state_key if evm_graph else bare] = facts
         if not crit:
-            return _bounded_deriver_result(scratchpad, producer, [])
-        # Same-file bound: which production file declares/holds each critical var?
-        # (The source-tier graph keys var_refs by BARE name with no contract.)
-        # Lang-agnostic: the file where the bare name appears as a word.
-        decl_files: dict = {b: set() for b in crit}
-        try:
-            from recon_prepass import (_production_source_files, _read_text,
-                                        _rel)  # type: ignore
-            for f in _production_source_files(root, _SUPPORTED_SUFFIXES):
-                t = _read_text(f)
-                if not t:
-                    continue
-                rel_f = _rel(f, root)
-                for b in crit:
-                    if re.search(r"\b" + re.escape(b) + r"\b", t):
-                        decl_files[b].add(rel_f)
-        except Exception:
-            pass
+            rows = []
+            if uncertainty_samples["DECLARATION_SCOPE_UNKNOWN"]:
+                rows.append(unknown_shortfall(
+                    producer=producer,
+                    scope="critical-state-declaration-scope",
+                    kind="DECLARATION_SCOPE_UNKNOWN",
+                    samples=sorted(
+                        uncertainty_samples["DECLARATION_SCOPE_UNKNOWN"]
+                    ),
+                    detail=("qualified EVM critical-state rows could not be joined "
+                            "to one exact direct source declaration; lexical word "
+                            "occurrences were not accepted as declaration authority"),
+                ))
+            return _critical_asset_mover_result(
+                scratchpad, producer, [], rows
+            )
+
+        # Non-EVM providers retain their existing file-bounded lexical behavior.
+        # EVM rows never enter this fallback: they require exact direct lexical
+        # declaration identity above and exact contract scope below.
+        decl_files: dict[str, set[str]] = {state_key: set() for state_key in crit}
+        if not evm_graph:
+            try:
+                from recon_prepass import (  # type: ignore
+                    _production_source_files,
+                    _read_text,
+                    _rel,
+                )
+                for source_file in _production_source_files(root, _SUPPORTED_SUFFIXES):
+                    source_text = _read_text(source_file)
+                    if not source_text:
+                        continue
+                    relative = _rel(source_file, root)
+                    for state_key, facts in crit.items():
+                        bare = str(facts["bare"])
+                        if re.search(r"\b" + re.escape(bare) + r"\b", source_text):
+                            decl_files[state_key].add(relative)
+            except Exception:
+                pass
         out: list = []
         seen_pairs: set = set()
         emitted_keys = _emitted_candidate_keys(scratchpad)
-        for lang, rel, name, params, body, _line in _iter_functions(root):
+        function_rows = (
+            _iter_scoped_solidity_functions(root)
+            if evm_graph else
+            (
+                (lang, rel, "", name, params, body, line, 0, False)
+                for lang, rel, name, params, body, line in _iter_functions(root)
+            )
+        )
+        for (
+            lang, rel, contract, name, params, body, line, column, inherits
+        ) in function_rows:
             if _unseen_candidate_count(out, emitted_keys) > _MAX_PER_DERIVER:
                 break
             spec = _LANG[lang]
@@ -1968,12 +2251,36 @@ def compute_critical_asset_mover_candidates(scratchpad: Path) -> list:
                 continue
             if not mover.search(body) or not id_param.search(params):
                 continue
-            for bare, fns in crit.items():
-                if decl_files.get(bare) and rel not in decl_files[bare]:
+            normalized_rel = _normalized_source_path(rel)
+            for state_key, facts in crit.items():
+                bare = str(facts["bare"])
+                fns = list(facts["fns"])
+                if evm_graph:
+                    same_file = normalized_rel == facts["declaration_file"]
+                    same_contract = contract == facts["declaration_contract"]
+                    if not (same_file and same_contract):
+                        if inherits:
+                            uncertainty_samples[
+                                "INHERITED_STATE_SCOPE_UNRESOLVED"
+                            ].add(
+                                f"{state_key} -> {rel}::{contract}.{name}"
+                                f"@L{line}:C{column}"
+                            )
+                        continue
+                elif decl_files.get(state_key) and rel not in decl_files[state_key]:
                     continue
-                if re.search(r"\b" + re.escape(bare) + r"\b", body) or name in fns:
+                # A bare dependency descriptor cannot distinguish EVM overloads.
+                # The exact scoped body is valid negative-candidate suppression;
+                # `name in fns` remains only for established non-EVM providers.
+                if re.search(r"\b" + re.escape(bare) + r"\b", body) or (
+                    not evm_graph and name in fns
+                ):
                     continue   # mover already references/excludes the critical var
-                pairkey = f"{rel}:{name}:{bare}"
+                pairkey = (
+                    f"{rel}::{contract}.{name}@L{line}:C{column}:{state_key}"
+                    if evm_graph else
+                    f"{rel}:{name}:{bare}"
+                )
                 if pairkey in seen_pairs:
                     continue
                 seen_pairs.add(pairkey)
@@ -1982,7 +2289,12 @@ def compute_critical_asset_mover_candidates(scratchpad: Path) -> list:
                     "key": f"ASSETMOVE:{pairkey}",
                     "title": (f"Generic asset-mover `{name}` can move the critical "
                               f"singleton `{bare}` that other functions depend on"),
-                    "location": f"`{rel}` :: `{name}` (critical asset `{bare}`)",
+                    "location": (
+                        f"`{rel}` :: `{contract}.{name}` "
+                        f"(critical asset `{state_key}`)"
+                        if evm_graph else
+                        f"`{rel}` :: `{name}` (critical asset `{bare}`)"
+                    ),
                     "source_note": "critical-asset-mover gap; mechanically derived — verifier to confirm or refute",
                     "root_cause": (f"`{name}` transfers an asset selected by a caller "
                                    f"parameter and does not exclude `{bare}`. `{bare}` "
@@ -2002,7 +2314,33 @@ def compute_critical_asset_mover_candidates(scratchpad: Path) -> list:
                 })
                 if _unseen_candidate_count(out, emitted_keys) > _MAX_PER_DERIVER:
                     break
-        return _bounded_deriver_result(scratchpad, producer, out)
+        uncertainty_rows = []
+        if uncertainty_samples["DECLARATION_SCOPE_UNKNOWN"]:
+            uncertainty_rows.append(unknown_shortfall(
+                producer=producer,
+                scope="critical-state-declaration-scope",
+                kind="DECLARATION_SCOPE_UNKNOWN",
+                samples=sorted(uncertainty_samples["DECLARATION_SCOPE_UNKNOWN"]),
+                detail=("qualified EVM critical-state rows could not be joined to "
+                        "one exact direct source declaration; lexical word "
+                        "occurrences were not accepted as declaration authority"),
+            ))
+        if uncertainty_samples["INHERITED_STATE_SCOPE_UNRESOLVED"]:
+            uncertainty_rows.append(unknown_shortfall(
+                producer=producer,
+                scope="inherited-critical-state-relations",
+                kind="INHERITED_STATE_SCOPE_UNRESOLVED",
+                samples=sorted(
+                    uncertainty_samples["INHERITED_STATE_SCOPE_UNRESOLVED"]
+                ),
+                detail=("one or more asset movers are declared in contracts with "
+                        "inheritance clauses, but the source-only scope adapter "
+                        "cannot prove which qualified base-state declaration they "
+                        "inherit; those cross-contract pairs were not guessed"),
+            ))
+        return _critical_asset_mover_result(
+            scratchpad, producer, out, uncertainty_rows
+        )
     except Exception as exc:
         try:
             replace_producer_shortfalls(
@@ -3985,7 +4323,9 @@ def _axis_graph_provider_debt(
         "functions",
         "function_signatures",
     }
-    if set(payload) != required:
+    graph_fields = frozenset(payload)
+    workspace_extended = required | {_EVM_ANALYSIS_WORKSPACE_GRAPH_FIELD}
+    if graph_fields not in {frozenset(required), frozenset(workspace_extended)}:
         return payload, ["mechanical graph typed authority shape mismatch"]
     try:
         from state_symbol_authority import GRAPH_SCHEMA
@@ -4020,6 +4360,51 @@ def _axis_graph_provider_debt(
         return payload, ["mechanical graph project root is unavailable"]
 
     debt: list[str] = []
+    if _EVM_ANALYSIS_WORKSPACE_GRAPH_FIELD in payload:
+        workspace_reference = payload.get(_EVM_ANALYSIS_WORKSPACE_GRAPH_FIELD)
+        if str(payload.get("source") or "").strip().lower() not in {
+            "slither",
+            "evm-source",
+        }:
+            debt.append(
+                "mechanical graph EVM workspace extension is attached to a "
+                "non-EVM provider"
+            )
+        elif not isinstance(workspace_reference, dict):
+            debt.append(
+                "mechanical graph EVM workspace extension is malformed"
+            )
+        else:
+            try:
+                from evm_analysis_workspace_authority import (
+                    load_evm_analysis_workspace_authority,
+                    workspace_public_reference,
+                )
+
+                workspace = load_evm_analysis_workspace_authority(
+                    Path(scratchpad)
+                )
+                expected_reference = workspace_public_reference(workspace)
+                workspace_project_root = Path(
+                    str(workspace["project_root"]["absolute_path"])
+                ).resolve(strict=True)
+                observed_project_root = Path(project_root).resolve(strict=True)
+                if workspace_project_root != observed_project_root:
+                    debt.append(
+                        "mechanical graph EVM workspace project root differs "
+                        "from the axis source root"
+                    )
+                if workspace_reference != expected_reference:
+                    debt.append(
+                        "mechanical graph EVM workspace extension does not "
+                        "match the committed typed workspace receipt"
+                    )
+            except Exception as exc:
+                debt.append(
+                    "mechanical graph EVM workspace extension failed typed "
+                    "receipt/contract replay: "
+                    f"{type(exc).__name__}: {exc}"
+                )
     for identity in sorted(functions):
         row = functions.get(identity)
         fact = signatures.get(identity)
@@ -4081,6 +4466,7 @@ def _axis_provider_input_snapshot(
     root = Path(scratchpad)
     for name in (
         "_mechanical_graph.json",
+        _EVM_ANALYSIS_WORKSPACE_RECEIPT_NAME,
         "function_summary.md",
         "attack_surface.md",
     ):
@@ -4171,7 +4557,32 @@ def _axis_source_function_universe_debt(
         )
         for _lang, relative, name, _params, _body, line
         in _iter_functions(project_root)
+        if _lang != "sol"
     }
+    # Solidity graph construction is contract-scoped and includes only
+    # body-bearing declarations.  Reuse that same scope/body iterator here so
+    # interface and abstract declarations cannot fabricate executable graph
+    # omissions, while every concrete implementation remains in the subset
+    # check.
+    source_rows.update(
+        (
+            str(name).casefold(),
+            str(relative).replace("\\", "/").casefold(),
+            int(line),
+        )
+        for (
+            _lang,
+            relative,
+            _contract,
+            name,
+            _params,
+            _body,
+            line,
+            _column,
+            _inherits,
+        )
+        in _iter_scoped_solidity_functions(project_root)
+    )
     graph_rows: set[tuple[str, str, int]] = set()
     for identity, raw in graph.get("functions", {}).items():
         if not isinstance(raw, dict):
@@ -4672,6 +5083,7 @@ def compute_axis_population(
     source_bindings = {}
     for name in (
         "_mechanical_graph.json",
+        _EVM_ANALYSIS_WORKSPACE_RECEIPT_NAME,
         _HOT_FUNCTION_CAP_RECEIPT_NAME,
         "_coverage_shortfalls.json",
     ):
@@ -5451,9 +5863,15 @@ def validated_enumgap_promotion_deliveries(scratchpad: Path) -> dict[str, dict]:
         raise ValueError(
             "enumgap promotion receipt lacks inventory append commit authority"
         )
+    plan_path = root / _ENUMGAP_APPEND_PLAN_NAME
     try:
         payload = json.loads(receipt_path.read_text(encoding="utf-8"))
         commit = json.loads(commit_path.read_text(encoding="utf-8"))
+        plan = (
+            json.loads(plan_path.read_text(encoding="utf-8"))
+            if plan_path.is_file()
+            else None
+        )
         source_text = (
             root / "enumgap_exploration_findings.md"
         ).read_bytes().decode("utf-8", errors="strict")
@@ -5462,6 +5880,59 @@ def validated_enumgap_promotion_deliveries(scratchpad: Path) -> dict[str, dict]:
         ).read_bytes().decode("utf-8", errors="strict")
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot load enumgap promotion authority: {exc}") from exc
+    observed_plan_digest = ""
+    planned_deliveries: dict[str, str] = {}
+    if plan is not None:
+        expected_plan_keys = {
+            "schema_version",
+            "source_sha256",
+            "inventory_before_sha256",
+            "inventory_before_size",
+            "inventory_after_sha256",
+            "inventory_after_size",
+            "inventory_owner",
+            "planned_deliveries",
+            "plan_sha256",
+        }
+        if not isinstance(plan, dict) or set(plan) != expected_plan_keys:
+            raise ValueError("enumgap inventory append plan shape mismatch")
+        unsigned_plan = dict(plan)
+        observed_plan_digest = str(unsigned_plan.pop("plan_sha256", ""))
+        expected_plan_digest = hashlib.sha256(
+            json.dumps(
+                unsigned_plan,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        planned_value = plan.get("planned_deliveries")
+        if (
+            plan.get("schema_version")
+            != "plamen.enumgap_inventory_append_plan.v1"
+            or observed_plan_digest != expected_plan_digest
+            or type(plan.get("inventory_before_size")) is not int
+            or type(plan.get("inventory_after_size")) is not int
+            or int(plan.get("inventory_before_size") or 0) < 0
+            or int(plan.get("inventory_after_size") or 0)
+            < int(plan.get("inventory_before_size") or 0)
+            or not isinstance(plan.get("inventory_owner"), dict)
+            or not isinstance(planned_value, dict)
+            or any(
+                not isinstance(action_id, str)
+                or not re.fullmatch(r"INV-[0-9]+", str(inventory_id))
+                for action_id, inventory_id in (
+                    planned_value.items()
+                    if isinstance(planned_value, dict)
+                    else ()
+                )
+            )
+        ):
+            raise ValueError("enumgap inventory append plan binding mismatch")
+        planned_deliveries = {
+            str(action_id): str(inventory_id)
+            for action_id, inventory_id in planned_value.items()
+        }
     if (
         not isinstance(commit, dict)
         or commit.get("schema_version")
@@ -5470,12 +5941,27 @@ def validated_enumgap_promotion_deliveries(scratchpad: Path) -> dict[str, dict]:
         != hashlib.sha256(
             (root / "enumgap_exploration_findings.md").read_bytes()
         ).hexdigest()
+        # The inventory is an append/merge successor surface.  Later typed
+        # phases legitimately supersede its whole-file digest.  The historical
+        # append commit therefore binds the exact postimage recorded by its
+        # immutable plan; current survival is proven below from unique exact
+        # inventory blocks.  Comparing this commit to the latest whole file
+        # revoked valid delivery authority after every later inventory merge.
         or commit.get("inventory_sha256")
-        != hashlib.sha256(
-            (root / "findings_inventory.md").read_bytes()
-        ).hexdigest()
+        != (
+            plan.get("inventory_after_sha256")
+            if isinstance(plan, dict)
+            else hashlib.sha256(
+                (root / "findings_inventory.md").read_bytes()
+            ).hexdigest()
+        )
         or commit.get("promotion_receipt_sha256")
         != hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+        or commit.get("plan_sha256") != observed_plan_digest
+        or (
+            isinstance(plan, dict)
+            and commit.get("source_sha256") != plan.get("source_sha256")
+        )
     ):
         raise ValueError("enumgap inventory append commit binding mismatch")
     if not isinstance(payload, dict) or set(payload) != {
@@ -5506,6 +5992,15 @@ def validated_enumgap_promotion_deliveries(scratchpad: Path) -> dict[str, dict]:
         finding["id"]: finding
         for finding in parse_enumgap_exploration_findings(source_text)
     }
+    if (
+        planned_deliveries
+        and not set(planned_deliveries).issubset(findings)
+    ):
+        raise ValueError("enumgap inventory append plan delivery mismatch")
+    if deliveries and plan is None:
+        raise ValueError(
+            "enumgap promotion deliveries lack inventory append plan authority"
+        )
     recoverable_deliveries, _ = _recover_existing_enumgap_deliveries(
         list(findings.values()), inventory_text
     )
@@ -5522,7 +6017,14 @@ def validated_enumgap_promotion_deliveries(scratchpad: Path) -> dict[str, dict]:
         action_id = str(row.get("source_action_id") or "").upper()
         inventory_id = str(row.get("inventory_id") or "").upper()
         expected = recoverable_deliveries.get(action_id)
-        if expected is None or row != expected:
+        if (
+            expected is None
+            or row != expected
+            or (
+                action_id in planned_deliveries
+                and planned_deliveries[action_id] != inventory_id
+            )
+        ):
             raise ValueError(
                 f"enumgap promotion delivery identity mismatch for {action_id}"
             )

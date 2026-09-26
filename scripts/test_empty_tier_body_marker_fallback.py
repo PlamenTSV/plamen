@@ -1,4 +1,4 @@
-"""Regression tests for the empty-tier validator self-heal from body marker.
+"""Legacy-format compatibility tests, not typed empty-tier authority proof.
 
 Background: `_maybe_skip_empty_body_writer` is the driver's deterministic
 path for tier shards with zero findings. It writes BOTH:
@@ -21,9 +21,9 @@ sidecar `body_manifests/report_medium_c.empty.json` was missing on disk.
 Pipeline halted with "body validator: manifest report_medium_c.json
 missing for report_medium_c.md."
 
-Post-fix: `_empty_tier_sidecar_valid` accepts EITHER the sidecar OR the
-body file's authoritative marker. Both routes still cross-check that
-`expected_tier_assignment_count == 0` so impostors are rejected.
+Marker/sidecar compatibility applies only without typed state or context.
+Neither is authority: typed runs require committed PhaseIO replay, including
+when a checkpoint or ledger is malformed or a broken symlink.
 """
 from __future__ import annotations
 
@@ -31,12 +31,53 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 
 def _write(p: Path, body: str) -> None:
     p.write_text(body, encoding="utf-8")
+
+
+@pytest.mark.parametrize("state_name", ["_v2_checkpoint.json", "_artifact_state.json"])
+@pytest.mark.parametrize("broken_link", [False, True])
+def test_typed_state_never_downgrades_to_marker(tmp_path, state_name, broken_link):
+    import plamen_validators as V
+
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    _seed_empty_tier_inputs(sp)
+    body = sp / "report_medium.md"
+    _write(body, _AUTHENTIC_NOTE_BODY("report_medium"))
+    state = sp / state_name
+    if broken_link:
+        state.symlink_to(sp / "absent-state-target")
+    else:
+        state.write_bytes(b"{}\n")
+    original = body.read_bytes()
+    assert not V._empty_tier_sidecar_valid(sp, "report_medium", body.name)
+    assert V._validate_tier_body_against_manifest(sp, "report_medium")
+    assert body.read_bytes() == original
+    body.unlink()
+    assert V._validate_tier_body_against_manifest(sp, "report_medium")
+    assert not body.exists()
+
+
+def test_supplied_typed_context_never_downgrades_to_marker(tmp_path):
+    import plamen_validators as V
+
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    _seed_empty_tier_inputs(sp)
+    _write(sp / "report_medium.md", _AUTHENTIC_NOTE_BODY("report_medium"))
+    for kwargs in ({"project_root": tmp_path}, {"config": {}},
+                   {"project_root": tmp_path, "config": {}}):
+        assert not V._empty_tier_sidecar_valid(
+            sp, "report_medium", "report_medium.md", **kwargs,
+        )
+        assert V._validate_tier_body_against_manifest(sp, "report_medium", **kwargs)
 
 
 def _seed_empty_tier_inputs(scratchpad: Path) -> None:

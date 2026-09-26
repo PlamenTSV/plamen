@@ -423,7 +423,10 @@ def _build_capture(
     )
     snapshot = _validate_snapshot_bytes(snapshot_bytes)
     root = _installed_root()
-    current_methodology = build_methodology_snapshot_component(root)
+    current_methodology = build_methodology_snapshot_component(
+        root,
+        pipeline=str(snapshot["components"]["source_scope"].get("pipeline") or ""),
+    )
     if dict(snapshot["components"]["methodology"]) != current_methodology:
         _fail(
             "installed methodology differs from canonical audit snapshot "

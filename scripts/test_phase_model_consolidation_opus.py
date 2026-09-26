@@ -16,12 +16,21 @@ def _pm(name: str, *, mode: str = "thorough", pipeline: str = "sc",
 
 def test_inventory_and_tier_writers_opus_in_sc_thorough():
     for name in (
-        "inventory", "inventory_chunk_a", "inventory_chunk_b", "inventory_chunk_c",
+        "inventory",
         "report_body_writer_medium", "report_body_writer_low_info",
         "report_body_writer_medium_a",            # expanded shard (prefix match)
         "report_body_writer_low_info_b",
     ):
         assert "opus" in _pm(name).lower(), name
+
+
+def test_inventory_chunks_stay_sonnet_in_sc_thorough():
+    """Chunks are lossless P0-L normalization shards (the reconciler enforces
+    preservation), and Opus 5 refuses the transcription task as
+    `reasoning_extraction` (DODO run41/43/45). Only the MERGE is promoted."""
+    for name in ("inventory_chunk_a", "inventory_chunk_b", "inventory_chunk_c"):
+        assert "opus" not in _pm(name).lower(), name
+        assert "sonnet" in _pm(name).lower(), name
 
 
 def test_chain_already_opus_unchanged():

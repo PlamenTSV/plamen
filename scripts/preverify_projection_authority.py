@@ -26,6 +26,8 @@ from artifact_ledger import (
     semantic_input_producer_authority_issues,
 )
 from bounded_artifact_io import read_bounded_regular_bytes
+from portable_path_contract import assert_lexically_bounded_relative_path
+from operational_markdown import operational_markdown_view
 from phase_io_contracts import LaunchSpec, resolve_phase_io_contract
 from preverify_inventory_successor import (
     DELIVERY_RECEIPT_NAME,
@@ -129,6 +131,12 @@ def _read(root: Path, relative: str, *, label: str) -> bytes:
 def _relative(value: object, *, label: str) -> str:
     text = str(value or "")
     path = PurePosixPath(text)
+    try:
+        assert_lexically_bounded_relative_path(text, label=label)
+    except ValueError as exc:
+        raise PreverifyProjectionAuthorityError(
+            f"{label} is not a canonical relative POSIX path"
+        ) from exc
     if (
         not text
         or "\\" in text
@@ -1751,7 +1759,7 @@ def validate_frozen_projection_receipt(
         ) from exc
     actual_frozen_ids = sorted(
         match.group(1).upper()
-        for match in _FINDING_HEADING.finditer(inventory_text)
+        for match in _FINDING_HEADING.finditer(operational_markdown_view(inventory_text))
     )
     fixed_point = payload.get("candidate_delivery_fixed_point")
     if not isinstance(fixed_point, Mapping):

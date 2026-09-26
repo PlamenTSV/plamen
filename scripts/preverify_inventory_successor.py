@@ -15,6 +15,8 @@ from pathlib import Path, PurePosixPath
 import re
 from typing import Any, Mapping, Sequence
 
+from portable_path_contract import assert_lexically_bounded_relative_path
+
 
 FINAL_SCHEMA = "plamen.preverify_inventory_successor.v1"
 DELIVERY_SCHEMA = "plamen.finding_delivery_successor.v1"
@@ -87,6 +89,12 @@ def _safe_relative_name(value: object, *, label: str) -> str:
         raise PreverifyInventorySuccessorError(
             f"{label} must be a canonical relative POSIX path"
         )
+    try:
+        assert_lexically_bounded_relative_path(value, label=label)
+    except ValueError as exc:
+        raise PreverifyInventorySuccessorError(
+            f"{label} must be a canonical relative POSIX path"
+        ) from exc
     path = PurePosixPath(value)
     if (
         path.is_absolute()

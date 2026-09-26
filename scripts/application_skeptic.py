@@ -22,7 +22,11 @@ from finding_producer_registry import (
     validate_application_skeptic_candidate,
 )
 from negative_closure_policy import terminal_negative_authorized
-from closure_broker_v2 import resolve_central_negative_closure
+from closure_broker_v2 import (
+    OUT_OF_SCOPE,
+    REFUTED_FULL,
+    resolve_central_negative_closure,
+)
 
 
 WORK_PLAN_SCHEMA = "plamen.application_skeptic_work_plan.v1"
@@ -401,6 +405,50 @@ def _validate_plan(plan: Mapping[str, Any]) -> None:
         raise ApplicationSkepticError("application-skeptic work identities are not exact")
 
 
+def _terminal_negative_requested_effect(work_item: Mapping[str, Any]) -> str:
+    """Derive one terminal effect from an exact, producer-bound work item.
+
+    Ordinary methodology negatives predate the candidate-negative extension
+    and retain their existing full-refutation effect. Candidate-negative work
+    must carry an exact proposal-family/effect pair: scope exclusion is valid
+    only for an all-NOT_APPLICABLE family, while full refutation is valid only
+    for an all-refutation family. Any ambiguity is non-terminal.
+    """
+
+    subject = work_item.get("application_subject")
+    candidate_fields_present = any(
+        field in work_item
+        for field in (
+            "candidate_proposed_dispositions",
+            "candidate_terminal_requested_effect",
+            "candidate_negative_family_id",
+        )
+    )
+    if subject != "CANDIDATE_NEGATIVE":
+        if candidate_fields_present:
+            raise ApplicationSkepticError(
+                "candidate-negative work has an invalid application subject"
+            )
+        return REFUTED_FULL
+
+    proposals = work_item.get("candidate_proposed_dispositions")
+    if proposals == ["NOT_APPLICABLE_PROPOSAL"]:
+        expected = OUT_OF_SCOPE
+    elif proposals == ["REFUTATION_PROPOSAL"]:
+        expected = REFUTED_FULL
+    else:
+        raise ApplicationSkepticError(
+            "candidate-negative proposal family has no exact terminal effect"
+        )
+
+    requested = work_item.get("candidate_terminal_requested_effect")
+    if requested != expected:
+        raise ApplicationSkepticError(
+            "candidate-negative terminal effect contradicts its proposal family"
+        )
+    return expected
+
+
 def read_bound_methodology_bytes(
     work_item: Mapping[str, Any], trusted_roots: Iterable[Path]
 ) -> bytes:
@@ -410,25 +458,67 @@ def read_bound_methodology_bytes(
     claimed_hash = _text(work_item.get("methodology_sha256")).casefold()
     if not claimed_path or not _valid_digest(claimed_hash):
         raise ApplicationSkepticError("methodology path/SHA-256 binding is invalid")
-    try:
-        path = Path(claimed_path).resolve(strict=True)
-    except OSError as exc:
-        raise ApplicationSkepticError(f"bound methodology is unavailable: {exc}") from exc
-    roots = []
+    roots: list[Path] = []
     for root in trusted_roots:
         try:
-            roots.append(Path(root).resolve(strict=True))
+            resolved_root = Path(root).resolve(strict=True)
         except OSError:
             continue
-    if not roots or not any(path == root or path.is_relative_to(root) for root in roots):
-        raise ApplicationSkepticError("bound methodology path is outside trusted roots")
-    data = path.read_bytes()
-    actual = _bytes_sha256(data)
-    if actual != claimed_hash:
+        if resolved_root not in roots:
+            roots.append(resolved_root)
+    if not roots:
+        raise ApplicationSkepticError("trusted methodology roots are unavailable")
+
+    claimed = Path(claimed_path)
+    candidates: list[Path] = []
+    candidate_bases = ((None, claimed),) if claimed.is_absolute() else tuple(
+        (root, root / claimed) for root in roots
+    )
+    for base, candidate in candidate_bases:
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if base is not None and not (
+            resolved == base or resolved.is_relative_to(base)
+        ):
+            # Relative bindings cannot escape their root through `..` or a
+            # symlink. Another trusted root must not authorize that spelling.
+            continue
+        if not any(
+            resolved == root or resolved.is_relative_to(root)
+            for root in roots
+        ):
+            continue
+        if resolved not in candidates:
+            candidates.append(resolved)
+    if not candidates:
         raise ApplicationSkepticError(
-            f"bound methodology SHA-256 mismatch: expected {claimed_hash}, got {actual}"
+            "bound methodology is unavailable or outside trusted roots"
         )
-    return data
+
+    matches: list[tuple[Path, bytes]] = []
+    observed: list[str] = []
+    for path in candidates:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        actual = _bytes_sha256(data)
+        observed.append(actual)
+        if actual == claimed_hash:
+            matches.append((path, data))
+    if len(matches) > 1:
+        raise ApplicationSkepticError(
+            "relative methodology binding is ambiguous across trusted roots"
+        )
+    if len(matches) == 1:
+        return matches[0][1]
+    actuals = ", ".join(sorted(set(observed))) or "unreadable"
+    raise ApplicationSkepticError(
+        "bound methodology SHA-256 mismatch: expected "
+        f"{claimed_hash}, got {actuals}"
+    )
 
 
 def build_application_skeptic_shard_prompt(
@@ -1059,14 +1149,18 @@ def adjudicate_application_skeptic(
         if outcome == "AGREE_NEGATIVE":
             legacy_closure_authority = (closure_authorities or {}).get(work_id)
             try:
+                requested_effect = _terminal_negative_requested_effect(item)
                 authorized, policy_reason = terminal_negative_authorized(
                     work_item=item,
                     assessment=assessment,
                     authority=legacy_closure_authority,
                     provider_validator=closure_provider_validator,
                     closure_authority=closure_authority,
-                    requested_effect="REFUTED_FULL",
+                    requested_effect=requested_effect,
                 )
+            except ApplicationSkepticError:
+                authorized = False
+                policy_reason = "NEGATIVE_CLOSURE_EFFECT_BINDING_INVALID"
             except Exception as exc:
                 authorized = False
                 policy_reason = (
@@ -1091,7 +1185,7 @@ def adjudicate_application_skeptic(
                 central_closure_resolution = resolve_central_negative_closure(
                     closure_authority,
                     work_item=item,
-                    requested_effect="REFUTED_FULL",
+                    requested_effect=requested_effect,
                 )
 
         if outcome == "AGREE_NEGATIVE":

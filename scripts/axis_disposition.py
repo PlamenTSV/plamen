@@ -30,6 +30,24 @@ from exploration_clear_lifecycle import resolve_clear_evidence
 from operational_markdown import operational_markdown_view
 
 
+AXIS_CANONICAL_DIGEST_PROMPT = """## Driver-owned identity projection
+
+Do not copy or compute schema versions, run/worklist/repair digests, source or
+receipt hashes, loci, provenance strings, action IDs, or commitment hashes.
+Those are transport and provenance facts. The driver binds the raw model bytes
+out of band, routes rows by the exact request order, and deterministically
+seals every machine-owned field before semantic reconciliation.
+
+Write only the model-owned `items` array. Each row contains `disposition`,
+`evidence`, `invariant_commitment`, and `rationale`, in exact request order.
+For SOURCE_LOCUS evidence emit only `{"kind":"SOURCE_LOCUS"}`; for
+CANONICAL_PRIOR add `canonical_id`; for EXECUTION_RECEIPT add `evidence_id`.
+A CLEAR invariant contains only `ci_id`, `shape`, `assertion`, and
+`falsify_class`. FINDING/UNRESOLVED uses JSON null. Never omit, add, merge, or
+reorder a row.
+"""
+
+
 WORKLIST_SCHEMA = "plamen.axis_disposition_worklist.v1"
 RECEIPT_SCHEMA = "plamen.axis_disposition_receipt.v1"
 REPAIR_SCHEMA = "plamen.axis_repair_work.v1"
@@ -137,10 +155,18 @@ _V2_AXISGAP_CLAIM_RE = re.compile(
     r"(?![A-Za-z0-9_-])",
     re.IGNORECASE | re.ASCII,
 )
+# Canonical producers use bold labels.  Retain the exact unbolded spelling as
+# a narrow compatibility form because provider-generated action blocks can
+# preserve every bound identity while dropping only Markdown emphasis.  The
+# reconciler still enforces one unique heading, action reference, and AXW ID.
 _FIELD_RE_TEMPLATE = (
-    r"(?ims)^[ \t]*(?:[-*][ \t]+)?\*\*{name}\*\*[ \t]*:[ \t]*"
-    r"(?P<value>.*?)(?=^[ \t]*(?:[-*][ \t]+)?\*\*[^*\n]+\*\*[ \t]*:"
-    r"|^#{{2,6}}[ \t]+|\Z)"
+    r"(?ims)^[ \t]*(?:[-*][ \t]+)?"
+    r"(?:\*\*{name}\*\*|{name})[ \t]*:[ \t]*"
+    r"(?P<value>.*?)"
+    r"(?=^[ \t]*(?:[-*][ \t]+)?(?:"
+    r"\*\*(?:Severity|Location|Work[ \t]+Item[ \t]+ID|Description)\*\*"
+    r"|(?:Severity|Location|Work[ \t]+Item[ \t]+ID|Description)"
+    r")[ \t]*:|^#{{2,6}}[ \t]+|\Z)"
 )
 _LOCUS_RE = re.compile(
     r"(?P<path>[A-Za-z0-9_./\\ -]+\.[A-Za-z0-9_]+)"
@@ -976,6 +1002,22 @@ def _split_row(line: str) -> tuple[str, ...] | None:
     return tuple(cells)
 
 
+def _table_data_start(lines: Sequence[str], header: int, end: int) -> int:
+    """Locate semantic rows independently of Markdown separator arity."""
+
+    candidate = header + 1
+    if candidate >= end:
+        return candidate
+    raw = lines[candidate].strip()
+    cells = _split_row(lines[candidate])
+    if (
+        (cells is not None and bool(cells) and all(_SEPARATOR_RE.fullmatch(cell) for cell in cells))
+        or (bool(raw) and "-" in raw and re.fullmatch(r"[|:\-\s]+", raw) is not None)
+    ):
+        return candidate + 1
+    return candidate
+
+
 def _coverage_rows(text: str) -> tuple[list[dict[str, Any]], list[str]]:
     source_lines = text.splitlines()
     structural_lines = operational_markdown_view(text).splitlines()
@@ -1001,14 +1043,12 @@ def _coverage_rows(text: str) -> tuple[list[dict[str, Any]], list[str]]:
         if cells is not None and tuple(cell.casefold() for cell in cells) == _COVERAGE_HEADER:
             header = index
             break
-    if header is None or header + 1 >= end:
+    if header is None:
         return [], ["axis Coverage Record header is missing or malformed"]
-    separator = _split_row(structural_lines[header + 1])
-    if separator is None or len(separator) != 4 or not all(_SEPARATOR_RE.fullmatch(cell) for cell in separator):
-        return [], ["axis Coverage Record separator is missing or malformed"]
+    data_start = _table_data_start(structural_lines, header, end)
     rows: list[dict[str, Any]] = []
     debt: list[str] = []
-    for index in range(header + 2, end):
+    for index in range(data_start, end):
         structural = structural_lines[index]
         raw = source_lines[index]
         cells = _split_row(structural)
@@ -1039,7 +1079,26 @@ def _field(block: str, name: str) -> str:
     match = re.search(
         _FIELD_RE_TEMPLATE.format(name=re.escape(name)), structural
     )
-    return _normal(match.group("value")) if match else ""
+    if match is None:
+        return ""
+    # The operational view is offset-preserving and is the authority for
+    # whether the label and its terminating boundary are real Markdown.  It
+    # intentionally masks inline-code contents, though, and Location values
+    # conventionally wrap paths in backticks.  Reparse only the already
+    # authenticated field slice from the original bytes.  This is necessary
+    # because the structural matcher may consume masked inline-code spaces as
+    # pre-value horizontal whitespace.  A label hidden inside inline code
+    # remains masked and therefore cannot create the outer match or authority.
+    source_field = block[match.start():match.end()]
+    source_match = re.match(
+        r"(?is)^[ \t]*(?:[-*][ \t]+)?(?:\*\*"
+        + re.escape(name)
+        + r"\*\*|"
+        + re.escape(name)
+        + r")[ \t]*:[ \t]*(?P<value>.*)$",
+        source_field,
+    )
+    return _normal(source_match.group("value")) if source_match else ""
 
 
 def _action_records(text: str) -> tuple[dict[str, dict[str, Any]], set[str]]:
@@ -2651,6 +2710,202 @@ def parse_axis_model_dispositions(
     return payload
 
 
+def project_axis_model_dispositions(
+    raw: bytes,
+    *,
+    worklist: Mapping[str, Any],
+    expected_run_id: str,
+    execution_evidence_authority: Mapping[str, Any],
+    canonical_prior_authority_digest: str,
+    repair_plan_digest: str = "",
+    allowed_work_item_ids: Sequence[str] | None = None,
+    require_exact_denominator: bool = False,
+) -> dict[str, Any]:
+    """Bind model-owned axis judgments to driver-owned machine identity.
+
+    Models decide disposition, rationale, evidence kind/reference, and the
+    falsifiable invariant text. The driver owns all denominator IDs, action
+    routes, loci, provenance strings, source hashes, receipt hashes, and
+    derived digests. Raw model bytes remain untouched and PhaseIO-bound; this
+    projection is the canonical value consumed by semantic reconciliation.
+    """
+
+    checked = _validate_axis_worklist_v2(worklist)
+    if str(checked["run_id"]) != str(expected_run_id):
+        raise AxisDispositionError("axis projection run mismatch")
+    authority = validate_axis_execution_evidence_authority(
+        execution_evidence_authority,
+        expected_run_id=str(expected_run_id),
+    )
+    receipt_hashes = {
+        str(row["evidence_id"]): str(row["receipt_sha256"])
+        for row in authority["receipts"]
+    }
+    payload = _load_json_bytes(bytes(raw), label="axis model dispositions")
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        raise AxisDispositionError("axis model dispositions items are invalid")
+    all_items = {
+        str(item["work_item_id"]): item for item in checked["items"]
+    }
+    expected_ids = (
+        [str(value) for value in allowed_work_item_ids]
+        if allowed_work_item_ids is not None
+        else [str(item["work_item_id"]) for item in checked["items"]]
+    )
+    if (
+        len(expected_ids) != len(set(expected_ids))
+        or any(identity not in all_items for identity in expected_ids)
+    ):
+        raise AxisDispositionError("axis projection denominator is invalid")
+    if any(not isinstance(item, Mapping) for item in raw_items):
+        raise AxisDispositionError(
+            "axis model disposition row must be an object"
+        )
+    if require_exact_denominator and len(raw_items) != len(expected_ids):
+        raise AxisDispositionError(
+            "axis model dispositions must cover the exact item denominator"
+        )
+
+    supplied_ids = [
+        str(item.get("work_item_id") or "").strip()
+        for item in raw_items
+    ]
+    routed_pairs: list[tuple[str, Mapping[str, Any]]]
+    if (
+        len(raw_items) == len(expected_ids)
+        and all(supplied_ids)
+        and len(set(supplied_ids)) == len(supplied_ids)
+        and set(supplied_ids) == set(expected_ids)
+    ):
+        by_id = dict(zip(supplied_ids, raw_items, strict=True))
+        routed_pairs = [
+            (identity, by_id[identity]) for identity in expected_ids
+        ]
+    elif len(raw_items) == len(expected_ids):
+        # The semantic-only schema has no IDs. The same ordinal path also
+        # treats malformed legacy copied identity as presentation noise.
+        routed_pairs = list(zip(expected_ids, raw_items, strict=True))
+    else:
+        # Base reconciliation is intentionally partial: keep valid named rows
+        # and let the existing bounded repair plan account for missing,
+        # duplicate, or unknown rows. Repair precommit opts into the exact
+        # denominator above.
+        routed_pairs = list(zip(supplied_ids, raw_items, strict=True))
+
+    projected_items: list[dict[str, Any]] = []
+    for identity, raw_item in routed_pairs:
+        if identity not in all_items:
+            projected_items.append({
+                "work_item_id": identity,
+                "disposition": str(
+                    raw_item.get("disposition") or ""
+                ).upper(),
+                "action_id": str(raw_item.get("action_id") or "").upper(),
+                "evidence": raw_item.get("evidence"),
+                "invariant_commitment": raw_item.get(
+                    "invariant_commitment"
+                ),
+                "rationale": str(raw_item.get("rationale") or "").strip(),
+            })
+            continue
+        item = all_items[identity]
+        disposition = str(raw_item.get("disposition") or "").upper()
+        rationale = str(raw_item.get("rationale") or "").strip()
+        raw_evidence = raw_item.get("evidence")
+        evidence: Any = raw_evidence
+        commitment: Any = None
+        action_id = (
+            str(item["required_action_id"])
+            if disposition in {"FINDING", "UNRESOLVED"}
+            else ""
+        )
+        if (
+            disposition == "CLEAR"
+            and isinstance(raw_evidence, list)
+            and len(raw_evidence) == 1
+            and isinstance(raw_evidence[0], Mapping)
+        ):
+            evidence_row = raw_evidence[0]
+            kind = str(evidence_row.get("kind") or "")
+            if kind == "SOURCE_LOCUS":
+                evidence = [{
+                    "kind": kind,
+                    "source_relpath": item["source_relpath"],
+                    "source_locus": item["source_locus"],
+                    "source_hash": item["source_hash"],
+                }]
+            elif kind == "CANONICAL_PRIOR":
+                evidence = [{
+                    "kind": kind,
+                    "canonical_id": str(
+                        evidence_row.get("canonical_id") or ""
+                    ),
+                    "authority_digest": str(
+                        canonical_prior_authority_digest
+                    ),
+                }]
+            elif kind == "EXECUTION_RECEIPT":
+                evidence_id = str(evidence_row.get("evidence_id") or "")
+                evidence = [{
+                    "kind": kind,
+                    "evidence_id": evidence_id,
+                    "receipt_sha256": receipt_hashes.get(evidence_id, ""),
+                }]
+            raw_commitment = raw_item.get("invariant_commitment")
+            if isinstance(raw_commitment, Mapping):
+                block_unsigned = {
+                    "ci_id": _normal(raw_commitment.get("ci_id")).upper(),
+                    "locus": (
+                        f"{item['source_relpath']}:{item['source_locus']}"
+                    ),
+                    "shape": _normal(
+                        raw_commitment.get("shape")
+                    ).upper(),
+                    "assertion": _normal(
+                        raw_commitment.get("assertion")
+                    ),
+                    "falsify_class": _normal(
+                        raw_commitment.get("falsify_class")
+                    ).lower(),
+                    "provenance": f"AXW:{identity}",
+                    "source_hash": item["source_hash"],
+                    "evidence_sha256": _digest(evidence),
+                }
+                commitment = {
+                    **block_unsigned,
+                    "ci_block_sha256": _digest(block_unsigned),
+                }
+        projected_items.append({
+            "work_item_id": identity,
+            "disposition": disposition,
+            "action_id": action_id,
+            "evidence": evidence,
+            "invariant_commitment": commitment,
+            "rationale": rationale,
+        })
+
+    unsigned: dict[str, Any] = {
+        "schema_version": (
+            REPAIR_MODEL_DISPOSITIONS_SCHEMA
+            if repair_plan_digest else MODEL_DISPOSITIONS_SCHEMA
+        ),
+        "run_id": str(expected_run_id),
+        "worklist_hash": checked["worklist_hash"],
+        "producer": "MODEL",
+        "items": projected_items,
+    }
+    if repair_plan_digest:
+        unsigned["repair_plan_digest"] = str(repair_plan_digest)
+    projected = {**unsigned, "sidecar_digest": _digest(unsigned)}
+    return parse_axis_model_dispositions(
+        _canonical(projected).encode("utf-8"),
+        worklist=checked,
+        expected_run_id=str(expected_run_id),
+        repair_plan_digest=str(repair_plan_digest),
+    )
+
+
 def _v2_actions(
     raw: bytes,
 ) -> tuple[dict[str, dict[str, Any]], set[str], list[str]]:
@@ -3152,10 +3407,14 @@ def reconcile_axis_dispositions_initial(
     )
     document_issues: list[str] = []
     try:
-        payload = parse_axis_model_dispositions(
+        payload = project_axis_model_dispositions(
             bytes(base_dispositions_raw),
             worklist=checked,
             expected_run_id=str(checked["run_id"]),
+            execution_evidence_authority=authority,
+            canonical_prior_authority_digest=(
+                canonical_prior_authority_digest
+            ),
         )
     except AxisDispositionError as exc:
         payload = None
@@ -3402,11 +3661,17 @@ def validate_axis_repair_model_outputs(
         raise AxisDispositionError(
             "axis repair semantic pair is incomplete"
         )
-    payload = parse_axis_model_dispositions(
+    payload = project_axis_model_dispositions(
         dispositions_raw,
         worklist=checked,
         expected_run_id=str(checked["run_id"]),
+        execution_evidence_authority=authority,
+        canonical_prior_authority_digest=(
+            canonical_prior_authority_digest
+        ),
         repair_plan_digest=str(plan["plan_digest"]),
+        allowed_work_item_ids=plan["retained_work_item_ids"],
+        require_exact_denominator=True,
     )
     retained = [
         str(value) for value in plan["retained_work_item_ids"]
@@ -3933,11 +4198,16 @@ def reconcile_axis_dispositions_final(
         repair_dispositions_raw or repair_findings_raw
     ):
         try:
-            repair_payload = parse_axis_model_dispositions(
+            repair_payload = project_axis_model_dispositions(
                 bytes(repair_dispositions_raw or b""),
                 worklist=checked,
                 expected_run_id=str(checked["run_id"]),
+                execution_evidence_authority=authority,
+                canonical_prior_authority_digest=(
+                    canonical_prior_authority_digest
+                ),
                 repair_plan_digest=plan["plan_digest"],
+                allowed_work_item_ids=plan["retained_work_item_ids"],
             )
         except AxisDispositionError as exc:
             repair_payload = None
@@ -6459,6 +6729,7 @@ __all__ = [
     "load_axis_worklist",
     "load_axis_worklist_v2",
     "parse_axis_model_dispositions",
+    "project_axis_model_dispositions",
     "reconcile_axis_output",
     "reconcile_axis_dispositions_final",
     "reconcile_axis_dispositions_initial",

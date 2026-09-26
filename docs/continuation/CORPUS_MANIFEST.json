@@ -3703,6 +3703,8 @@
                                "docs/continuation/CORPUS_MANIFEST.json",
                                "docs/continuation/MODEL_ROUTING_PORTABLE_REPLAY.json",
                                "docs/continuation/PRIVATE_ARTIFACTS.md",
+                               "docs/continuation/NATIVE_BROKER_V2_CONTRACT.md",
+                               "docs/continuation/REQUIREMENTS_RECONCILIATION.jsonl",
                                "scripts/replay_model_routing_research.py",
                                "scripts/test_model_routing_research_portable_replay.py",
                                "docs/continuation/research/",

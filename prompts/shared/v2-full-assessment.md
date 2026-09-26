@@ -230,7 +230,7 @@ for f in $(ls "$S"/analysis_*.md 2>/dev/null | grep -vE "rescan|percontract"); d
 done
 
 echo "=== Opus spawn mandate check ==="
-grep -c "MUST spawn\|Opus 4.8 MANDATE\|spawn.*all.*anyway" "$S/_prompt_breadth.md" 2>/dev/null
+grep -c "MUST spawn\|ROSTER COMPLETENESS\|spawn.*all.*anyway" "$S/_prompt_breadth.md" 2>/dev/null
 
 echo "=== Expected vs actual ==="
 python -c "
@@ -240,7 +240,7 @@ print('Expected:', d.get('breadth_count'))
 " 2>/dev/null
 ```
 
-**FAIL if**: Actual count < expected breadth_count. Any agent file < 200 bytes (stub). FLASH_LOAN agent missing (NEVER MERGE rule). Zero spawn mandate keywords in prompt (Opus 4.8 mandate not applied).
+**FAIL if**: Actual count < expected breadth_count. Any agent file < 200 bytes (stub). FLASH_LOAN agent missing (NEVER MERGE rule). Zero spawn mandate keywords in prompt (roster mandate not applied).
 
 ---
 
@@ -651,7 +651,7 @@ grep "medusa_fuzz" "$S/pipeline_checkpoint.md"
 - Consumed by agents: {Y/N}
 - If DEGRADED: reason (forge/slither not installed, compilation failed)
 
-## Opus 4.8 Alignment: {PASS|ISSUES}
+## Roster Alignment: {PASS|ISSUES}
 - Spawn mandates in prompts: {Y/N}
 - Evidence tags mandatory: {Y/N}
 - Evidence tag count: {N} (baseline: 326 in prior run)

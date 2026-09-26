@@ -7,14 +7,18 @@ from pathlib import Path
 
 import pytest
 
+from artifact_ledger import record_work_unit_artifacts, record_work_unit_inputs
 import enumeration_gate as EG
 import plamen_driver as D
 import plamen_validators as V
 from enumgap_markdown import enumgap_reference_heading_ids
+from exploration_authority_bundle import build_immutable_prior_bundle
 from exploration_clear_lifecycle import compile_initial_receipt, write_lifecycle_artifacts
 from finding_producer_registry import validated_enumgap_obligation_dispositions
 from operational_markdown import operational_markdown_view
-from plamen_types import Phase
+from phase_io_contracts import ArtifactSpec, LaunchSpec, PhaseIOContract, canonical_work_unit_key
+from plamen_types import Phase, SC_PHASES
+from test_axis_population_provider_p0_i import _write_graph
 
 
 def _phase() -> Phase:
@@ -39,6 +43,10 @@ def _inventory_phase() -> Phase:
         critical=True,
         model="sonnet",
     )
+
+
+def _axis_phase() -> Phase:
+    return next(phase for phase in SC_PHASES if phase.name == "axis_coverage")
 
 
 def _config(project: Path) -> dict[str, object]:
@@ -71,11 +79,16 @@ def _seed_emitted_action(
     project: Path,
     *,
     finding_text: str | None = None,
+    disposition: str = "FINDING",
+    evidence: str = "NEXP-1",
+    project_source: str = "one\ntwo\n",
 ) -> tuple[Path, str]:
     scratch = project / ".scratchpad"
     scratch.mkdir(parents=True)
     (project / "src").mkdir()
-    (project / "src" / "Unit.sol").write_text("one\ntwo\n", encoding="utf-8")
+    (project / "src" / "Unit.sol").write_text(
+        project_source, encoding="utf-8"
+    )
     source = scratch / "exploration_skeptic_findings.md"
     source.write_text(
         "# Exploration\n\n## Coverage Record\n\n"
@@ -89,21 +102,84 @@ def _seed_emitted_action(
     )
     write_lifecycle_artifacts(scratch, initial)
     obligation_id = initial.obligations[0].obligation_id
-    assert D._bind_typed_model_phase_inputs(
-        _inventory_phase(), scratch, _config(project)
-    ) == []
-    (scratch / "findings_inventory.md").write_text(
+    inventory_raw = (
         "# Findings Inventory\n\n"
         "### Finding [INV-001]: Seed\n"
         "**Source IDs**: [BASE-0]\n"
         "**Severity**: Low\n"
         "**Location**: src/Unit.sol:L1\n"
-        "**Description**: retained seed.\n",
-        encoding="utf-8",
+        "**Description**: retained seed.\n"
     )
-    assert D._record_typed_model_phase_artifacts(
-        _inventory_phase(), scratch, _config(project)
-    ) == []
+    records_raw = D.derive_preverify_finding_records_bytes(
+        inventory_raw.encode("utf-8")
+    )
+    ledger_raw = json.dumps({
+        "schema_version": "plamen.id_ledger.v1",
+        "allocations": [{
+            "id": "INV-001",
+            "prefix": "INV-",
+            "owner_phase": "inventory",
+            "owner_attempt": 1,
+            "owning_artifact": "findings_inventory.md",
+            "title_hash": D._title_hash("Seed"),
+            "title_preview": "Seed",
+            "allocated_at": "1970-01-01T00:00:00+00:00",
+        }],
+    }, sort_keys=True, indent=2) + "\n"
+    producer_key = canonical_work_unit_key(
+        "sc", "thorough", "evm", "claude", "inventory", "additive_reemit"
+    )
+    producer = PhaseIOContract(
+        pipeline="sc",
+        mode="thorough",
+        ecosystem="evm",
+        backend="claude",
+        phase="inventory",
+        work_unit_id="additive_reemit",
+        outputs=tuple(
+            ArtifactSpec(
+                root="scratchpad",
+                path=name,
+                owner_key=producer_key,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="CREATE",
+                consumers=(
+                    "enumgap_delivery/inventory_append",
+                    "axis_disposition/promotion.plan",
+                ),
+            )
+            for name in (
+                "findings_inventory.md", "finding_records.json", "_id_ledger.json"
+            )
+        ),
+    )
+    producer_launch = LaunchSpec(
+        work_unit_key=producer_key,
+        pipeline="sc",
+        mode="thorough",
+        ecosystem="evm",
+        backend="claude",
+        model="driver",
+        timeout_s=120,
+        exec_mode="python",
+        tool_policy=("filesystem",),
+    )
+    record_work_unit_inputs(
+        scratch, project, producer, producer_launch,
+        run_id=str(_config(project)["_run_id"]),
+    )
+    (scratch / "findings_inventory.md").write_text(
+        inventory_raw, encoding="utf-8"
+    )
+    (scratch / "finding_records.json").write_bytes(records_raw)
+    (scratch / "_id_ledger.json").write_text(
+        ledger_raw, encoding="utf-8"
+    )
+    record_work_unit_artifacts(
+        scratch, project, producer, producer_launch,
+        run_id=str(_config(project)["_run_id"]), actor="DRIVER",
+    )
     worklist, issues = D._prepare_enumgap_disposition_worklist(
         _phase(), _config(project), scratch
     )
@@ -117,7 +193,7 @@ def _seed_emitted_action(
         + "## Coverage Record\n\n"
         "| Obligation | Relationship | Disposition | Evidence |\n"
         "|---|---|---|---|\n"
-        f"| {obligation_id} | sibling / inverse | FINDING | NEXP-1 |\n",
+        f"| {obligation_id} | sibling / inverse | {disposition} | {evidence} |\n",
         encoding="utf-8",
     )
     assert D._record_typed_model_phase_artifacts(
@@ -214,9 +290,247 @@ def test_live_driver_inventory_append_has_exact_phaseio_merge_authority(
     key = "sc/thorough/evm/claude/enumgap_delivery/inventory_append"
     assert state["work_units"][key]["semantic_status"] == "ACTIVE"
     assert state["work_units"][key]["execution_state"] == "OUTPUT_COMMITTED"
+    canonical = {
+        "scratchpad:findings_inventory.md",
+        "scratchpad:finding_records.json",
+        "scratchpad:_id_ledger.json",
+    }
+    assert canonical <= set(state["work_units"][key]["artifacts"])
+    assert all(
+        state["artifact_bindings"][identity]["owner_key"] == key
+        for identity in canonical
+    )
+    inventory_ids = set(D._depth_additive_identity_set(
+        "findings_inventory.md", (scratch / "findings_inventory.md").read_bytes()
+    ))
+    record_ids = set(D._depth_additive_identity_set(
+        "finding_records.json", (scratch / "finding_records.json").read_bytes()
+    ))
+    ledger_ids = set(D._depth_additive_identity_set(
+        "_id_ledger.json", (scratch / "_id_ledger.json").read_bytes()
+    ))
+    assert inventory_ids == record_ids
+    assert inventory_ids <= ledger_ids
     assert D._promote_enumgap_exploration_transaction(
         _phase(), _config(project), scratch
     ) == {"parsed": 1, "emitted": 0}
+
+
+def test_live_driver_clear_only_enumgap_commits_authoritative_noop_generation(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    scratch, _ = _seed_emitted_action(
+        project,
+        finding_text="",
+        disposition="CLEAR",
+        evidence="src/Unit.sol:L1",
+    )
+    canonical_names = (
+        "findings_inventory.md",
+        "finding_records.json",
+        "_id_ledger.json",
+    )
+    inventory_before = (scratch / "findings_inventory.md").read_bytes()
+    identities_before = {
+        name: set(D._depth_additive_identity_set(
+            name, (scratch / name).read_bytes()
+        ))
+        for name in canonical_names
+    }
+
+    outcome = D._promote_enumgap_exploration_transaction(
+        _phase(), _config(project), scratch
+    )
+
+    assert outcome == {"parsed": 0, "emitted": 0}
+    assert (scratch / "findings_inventory.md").read_bytes() == inventory_before
+    identities_after = {
+        name: set(D._depth_additive_identity_set(
+            name, (scratch / name).read_bytes()
+        ))
+        for name in canonical_names
+    }
+    assert identities_after == identities_before
+    assert (
+        identities_after["findings_inventory.md"]
+        == identities_after["finding_records.json"]
+    )
+    assert (
+        identities_after["findings_inventory.md"]
+        <= identities_after["_id_ledger.json"]
+    )
+    state = json.loads(
+        (scratch / "_artifact_state.json").read_text(encoding="utf-8")
+    )
+    key = "sc/thorough/evm/claude/enumgap_delivery/inventory_append"
+    unit = state["work_units"][key]
+    assert unit["semantic_status"] == "ACTIVE"
+    assert unit["execution_state"] == "OUTPUT_COMMITTED"
+    assert all(
+        state["artifact_bindings"][f"scratchpad:{name}"]["owner_key"] == key
+        for name in canonical_names
+    )
+    for name in (
+        "enumgap_inventory_append_plan.json",
+        "enumgap_inventory_append_commit.json",
+        "enumgap_exploration_promotion_receipt.json",
+    ):
+        identity = f"scratchpad:{name}"
+        artifact = unit["artifacts"][identity]
+        assert artifact["status"] == "MISSING"
+        assert artifact["authority_level"] == "NONE"
+        assert artifact["conditional_receipt"]["state"] == "NOT_TRIGGERED"
+        assert not (scratch / name).exists()
+    assert D._promote_enumgap_exploration_transaction(
+        _phase(), _config(project), scratch
+    ) == {"parsed": 0, "emitted": 0}
+
+
+def test_live_driver_clear_only_enumgap_rejects_stale_conditional_output(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    scratch, _ = _seed_emitted_action(
+        project,
+        finding_text="",
+        disposition="CLEAR",
+        evidence="src/Unit.sol:L1",
+    )
+    (scratch / "enumgap_inventory_append_plan.json").write_text(
+        '{"schema_version":"plamen.enumgap_inventory_append_plan.v1"}\n',
+        encoding="utf-8",
+    )
+
+    outcome = D._promote_enumgap_exploration_transaction(
+        _phase(), _config(project), scratch
+    )
+
+    assert outcome["parsed"] == 0
+    assert outcome["emitted"] == 0
+    assert outcome.get("debt")
+    assert any(
+        "unowned" in issue.lower()
+        or "pre-existing" in issue.lower()
+        or "prestate" in issue.lower()
+        for issue in outcome["debt"]
+    )
+
+
+def test_clear_only_enumgap_successor_is_authoritative_axis_model_input(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    scratch, _ = _seed_emitted_action(
+        project,
+        finding_text="",
+        disposition="CLEAR",
+        evidence="src/Unit.sol:L1",
+        project_source=(
+            "contract Unit {\n"
+            "  function quiet(uint256 x) external pure returns (uint256) {\n"
+            "    return x;\n"
+            "  }\n"
+            "}\n"
+        ),
+    )
+    assert D._promote_enumgap_exploration_transaction(
+        _phase(), _config(project), scratch
+    ) == {"parsed": 0, "emitted": 0}
+    _write_graph(
+        scratch,
+        {
+            "Unit.quiet(uint256)": {
+                "bare": "quiet",
+                "loc": "src/Unit.sol:L2",
+                "callers": ["caller-a", "caller-b"],
+            }
+        },
+    )
+    config = _config(project)
+
+    worklist, planning_issues = D._prepare_axis_disposition_worklist(
+        phase=_axis_phase(),
+        config=config,
+        scratchpad=scratch,
+    )
+
+    assert planning_issues == []
+    assert worklist["requires_execution"] is True
+    assert worklist["count"] > 0
+    binding_issues = D._bind_typed_model_phase_inputs(
+        _axis_phase(), scratch, config
+    )
+    assert binding_issues == []
+    state = json.loads(
+        (scratch / "_artifact_state.json").read_text(encoding="utf-8")
+    )
+    axis_key = "sc/thorough/evm/claude/axis_coverage/model"
+    inventory_binding = state["work_units"][axis_key]["input_bindings"][
+        "scratchpad:findings_inventory.md"
+    ]
+    assert inventory_binding["producer_work_unit_key"] == (
+        "sc/thorough/evm/claude/enumgap_delivery/inventory_append"
+    )
+    assert inventory_binding["status"] == "ACTIVE"
+
+
+def test_enumgap_crash_before_phaseio_commit_resumes_without_duplicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    scratch, _ = _seed_emitted_action(project)
+    original_commit = D._commit_deterministic_driver_work_unit
+
+    def crash_before_final_commit(*args: object, **kwargs: object) -> list[str]:
+        contract = kwargs.get("contract")
+        if getattr(contract, "phase", "") == "enumgap_delivery":
+            raise RuntimeError("injected crash before enumgap PhaseIO commit")
+        return original_commit(*args, **kwargs)
+
+    monkeypatch.setattr(
+        D, "_commit_deterministic_driver_work_unit", crash_before_final_commit
+    )
+    with pytest.raises(
+        RuntimeError, match="injected crash before enumgap PhaseIO commit"
+    ):
+        D._promote_enumgap_exploration_transaction(
+            _phase(), _config(project), scratch
+        )
+
+    inventory_after_crash = (scratch / "findings_inventory.md").read_bytes()
+    assert inventory_after_crash.count(b"Source IDs**: NEXP-1") == 1
+    monkeypatch.setattr(
+        D, "_commit_deterministic_driver_work_unit", original_commit
+    )
+
+    resumed = D._promote_enumgap_exploration_transaction(
+        _phase(), _config(project), scratch
+    )
+
+    assert resumed == {"parsed": 1, "emitted": 0}
+    assert (scratch / "findings_inventory.md").read_bytes() == inventory_after_crash
+    state = json.loads(
+        (scratch / "_artifact_state.json").read_text(encoding="utf-8")
+    )
+    key = "sc/thorough/evm/claude/enumgap_delivery/inventory_append"
+    unit = state["work_units"][key]
+    assert unit["execution_state"] == "OUTPUT_COMMITTED"
+    for name in (
+        "enumgap_inventory_append_plan.json",
+        "enumgap_inventory_append_commit.json",
+        "enumgap_exploration_promotion_receipt.json",
+    ):
+        identity = f"scratchpad:{name}"
+        assert (scratch / name).is_file()
+        assert unit["artifacts"][identity]["conditional_receipt"]["state"] == (
+            "PRODUCED"
+        )
+    assert D._promote_enumgap_exploration_transaction(
+        _phase(), _config(project), scratch
+    ) == {"parsed": 1, "emitted": 0}
+    assert (scratch / "findings_inventory.md").read_bytes() == inventory_after_crash
 
 
 def test_non_utf8_enumgap_source_is_visible_delivery_debt(
@@ -314,6 +628,28 @@ def test_bound_source_and_inventory_block_drift_revoke_delivery(
     )
     with pytest.raises(ValueError, match="binding mismatch|identity mismatch"):
         EG.validated_enumgap_promotion_deliveries(scratch)
+
+
+def test_later_inventory_successor_preserves_exact_enumgap_delivery(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    scratch, _ = _seed_emitted_action(project)
+    assert EG.promote_enumgap_exploration_to_inventory(scratch)["emitted"] == 1
+    inventory = scratch / "findings_inventory.md"
+    inventory.write_text(
+        inventory.read_text(encoding="utf-8")
+        + "\n### Finding [INV-900]: later typed successor\n"
+        "**Source IDs**: LATER-1\n"
+        "**Severity**: Low\n"
+        "**Location**: src/Later.sol:L1\n"
+        "**Description**: A later phase may append an unrelated finding.\n",
+        encoding="utf-8",
+    )
+
+    deliveries = EG.validated_enumgap_promotion_deliveries(scratch)
+
+    assert deliveries["NEXP-1"]["inventory_id"] == "INV-002"
 
 
 def test_duplicate_source_action_id_cannot_gain_first_writer_authority(
@@ -655,9 +991,11 @@ def test_bad_emitted_delivery_does_not_revoke_unrelated_clear_authority(
         ),
         encoding="utf-8",
     )
-    (scratch / "exploration_clear_prior_aliases.json").write_text(
-        json.dumps(D._exploration_clear_prior_alias_payload(scratch)), encoding="utf-8"
+    prior_bundle = build_immutable_prior_bundle(
+        (scratch / "_canonical_finding_ids.json").read_bytes()
     )
+    for name, raw in prior_bundle.output_vector.items():
+        (scratch / name).write_bytes(raw)
     worklist, issues = D._prepare_enumgap_disposition_worklist(
         _phase(), _config(project), scratch
     )

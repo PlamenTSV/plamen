@@ -80,6 +80,7 @@ def test_accepted_depth_attempt_runs_each_postprocessor_once(tmp_path, monkeypat
     )
     assert receipt["status"] == "FINALIZED"
     assert set(receipt["processors"]) == {
+        "registered_depth_promotion",
         "niche_promotion",
         "blind_spot_recovery",
         "enumeration_gate",
@@ -526,7 +527,8 @@ def test_invalidated_referent_that_helper_does_not_restore_stays_failed(
             ),
         }
         for name in (
-            "niche_promotion", "blind_spot_recovery", "enumeration_gate", "variant_gate"
+            "registered_depth_promotion", "niche_promotion", "blind_spot_recovery",
+            "enumeration_gate", "variant_gate"
         )
     }
     (tmp_path / "depth_finalization_receipt.json").write_text(
@@ -647,6 +649,7 @@ def _seed_complete_depth_finalization_receipt(tmp_path) -> None:
             "outcome": {"inventory_referents": []},
         }
         for name in (
+            "registered_depth_promotion",
             "niche_promotion",
             "blind_spot_recovery",
             "enumeration_gate",
@@ -690,6 +693,54 @@ def test_niche_identity_debt_degrades_accepted_depth_boundary(
     assert failed["result"]["artifact"] == "niche_identity_debt.json"
     assert failed["result"]["blocking_debt_count"] == 1
     assert failed["result"]["required_action"] == "RECONCILE_PRODUCER_IDENTITY"
+
+
+def test_niche_mixed_success_retains_delivered_outcome_with_sibling_debt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "findings_inventory.md").write_text(
+        "# Findings Inventory\n", encoding="utf-8"
+    )
+    (tmp_path / "niche_semantic_findings.md").write_text(
+        "## Finding [NSC-1]: delivered niche candidate\n"
+        "**Severity**: Medium\n"
+        "**Location**: src/Module.sol:L3\n"
+        "**Description**: A valid specialized candidate.\n"
+        "**Impact**: Incorrect accounting remains possible.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "niche_unknown_findings.md").write_text(
+        "## Finding [ZZQ-7]: unresolved producer identity\n"
+        "**Severity**: Medium\n"
+        "**Location**: src/Module.sol:L7\n"
+        "**Description**: This candidate must remain visible.\n"
+        "**Impact**: Silent loss would reduce recall.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(D, "promote_blind_spot_to_inventory", lambda _sp: (0, 0))
+    monkeypatch.setattr(
+        enumeration_gate, "run_enumeration_gate", lambda _sp: {"emitted": 0}
+    )
+    monkeypatch.setattr(
+        D, "_run_gate_v_for_phase", lambda _phase, _sp: {"emitted": 0}
+    )
+
+    result = D._run_accepted_depth_postprocessors(
+        "depth", tmp_path, accepted=True, recovery_preflight=False
+    )
+
+    failed = result["processors"]["niche_promotion"]
+    assert result["status"] == "DEGRADED_HUMAN_REVIEW"
+    assert failed["status"] == "FAILED"
+    assert failed["result"]["parsed"] == 2
+    assert failed["result"]["appended"] == 1
+    assert len(failed["outcome"]["inventory_referents"]) == 1
+    assert set(
+        failed["outcome"]["inventory_referents"][0]["source_ids"]
+    ) == {"NICHE-PROMOTED", "NSC-1"}
+    assert (tmp_path / "findings_inventory.md").read_text(
+        encoding="utf-8"
+    ).count("NSC-1") == 1
 
 
 def test_niche_identity_debt_invalidates_clean_receipt_reuse(

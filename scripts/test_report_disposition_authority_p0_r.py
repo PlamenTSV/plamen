@@ -39,6 +39,7 @@ from queue_work_items import (
 from report_disposition_authority import (
     APPENDIX_SIDECAR_NAME,
     AUTHORITY_NAME,
+    _current_verifier_launch_binding,
     authorized_nonbody_internal_ids,
     reconcile_report_dispositions,
     validate_index_dispositions,
@@ -55,6 +56,210 @@ from verifier_work_roster import (
 
 
 RUN_ID = "12345678-1234-4567-8abc-1234567890ab"
+
+
+def _canonical_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _digest(value: object) -> str:
+    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def _runtime_unit_phase_io(sp: Path, unit, spec: VerifierLaunchSpec):
+    plan = QueueWorkPlan.from_json(
+        (sp / "verification_queue.work_plan.json").read_text(
+            encoding="utf-8", errors="strict"
+        )
+    )
+    shard = next(
+        shard
+        for shard in plan.shards
+        if tuple(shard.ordered_work_item_ids) == tuple(unit.ordered_work_item_ids)
+    )
+    common = {
+        "pipeline": "sc",
+        "mode": "thorough",
+        "ecosystem": "evm",
+        "backend": spec.backend,
+        "phase": shard.shard_id,
+    }
+    model_contract = resolve_phase_io_contract(
+        **common,
+        work_unit_id=f"method_model.{unit.work_unit_id}",
+        exact_inputs=(),
+        exact_outputs=tuple(unit.expected_output_files),
+    )
+    control_contract = resolve_phase_io_contract(
+        **common,
+        work_unit_id=f"method_receipt.{unit.work_unit_id}",
+        exact_inputs=(),
+        exact_outputs=(
+            f"_verifier_runtime_units/{unit.work_unit_id}/gate_receipt.json",
+            f"_verifier_runtime_units/{unit.work_unit_id}/unit_receipt.json",
+        ),
+        exact_writer="DRIVER",
+    )
+    model_launch = LaunchSpec(
+        work_unit_key=model_contract.key,
+        pipeline=model_contract.pipeline,
+        mode=model_contract.mode,
+        ecosystem=model_contract.ecosystem,
+        backend=model_contract.backend,
+        model=spec.model,
+        timeout_s=spec.timeout_seconds,
+        exec_mode=spec.transport,
+        tool_policy=("filesystem", "shell", "foreground-only"),
+    )
+    control_launch = LaunchSpec(
+        work_unit_key=control_contract.key,
+        pipeline=control_contract.pipeline,
+        mode=control_contract.mode,
+        ecosystem=control_contract.ecosystem,
+        backend=control_contract.backend,
+        model="driver",
+        timeout_s=spec.timeout_seconds,
+        exec_mode="python",
+        tool_policy=("filesystem",),
+    )
+    return model_contract, model_launch, control_contract, control_launch
+
+
+def _write_digest_bound_fixture_receipt(
+    path: Path,
+    unsigned: dict,
+    *,
+    digest_field: str,
+    digest_has_newline: bool = False,
+) -> tuple[dict, str]:
+    digest_input = _canonical_bytes(unsigned)
+    if digest_has_newline:
+        digest_input += b"\n"
+    digest = hashlib.sha256(digest_input).hexdigest()
+    payload = {**unsigned, digest_field: digest}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_canonical_bytes(payload) + b"\n")
+    return payload, digest
+
+
+def _commit_replayable_model_authority_fixture(
+    sp: Path,
+    model_contract,
+    model_launch: LaunchSpec,
+) -> dict:
+    """Commit a structurally replayable MODEL transaction fixture.
+
+    The deterministic provider-completion receipt below is the isolated fake
+    external-effect boundary.  Production execution-authority validation and
+    PhaseIO incorporation/commit replay remain real.  This fixture proves the
+    downstream gate binding; it deliberately does not claim that a provider
+    process ran or that model output was semantically correct.
+    """
+
+    attempt_id = "attempt-report-disposition-fixture"
+    work_plan_digest = _digest({"fixture": model_contract.key})
+    attempt_root = (
+        sp
+        / ".worker_transactions"
+        / model_contract.phase
+        / model_contract.work_unit_id
+        / "attempts"
+        / attempt_id
+    )
+    provider_path = attempt_root / "provider_completion.json"
+    _provider, provider_digest = _write_digest_bound_fixture_receipt(
+        provider_path,
+        {
+            "schema": "plamen.test-only-provider-completion.v1",
+            "output_source_mode": "STDOUT_ASSIGNED_OUTPUT",
+        },
+        digest_field="completion_sha256",
+        digest_has_newline=True,
+    )
+    attempt_path = attempt_root / "completion.json"
+    _attempt, attempt_digest = _write_digest_bound_fixture_receipt(
+        attempt_path,
+        {
+            "schema": "plamen.test-only-worker-attempt-completion.v1",
+            "run_id": RUN_ID,
+            "phase": model_contract.phase,
+            "work_unit_id": model_contract.work_unit_id,
+            "generation": 1,
+            "work_plan_digest": work_plan_digest,
+            "attempt_id": attempt_id,
+            "provider_completion_relative_path": provider_path.relative_to(sp).as_posix(),
+            "provider_completion_digest": provider_digest,
+            "canonical_projection_state": "PENDING_PHASE_IO",
+        },
+        digest_field="completion_digest",
+    )
+    incorporation_path = attempt_root / "incorporation.json"
+    projected = []
+    for output in model_contract.outputs:
+        path = sp / output.path
+        raw = path.read_bytes()
+        projected.append(
+            {
+                "canonical_identity": output.identity,
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "size": len(raw),
+            }
+        )
+    _incorporation, incorporation_digest = _write_digest_bound_fixture_receipt(
+        incorporation_path,
+        {
+            "schema": "plamen.worker_phaseio_incorporation.v1",
+            "run_id": RUN_ID,
+            "phase": model_contract.phase,
+            "work_unit_id": model_contract.work_unit_id,
+            "generation": 1,
+            "work_plan_digest": work_plan_digest,
+            "attempt_id": attempt_id,
+            "provider_completion_digest": provider_digest,
+            "contract_digest": model_contract.digest,
+            "launch_digest": model_launch.digest,
+            "projection_state": "COMPLETE",
+            "projected_members": projected,
+        },
+        digest_field="incorporation_digest",
+    )
+    authority_unsigned = {
+        "schema": "plamen.worker_execution_authority.v1",
+        "run_id": RUN_ID,
+        "phase": model_contract.phase,
+        "work_unit_id": model_contract.work_unit_id,
+        "generation": 1,
+        "work_plan_digest": work_plan_digest,
+        "attempt_id": attempt_id,
+        "attempt_completion_relative_path": attempt_path.relative_to(sp).as_posix(),
+        "attempt_completion_digest": attempt_digest,
+        "provider_completion_relative_path": provider_path.relative_to(sp).as_posix(),
+        "provider_completion_digest": provider_digest,
+        "incorporation_relative_path": incorporation_path.relative_to(sp).as_posix(),
+        "incorporation_digest": incorporation_digest,
+        "contract_digest": model_contract.digest,
+        "launch_digest": model_launch.digest,
+    }
+    authority = {
+        **authority_unsigned,
+        "authority_digest": _digest(authority_unsigned),
+    }
+    record_work_unit_artifacts(
+        sp,
+        sp.parent,
+        model_contract,
+        model_launch,
+        run_id=RUN_ID,
+        actor="MODEL",
+        execution_authority=authority,
+    )
+    return authority
 
 
 def _seed_report_assembly_owner(
@@ -206,6 +411,26 @@ def _write_queue(sp: Path, items: list[QueueWorkItem]) -> None:
         (unit_dir / "launch_spec.json").write_text(
             spec.to_json() + "\n", encoding="utf-8"
         )
+        (
+            model_contract,
+            model_launch,
+            control_contract,
+            control_launch,
+        ) = _runtime_unit_phase_io(sp, unit, spec)
+        record_work_unit_inputs(
+            sp,
+            sp.parent,
+            model_contract,
+            model_launch,
+            run_id=RUN_ID,
+        )
+        record_work_unit_inputs(
+            sp,
+            sp.parent,
+            control_contract,
+            control_launch,
+            run_id=RUN_ID,
+        )
 
 
 def _refresh_runtime_unit_receipts(sp: Path) -> None:
@@ -227,8 +452,40 @@ def _refresh_runtime_unit_receipts(sp: Path) -> None:
                 encoding="utf-8", errors="strict"
             )
         )
+        (
+            model_contract,
+            model_launch,
+            control_contract,
+            control_launch,
+        ) = _runtime_unit_phase_io(sp, unit, spec)
+        model_authority = _commit_replayable_model_authority_fixture(
+            sp,
+            model_contract,
+            model_launch,
+        )
         gate_path = unit_dir / "gate_receipt.json"
-        gate_path.write_text('{"fixture":"gate"}\n', encoding="utf-8")
+        gate = {
+            "schema_version": "plamen.verifier_unit_gate_receipt.v2",
+            "state": "CLEAN",
+            "work_unit_id": unit.work_unit_id,
+            "work_unit_resume_digest": unit.resume_digest,
+            "roster_digest": roster.digest,
+            "launch_spec_digest": spec.digest,
+            "method_dispatch_id": _digest(
+                {"fixture_method_dispatch": unit.work_unit_id}
+            ),
+            "method_dispatch_sha256": "3" * 64,
+            "ordered_work_item_ids": list(unit.ordered_work_item_ids),
+            "operator_receipt_digests": [],
+            "model_execution_authority_digest": model_authority[
+                "authority_digest"
+            ],
+            "output_sha256": {
+                name: hashlib.sha256((sp / name).read_bytes()).hexdigest()
+                for name in unit.expected_output_files
+            },
+        }
+        gate_path.write_bytes(_canonical_bytes(gate) + b"\n")
         unit_receipt = VerifierUnitReceipt.completed_for(
             unit,
             launch_spec_digest=spec.digest,
@@ -243,6 +500,47 @@ def _refresh_runtime_unit_receipts(sp: Path) -> None:
         (unit_dir / "unit_receipt.json").write_text(
             unit_receipt.to_json() + "\n", encoding="utf-8"
         )
+        record_work_unit_artifacts(
+            sp,
+            sp.parent,
+            control_contract,
+            control_launch,
+            run_id=RUN_ID,
+            actor="DRIVER",
+        )
+
+
+def _rewrite_gate_with_current_unit_receipt(sp: Path, mutate) -> None:
+    roster = VerifierWorkRoster.from_json(
+        (sp / "verification_runtime_roster.json").read_text(
+            encoding="utf-8", errors="strict"
+        )
+    )
+    unit = roster.work_units[0]
+    unit_dir = sp / "_verifier_runtime_units" / unit.work_unit_id
+    gate_path = unit_dir / "gate_receipt.json"
+    gate = json.loads(gate_path.read_text(encoding="utf-8", errors="strict"))
+    mutate(gate)
+    gate_path.write_bytes(_canonical_bytes(gate) + b"\n")
+    spec = VerifierLaunchSpec.from_json(
+        (unit_dir / "launch_spec.json").read_text(
+            encoding="utf-8", errors="strict"
+        )
+    )
+    unit_receipt = VerifierUnitReceipt.completed_for(
+        unit,
+        launch_spec_digest=spec.digest,
+        output_receipt_digests=[
+            hashlib.sha256(
+                (sp / f"verify_{work_id}.receipt.json").read_bytes()
+            ).hexdigest()
+            for work_id in unit.ordered_work_item_ids
+        ],
+        gate_receipt_digests=[hashlib.sha256(gate_path.read_bytes()).hexdigest()],
+    )
+    (unit_dir / "unit_receipt.json").write_text(
+        unit_receipt.to_json() + "\n", encoding="utf-8"
+    )
 
 
 def _write_verifier(
@@ -704,6 +1002,74 @@ def test_current_provider_launch_authority_is_required_before_nonbody_relocation
     result = reconcile_report_dispositions(sp, root, run_id=RUN_ID)
     assert result["moved"] == 0
     assert result["issues"]
+    assert (root / "AUDIT_REPORT.md").read_text(encoding="utf-8") == original
+
+
+def test_gate_v2_accepts_replayable_model_execution_authority(
+    tmp_path: Path,
+) -> None:
+    sp, root, item, _original = _setup(tmp_path, status="CONFIRMED")
+
+    plan = QueueWorkPlan.from_json(
+        (sp / "verification_queue.work_plan.json").read_text(
+            encoding="utf-8", errors="strict"
+        )
+    )
+    unit_dir = next((sp / "_verifier_runtime_units").iterdir())
+    spec = VerifierLaunchSpec.from_json(
+        (unit_dir / "launch_spec.json").read_text(
+            encoding="utf-8", errors="strict"
+        )
+    )
+    assert _current_verifier_launch_binding(
+        sp,
+        item,
+        plan_digest=plan.digest,
+        expected_run_id=RUN_ID,
+    ) == (spec.digest, spec.backend)
+
+    result = reconcile_report_dispositions(sp, root, run_id=RUN_ID)
+
+    row = next(
+        row
+        for row in result["authority"]["rows"]
+        if row["candidate_id"] == item.work_item_id
+    )
+    assert row["verifier_receipt_digest"]
+    assert not any(
+        "exact verifier output receipt is missing/stale/tampered" in issue
+        for issue in result["issues"]
+    )
+
+
+@pytest.mark.parametrize("authority_state", ["absent", "forged"])
+def test_gate_v2_rejects_absent_or_forged_model_execution_authority(
+    tmp_path: Path,
+    authority_state: str,
+) -> None:
+    sp, root, item, original = _setup(tmp_path, status="CONFIRMED")
+
+    def mutate(gate: dict) -> None:
+        if authority_state == "absent":
+            gate.pop("model_execution_authority_digest")
+        else:
+            gate["model_execution_authority_digest"] = "f" * 64
+
+    # Rebind the enclosing unit receipt so this reaches the semantic v2 gate
+    # check instead of failing at the outer byte-digest vector.
+    _rewrite_gate_with_current_unit_receipt(sp, mutate)
+    result = reconcile_report_dispositions(sp, root, run_id=RUN_ID)
+
+    row = next(
+        row
+        for row in result["authority"]["rows"]
+        if row["candidate_id"] == item.work_item_id
+    )
+    assert row["verifier_receipt_digest"] == ""
+    assert any(
+        "exact verifier output receipt is missing/stale/tampered" in issue
+        for issue in result["issues"]
+    )
     assert (root / "AUDIT_REPORT.md").read_text(encoding="utf-8") == original
 
 

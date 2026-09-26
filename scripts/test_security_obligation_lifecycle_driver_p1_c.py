@@ -5,6 +5,9 @@ import hashlib
 import inspect
 import json
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from artifact_ledger import (
     detect_semantic_input_drift,
@@ -15,16 +18,21 @@ from artifact_ledger import (
 from phase_io_contracts import LaunchSpec, resolve_phase_io_contract
 import plamen_driver as D
 import plamen_mechanical as M
+import security_obligation_authority as SO
 import security_obligation_lifecycle as L
+import security_obligation_phaseio_authority as C
 from test_security_obligation_lifecycle_p1_c import (
     RUN_ID,
     _apply_successor,
-    _setup,
+    _setup as _semantic_setup,
     _write_mandatory_chain,
 )
 
 
-def _config(root: Path) -> dict[str, str]:
+def _config(root: Path) -> dict[str, Any]:
+    checkpoint = json.loads(
+        (root / "_v2_checkpoint.json").read_text(encoding="utf-8")
+    )
     return {
         "pipeline": "sc",
         "mode": "thorough",
@@ -33,7 +41,32 @@ def _config(root: Path) -> dict[str, str]:
         "project_root": str(root.parent),
         "scratchpad": str(root),
         "_run_id": RUN_ID,
+        "_audit_snapshot": checkpoint["audit_snapshot"],
     }
+
+
+def _setup(tmp_path: Path, *, count: int = 2) -> tuple[Path, list[str]]:
+    """Promote the semantic fixture source through its genuine DRIVER row."""
+
+    root, aliases = _semantic_setup(tmp_path, count=count)
+    source_names = (
+        SO.FEATURE_FACT_FILE,
+        SO.AUTHORITY_FILE,
+        SO.PROJECTION_FILE,
+    )
+    expected = {name: (root / name).read_bytes() for name in source_names}
+    for name in source_names:
+        (root / name).unlink()
+    config = _config(root)
+    issues = D._record_security_obligation_phase_io(
+        root, config, stage=SO.POST_DEPTH_STAGE
+    )
+    assert not any("transaction failed" in issue for issue in issues), issues
+    assert D._validate_security_obligation_phase_io(
+        root, config, stage=SO.POST_DEPTH_STAGE
+    ) == []
+    assert {name: (root / name).read_bytes() for name in source_names} == expected
+    return root, aliases
 
 
 def test_final_lifecycle_contract_is_exact_driver_owned() -> None:
@@ -118,6 +151,7 @@ def test_resume_validation_is_side_effect_free_and_detects_verifier_tamper(
 
 def test_lifecycle_input_drift_directionally_invalidates_report_model(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     root, aliases = _setup(tmp_path, count=1)
     items = _write_mandatory_chain(root, aliases, verdict="CONFIRMED")
@@ -126,14 +160,25 @@ def test_lifecycle_input_drift_directionally_invalidates_report_model(
     config["_security_obligation_lifecycle_consumer_state"] = {
         "report_index": True
     }
-    for name in (
-        "report_index_coverage_seed.md",
-        "candidate_semantic_facets.md",
-        "candidate_semantic_facets.json",
-    ):
-        path = root / name
-        if not path.exists():
-            path.write_text("{}\n" if path.suffix == ".json" else "# seed\n", encoding="utf-8")
+    # R10's complete producer/replay semantics have their own focused suite.
+    # This lifecycle fixture declares the empty conditional R10 universe, but
+    # still crosses the production prework transaction so model binding is
+    # backed by one current committed producer and the ephemeral consumer-ready
+    # authority that every SC report consumer now requires.
+    monkeypatch.setattr(
+        D, "_r10_report_prework_input_paths", lambda *_args, **_kwargs: ()
+    )
+    monkeypatch.setattr(
+        D, "_r10_report_prework_authority_issues", lambda *_args, **_kwargs: []
+    )
+    for name in ("finding_mapping.md", "dedup_decisions.md"):
+        (root / name).write_text(f"# {name}\n", encoding="utf-8")
+    prework_ready, prework_issues = D._run_report_index_prework_transaction(
+        root, config
+    )
+    assert prework_ready is True
+    assert prework_issues == []
+    assert D._r10_report_consumer_ready_issues(root, config) == []
     phase = next(row for row in D.SC_PHASES if row.name == "report_index")
     report_contract, report_launch = D._typed_model_phase_contract_and_launch(
         phase, root, config
@@ -183,7 +228,7 @@ def test_final_boundary_precedes_report_prework_and_model_binding() -> None:
         "_record_security_obligation_lifecycle_phase_io("
     )
     prework_at = source.index(
-        "_record_report_index_prework_artifacts(", lifecycle_at
+        "_run_report_index_prework_transaction(", lifecycle_at
     )
     report_boundary_at = source.rfind(
         'if phase.name == "report_index":', 0, lifecycle_at
@@ -202,12 +247,23 @@ def test_crash_bound_inputs_then_new_child_denominator_resume_converges(
     root, aliases = _setup(tmp_path, count=1)
     _write_mandatory_chain(root, aliases, verdict="CONFIRMED")
     config = _config(root)
-    before = L.security_obligation_lifecycle_input_artifacts(root)
+    context = C.build_run_context_from_config(config, run_id=RUN_ID)
+    before = L.security_obligation_lifecycle_input_artifacts(
+        root, run_context_authority=context
+    )
     old_contract, old_launch = D._security_obligation_lifecycle_contract_and_launch(
-        root, config, exact_inputs=before
+        root, config, exact_inputs=before, run_context=context
+    )
+    old_extension = C.build_phaseio_context_extension(
+        context, old_contract, old_launch, run_id=RUN_ID
     )
     old_unit = record_work_unit_inputs(
-        root, root.parent, old_contract, old_launch, run_id=RUN_ID
+        root,
+        root.parent,
+        old_contract,
+        old_launch,
+        run_id=RUN_ID,
+        preexecution_authority=old_extension,
     )
     bundle_root = root / "negative_closure_provider_bundles"
     bundle_root.mkdir()
@@ -230,18 +286,30 @@ def test_crash_after_output_before_artifact_commit_resumes_idempotently(
     root, aliases = _setup(tmp_path, count=1)
     _write_mandatory_chain(root, aliases, verdict="CONFIRMED")
     config = _config(root)
+    context = C.build_run_context_from_config(config, run_id=RUN_ID)
     contract, launch = D._security_obligation_lifecycle_contract_and_launch(
-        root, config
+        root, config, run_context=context
+    )
+    extension = C.build_phaseio_context_extension(
+        context, contract, launch, run_id=RUN_ID
     )
     unit = record_work_unit_inputs(
-        root, root.parent, contract, launch, run_id=RUN_ID
+        root,
+        root.parent,
+        contract,
+        launch,
+        run_id=RUN_ID,
+        preexecution_authority=extension,
     )
     expected = {
         identity.split(":", 1)[1]: row["sha256"]
         for identity, row in unit["input_bindings"].items()
     }
     L.write_security_obligation_lifecycle(
-        root, expected_input_sha256=expected
+        root,
+        expected_input_sha256=expected,
+        expected_run_id=RUN_ID,
+        run_context_authority=context,
     )
 
     assert D._record_security_obligation_lifecycle_phase_io(root, config) == []
@@ -288,21 +356,49 @@ def test_byte_mutation_between_bind_and_build_rebinds_before_commit(
     assert unit["input_rebind_history"]
 
 
+@pytest.mark.parametrize(
+    ("foreign_run_id", "expected_issue"),
+    (
+        ("different-run", "run context authority is invalid"),
+        (
+            "87654321-4321-4321-8321-cba987654321",
+            "run_id differs",
+        ),
+    ),
+)
 def test_driver_run_mismatch_never_records_active_lifecycle_outputs(
     tmp_path: Path,
+    foreign_run_id: str,
+    expected_issue: str,
 ) -> None:
     root, aliases = _setup(tmp_path, count=1)
     _write_mandatory_chain(root, aliases, verdict="CONFIRMED")
     config = _config(root)
-    config["_run_id"] = "different-run"
+    context = C.build_run_context_from_config(config, run_id=RUN_ID)
+    contract, _ = D._security_obligation_lifecycle_contract_and_launch(
+        root, config, run_context=context
+    )
+    source_names = (
+        SO.FEATURE_FACT_FILE,
+        SO.AUTHORITY_FILE,
+        SO.PROJECTION_FILE,
+    )
+    retained_source = {
+        name: (root / name).read_bytes() for name in source_names
+    }
+    retained_ledger = (root / "_artifact_state.json").read_bytes()
+    config["_run_id"] = foreign_run_id
 
     issues = D._record_security_obligation_lifecycle_phase_io(root, config)
 
-    assert any("run_id differs" in issue for issue in issues)
-    contract, _ = D._security_obligation_lifecycle_contract_and_launch(root, config)
+    assert any(expected_issue in issue for issue in issues)
     unit = read_artifact_ledger(root).get("work_units", {}).get(contract.key)
     assert not isinstance(unit, dict) or unit.get("semantic_status") != "ACTIVE"
     assert D._validate_security_obligation_lifecycle_phase_io(root, config)
+    assert {
+        name: (root / name).read_bytes() for name in source_names
+    } == retained_source
+    assert (root / "_artifact_state.json").read_bytes() == retained_ledger
 
 
 def _write_delivered_body(root: Path, *, finding_id: str, report_id: str = "M-01") -> None:
@@ -330,7 +426,7 @@ def _write_delivered_body(root: Path, *, finding_id: str, report_id: str = "M-01
     )
 
 
-def test_appendix_replays_json_when_markdown_cache_deleted_or_tampered(
+def test_appendix_rejects_deleted_or_tampered_committed_projection(
     tmp_path: Path,
 ) -> None:
     root, aliases = _setup(tmp_path, count=1)
@@ -344,8 +440,9 @@ def test_appendix_replays_json_when_markdown_cache_deleted_or_tampered(
     tampered = M._build_human_review_appendix(root)
 
     for appendix in (deleted, tampered):
-        assert "coverage-ref-" in appendix
-        assert "STALE_OR_MISSING" in appendix
+        assert "authoritative lifecycle/PhaseIO replay failed" in appendix
+        assert "UNKNOWN" in appendix
+        assert "coverage-ref-" not in appendix
         assert "SOT-" not in appendix
 
 

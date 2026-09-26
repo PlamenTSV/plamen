@@ -24,6 +24,7 @@ from types import SimpleNamespace
 import pytest
 
 from artifact_ledger import (
+    ArtifactLedgerError,
     read_artifact_ledger,
     record_work_unit_artifacts,
     record_work_unit_inputs,
@@ -38,6 +39,7 @@ import plamen_driver as D
 import plamen_mechanical as M
 from plamen_types import L1_PHASES, SC_PHASES
 import plamen_validators as V
+from report_r10_startup import restore_r10_then_refresh_report_routing
 
 
 def _report_index_bytes(
@@ -134,11 +136,28 @@ def _config(tmp_path: Path, *, pipeline: str = "sc") -> dict:
     }
 
 
-def _seed_model_inputs(config: dict) -> None:
+def _seed_model_inputs(
+    config: dict,
+    *,
+    mapping_rows: tuple[tuple[str, str], ...] = (),
+) -> None:
     root = Path(config["scratchpad"])
+    mapping_payload = b"# Finding Mapping\n"
+    if mapping_rows:
+        mapping_lines = [
+            "# Finding Mapping",
+            "",
+            "| Finding ID | Hypothesis ID | Mapping Status |",
+            "|------------|---------------|----------------|",
+        ]
+        mapping_lines.extend(
+            f"| {source_id} | {hypothesis_id} | PRIMARY |"
+            for source_id, hypothesis_id in mapping_rows
+        )
+        mapping_payload = ("\n".join(mapping_lines) + "\n").encode("utf-8")
     payloads = {
         "verification_queue.md": b"# Verification Queue\n",
-        "finding_mapping.md": b"# Finding Mapping\n",
+        "finding_mapping.md": mapping_payload,
         "dedup_decisions.md": b"# Dedup Decisions\n",
     }
     if config["pipeline"] == "l1":
@@ -241,6 +260,103 @@ def _prepare_model_attempt(config: dict, raw: bytes) -> None:
             '{"active":[],"excluded":[]}\n',
             encoding="utf-8",
         )
+
+
+def _physical_file_state(root: Path) -> dict[str, tuple[bytes, int, int]]:
+    return {
+        path.relative_to(root).as_posix(): (
+            path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns,
+        )
+        for path in root.rglob("*") if path.is_file()
+    }
+
+
+def _committed_sc_routing_fixture(tmp_path: Path) -> tuple[dict, Path]:
+    config = _config(tmp_path)
+    root = Path(config["scratchpad"])
+    _prepare_model_attempt(
+        config, _report_index_bytes(medium_summary=1, medium_master=2),
+    )
+    assert D._run_report_index_canonicalization_transaction(
+        _phase(), root, config,
+    ) == []
+    manifests, issues = D._run_report_index_routing_transaction(root, config)
+    assert issues == []
+    assert manifests
+    return config, root
+
+
+def _fresh_public_config(config: dict, root: Path) -> dict:
+    fresh = json.loads(D.canonical_semantic_config_bytes(config))
+    fresh["scratchpad"] = str(root)
+    fresh["_run_id"] = config["_run_id"]
+    assert D._R10_REPORT_CONSUMER_READY_KEY not in fresh
+    return fresh
+
+
+def test_startup_restores_committed_r10_before_real_routing_replay(
+    tmp_path: Path,
+):
+    config, root = _committed_sc_routing_fixture(tmp_path)
+    fresh = _fresh_public_config(config, root)
+    before = _physical_file_state(root)
+    canonical_key = (
+        f"sc/{config['mode']}/{config['language']}/{config['cli_backend']}"
+        "/report_index/canonicalize"
+    )
+    stored_digest = read_artifact_ledger(root)["work_units"][
+        canonical_key
+    ]["contract_digest"]
+    calls = 0
+
+    def route(path: Path, current: dict):
+        nonlocal calls
+        calls += 1
+        assert D._r10_report_consumer_ready_issues(path, current) == []
+        reconstructed, _launch = (
+            D._report_index_canonical_contract_and_launch(path, current)
+        )
+        assert reconstructed.digest == stored_digest
+        assert {
+            "scratchpad:candidate_semantic_facets.md",
+            "scratchpad:candidate_semantic_facets.json",
+        } <= set(reconstructed.immutable_inputs)
+        return D._run_report_index_routing_transaction(path, current)
+
+    assert restore_r10_then_refresh_report_routing(
+        root, fresh,
+        establish_ready=D._establish_r10_report_consumer_ready,
+        refresh_routing=route,
+    ) == []
+    assert calls == 1
+    assert D._r10_report_consumer_ready_issues(root, fresh) == []
+    assert _physical_file_state(root) == before
+
+
+def test_startup_r10_replay_refuses_tampered_prework_before_routing(
+    tmp_path: Path,
+):
+    config, root = _committed_sc_routing_fixture(tmp_path)
+    fresh = _fresh_public_config(config, root)
+    source = root / "external_assumption_undemotion_compute.json"
+    source.write_bytes(source.read_bytes() + b"\ntampered after commit\n")
+    before = _physical_file_state(root)
+    calls = 0
+
+    def route(path: Path, current: dict):
+        nonlocal calls
+        calls += 1
+        return D._run_report_index_routing_transaction(path, current)
+
+    issues = restore_r10_then_refresh_report_routing(
+        root, fresh,
+        establish_ready=D._establish_r10_report_consumer_ready,
+        refresh_routing=route,
+    )
+    assert issues
+    assert calls == 0
+    assert D._R10_REPORT_CONSUMER_READY_KEY not in fresh
+    assert _physical_file_state(root) == before
 
 
 def _disable_unrelated_report_index_checks(
@@ -820,9 +936,27 @@ def test_model_retry_from_canonical_generation_fails_closed(
     if invalidate != "skipped_generation":
         config["_phase_io_model_attempts"]["report_index"] = 2
 
+    def physical_state():
+        return {
+            path.relative_to(root).as_posix(): (
+                path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns
+            )
+            for path in root.rglob("*") if path.is_file()
+        }
+
+    before = physical_state()
     issues = D._bind_typed_model_phase_inputs(phase, root, config)
 
     assert issues
+    if invalidate == "input_drift":
+        # R10 rejects the changed denominator before a retry contract can be
+        # constructed.  No retry unit may be recorded or prior lineage altered.
+        expected = "scratchpad:verification_queue.md: R10 PhaseIO input bytes changed"
+        assert any(expected in issue for issue in issues)
+        with pytest.raises(ArtifactLedgerError, match=expected):
+            D._typed_model_phase_contract_and_launch(phase, root, config)
+        assert physical_state() == before
+        return
     retry, _launch = D._typed_model_phase_contract_and_launch(
         phase, root, config
     )
@@ -846,23 +980,32 @@ def test_canonical_retry_rederives_optional_dropout_generation(
     config = _config(tmp_path)
     root = Path(config["scratchpad"])
     phase = _phase()
-    _seed_model_inputs(config)
-    (root / "report_index_coverage_seed.md").write_text(
-        "\n".join([
-            "# Coverage Seed",
-            "",
-            "| Finding/Hyp ID | Expected Severity |",
-            "|----------------|-------------------|",
-            "| H-99 | Medium |",
-            "",
-        ]),
-        encoding="utf-8",
+    # H-99 is a bounded mapped pre-verification lead, not an active queue
+    # finding. Report prework must derive and own its retention source; this
+    # optional-output test does not substitute mapping for verifier authority.
+    _seed_model_inputs(
+        config,
+        mapping_rows=(("INV-99", "H-99"),),
     )
+    coverage_seed = root / "report_index_coverage_seed.md"
+    coverage_seed_bytes = coverage_seed.read_bytes()
+    coverage_seed_stat = coverage_seed.stat()
+    coverage_text = coverage_seed_bytes.decode("utf-8", errors="strict")
+    assert "| INV-99 |" in coverage_text
+    assert "| H-99 |" in coverage_text
+    seed_binding = read_artifact_ledger(root)["artifact_bindings"][
+        "scratchpad:report_index_coverage_seed.md"
+    ]
+    assert seed_binding["owner_key"].endswith("/report_index/prework")
     assert D._bind_typed_model_phase_inputs(phase, root, config) == []
     (root / "report_index.md").write_bytes(
-        _report_index_bytes(medium_summary=1, medium_master=1)
+        _report_index_bytes(medium_summary=1, medium_master=1).replace(
+            b"| H-1 |", b"| INV-99 |"
+        )
     )
-    (root / "report_coverage.md").write_bytes(_coverage_bytes())
+    (root / "report_coverage.md").write_bytes(
+        _coverage_bytes().replace(b"H-1", b"INV-99")
+    )
     assert D._run_report_index_canonicalization_transaction(
         phase, root, config
     ) == []
@@ -873,14 +1016,32 @@ def test_canonical_retry_rederives_optional_dropout_generation(
     )
     assert first_dropout["row_count"] == 1
     assert first_dropout["rows"][0]["candidate_id"] == "H-99"
+    assert first_dropout["rows"][0]["retention_target"] == "HUMAN_REVIEW"
+    assert first_dropout["rows"][0]["source_artifact"] == (
+        "report_index_coverage_seed.md"
+    )
+    assert first_dropout["rows"][0]["source_sha256"] == hashlib.sha256(
+        coverage_seed_bytes
+    ).hexdigest()
+    assert coverage_seed.read_bytes() == coverage_seed_bytes
+    assert (coverage_seed.stat().st_ino, coverage_seed.stat().st_mtime_ns) == (
+        coverage_seed_stat.st_ino,
+        coverage_seed_stat.st_mtime_ns,
+    )
 
     config["_phase_io_model_attempts"]["report_index"] = 2
     assert D._bind_typed_model_phase_inputs(phase, root, config) == []
     second_raw = _report_index_bytes(
-        medium_summary=1, medium_master=1
-    ).replace(b"| H-1 |", b"| H-99 |")
+        medium_summary=2, medium_master=2
+    ).replace(
+        b"| H-1 |", b"| INV-99 |"
+    ).replace(
+        b"| H-2 |", b"| H-99 |"
+    )
     (root / "report_index.md").write_bytes(second_raw)
-    (root / "report_coverage.md").write_bytes(_coverage_bytes())
+    (root / "report_coverage.md").write_bytes(
+        _coverage_bytes().replace(b"H-1", b"INV-99")
+    )
     _model, model_issues = D._record_report_index_model_preimage(
         phase, root, config
     )
@@ -896,6 +1057,11 @@ def test_canonical_retry_rederives_optional_dropout_generation(
     )
     assert second_dropout["row_count"] == 0
     assert second_dropout["rows"] == []
+    assert coverage_seed.read_bytes() == coverage_seed_bytes
+    assert (coverage_seed.stat().st_ino, coverage_seed.stat().st_mtime_ns) == (
+        coverage_seed_stat.st_ino,
+        coverage_seed_stat.st_mtime_ns,
+    )
     assert "No omitted candidate" in (
         root / "report_semantic_report_dropouts.md"
     ).read_text(encoding="utf-8")

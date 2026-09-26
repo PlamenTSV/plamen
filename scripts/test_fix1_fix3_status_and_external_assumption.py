@@ -534,15 +534,18 @@ def test_ext_assumption_predicate_helpers(tmp_path):
 # R1 consumer closure -- unbound identity cannot become negative authority
 # ===========================================================================
 
-def test_unbound_depth_identity_bypasses_low_score_drop_into_typed_debt(tmp_path):
+def test_unbound_depth_identity_is_promoted_and_retains_typed_debt(tmp_path):
     V = _v()
     sp = _scratch(tmp_path)
     _unbound_depth_consensus_fixture(sp, source_ids="")
     inventory = sp / "findings_inventory.md"
     before = inventory.read_bytes()
 
-    assert V._promote_depth_findings_to_inventory(sp) == []
-    assert inventory.read_bytes() == before  # no invented INV identity
+    assert V._promote_depth_findings_to_inventory(sp) == ["DST-1"]
+    assert inventory.read_bytes() != before
+    assert "depth_state_trace_findings.md:DST-1@sha256:" in inventory.read_text(
+        encoding="utf-8"
+    )
     debt_path = sp / "depth_identity_preservation_debt.json"
     payload = json.loads(debt_path.read_text(encoding="utf-8"))
     assert payload["authority"] == "NONE_HUMAN_REVIEW_ONLY"
@@ -556,11 +559,32 @@ def test_unbound_depth_identity_bypasses_low_score_drop_into_typed_debt(tmp_path
     assert row["negative_or_drop_authority"] is False
     assert V._validate_depth_promotion_receipt(sp) == []
     first_debt = debt_path.read_bytes()
+    first_debt_stat = debt_path.stat()
     assert V._promote_depth_findings_to_inventory(sp) == []
     assert debt_path.read_bytes() == first_debt
+    second_debt_stat = debt_path.stat()
+    assert (
+        second_debt_stat.st_dev,
+        second_debt_stat.st_ino,
+        second_debt_stat.st_mtime_ns,
+    ) == (
+        first_debt_stat.st_dev,
+        first_debt_stat.st_ino,
+        first_debt_stat.st_mtime_ns,
+    )
 
 
-def test_tampered_identity_preservation_debt_fails_closed(tmp_path):
+def test_missing_identity_cache_cannot_halt_current_source_derivation(tmp_path):
+    V = _v()
+    sp = _scratch(tmp_path)
+    _unbound_depth_consensus_fixture(sp, source_ids="")
+    assert V._promote_depth_findings_to_inventory(sp) == ["DST-1"]
+    (sp / "depth_identity_preservation_debt.json").unlink()
+
+    assert V._validate_depth_promotion_receipt(sp) == []
+
+
+def test_tampered_identity_preservation_cache_has_no_semantic_authority(tmp_path):
     V = _v()
     sp = _scratch(tmp_path)
     _unbound_depth_consensus_fixture(sp, source_ids="")
@@ -570,27 +594,26 @@ def test_tampered_identity_preservation_debt_fails_closed(tmp_path):
     payload["rows"][0]["proof_authority"] = "FULL"
     debt_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    issues = V._validate_depth_promotion_receipt(sp)
-    assert issues
-    assert "identity preservation" in " ".join(issues).lower()
+    # The forged cache cannot grant proof or alter the preservation set;
+    # current source authority is re-derived at the consumer boundary.
+    assert V._validate_depth_promotion_receipt(sp) == []
 
 
-def test_stale_confidence_identity_authority_fails_closed(tmp_path):
+def test_stale_identity_cache_rederives_current_conservative_authority(tmp_path):
     V = _v()
     sp = _scratch(tmp_path)
     source = _unbound_depth_consensus_fixture(sp, source_ids="")
     inventory = sp / "findings_inventory.md"
-    before = inventory.read_bytes()
     V._promote_depth_findings_to_inventory(sp)
+    promoted = inventory.read_bytes()
     source.write_text(source.read_text(encoding="utf-8") + "\nlate mutation\n", encoding="utf-8")
 
     issues = V._validate_depth_promotion_receipt(sp)
-    assert issues
-    assert inventory.read_bytes() == before
-    assert "identity preservation" in " ".join(issues).lower()
+    assert issues == []
+    assert inventory.read_bytes() == promoted
 
 
-def test_exact_bound_low_score_keeps_existing_numeric_threshold_behavior(tmp_path):
+def test_exact_bound_low_score_is_telemetry_not_admission_control(tmp_path):
     V = _v()
     sp = _scratch(tmp_path)
     _unbound_depth_consensus_fixture(
@@ -606,8 +629,8 @@ def test_exact_bound_low_score_keeps_existing_numeric_threshold_behavior(tmp_pat
     inventory = sp / "findings_inventory.md"
     before = inventory.read_bytes()
 
-    assert V._promote_depth_findings_to_inventory(sp) == []
-    assert inventory.read_bytes() == before
+    assert V._promote_depth_findings_to_inventory(sp) == ["DST-1"]
+    assert inventory.read_bytes() != before
     assert V._validate_depth_promotion_receipt(sp) == []
     debt = sp / "depth_identity_preservation_debt.json"
     if debt.exists():
@@ -638,7 +661,7 @@ def test_exact_current_anchor_high_score_keeps_positive_promotion_behavior(tmp_p
     assert V._validate_depth_promotion_receipt(sp) == []
 
 
-def test_nonexistent_exact_anchor_is_unbound_even_at_high_score(tmp_path):
+def test_nonexistent_exact_anchor_is_promoted_and_retained_as_debt(tmp_path):
     V = _v()
     sp = _scratch(tmp_path)
     _unbound_depth_consensus_fixture(
@@ -647,8 +670,8 @@ def test_nonexistent_exact_anchor_is_unbound_even_at_high_score(tmp_path):
     inventory = sp / "findings_inventory.md"
     before = inventory.read_bytes()
 
-    assert V._promote_depth_findings_to_inventory(sp) == []
-    assert inventory.read_bytes() == before
+    assert V._promote_depth_findings_to_inventory(sp) == ["DST-1"]
+    assert inventory.read_bytes() != before
     debt = json.loads(
         (sp / "depth_identity_preservation_debt.json").read_text("utf-8")
     )
@@ -661,7 +684,7 @@ def test_nonexistent_exact_anchor_is_unbound_even_at_high_score(tmp_path):
     assert V._validate_depth_promotion_receipt(sp) == []
 
 
-def test_stale_exact_anchor_becomes_unbound_preservation_debt(tmp_path):
+def test_stale_exact_anchor_is_promoted_with_preservation_debt(tmp_path):
     V = _v()
     sp = _scratch(tmp_path)
     inventory_text = (
@@ -682,15 +705,15 @@ def test_stale_exact_anchor_becomes_unbound_preservation_debt(tmp_path):
     )
     before = (sp / "findings_inventory.md").read_bytes()
 
-    assert V._promote_depth_findings_to_inventory(sp) == []
-    assert (sp / "findings_inventory.md").read_bytes() == before
+    assert V._promote_depth_findings_to_inventory(sp) == ["DST-1"]
+    assert (sp / "findings_inventory.md").read_bytes() != before
     debt = json.loads(
         (sp / "depth_identity_preservation_debt.json").read_text("utf-8")
     )
     assert debt["rows"][0]["identity_status"] == "UNRESOLVED_CANONICAL_ANCHOR"
 
 
-def test_duplicate_exact_anchor_is_ambiguous_preservation_debt(tmp_path):
+def test_duplicate_exact_anchor_is_promoted_with_ambiguous_preservation_debt(tmp_path):
     V = _v()
     sp = _scratch(tmp_path)
     duplicate_inventory = (
@@ -706,8 +729,8 @@ def test_duplicate_exact_anchor_is_ambiguous_preservation_debt(tmp_path):
     )
     before = (sp / "findings_inventory.md").read_bytes()
 
-    assert V._promote_depth_findings_to_inventory(sp) == []
-    assert (sp / "findings_inventory.md").read_bytes() == before
+    assert V._promote_depth_findings_to_inventory(sp) == ["DST-1"]
+    assert (sp / "findings_inventory.md").read_bytes() != before
     debt = json.loads(
         (sp / "depth_identity_preservation_debt.json").read_text("utf-8")
     )

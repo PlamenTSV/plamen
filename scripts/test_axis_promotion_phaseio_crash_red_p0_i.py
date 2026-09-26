@@ -11,7 +11,7 @@ from contextlib import nullcontext
 import json
 from pathlib import Path
 import sys
-from typing import Any, Mapping
+from typing import Any
 
 import pytest
 
@@ -21,6 +21,9 @@ from artifact_ledger import (
     read_artifact_ledger,
     validate_work_unit_artifacts,
     validate_work_unit_inputs,
+)
+from test_axis_driver_transaction_red_p0_i import (
+    _commit_canonical_predecessor,
 )
 from test_axis_repair_promotion_fault_red_p0_i import (
     _axis_phase,
@@ -39,27 +42,20 @@ def test_append_before_receipt_replay_preserves_original_phaseio_preimage(
     scratchpad, config, worklist, application, _findings = (
         _complete_base_application(tmp_path)
     )
-    original_atomic_json = DRIVER._atomic_driver_json
-    crash_once = True
-
-    def crash_after_append(path: Path, value: Mapping[str, Any]) -> None:
-        nonlocal crash_once
-        if (
-            Path(path).name == "axis_coverage_promotion_receipt.json"
-            and crash_once
-        ):
-            crash_once = False
-            raise RuntimeError("fixture crash after inventory append")
-        original_atomic_json(path, value)
-
-    monkeypatch.setattr(DRIVER, "_atomic_driver_json", crash_after_append)
-    with pytest.raises(RuntimeError, match="after inventory append"):
+    _commit_canonical_predecessor(
+        Path(config["project_root"]),
+        scratchpad,
+        backend=str(config["cli_backend"]),
+    )
+    config["_axis_promotion_failpoint"] = "after_findings_inventory.md"
+    with pytest.raises(RuntimeError, match="axis promotion injected failpoint"):
         DRIVER._promote_axis_disposition_actions(
             phase=_axis_phase(),
             config=config,
             scratchpad=scratchpad,
             application_receipt=application,
         )
+    config.pop("_axis_promotion_failpoint")
 
     action_id = worklist["items"][0]["required_action_id"]
     inventory = scratchpad / "findings_inventory.md"
@@ -82,7 +78,6 @@ def test_append_before_receipt_replay_preserves_original_phaseio_preimage(
     pending = read_artifact_ledger(scratchpad)["work_units"][contract.key]
     assert pending["execution_state"] == "INPUTS_BOUND_PREEXECUTION"
 
-    monkeypatch.setattr(DRIVER, "_atomic_driver_json", original_atomic_json)
     promotion, issues = DRIVER._promote_axis_disposition_actions(
         phase=_axis_phase(),
         config=config,
@@ -111,6 +106,16 @@ def test_append_before_receipt_replay_preserves_original_phaseio_preimage(
     ) == []
 
 
+def _replace_canonical_inventory(scratchpad: Path, text: str) -> Path:
+    canonical = DRIVER._axis_coupled_canonical_postimages(
+        inventory_raw=text.encode("utf-8"),
+        ledger_raw=(scratchpad / "_id_ledger.json").read_bytes(),
+    )
+    for name, raw in canonical.items():
+        (scratchpad / name).write_bytes(raw)
+    return scratchpad / "findings_inventory.md"
+
+
 def test_inert_markdown_axisgap_text_cannot_suppress_canonical_delivery(
     tmp_path: Path,
 ) -> None:
@@ -118,14 +123,18 @@ def test_inert_markdown_axisgap_text_cannot_suppress_canonical_delivery(
         _complete_base_application(tmp_path)
     )
     action_id = worklist["items"][0]["required_action_id"]
-    inventory = scratchpad / "findings_inventory.md"
-    inventory.write_text(
+    inventory = _replace_canonical_inventory(
+        scratchpad,
         "# Findings Inventory\n\n"
         "Documentation example (not an inventory finding):\n\n"
         "```text\n"
         f"Source IDs: AXISGAP:{action_id}\n"
         "```\n",
-        encoding="utf-8",
+    )
+    _commit_canonical_predecessor(
+        Path(config["project_root"]),
+        scratchpad,
+        backend=str(config["cli_backend"]),
     )
 
     promotion, issues = DRIVER._promote_axis_disposition_actions(
@@ -155,14 +164,18 @@ def test_duplicate_exact_claims_do_not_trigger_a_third_inventory_append(
     )
     assert len(actions) == 1
     action_id = worklist["items"][0]["required_action_id"]
-    inventory = scratchpad / "findings_inventory.md"
-    inventory.write_text(
+    inventory = _replace_canonical_inventory(
+        scratchpad,
         "# Findings Inventory\n\n"
         + AXIS.render_axis_inventory_block(actions[0], "INV-001")
         + "\n\n"
         + AXIS.render_axis_inventory_block(actions[0], "INV-002")
         + "\n",
-        encoding="utf-8",
+    )
+    _commit_canonical_predecessor(
+        Path(config["project_root"]),
+        scratchpad,
+        backend=str(config["cli_backend"]),
     )
     promotion, _issues = DRIVER._promote_axis_disposition_actions(
         phase=_axis_phase(),

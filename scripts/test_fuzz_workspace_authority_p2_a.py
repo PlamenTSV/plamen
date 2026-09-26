@@ -13,6 +13,20 @@ import pytest
 import fuzz_workspace_authority as fwa
 
 
+_EXECUTION_CAPABILITY = fwa.fuzz_execution_capability()
+_REQUIRES_FUZZ_EXECUTION_CONTAINMENT = pytest.mark.skipif(
+    _EXECUTION_CAPABILITY["status"] != "READY",
+    reason=(
+        "host has no proof-grade fuzz execution boundary: "
+        + ",".join(
+            str(row.get("code") or "UNKNOWN")
+            for row in _EXECUTION_CAPABILITY.get("issues", [])
+            if isinstance(row, dict)
+        )
+    ),
+)
+
+
 def _project(tmp_path: Path) -> Path:
     root = tmp_path / "project"
     (root / "src").mkdir(parents=True)
@@ -52,8 +66,83 @@ def _materialize(tmp_path: Path, **kwargs: object) -> dict[str, object]:
     )
 
 
+def _materialize_medusa(tmp_path: Path) -> dict[str, object]:
+    root = _project(tmp_path)
+    scratchpad = root / ".scratchpad"
+    scratchpad.mkdir()
+    return fwa.materialize_fuzz_workspace(
+        scratchpad=scratchpad,
+        build_root=root,
+        project_root=root,
+        job_id="medusa-fuzz",
+        language="evm",
+        role="medusa_fuzz",
+        run_id="RUN-MEDUSA",
+        source_snapshot_digest="d" * 64,
+        allowed_tools=(Path(sys.executable).name,),
+    )
+
+
 def _load(path: str | Path) -> dict[str, object]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def test_execution_capability_is_digest_bound_and_never_exposes_host_paths() -> None:
+    capability = fwa.fuzz_execution_capability()
+    assert capability["schema_version"] == fwa.EXECUTION_CAPABILITY_SCHEMA
+    assert capability["status"] in {"READY", "UNSCORED"}
+    assert capability["payload_digest"] == fwa.payload_digest(capability)
+    assert set(capability) == {
+        "schema_version", "status", "platform", "process_tree_policy",
+        "write_confinement_policy", "issues", "payload_digest",
+    }
+    rendered = json.dumps(capability, sort_keys=True)
+    assert str(Path.home()) not in rendered
+    if capability["status"] == "UNSCORED":
+        assert {
+            str(row["code"])
+            for row in capability["issues"]
+            if isinstance(row, dict)
+        } >= {"PROCESS_CONTAINMENT_UNAVAILABLE"}
+
+
+def test_runner_rejects_uncontained_host_before_any_process_or_command_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt = _materialize(tmp_path)
+    monkeypatch.setattr(
+        fwa,
+        "process_tree_termination_capability",
+        lambda: {
+            "platform": "MACOS",
+            "strategy": "PROCESS_GROUP_DIAGNOSTIC_ONLY",
+            "write_confinement": "UNAVAILABLE",
+            "exhaustive_descendant_termination_authority": False,
+            "exhaustive_write_confinement_authority": False,
+            "limitation": "FIXTURE_NO_RECURSIVE_DESCENDANT_AUTHORITY",
+        },
+    )
+
+    def forbidden_launch(*args: object, **kwargs: object) -> object:
+        raise AssertionError("uncontained host reached process creation")
+
+    monkeypatch.setattr(fwa, "_popen_contained", forbidden_launch)
+    assert fwa.run_recorded_command(
+        Path(str(receipt["authority_path"])),
+        [sys.executable, "-c", "print('must-not-run')"],
+        30,
+    ) == 125
+    command_root = Path(str(receipt["runtime_root"])) / "commands"
+    assert list(command_root.iterdir()) == []
+    debt = _load(str(receipt["debt_path"]))
+    assert {str(row["code"]) for row in debt["issues"]} == {
+        "APPLE_FUZZ_CONTINUATION_LEASE_PRODUCER_ABSENT",
+        "APPLE_FUZZ_LIFECYCLE_TERMINAL_PRODUCER_ABSENT",
+        "APPLE_FUZZ_SECURE_RECEIPT_MINTER_ABSENT",
+        "APPLE_FUZZ_SERVICE_SESSION_PRODUCER_ABSENT",
+        "FILESYSTEM_CONTAINMENT_UNAVAILABLE",
+        "PROCESS_CONTAINMENT_UNAVAILABLE",
+    }
 
 
 def test_evm_workspace_binds_only_remapped_solidity_node_dependencies(
@@ -180,6 +269,8 @@ def test_driver_indexes_reconcile_exact_unscored_denominator_compare_only(
         output=output.name,
     )
     assert row["status"] == "READY"
+    assert row["model_repair_disposition"] == "NOT_REQUIRED"
+    assert row["proof_authority"] == "NONE"
 
     result = fwa.finalize_fuzz_workspace(Path(str(receipt["authority_path"])))
     assert result["status"] == "UNSCORED"
@@ -188,6 +279,10 @@ def test_driver_indexes_reconcile_exact_unscored_denominator_compare_only(
     )
     assert result_index["row_count"] == 1
     assert result_index["rows"][0]["status"] == "UNSCORED"
+    assert result_index["rows"][0]["model_repair_disposition"] == (
+        "ELIGIBLE_UNSCORED"
+    )
+    assert result_index["rows"][0]["proof_authority"] == "NONE"
     assert result_index["rows"][0]["output_sha256"] == hashlib.sha256(
         output.read_bytes()
     ).hexdigest()
@@ -207,6 +302,141 @@ def test_driver_indexes_reconcile_exact_unscored_denominator_compare_only(
     assert fwa.write_fuzz_workspace_result_index(
         scratchpad / fwa.WORKSPACE_INDEX_FILE
     ) == result_index
+
+
+def test_workspace_index_binds_execution_unavailable_debt_and_excludes_model_repair(
+    tmp_path: Path,
+) -> None:
+    receipt = _materialize(tmp_path)
+    scratchpad = Path(str(receipt["scratchpad_root"]))
+    output = scratchpad / "invariant_fuzz_results.md"
+    output.write_text(
+        "## Result Status: TOOL_UNAVAILABLE\n\n"
+        "Execution containment is unavailable on this host.\n",
+        encoding="utf-8",
+    )
+    authority_path = Path(str(receipt["authority_path"]))
+    debt = fwa.mark_fuzz_workspace_unscored(authority_path, [{
+        "code": "PROCESS_CONTAINMENT_UNAVAILABLE",
+        "detail": "Darwin recursive process supervisor is unavailable",
+    }])
+    jobs = [{
+        "agent_id": "invariant-fuzz",
+        "role": "invariant_fuzz",
+        "output": output.name,
+        "category": "fuzz",
+        "fuzz_workspace_status": "UNSCORED",
+        "fuzz_authority_path": str(authority_path),
+    }]
+    launch_index = fwa.write_fuzz_workspace_index(
+        scratchpad,
+        jobs,
+        run_id="RUN-1",
+        pipeline="sc",
+        mode="thorough",
+        ecosystem="evm",
+        backend="claude",
+    )
+    row = launch_index["rows"][0]
+    assert row["status"] == "UNAVAILABLE"
+    assert row["launch_debt"] == debt
+    assert row["launch_debt_digest"] == debt["payload_digest"]
+    assert row["model_repair_disposition"] == "EXCLUDED_UNAVAILABLE"
+    assert row["proof_authority"] == "NONE"
+
+    # Finalization extends the monotonic debt.  The immutable launch index
+    # continues to replay its exact embedded prelaunch snapshot.
+    result = fwa.finalize_fuzz_workspace(authority_path)
+    assert result["status"] == "UNSCORED"
+    assert result["command_count"] == 0
+    assert fwa.validate_fuzz_workspace_index(
+        scratchpad / fwa.WORKSPACE_INDEX_FILE
+    ) == []
+    result_index = fwa.write_fuzz_workspace_result_index(
+        scratchpad / fwa.WORKSPACE_INDEX_FILE
+    )
+    result_row = result_index["rows"][0]
+    assert result_row["status"] == "UNAVAILABLE"
+    assert result_row["model_repair_disposition"] == "EXCLUDED_UNAVAILABLE"
+    assert result_row["proof_authority"] == "NONE"
+    assert result_row["campaign_execution_status"] == "NOT_EXECUTED"
+
+
+def test_workspace_index_rejects_stale_or_tampered_launch_debt(
+    tmp_path: Path,
+) -> None:
+    receipt = _materialize(tmp_path)
+    scratchpad = Path(str(receipt["scratchpad_root"]))
+    authority_path = Path(str(receipt["authority_path"]))
+    debt = fwa.mark_fuzz_workspace_unscored(authority_path, [{
+        "code": "PROCESS_CONTAINMENT_UNAVAILABLE",
+        "detail": "fixture",
+    }])
+    stale = dict(debt)
+    stale["authority_digest"] = "f" * 64
+    stale["payload_digest"] = fwa.payload_digest(stale)
+    jobs = [{
+        "agent_id": "invariant-fuzz",
+        "role": "invariant_fuzz",
+        "output": "invariant_fuzz_results.md",
+        "category": "fuzz",
+        "fuzz_workspace_status": "UNSCORED",
+        "fuzz_authority_path": str(authority_path),
+        "fuzz_launch_debt": stale,
+    }]
+    index = fwa.write_fuzz_workspace_index(
+        scratchpad,
+        jobs,
+        run_id="RUN-1",
+        pipeline="sc",
+        mode="thorough",
+        ecosystem="evm",
+        backend="claude",
+    )
+    assert index["rows"][0]["status"] == "UNSCORED"
+    assert "DEBT_RECEIPT_INVALID" in index["rows"][0]["issue_codes"]
+    assert index["rows"][0]["model_repair_disposition"] == "ELIGIBLE_UNSCORED"
+
+    index_path = scratchpad / fwa.WORKSPACE_INDEX_FILE
+    tampered = _load(index_path)
+    tampered["rows"][0]["launch_debt"]["issues"][0]["detail"] = "forged"
+    index_path.write_text(json.dumps(tampered), encoding="utf-8")
+    assert fwa.validate_fuzz_workspace_index(index_path)
+
+
+def test_workspace_index_preserves_typed_deferred_without_proof_or_model_repair(
+    tmp_path: Path,
+) -> None:
+    receipt = _materialize(tmp_path)
+    scratchpad = Path(str(receipt["scratchpad_root"]))
+    authority_path = Path(str(receipt["authority_path"]))
+    fwa.mark_fuzz_workspace_unscored(authority_path, [{
+        "code": "FUZZ_CAMPAIGN_DEFERRED",
+        "detail": "governed execution capacity is scheduled for a later lane",
+    }])
+    index = fwa.write_fuzz_workspace_index(
+        scratchpad,
+        [{
+            "agent_id": "invariant-fuzz",
+            "role": "invariant_fuzz",
+            "output": "invariant_fuzz_results.md",
+            "category": "fuzz",
+            "fuzz_workspace_status": "DEFERRED",
+            "fuzz_authority_path": str(authority_path),
+        }],
+        run_id="RUN-1",
+        pipeline="sc",
+        mode="thorough",
+        ecosystem="evm",
+        backend="claude",
+    )
+    row = index["rows"][0]
+    assert row["status"] == "DEFERRED"
+    assert row["model_repair_disposition"] == "EXCLUDED_DEFERRED"
+    assert row["proof_authority"] == "NONE"
+    assert fwa.validate_fuzz_workspace_index(
+        scratchpad / fwa.WORKSPACE_INDEX_FILE
+    ) == []
 
 
 def test_workspace_index_tamper_is_never_reblessed(tmp_path: Path) -> None:
@@ -265,6 +495,121 @@ def test_unscored_fuzz_tag_retains_candidate_without_proof_authority(
     assert findings[0]["id"] == "MEDUSA-1"
     assert findings[0]["preferred_tag"] == "CODE-TRACE"
     assert findings[0]["fuzz_execution_status"] == "UNSCORED"
+    assert findings[0]["fuzz_original_tag"] == "MEDUSA-PASS"
+
+
+def test_medusa_finalizer_rejects_ignored_boolean_oracle_on_any_write_path(
+    tmp_path: Path,
+) -> None:
+    receipt = _materialize_medusa(tmp_path)
+    active = Path(str(receipt["active_root"]))
+    medusa = active / ".medusa-tests"
+    medusa.mkdir()
+    (medusa / "IgnoredOracle.sol").write_text(
+        "contract IgnoredOracle { function fuzz_feeBounded() public view "
+        "returns (bool) { return false; } }\n",
+        encoding="utf-8",
+    )
+    (medusa / "medusa.json").write_text(
+        '{"fuzzing":{"targetContracts":["IgnoredOracle"]}}\n',
+        encoding="utf-8",
+    )
+    manifest = {
+        "schema_version": "plamen.fuzz-harness-bundle.v2",
+        "role": "medusa_fuzz",
+        "files": [],
+        "campaign": {
+            "tool": "medusa",
+            "cwd_relative": ".",
+            "argv": [
+                "medusa", "fuzz", "--config", ".medusa-tests/medusa.json",
+                "--timeout", "600", "--test-limit", "50000",
+            ],
+            "assertion_ids": ["MEDUSA-INV-1::fuzz_feeBounded"],
+            "expected_cases": 50000,
+        },
+    }
+    manifest["payload_digest"] = fwa.payload_digest(manifest)
+    manifest_path = active / ".plamen-generated/plamen-fuzz-bundle.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = fwa.finalize_fuzz_workspace(
+        Path(str(receipt["authority_path"])), _persist=False
+    )
+
+    assert result["status"] == "UNSCORED"
+    assert "MEDUSA_PROPERTY_ORACLE_UNBOUND" in {
+        row["code"] for row in result["issues"]
+    }
+
+
+def test_authenticated_violation_upgrades_only_exact_candidate_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plamen_parsers as parsers
+
+    path = tmp_path / "invariant_fuzz_results.md"
+    path.write_text(
+        "### Finding [FUZZ-1]: writable flag overlaps the next key\n\n"
+        "**Severity**: High\n\n"
+        "**Location**: contracts/AccountEncoder.sol:44\n\n"
+        "**Description**: The decoder reads a full word for a one-byte flag, "
+        "so following key material can promote false to true.\n\n"
+        "**Assertion IDs**: INV-ACCOUNT-FLAG0; "
+        "invariant_INV_ACCOUNT_FLAG0()\n\n"
+        "**Evidence Tag**: [CODE-TRACE]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        parsers,
+        "_fuzz_execution_authority_for_artifact",
+        lambda _path: {
+            "status": "MEASURED",
+            "proof_authority": "EXECUTION_SCOPE_REQUIRES_CONSUMER",
+            "campaign_execution_status": "EXECUTED_VIOLATION",
+            "violation_observation_count": 1,
+            "violation_ids": ["invariant_INV_ACCOUNT_FLAG0()"],
+            "reason": "",
+        },
+    )
+    findings = parsers._parse_depth_finding_blocks(path)
+    assert len(findings) == 1
+    assert findings[0]["preferred_tag"] == "FUZZ-PASS"
+    assert findings[0]["fuzz_matched_violation_ids"] == [
+        "invariant_INV_ACCOUNT_FLAG0()"
+    ]
+
+
+def test_measured_clean_campaign_cannot_preserve_model_claimed_fuzz_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plamen_parsers as parsers
+
+    path = tmp_path / "medusa_fuzz_findings.md"
+    path.write_text(
+        "### Finding [MEDUSA-1]: unsupported pass claim\n\n"
+        "**Severity**: Medium\n\n"
+        "**Location**: contracts/Gateway.sol:90\n\n"
+        "**Description**: This source candidate has no mechanically observed "
+        "property violation in the completed campaign.\n\n"
+        "**Evidence Tag**: [MEDUSA-PASS]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        parsers,
+        "_fuzz_execution_authority_for_artifact",
+        lambda _path: {
+            "status": "MEASURED",
+            "proof_authority": "EXECUTION_SCOPE_REQUIRES_CONSUMER",
+            "campaign_execution_status": "EXECUTED_SUCCESS",
+            "violation_observation_count": 0,
+            "violation_ids": [],
+            "reason": "",
+        },
+    )
+    findings = parsers._parse_depth_finding_blocks(path)
+    assert len(findings) == 1
+    assert findings[0]["preferred_tag"] == "CODE-TRACE"
     assert findings[0]["fuzz_original_tag"] == "MEDUSA-PASS"
 
 
@@ -443,6 +788,7 @@ def test_source_toctou_fails_without_publishing_partial_workspace(
     assert "SOURCE_TOCTOU" in json.dumps(_load(str(receipt["debt_path"])))
 
 
+@_REQUIRES_FUZZ_EXECUTION_CONTAINMENT
 def test_recorded_runner_binds_tool_command_version_logs_and_result(
     tmp_path: Path,
 ) -> None:
@@ -548,6 +894,7 @@ def test_generated_lane_collision_never_overwrites_quarantined_user_test(
     )
 
 
+@_REQUIRES_FUZZ_EXECUTION_CONTAINMENT
 def test_cli_runner_is_cross_platform_and_does_not_use_a_shell(tmp_path: Path) -> None:
     receipt = _materialize(tmp_path)
     module = Path(fwa.__file__).resolve()
@@ -586,6 +933,7 @@ def test_cli_runner_is_cross_platform_and_does_not_use_a_shell(tmp_path: Path) -
     assert _load(str(receipt["result_path"]))["status"] == "UNSCORED"
 
 
+@_REQUIRES_FUZZ_EXECUTION_CONTAINMENT
 def test_recorded_runner_allows_only_generated_subproject_cwd(tmp_path: Path) -> None:
     receipt = _materialize(tmp_path)
     generated_subproject = Path(str(receipt["active_root"])) / "test" / "invariant"
@@ -636,9 +984,23 @@ def test_driver_prepares_distinct_workspace_per_fuzz_leaf_and_finalizes_marker(
         jobs, scratchpad=scratchpad, project_root=str(root), config=config
     )
     assert len(prepared) == 2
-    assert {job["fuzz_workspace_status"] for job in prepared} == {"READY"}
+    expected_status = str(_EXECUTION_CAPABILITY["status"])
+    assert {job["fuzz_workspace_status"] for job in prepared} == {expected_status}
     assert len({job["fuzz_workspace_root"] for job in prepared}) == 2
     assert all(Path(job["fuzz_authority_path"]).is_file() for job in prepared)
+    if expected_status != "READY":
+        expected_codes = {
+            str(row["code"])
+            for row in _EXECUTION_CAPABILITY["issues"]
+            if isinstance(row, dict)
+        }
+        for job in prepared:
+            debt = _load(job["fuzz_debt_path"])
+            assert expected_codes.issubset({
+                str(row["code"])
+                for row in debt["issues"]
+                if isinstance(row, dict)
+            })
     assert (root / "test" / "invariant" / "Existing.t.sol").is_file()
 
     job = prepared[0]
@@ -730,6 +1092,46 @@ def test_driver_aggregate_result_index_has_one_phaseio_owner(
         "scratchpad:fuzz_workspace_result_index.json"
     ]
     assert artifact["owner_key"] == owner
+
+
+def test_driver_finalizes_all_fuzz_workspaces_when_model_outputs_are_missing(
+    tmp_path: Path,
+) -> None:
+    import plamen_driver as driver
+
+    root = _project(tmp_path)
+    scratchpad = root / ".scratchpad"
+    scratchpad.mkdir()
+    config = {
+        "project_root": str(root),
+        "pipeline": "sc",
+        "language": "evm",
+        "mode": "thorough",
+        "cli_backend": "claude",
+        "_run_id": "RUN-CANCELLED-FUZZ",
+        "_audit_snapshot": {"snapshot_digest": "f" * 64},
+    }
+    jobs = driver._prepare_depth_fuzz_workspaces(
+        driver._depth_fuzz_jobs_if_required(scratchpad, config),
+        scratchpad=scratchpad,
+        project_root=str(root),
+        config=config,
+    )
+
+    issues = driver._record_depth_fuzz_result_index(
+        scratchpad=scratchpad, jobs=jobs, config=config
+    )
+
+    assert issues == [
+        "fuzz worker output is missing: invariant_fuzz_results.md",
+        "fuzz worker output is missing: medusa_fuzz_findings.md",
+    ]
+    for job in jobs:
+        result = _load(job["fuzz_result_path"])
+        assert result["status"] == "UNSCORED"
+        assert result["campaign_execution_status"] == "NOT_EXECUTED"
+        assert result["command_count"] == 0
+    assert not (scratchpad / fwa.RESULT_INDEX_FILE).exists()
 
 
 def test_missing_fuzz_index_is_launch_fatal_while_other_missing_inputs_degrade() -> None:
@@ -909,6 +1311,7 @@ def test_campaign_command_classification_is_role_specific(
     assert fwa._campaign_command_kind(language, role, argv) == expected
 
 
+@_REQUIRES_FUZZ_EXECUTION_CONTAINMENT
 def test_timeout_terminates_descendant_process_tree(tmp_path: Path) -> None:
     receipt = _materialize(tmp_path)
     marker = Path(str(receipt["generated_root"])) / "escaped-child.txt"
@@ -937,6 +1340,7 @@ def test_timeout_terminates_descendant_process_tree(tmp_path: Path) -> None:
     }
 
 
+@_REQUIRES_FUZZ_EXECUTION_CONTAINMENT
 def test_receipt_hashes_semantic_inherited_environment_without_disclosing_values(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1011,6 +1415,7 @@ def test_tool_output_lanes_cover_ecosystem_runtime_products(tmp_path: Path) -> N
     )
 
 
+@_REQUIRES_FUZZ_EXECUTION_CONTAINMENT
 def test_result_and_raw_command_log_tampering_are_detected(tmp_path: Path) -> None:
     receipt = _materialize(tmp_path)
     authority = Path(str(receipt["authority_path"]))
@@ -1033,6 +1438,7 @@ def test_result_and_raw_command_log_tampering_are_detected(tmp_path: Path) -> No
     assert any("COMMAND_RECEIPT_INVALID" in row for row in issues)
 
 
+@_REQUIRES_FUZZ_EXECUTION_CONTAINMENT
 def test_interrupted_running_receipt_remains_visible_unscored_debt(tmp_path: Path) -> None:
     receipt = _materialize(tmp_path)
     authority = Path(str(receipt["authority_path"]))
@@ -1056,6 +1462,7 @@ def test_interrupted_running_receipt_remains_visible_unscored_debt(tmp_path: Pat
     }
 
 
+@_REQUIRES_FUZZ_EXECUTION_CONTAINMENT
 def test_rejected_boundary_attempt_survives_finalization_as_integrity_debt(
     tmp_path: Path,
 ) -> None:
@@ -1075,6 +1482,7 @@ def test_rejected_boundary_attempt_survives_finalization_as_integrity_debt(
     [
         ([], "NOT_EXECUTED"),
         ([{"returncode": 1, "timed_out": False}], "EXECUTED_FAILED"),
+        ([{"returncode": 1, "timed_out": False, "semantic_outcome": "VIOLATION_OBSERVED"}], "EXECUTED_VIOLATION"),
         ([{"returncode": 124, "timed_out": True}], "TIMEOUT"),
         ([{"returncode": 1, "timed_out": False}, {"returncode": 0, "timed_out": False}], "EXECUTED_SUCCESS"),
     ],
@@ -1085,6 +1493,118 @@ def test_campaign_execution_status_is_deterministic(
     assert fwa._campaign_execution_status(rows) == expected
 
 
+def test_measured_fuzz_result_never_routes_to_model_repair() -> None:
+    assert fwa._model_repair_disposition("MEASURED") == "NOT_REQUIRED"
+
+
+def test_foundry_property_failure_is_an_observation_not_tool_failure() -> None:
+    output = """Compiling 77 files with Solc 0.8.26
+Compiler run successful!
+
+Ran 4 tests for test/invariant/InvariantFuzz.t.sol:InvariantFuzz
+[FAIL: failed to set up invariant testing environment: assertion failed: true != false] invariant_INV_ACCOUNT_FLAG0() (runs: 0, calls: 0, reverts: 0)
+[PASS] invariant_INV_ACCOUNT_FLAG1() (runs: 256, calls: 6400, reverts: 0)
+Suite result: FAILED. 3 passed; 1 failed; 0 skipped; finished in 355.06ms
+Encountered a total of 1 failing tests, 3 tests succeeded
+"""
+    semantics = fwa._campaign_text_semantics(
+        kind="FOUNDRY_INVARIANT",
+        returncode=1,
+        timed_out=False,
+        stdout_text=output,
+        stderr_text="",
+    )
+    assert semantics == {
+        "semantic_outcome": "VIOLATION_OBSERVED",
+        "semantic_parser": "foundry-suite-v1",
+        "violation_count": 1,
+        "violation_ids": ["invariant_INV_ACCOUNT_FLAG0()"],
+    }
+
+
+def test_foundry_compile_failure_cannot_mint_violation_observation() -> None:
+    semantics = fwa._campaign_text_semantics(
+        kind="FOUNDRY_INVARIANT",
+        returncode=1,
+        timed_out=False,
+        stdout_text="Compiler run failed: parser error containing [FAIL]",
+        stderr_text="Error: compilation failed",
+    )
+    assert semantics["semantic_outcome"] == "TOOL_FAILURE"
+    assert semantics["violation_count"] == 0
+
+
+def test_medusa_summary_is_semantic_even_with_ansi_and_zero_exit() -> None:
+    output = (
+        "\x1b[32m[FAILED]\x1b[0m Property Test: Harness.property_balance()\n"
+        "Test summary: 3 test(s) passed, 1 test(s) failed\n"
+    )
+    semantics = fwa._campaign_text_semantics(
+        kind="MEDUSA_FUZZ",
+        returncode=0,
+        timed_out=False,
+        stdout_text=output,
+        stderr_text="",
+    )
+    assert semantics["semantic_outcome"] == "VIOLATION_OBSERVED"
+    assert semantics["violation_count"] == 1
+    assert semantics["violation_ids"] == ["Harness.property_balance()"]
+
+
+def test_medusa_terminal_output_must_classify_every_oracle_as_property_test() -> None:
+    ignored_return = (
+        "[PASSED] Assertion Test: Harness.property_balance()\n"
+        "Test summary: 1 test(s) passed, 0 test(s) failed\n"
+    )
+    assert fwa._medusa_terminal_property_issues(
+        ignored_return,
+        ["property_balance"],
+        campaign_label="campaign 1",
+    ) == [
+        "campaign 1 has no terminal Property Test result for: property_balance"
+    ]
+    bound_return = (
+        "\x1b[32m[PASSED]\x1b[0m Property Test: Harness.property_balance()\n"
+        "Test summary: 1 test(s) passed, 0 test(s) failed\n"
+    )
+    assert fwa._medusa_terminal_property_issues(
+        bound_return,
+        ["property_balance"],
+        campaign_label="campaign 1",
+    ) == []
+
+
+def test_medusa_terminal_output_allows_repeated_consistent_failure() -> None:
+    output = (
+        "[FAILED] Property Test: Harness.property_balance()\n"
+        "Test for method Harness.property_balance() failed after one call\n"
+        "Fuzzer stopped, test results follow below\n"
+        "[FAILED] Property Test: Harness.property_balance()\n"
+        "Test summary: 0 test(s) passed, 1 test(s) failed\n"
+    )
+    assert fwa._medusa_terminal_property_issues(
+        output,
+        ["property_balance"],
+        campaign_label="campaign 1",
+    ) == []
+
+
+def test_medusa_terminal_output_rejects_contradictory_statuses() -> None:
+    output = (
+        "[FAILED] Property Test: Harness.property_balance()\n"
+        "[PASSED] Property Test: Harness.property_balance()\n"
+    )
+    assert fwa._medusa_terminal_property_issues(
+        output,
+        ["property_balance"],
+        campaign_label="campaign 1",
+    ) == [
+        "campaign 1 reports contradictory terminal statuses for: "
+        "property_balance"
+    ]
+
+
+@_REQUIRES_FUZZ_EXECUTION_CONTAINMENT
 def test_campaign_requires_a_generated_harness_that_matches_executed_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1235,6 +1755,7 @@ def test_prepared_campaign_is_backend_neutral_but_not_self_certifying(
     }
 
 
+@_REQUIRES_FUZZ_EXECUTION_CONTAINMENT
 def test_failed_campaign_classification_cannot_be_measured(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1251,3 +1772,42 @@ def test_failed_campaign_classification_cannot_be_measured(
     assert "CAMPAIGN_EXECUTION_FAILED" in {
         row["code"] for row in result["issues"]
     }
+
+
+@_REQUIRES_FUZZ_EXECUTION_CONTAINMENT
+def test_falsified_foundry_campaign_is_measured_positive_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt = _materialize(tmp_path)
+    authority = Path(str(receipt["authority_path"]))
+    harness = Path(str(receipt["generated_root"])) / "InvariantFuzz.t.sol"
+    harness.write_text("contract InvariantFuzz {}\n", encoding="utf-8")
+    output = "\\n".join((
+        "Compiler run successful!",
+        "Ran 1 test for test/InvariantFuzz.t.sol:InvariantFuzz",
+        "[FAIL: assertion failed: true != false] invariant_balance() (runs: 1, calls: 1, reverts: 0)",
+        "Suite result: FAILED. 0 passed; 1 failed; 0 skipped",
+        "Encountered a total of 1 failing tests, 0 tests succeeded",
+    ))
+    assert fwa.run_recorded_command(
+        authority,
+        [sys.executable, "-c", f"print({output!r}); raise SystemExit(1)"],
+        30,
+    ) == 1
+    monkeypatch.setattr(
+        fwa, "_campaign_command_kind",
+        lambda language, role, argv: "FOUNDRY_INVARIANT",
+    )
+    result = fwa.finalize_fuzz_workspace(authority)
+    assert result["status"] == "MEASURED"
+    assert result["campaign_execution_status"] == "EXECUTED_VIOLATION"
+    assert result["proof_authority"] == "EXECUTION_SCOPE_REQUIRES_CONSUMER"
+    assert result["issues"] == []
+    assert result["campaign_commands"][0]["semantic_outcome"] == "VIOLATION_OBSERVED"
+    assert result["campaign_commands"][0]["violation_ids"] == [
+        "invariant_balance()"
+    ]
+    assert result["runner_observations"][0]["code"] == (
+        "FUZZ_PROPERTY_VIOLATION_OBSERVED"
+    )
+    assert fwa.validate_fuzz_workspace_result(authority) == []

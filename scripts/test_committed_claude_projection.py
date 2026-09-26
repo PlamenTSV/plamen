@@ -76,7 +76,7 @@ def _receipt(source: Path, installed: Path, codex: Path):
 
 
 def _build_borrowed_legacy_candidate(module, tmp_path, *, probe_early_admission=False):
-    """Build the current 823-row package carrying a legacy migration."""
+    """Build the current governed package carrying a legacy migration."""
     user_root = (tmp_path / "user").absolute()
     source = (tmp_path / "legacy-source").absolute()
     installed = user_root / ".plamen"
@@ -813,6 +813,15 @@ def _patch_install_shell(monkeypatch, module, source: Path, *, has_claude=True):
     monkeypatch.setattr(module.console, "print", lambda *_a, **_k: None)
     monkeypatch.setattr(module, "_ensure_windows_plamen_command", lambda **_k: None)
     monkeypatch.setattr(module, "_ensure_posix_plamen_command", lambda **_k: None)
+    # The production POSIX launcher is intentionally gated on the installed
+    # managed CPython 3.12 identity before its publisher is called.  These
+    # transaction-order tests replace the publisher and do not construct that
+    # machine-scoped runtime, so replace the paired identity selector as part
+    # of the same launcher seam rather than weakening the product gate.
+    monkeypatch.setattr(
+        module, "_managed_runtime_launcher_python",
+        lambda: Path(sys.executable).resolve(strict=True),
+    )
     monkeypatch.setattr(
         module,
         "_validated_managed_backend_paths",
@@ -4091,7 +4100,7 @@ def test_live_shape_legacy_lease_prepares_successor_without_named_reopen(
         assert selected == public
         assert created is None
         displaced = lock_path.with_suffix(".retained")
-        if os.name == "nt":
+        if os.name == "nt" or sys.platform == "darwin":
             with pytest.raises(OSError):
                 os.rename(lock_path, displaced)
             named = lock_path.stat(follow_symlinks=False)
@@ -4329,6 +4338,8 @@ def _legacy_prepackage_intent(monkeypatch, module, tmp_path, *, publish_key):
     )
     if publish_key:
         key_path.write_bytes(key_raw)
+        if os.name != "nt":
+            key_path.chmod(0o600)
     monkeypatch.setattr(
         module, "_validated_committed_install_receipt", lambda: receipt,
     )
@@ -5194,7 +5205,10 @@ def test_receipt_snapshot_rejects_authenticated_hardlink_source(
         "sha256": hashlib.sha256(raw).hexdigest(),
         "terminal_authority": authority,
     }]
-    with pytest.raises(RuntimeError, match="hardlinked|snapshot row differs"):
+    with pytest.raises(
+        RuntimeError,
+        match="hardlinked|snapshot row differs|committed file identity differs",
+    ):
         transaction.add_receipt_tree(
             committed_root, "scripts",
             str(Path(module.CLAUDE_HOME) / "scripts"), rows,
@@ -6225,6 +6239,8 @@ def test_windows_trash_reparse_to_outside_is_rejected_without_source_change(
     monkeypatch, tmp_path, kind,
 ):
     module = _load()
+    if kind == "junction" and os.name != "nt":
+        pytest.skip("synthetic junction classification is Windows-only")
     transaction = tmp_path / "transaction"
     transaction.mkdir()
     (transaction / ".plamen-transaction-owned").write_bytes(
@@ -6387,6 +6403,7 @@ def test_windows_trash_createfile_gap_replacement_aborts_before_source_move(
     assert (replaced / ".plamen-trash-owned").is_file()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows trash recovery semantics")
 def test_windows_created_directory_trash_crash_recovers_on_second_pass(
     monkeypatch, tmp_path,
 ):

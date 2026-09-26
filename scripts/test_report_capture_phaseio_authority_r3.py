@@ -107,8 +107,26 @@ def _fixture(tmp_path: Path):
         exact_input_authorities={},
     )
     launch = _launch(contract)
+    preexecution_authority = _adapter().build_report_capture_preexecution_authority(
+        scratchpad=scratch,
+        project_root=project,
+        run_id=RUN_ID,
+        contract=contract,
+        launch=launch,
+        expected_output_records={
+            "scratchpad:report_assembly_source_capture.json": {
+                "sha256": hashlib.sha256(source_bytes).hexdigest(),
+                "size": len(source_bytes),
+            },
+        },
+    )
     record_work_unit_inputs(
-        scratch, project, contract, launch, run_id=RUN_ID
+        scratch,
+        project,
+        contract,
+        launch,
+        run_id=RUN_ID,
+        preexecution_authority=preexecution_authority,
     )
     (scratch / "report_assembly_source_capture.json").write_bytes(source_bytes)
     record_work_unit_artifacts(
@@ -262,8 +280,26 @@ def _commit_source_capture(
         },
     )
     launch = _launch(contract)
+    preexecution_authority = _adapter().build_report_capture_preexecution_authority(
+        scratchpad=scratch,
+        project_root=project,
+        run_id=RUN_ID,
+        contract=contract,
+        launch=launch,
+        expected_output_records={
+            "scratchpad:report_assembly_source_capture.json": {
+                "sha256": hashlib.sha256(source_bytes).hexdigest(),
+                "size": len(source_bytes),
+            },
+        },
+    )
     record_work_unit_inputs(
-        scratch, project, contract, launch, run_id=RUN_ID
+        scratch,
+        project,
+        contract,
+        launch,
+        run_id=RUN_ID,
+        preexecution_authority=preexecution_authority,
     )
     (scratch / "report_assembly_source_capture.json").write_bytes(source_bytes)
     record_work_unit_artifacts(
@@ -319,8 +355,26 @@ def _commit_final(project: Path, scratch: Path) -> bytes:
         exact_outputs=("report_assembly_final_capture.json",),
     )
     launch = _launch(contract)
+    preexecution_authority = _adapter().build_report_capture_preexecution_authority(
+        scratchpad=scratch,
+        project_root=project,
+        run_id=RUN_ID,
+        contract=contract,
+        launch=launch,
+        expected_output_records={
+            "scratchpad:report_assembly_final_capture.json": {
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "size": len(raw),
+            },
+        },
+    )
     record_work_unit_inputs(
-        scratch, project, contract, launch, run_id=RUN_ID
+        scratch,
+        project,
+        contract,
+        launch,
+        run_id=RUN_ID,
+        preexecution_authority=preexecution_authority,
     )
     (scratch / "report_assembly_final_capture.json").write_bytes(raw)
     record_work_unit_artifacts(

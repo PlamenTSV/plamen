@@ -29,6 +29,7 @@ from typing import Any, Callable, Mapping, Sequence
 import uuid
 
 from bounded_artifact_io import read_bounded_regular_bytes
+from portable_path_contract import assert_lexically_bounded_relative_path
 
 
 SCHEMA = "plamen.semantic_dedup_transaction.v1"
@@ -244,6 +245,14 @@ def _validate_root(root: Path) -> Path:
 def _safe_relative(value: str) -> str:
     raw = str(value or "").replace("\\", "/").strip()
     parsed = PurePosixPath(raw)
+    try:
+        assert_lexically_bounded_relative_path(
+            raw, label="semantic-dedup relative path"
+        )
+    except ValueError as exc:
+        raise SemanticDedupTransactionError(
+            f"unsafe semantic-dedup relative path: {value!r}"
+        ) from exc
     if (
         not raw
         or raw != parsed.as_posix()
@@ -338,6 +347,17 @@ def _atomic_bytes(path: Path, raw: bytes) -> None:
         raise SemanticDedupTransactionError(
             f"semantic-dedup output parent is link-like: {path.parent.name}"
         )
+    if path.exists():
+        if _is_linklike(path) or not path.is_file():
+            raise SemanticDedupTransactionError(
+                f"semantic-dedup output path is unsafe: {path.name}"
+            )
+        try:
+            if read_bounded_regular_bytes(path, max(len(raw), 1)) == raw:
+                return
+        except ValueError:
+            # A larger/different prior value is replaced transactionally.
+            pass
     fd, name = tempfile.mkstemp(
         prefix=f".{path.name[:12]}.",
         suffix=".tmp",

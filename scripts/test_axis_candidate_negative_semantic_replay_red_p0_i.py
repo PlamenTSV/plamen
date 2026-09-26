@@ -379,3 +379,56 @@ def test_live_axis_negative_harvest_phaseio_binds_full_semantic_denominator(
         PRIOR.AUTHORITY_NAME,
         "project::contracts/A.sol",
     }.issubset(set(captured["exact_inputs"]))
+
+
+def test_axis_signed_semantic_debt_does_not_quarantine_its_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, scratchpad, _item, _worklist, _final = _authorities(tmp_path)
+    phase = next(row for row in SC_PHASES if row.name == "axis_coverage")
+    config: dict[str, Any] = {
+        "project_root": str(project),
+        "pipeline": PIPELINE,
+        "mode": MODE,
+        "language": ECOSYSTEM,
+        "cli_backend": "claude",
+        "_run_id": RUN_ID,
+    }
+    observed: dict[str, Any] = {}
+    semantic_ledger = {"issues": [{"code": "INPUT_DEBT"}]}
+
+    monkeypatch.setattr(
+        DRIVER,
+        "_candidate_negative_harvest_contract_and_launch",
+        lambda **_kwargs: (object(), object()),
+    )
+    monkeypatch.setattr(
+        DRIVER,
+        "_arm_deterministic_driver_work_unit",
+        lambda **_kwargs: (True, []),
+    )
+    monkeypatch.setattr(
+        DRIVER,
+        "build_axis_clear_candidate_negative_ledger",
+        lambda **_kwargs: semantic_ledger,
+    )
+    monkeypatch.setattr(
+        DRIVER,
+        "write_candidate_negative_ledger",
+        lambda _root, _ledger: scratchpad
+        / "candidate_negative_proposals_axis_coverage.json",
+    )
+
+    def commit(**kwargs: Any) -> list[str]:
+        observed.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        DRIVER, "_commit_deterministic_driver_work_unit", commit
+    )
+
+    assert DRIVER._harvest_axis_clear_candidate_negative(
+        phase, config, scratchpad
+    ) == ["INPUT_DEBT"]
+    assert "domain_issues" not in observed

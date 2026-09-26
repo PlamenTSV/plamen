@@ -60,6 +60,8 @@ def test_recovers_only_the_leaked_blind_finding(tmp_path: Path):
     assert "BLIND-B3" in inv
     assert "Blind-Spot-Recovered Findings" in inv
     assert "LEAKED" in inv
+    assert "**Primary Artifact**: blind_spot_b_findings.md" in inv
+    assert "**Source Artifact Hash**: sha256:" in inv
     # B1/B2 not re-added (still single occurrence each as the original source id)
     assert inv.count("BLIND-B1") == 1 and inv.count("BLIND-B2") == 1
 
@@ -96,8 +98,83 @@ def test_no_blind_files_noop(tmp_path: Path):
 def test_id_regex_matches_letter_digit_suffix():
     m = _mech()
     assert m._BLIND_SPOT_HEADING_RE.search("### Finding [BLIND-B3]: x")
+    assert m._BLIND_SPOT_HEADING_RE.search("## Finding [BLIND-A-1]: x")
     assert m._BLIND_SPOT_HEADING_RE.search("## Finding [BLIND-A12]: y")
     assert m._BLIND_SPOT_HEADING_RE.search("### Finding [BLIND-1]: z")
+
+
+def test_run18_mixed_blind_ids_promote_with_exact_delivery_referents(
+    tmp_path: Path,
+):
+    """Replay the two ID shapes and provenance gap observed in Run18."""
+    import plamen_validators as V
+
+    m = _mech()
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    (sp / "findings_inventory.md").write_text(
+        "# Finding Inventory\n\n"
+        "### Finding [INV-056]: Public helper can spend residual allowances\n"
+        "**Severity**: High\n"
+        "**Location**: contracts/GatewayTransferNative.sol:L286\n"
+        "**Source IDs**: BLIND-B1 (blind-spot-recovered; LEAKED from "
+        "blind_spot_b_findings.md)\n"
+        "**Description**: Existing Run18-style recovery row lacks an exact "
+        "producer-artifact binding.\n"
+        "**Impact**: Adapter-held tokens can be redirected.\n\n"
+        "### Finding [INV-057]: Privileged state changes lack events\n"
+        "**Severity**: Informational\n"
+        "**Location**: contracts/GatewayCrossChain.sol:L157\n"
+        "**Source IDs**: BLIND-B2 (blind-spot-recovered; LEAKED from "
+        "blind_spot_b_findings.md)\n"
+        "**Description**: Existing Run18-style recovery row lacks an exact "
+        "producer-artifact binding.\n"
+        "**Impact**: Monitoring is impaired.\n",
+        encoding="utf-8",
+    )
+    (sp / "blind_spot_a_findings.md").write_text(
+        _blind_block(
+            "BLIND-A-1",
+            "Native-sentinel withdrawals can spend resident ZRC20 without receiving funds",
+        ),
+        encoding="utf-8",
+    )
+    (sp / "blind_spot_b_findings.md").write_text(
+        _blind_block(
+            "BLIND-B1",
+            "Public helper can spend residual gateway allowances",
+        )
+        + _blind_block(
+            "BLIND-B2",
+            "Six privileged state changes lack protocol events",
+        ),
+        encoding="utf-8",
+    )
+
+    parsed, recovered = m.promote_blind_spot_to_inventory(sp)
+    assert (parsed, recovered) == (3, 1)
+    inventory = (sp / "findings_inventory.md").read_text(encoding="utf-8")
+    assert inventory.count("BLIND-A-1") == 1
+    assert inventory.count("BLIND-B1") == 1
+    assert inventory.count("BLIND-B2") == 1
+    assert inventory.count("**Primary Artifact**: blind_spot_b_findings.md") == 2
+    assert inventory.count("**Primary Artifact**: blind_spot_a_findings.md") == 1
+
+    scan = V._scan_registered_finding_delivery_sources(sp)
+    payload = V._build_registered_finding_delivery_receipt_payload(
+        sp, scan, inventory
+    )
+    relevant = {
+        row["action_id"]: row["disposition"]
+        for row in payload["actions"]
+        if row["action_id"] in {"BLIND-A-1", "BLIND-B1", "BLIND-B2"}
+    }
+    assert relevant == {
+        "BLIND-A-1": "PROMOTED_FINDING",
+        "BLIND-B1": "PROMOTED_FINDING",
+        "BLIND-B2": "PROMOTED_FINDING",
+    }
+    assert payload["residual_debt"] == []
 
 
 if __name__ == "__main__":

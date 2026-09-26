@@ -524,3 +524,140 @@ def test_explicit_shell_command_instructions_are_denied(prompt: str) -> None:
 )
 def test_nominal_descriptive_prose_does_not_false_positive(prompt: str) -> None:
     assert _issues(prompt) == ()
+
+
+# --- DODO run46: the two recognizer defects that kept every depth worker from launching ---
+
+def test_read_directive_naming_the_units_own_output_is_not_unregistered() -> None:
+    prompt = (
+        "Read each of these immutable graph projections before completing "
+        "`scratchpad:assigned_findings.md`:\n"
+        "- `scratchpad:recon_summary.md`\n"
+    )
+    assert "UNREGISTERED_ARTIFACT_READ" not in _codes(prompt)
+    # negative control: a genuinely unregistered artifact in the same read
+    # directive still fails, and the own-output token does not mask it
+    bad = (
+        "Read `scratchpad:ground_truth.md` before completing "
+        "`scratchpad:assigned_findings.md`.\n"
+    )
+    issues = _issues(bad)
+    assert [(i.code, i.subject) for i in issues] == [
+        ("UNREGISTERED_ARTIFACT_READ", "scratchpad:ground_truth.md"),
+    ]
+
+
+def test_agents_directory_in_a_quoted_skill_path_is_not_a_coordinator_instruction() -> None:
+    prompt = (
+        "- Read and EXECUTE `/home/u/.plamen/agents/skills/evm/token-flow-tracing/SKILL.md` "
+        "(skill `TOKEN_FLOW_TRACING`).\n"
+    )
+    assert "DENIED_COORDINATOR_INSTRUCTION" not in _codes(prompt)
+    # negative control: an actual instruction to use the coordinator tool is still denied
+    assert "DENIED_COORDINATOR_INSTRUCTION" in _codes(
+        "Use the Agent tool to spawn a subagent for each contract.\n"
+    )
+    assert "DENIED_COORDINATOR_INSTRUCTION" in _codes(
+        "Execute the analysis by delegating to sub-agents.\n"
+    )
+
+
+# ==========================================================================
+# Family read tokens (2026-09-20 downstream discovery, action 8).
+# Methodology prose names SETS of artifacts (`verify_*.md`,
+# `depth_*_findings.md`, `verify_<ID>.md`).  No such token can ever equal a
+# registered identity, so every read directive carrying one was denied and the
+# phase never launched.  A family is satisfied by a member it actually names;
+# write authority stays exact.
+# ==========================================================================
+
+_FAMILY_INPUTS = (
+    "scratchpad:depth_token_flow_findings.md",
+    "scratchpad:depth_state_trace_findings.md",
+    "scratchpad:verify_core.md",
+    "scratchpad:verify_H-1.md",
+    "scratchpad:recon_summary.md",
+)
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "{SCRATCHPAD}/depth_*_findings.md",
+        "depth_*_findings.md",
+        "{SCRATCHPAD}/verify_*.md",
+        "verify_<ID>.md",
+        "verify_{id}.md",
+    ],
+)
+def test_family_read_token_binds_to_a_registered_member(token: str) -> None:
+    prompt = f"Read {token} before writing your assigned output.\n"
+    assert "UNREGISTERED_ARTIFACT_READ" not in _codes(
+        prompt, phase_io_inputs=_FAMILY_INPUTS
+    )
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["chain_*_notes.md", "{SCRATCHPAD}/report_*.md", "verify_*.json"],
+)
+def test_family_read_token_with_no_member_is_still_denied(token: str) -> None:
+    prompt = f"Read {token} before writing your assigned output.\n"
+    assert "UNREGISTERED_ARTIFACT_READ" in _codes(
+        prompt, phase_io_inputs=_FAMILY_INPUTS
+    )
+
+
+def test_family_token_never_satisfies_a_write_directive() -> None:
+    prompt = "Write depth_*_findings.md when you are done.\n"
+    assert "UNREGISTERED_OUTPUT_WRITE" in _codes(
+        prompt, phase_io_inputs=_FAMILY_INPUTS
+    )
+
+
+def test_family_pattern_never_crosses_a_directory_boundary() -> None:
+    """`*` stands for one segment's worth of characters, never a `/`."""
+    assert C._family_regex_source("depth_*_findings.md") == (
+        "depth_" + "[^/]*" + "_findings\\.md"
+    )
+    assert C._family_regex_source("plain_name.md") is None
+
+
+# ==========================================================================
+# Search-directive roles (2026-09-20 downstream discovery, action 10).
+# `Search <root> for <PATTERN>` -- the pattern is what the worker looks FOR,
+# never where it looks.  Treating it as a search root denied the chain worker
+# for following its own methodology.
+# ==========================================================================
+
+def test_search_pattern_is_not_treated_as_a_search_root() -> None:
+    prompt = (
+        "Search ALL depth agent output files (`depth_token_flow_findings.md`) "
+        "for `[CROSS-DOMAIN-DEP: {domain}]` tags.\n"
+    )
+    codes = _codes(
+        prompt,
+        phase_io_inputs=("scratchpad:depth_token_flow_findings.md",),
+        safe_search_roots=(),
+    )
+    assert "UNSAFE_SEARCH_ROOT_DIRECTIVE" not in codes
+
+
+@pytest.mark.parametrize(
+    "governor", ["for", "matching", "containing", "named", "called"]
+)
+def test_every_pattern_governor_is_recognised(governor: str) -> None:
+    prompt = f"Search the contracts directory {governor} `TODO-marker` now.\n"
+    codes = _codes(prompt, safe_search_roots=())
+    assert "UNSAFE_SEARCH_ROOT_DIRECTIVE" not in codes
+
+
+def test_a_real_unsafe_search_root_is_still_denied() -> None:
+    """Control: a root in root position is still checked."""
+    prompt = "Search /etc for `secrets`.\n"
+    assert "UNSAFE_SEARCH_ROOT_DIRECTIVE" in _codes(prompt, safe_search_roots=())
+
+
+def test_root_governed_by_a_location_preposition_is_still_checked() -> None:
+    prompt = "Search in /etc for `secrets`.\n"
+    assert "UNSAFE_SEARCH_ROOT_DIRECTIVE" in _codes(prompt, safe_search_roots=())

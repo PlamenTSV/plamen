@@ -1,12 +1,12 @@
 {
   "owners": {
     "evaluation": {
-      "content_sha256_lf_nfc": "c6a6a1f83e70d70b925a539b71a75273bf8d2fd1d638cdab0c26580e96f28f70",
+      "content_sha256_lf_nfc": "2b39ae1763f4b5e98bad21650dc26c0102a975d1edaa496ad9743490a750a90b",
       "format": "markdown",
       "path": "benchmarks/application-coverage-evaluation-plan.md"
     },
     "graph": {
-      "content_sha256_lf_nfc": "2db7f1c77bf1776b7ebc00633e146e13a57ebbabf0675b05a151459a0ccb4342",
+      "content_sha256_lf_nfc": "fdfeb8387860c1f79fcddb19242b8b2d3dea1b9fff16f07fd24fbda3fc2cfd18",
       "format": "markdown",
       "path": "architecture/ecosystem-graph-provider-contract.md"
     },
@@ -16,12 +16,12 @@
       "path": "methodology/method-cards-v1.yaml"
     },
     "rfc": {
-      "content_sha256_lf_nfc": "2778af4391ec5a7f725d908c446bb3d9ebaf105fe13f08a3a46f37cadd0f35b4",
+      "content_sha256_lf_nfc": "eac1f57dffac664df2a462ca174f80ae35fb303a58fec4a644a3223dfad21d2e",
       "format": "markdown",
       "path": "architecture/method-application-rfc.md"
     },
     "scheduler": {
-      "content_sha256_lf_nfc": "e94344e0dd9f0ba7b6a5bcc0d742998e0eca5632986ca278a9bde4ab86803110",
+      "content_sha256_lf_nfc": "79739c3a326e8edbd633aa7d850e3ad5b4d83bfa57f347273f90d6da6c49605c",
       "format": "markdown",
       "path": "architecture/work-unit-scheduler.md"
     }

@@ -113,6 +113,21 @@ def test_governance_state_and_revocation_semantics_are_machine_checked(
 
     governance.write_bytes(_GOVERNANCE.read_bytes())
     payload = json.loads(governance.read_text(encoding="utf-8"))
+    medusa = next(
+        row for row in payload["tools"] if row["tool_id"] == "medusa"
+    )
+    medusa["update_policy"]["policy_sha256"] = "0" * 64
+    governance.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(SNAP.SnapshotInputError, match="governance semantics"):
+        SNAP._load_toolchain_identity_controls()
+    with pytest.raises(
+        TOOL_LEDGER.ToolCoverageLedgerError,
+        match="governance semantics",
+    ):
+        TOOL_LEDGER.load_toolchain_governance(governance)
+
+    governance.write_bytes(_GOVERNANCE.read_bytes())
+    payload = json.loads(governance.read_text(encoding="utf-8"))
     forge = next(
         row for row in payload["tools"] if row["tool_id"] == "forge"
     )
@@ -703,7 +718,7 @@ def test_same_version_setup_repairs_protobuf_from_exact_requirements(
         "_write_python_dependency_stamp",
         lambda _digest, **_kwargs: None,
     )
-    commands: list[str] = []
+    commands: list[list[str]] = []
     monkeypatch.setattr(
         INSTALLER,
         "_run_install_cmd",
@@ -719,7 +734,9 @@ def test_same_version_setup_repairs_protobuf_from_exact_requirements(
 
     assert INSTALLER._setup_python_deps(lambda _text: None) is True
     assert len(commands) == 1
-    assert "requirements-runtime-full.lock" in commands[0]
+    assert commands[0][-2:] == [
+        "-r", str(tmp_path / "requirements-runtime-full.lock"),
+    ]
     assert "protobuf==7.35.1" in (
         tmp_path / "requirements-runtime-full.lock"
     ).read_text(encoding="utf-8")

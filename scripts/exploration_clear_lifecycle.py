@@ -79,6 +79,17 @@ _SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
 _ACTION_ID_RE = re.compile(
     r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]*(?:-[A-Z0-9][A-Z0-9_-]*)+)(?![A-Za-z0-9_-])"
 )
+_LEGACY_ACTION_ID_RE = re.compile(
+    r"^(?:SKEP-[0-9]+|SKEP-LEGACY-[A-F0-9]{12}|"
+    r"ECRA-[A-F0-9]{24}|ECLRADD-[A-Z0-9_-]+)$",
+    re.ASCII,
+)
+_FINDING_HEADING_RE = re.compile(
+    r"(?im)^[ \t]{0,3}#{2,6}[ \t]+Finding[ \t]+"
+    r"\[[ \t]*(?P<id>[A-Z][A-Z0-9]*(?:-[A-Z0-9][A-Z0-9_-]*)+)[ \t]*\]"
+    r"[ \t]*:",
+    re.ASCII,
+)
 _LOCUS_RE = re.compile(
     r"(?<![A-Za-z0-9_:/\\])"
     r"(?P<path>(?![A-Za-z]:[\\/])(?:[A-Za-z0-9_. -]+[\\/])*[A-Za-z0-9_. -]+)"
@@ -86,6 +97,11 @@ _LOCUS_RE = re.compile(
     r"(?![A-Za-z0-9])",
     re.ASCII,
 )
+_PROVENANCE_TOKEN_RE = re.compile(r"[a-z0-9_.$-]+", re.ASCII)
+_PROVENANCE_CONNECTORS = frozenset({
+    "a", "an", "and", "at", "by", "for", "from", "in", "of", "on",
+    "the", "to", "via", "with",
+})
 
 
 class ExplorationClearError(ValueError):
@@ -529,6 +545,22 @@ def _is_separator(cells: Sequence[str], width: int) -> bool:
     return len(cells) == width and all(_SEPARATOR_CELL_RE.fullmatch(cell) for cell in cells)
 
 
+def _table_data_start(lines: Sequence[str], header: int, end: int) -> int:
+    """Locate typed rows after optional, presentation-only table syntax."""
+
+    candidate = header + 1
+    if candidate >= end:
+        return candidate
+    raw = lines[candidate].strip()
+    cells = _split_markdown_row(lines[candidate])
+    if (
+        (cells is not None and bool(cells) and all(_SEPARATOR_CELL_RE.fullmatch(cell) for cell in cells))
+        or (bool(raw) and "-" in raw and re.fullmatch(r"[|:\-\s]+", raw) is not None)
+    ):
+        return candidate + 1
+    return candidate
+
+
 def _coverage_source_rows(text: str) -> tuple[list[tuple[int, str, tuple[str, ...]]], list[str]]:
     """Return only exact rows under the H2 Coverage Record table."""
     lines = text.splitlines()
@@ -555,14 +587,12 @@ def _coverage_source_rows(text: str) -> tuple[list[tuple[int, str, tuple[str, ..
         if cells is not None and tuple(cell.casefold() for cell in cells) == _COVERAGE_HEADER:
             header_index = index
             break
-    if header_index is None or header_index + 1 >= section_end:
+    if header_index is None:
         return [], ["exploration coverage header is missing or malformed"]
-    separator = _split_markdown_row(lines[header_index + 1])
-    if separator is None or not _is_separator(separator, len(_COVERAGE_HEADER)):
-        return [], ["exploration coverage header separator is missing or malformed"]
+    data_start = _table_data_start(lines, header_index, section_end)
 
     rows: list[tuple[int, str, tuple[str, ...]]] = []
-    for index in range(header_index + 2, section_end):
+    for index in range(data_start, section_end):
         raw = lines[index]
         cells = _split_markdown_row(raw)
         if cells is None:
@@ -607,13 +637,11 @@ def _commitment_source_rows(
         if cells is not None and tuple(cell.casefold() for cell in cells) == _COMMITMENT_HEADER:
             header_index = index
             break
-    if header_index is None or header_index + 1 >= section_end:
+    if header_index is None:
         return [], ["exploration invariant commitment header is missing or malformed"]
-    separator = _split_markdown_row(lines[header_index + 1])
-    if separator is None or not _is_separator(separator, len(_COMMITMENT_HEADER)):
-        return [], ["exploration invariant commitment separator is missing or malformed"]
+    data_start = _table_data_start(lines, header_index, section_end)
     rows: list[tuple[int, str, tuple[str, ...]]] = []
-    for index in range(header_index + 2, section_end):
+    for index in range(data_start, section_end):
         raw = lines[index]
         cells = _split_markdown_row(raw)
         if cells is None:
@@ -695,6 +723,29 @@ def _resolve_evidence(
     return "INVALID_CLEAR", ""
 
 
+def _provenance_binds_instance(provenance: str, instance: str) -> bool:
+    """Match human provenance without making word order an authority field.
+
+    The exact Finding/Axis/Instance relation is already bound by the typed
+    commitment-table row and unique CI identifier.  Provenance is redundant
+    explanatory text, so equivalent renderings such as ``X empty branch`` and
+    ``empty branch in X`` must agree.  Require every meaningful instance token
+    (case-folded, connector-free) rather than a brittle literal substring.
+    """
+
+    normalized_provenance = _identity_part(provenance)
+    normalized_instance = _identity_part(instance)
+    if normalized_instance and normalized_instance in normalized_provenance:
+        return True
+    expected = {
+        token
+        for token in _PROVENANCE_TOKEN_RE.findall(normalized_instance)
+        if token not in _PROVENANCE_CONNECTORS
+    }
+    observed = set(_PROVENANCE_TOKEN_RE.findall(normalized_provenance))
+    return bool(expected) and expected.issubset(observed)
+
+
 def resolve_clear_evidence(
     evidence: str,
     *,
@@ -721,10 +772,36 @@ def _instance_is_named(source_finding: str, axis: str, instance: str) -> bool:
     )
 
 
-def _action_id(value: str, *, source_finding: str = "") -> str:
+def _emitted_finding_ids(text: str) -> frozenset[str]:
+    return frozenset(
+        match.group("id").upper()
+        for match in _FINDING_HEADING_RE.finditer(text)
+    )
+
+
+def _action_id(
+    value: str,
+    *,
+    source_finding: str = "",
+    emitted_finding_ids: frozenset[str] = frozenset(),
+) -> str:
+    """Resolve an additive ID without mistaking source ranges for findings.
+
+    When the producer emitted finding headings, those headings are the exact
+    action namespace and may legitimately repeat the coverage row's Finding
+    cell.  Heading-less legacy/repair inputs retain only the lifecycle's known
+    namespaces; generic tokens such as ``L329-L337`` never become actions.
+    """
+
     for match in _ACTION_ID_RE.finditer(value.upper()):
         candidate = match.group(1)
-        if candidate.casefold() != source_finding.casefold():
+        if emitted_finding_ids:
+            if candidate in emitted_finding_ids:
+                return candidate
+        elif (
+            candidate.casefold() != source_finding.casefold()
+            and _LEGACY_ACTION_ID_RE.fullmatch(candidate) is not None
+        ):
             return candidate
     return ""
 
@@ -869,7 +946,9 @@ def _exploration_invariant_commitments(
                             malformed.append("falsify class")
                         if (
                             _identity_part(row.source_finding) not in provenance
-                            or _identity_part(row.instance) not in provenance
+                            or not _provenance_binds_instance(
+                                provenance, row.instance
+                            )
                         ):
                             malformed.append("provenance binding")
                         if malformed:
@@ -974,7 +1053,20 @@ def _exploration_invariant_commitments(
         + " / ".join(identity)
         for identity in sorted(unused)
     )
-    status = "DEBT" if obligations or debt else "COMPLETE"
+    # This field is the aggregate of the typed commitment denominator only.
+    # Declaration rows that do not bind a production-locus clear remain
+    # visible in the receipt-wide ``debt`` and therefore degrade the overall
+    # lifecycle status, but they are not members of ``commitments``.  Folding
+    # that unrelated debt into this field makes the producer disagree with
+    # its own validator, which independently and correctly derives the
+    # aggregate from the commitment rows.
+    status = (
+        "DEBT"
+        if any(item.status == "DEBT" for item in commitments)
+        else "REOPENED"
+        if any(item.status == "REOPENED_AS_ADDITIVE" for item in commitments)
+        else "COMPLETE"
+    )
     return (
         tuple(sorted(commitments, key=lambda item: item.obligation_id)),
         tuple(sorted(obligations, key=lambda item: item.obligation_id)),
@@ -999,6 +1091,7 @@ def compile_initial_receipt(
     artifact_sha = _bytes_digest(artifact_bytes)
     raw_rows, parse_debt = _coverage_source_rows(text)
 
+    emitted_finding_ids = _emitted_finding_ids(text)
     parsed: list[ExplorationRow] = []
     for line_number, raw_line, cells in raw_rows:
         source_finding, axis, instance, disposition, evidence = cells
@@ -1008,16 +1101,32 @@ def compile_initial_receipt(
         resolved = ""
         if disposition_u in _CLEAR_DISPOSITIONS:
             if _instance_is_named(source_finding, axis, instance):
-                resolution_kind, resolved = _resolve_evidence(
-                    evidence,
-                    production_root=Path(production_root),
-                    canonical_prior_ids=canonical_prior_ids,
+                # ASSESSED means an existing finding may already own this
+                # unsafe instance.  If its evidence contains both that finding
+                # and a supporting source locus, canonical ownership must win;
+                # treating the locus as a local safety clear would demand a
+                # nonsensical invariant for a known bug.  NO-GAP retains the
+                # opposite, guard-first semantics through _resolve_evidence.
+                prior = (
+                    _canonical_prior_reference(evidence, canonical_prior_ids)
+                    if disposition_u == "ASSESSED"
+                    else ""
                 )
+                if prior:
+                    resolution_kind, resolved = "CANONICAL_PRIOR", prior
+                else:
+                    resolution_kind, resolved = _resolve_evidence(
+                        evidence,
+                        production_root=Path(production_root),
+                        canonical_prior_ids=canonical_prior_ids,
+                    )
             else:
                 resolution_kind = "INVALID_CLEAR"
         elif disposition_u in _ADDITIVE_DISPOSITIONS:
             resolution_kind = "ADDITIVE_ACTION" if _action_id(
-                evidence, source_finding=source_finding
+                evidence,
+                source_finding=source_finding,
+                emitted_finding_ids=emitted_finding_ids,
             ) else "UNRESOLVED"
         elif disposition_u in _UNRESOLVED_DISPOSITIONS:
             resolution_kind = "UNRESOLVED"
@@ -1113,7 +1222,11 @@ def compile_initial_receipt(
                 )
             )
         elif first.resolution_kind == "ADDITIVE_ACTION":
-            action_id = _action_id(first.evidence, source_finding=first.source_finding)
+            action_id = _action_id(
+                first.evidence,
+                source_finding=first.source_finding,
+                emitted_finding_ids=emitted_finding_ids,
+            )
             actions.append(
                 AdditiveAction(
                     action_id=action_id,
@@ -1281,14 +1394,12 @@ def _repair_response_rows(text: str) -> tuple[str, str, list[tuple[str, ...]], l
         if cells is not None and tuple(cell.casefold() for cell in cells) == expected:
             header = index
             break
-    if header is None or header + 1 >= end:
+    if header is None:
         return plan_id, plan_hash, [], [*metadata_debt, "repair disposition header is missing or malformed"]
-    separator = _split_markdown_row(lines[header + 1])
-    if separator is None or not _is_separator(separator, len(expected)):
-        return plan_id, plan_hash, [], [*metadata_debt, "repair disposition separator is missing or malformed"]
+    data_start = _table_data_start(lines, header, end)
     rows: list[tuple[str, ...]] = []
     debt: list[str] = list(metadata_debt)
-    for index in range(header + 2, end):
+    for index in range(data_start, end):
         cells = _split_markdown_row(lines[index])
         if cells is None:
             if lines[index].strip() or rows:
@@ -1342,6 +1453,7 @@ def reconcile_repair_attempt(
         debt.append(f"missing repair disposition for obligation {oid}")
 
     remaining: list[ExplorationObligation] = []
+    repaired_resolutions: dict[str, tuple[str, str]] = {}
     actions = list(receipt.additive_actions)
     if not binding_ok:
         remaining = [_unresolved(row, "repair response binding mismatch") for row in receipt.obligations]
@@ -1370,9 +1482,16 @@ def reconcile_repair_attempt(
                     )
                     if kind == "INVALID_CLEAR":
                         remaining.append(_unresolved(obligation, "repair supplied no exact resolvable evidence"))
-                    # Exact mechanical evidence closes the obligation.  The model's
-                    # stated rationale is deliberately not an adjudication input.
-                    del resolved
+                    else:
+                        # Preserve the producer row and its source-row digest, but
+                        # advance its typed resolution state using the exact repair
+                        # evidence.  Downstream denominators consume this state;
+                        # leaving the row INVALID_CLEAR after closing its obligation
+                        # creates a split-brain receipt and strands any commitment
+                        # the producer already declared for that exact identity.
+                        repaired_resolutions[oid] = (kind, resolved)
+                    # The model's stated rationale is deliberately not an
+                    # adjudication input.
             elif disposition_u in {"ADD", "ADDITIVE"}:
                 normalized_action = _action_id(action_id, source_finding=obligation.source_finding)
                 if not normalized_action or normalized_action != action_id.upper():
@@ -1423,10 +1542,65 @@ def reconcile_repair_attempt(
             continue
         unique_actions.append(members[0])
 
-    remaining.sort(key=lambda item: item.obligation_id)
+    reconciled_rows = tuple(
+        replace(
+            row,
+            resolution_kind=repaired_resolutions[row.obligation_id][0],
+            resolved_reference=repaired_resolutions[row.obligation_id][1],
+        )
+        if row.obligation_id in repaired_resolutions
+        else row
+        for row in receipt.rows
+    )
+
+    # A repair that establishes an exact production locus changes the invariant
+    # denominator.  Recompile commitments from the sealed producer artifact so
+    # that the repaired typed row, its declaration, and its CI block advance as
+    # one semantic transition.  This is deliberately not model adjudication: the
+    # source bytes and repair evidence are already content-bound authorities.
+    try:
+        artifact_bytes = Path(receipt.source_artifact).read_bytes()
+        if _bytes_digest(artifact_bytes) != receipt.artifact_sha256:
+            raise ExplorationClearError(
+                "bound exploration source artifact digest changed during repair"
+            )
+        artifact_text = artifact_bytes.decode("utf-8")
+        _, _, prior_invariant_debt, _ = _exploration_invariant_commitments(
+            text=artifact_text,
+            artifact_sha256=receipt.artifact_sha256,
+            rows=receipt.rows,
+        )
+        (
+            recompiled_commitments,
+            recompiled_invariant_obligations,
+            recompiled_invariant_debt,
+            _recompiled_invariant_status,
+        ) = _exploration_invariant_commitments(
+            text=artifact_text,
+            artifact_sha256=receipt.artifact_sha256,
+            rows=reconciled_rows,
+        )
+        prior_invariant_debt_set = set(prior_invariant_debt)
+        debt = [item for item in debt if item not in prior_invariant_debt_set]
+        debt.extend(recompiled_invariant_debt)
+    except (OSError, UnicodeError, ExplorationClearError) as exc:
+        debt.append(f"cannot recompile repaired invariant denominator: {exc}")
+        recompiled_commitments = receipt.invariant_commitments
+        recompiled_invariant_obligations = ()
+
     additive_obligation_ids = {item.obligation_id for item in unique_actions}
+    remaining_by_id = {item.obligation_id: item for item in remaining}
+    for obligation in recompiled_invariant_obligations:
+        if (
+            obligation.obligation_id not in additive_obligation_ids
+            and obligation.obligation_id not in remaining_by_id
+        ):
+            remaining.append(obligation)
+            remaining_by_id[obligation.obligation_id] = obligation
+    remaining.sort(key=lambda item: item.obligation_id)
+
     reconciled_commitments: list[InvariantCommitment] = []
-    for commitment in receipt.invariant_commitments:
+    for commitment in recompiled_commitments:
         if (
             commitment.status == "DEBT"
             and commitment.obligation_id in additive_obligation_ids
@@ -1442,20 +1616,24 @@ def reconcile_repair_attempt(
             )
         reconciled_commitments.append(commitment)
     invariant_status = (
-        "DEBT"
+        "NOT_APPLICABLE"
+        if not reconciled_commitments
+        else "DEBT"
         if any(item.status == "DEBT" for item in reconciled_commitments)
         else "REOPENED"
         if any(
             item.status == "REOPENED_AS_ADDITIVE"
             for item in reconciled_commitments
         )
-        else receipt.invariant_commitment_status
+        else "COMPLETE"
     )
     repaired = replace(
         receipt,
+        rows=reconciled_rows,
         obligations=tuple(remaining),
         additive_actions=tuple(unique_actions),
         invariant_commitment_status=invariant_status,
+        invariant_commitment_denominator=len(reconciled_commitments),
         invariant_commitments=tuple(reconciled_commitments),
         debt=tuple(dict.fromkeys(debt)),
         status=_status(

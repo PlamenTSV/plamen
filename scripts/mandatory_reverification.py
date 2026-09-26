@@ -2555,6 +2555,8 @@ _QUEUE_TRANSACTION_PATHS = (
 
 
 def _atomic_transaction_bytes(path: Path, raw: bytes) -> None:
+    if path.is_file() and not path.is_symlink() and path.read_bytes() == raw:
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent

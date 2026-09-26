@@ -19,6 +19,7 @@ from typing import Any, Mapping, Sequence
 
 from artifact_ledger import (
     _ArtifactValidationContext,
+    _artifact_validation_epoch,
     ArtifactLedgerError,
     read_artifact_ledger,
     record_work_unit_explicit_absence_bindings,
@@ -1163,6 +1164,7 @@ def validate_transaction_authority(
     plan: Mapping[str, Any],
     run_id: str,
     require_parent_commit: bool = True,
+    _validation_context: _ArtifactValidationContext | None = None,
 ) -> list[str]:
     """Validate exact current-run authority for T0--T9 and the parent.
 
@@ -1194,12 +1196,22 @@ def validate_transaction_authority(
             "verify-queue PhaseIO topology invalid: "
             f"{type(exc).__name__}: {exc}"
         ]
-    try:
-        validation_context = _ArtifactValidationContext(
-            Path(scratchpad), Path(project_root)
-        )
-    except ArtifactLedgerError as exc:
-        return [f"verify-queue PhaseIO ledger invalid: {exc}"]
+    if _validation_context is None:
+        try:
+            with _artifact_validation_epoch(
+                Path(scratchpad), Path(project_root)
+            ) as validation_context:
+                return validate_transaction_authority(
+                    scratchpad=Path(scratchpad),
+                    project_root=Path(project_root),
+                    plan=plan,
+                    run_id=run_id,
+                    require_parent_commit=require_parent_commit,
+                    _validation_context=validation_context,
+                )
+        except ArtifactLedgerError as exc:
+            return [f"verify-queue PhaseIO ledger invalid: {exc}"]
+    validation_context = _validation_context
     for unit in units:
         try:
             contract, launch = resolve_transaction_unit_authority(
@@ -1245,10 +1257,6 @@ def validate_transaction_authority(
         contracts=contracts,
         run_id=str(run_id),
     ))
-    # This must remain the final filesystem authority operation.  In-memory
-    # edge reconciliation is intentionally complete before the terminal epoch
-    # so no callback can mutate a cached artifact after its last revalidation.
-    issues.extend(validation_context.finish())
     return list(dict.fromkeys(issues))
 
 

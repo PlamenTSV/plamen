@@ -394,11 +394,21 @@ def _execution_evidence(
         ):
             raise ExecutionScopeRuntimeError("execution evidence binding mismatch")
         matches.append((value, path, raw))
-    if len(matches) != 1:
+    # Duration is append-only execution telemetry, not successor authority.
+    # Every duration-only replay above must still bind the same immutable
+    # manifest, successor, and stable result.  Select only the unique record
+    # whose complete result equals the canonical manifest row; a later timing
+    # observation must never replace missing or damaged canonical evidence.
+    canonical_matches = [
+        match
+        for match in matches
+        if dict(match[0]["executed_result"]) == dict(result)
+    ]
+    if len(canonical_matches) != 1:
         raise ExecutionScopeRuntimeError(
-            "exact execution evidence cardinality is not one"
+            "exact canonical execution evidence cardinality is not one"
         )
-    return matches[0]
+    return canonical_matches[0]
 
 
 def _resolve_oracle(

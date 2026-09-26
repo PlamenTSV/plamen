@@ -91,6 +91,9 @@ sys.path.insert(0, r'__SCRIPTS_DIR__')
 
 # Block real recon_prepass BEFORE plamen_driver imports it.
 _stub_mod = types.ModuleType("recon_prepass")
+class _SmokeBuildContextResolutionError(RuntimeError):
+    pass
+_stub_mod.BuildContextResolutionError = _SmokeBuildContextResolutionError
 _stub_mod.run_recon_prepass = lambda cfg: "stub-prepass"
 def _recon_prepass_expected_owner_prefix(cfg):
     language = str(cfg.get("language") or "unknown").strip().lower()
@@ -162,6 +165,7 @@ _RECON_ARTIFACTS = [
     "state_variables.md", "function_list.md", "contract_inventory.md",
     "template_recommendations.md", "detected_patterns.md",
     "setter_list.md", "emit_list.md", "build_status.md",
+    "constraint_variables.md", "modifiers.md",
 ]
 
 _L1_RECON_ARTIFACTS = [
@@ -361,6 +365,63 @@ def _analysis_low_unique(fid, line):
         "**Impact**: The state can become inconsistent until the next repair operation.\n"
     )
 
+
+def _analysis_low_pair_unique(first_ordinal: int) -> str:
+    # Render two distinct low/info source actions for one breadth artifact.
+    # The production inventory boundary is deliberately one source action per
+    # canonical row. Reusing F-01/F-02 in several synthetic producer artifacts
+    # gives the chunk parser a shared provenance anchor and asks the canonical
+    # aggregate to perform a many-source merge. That is not what the C--G
+    # phase-loop scenarios exercise, so every fixture action receives a unique
+    # producer-local identity and distinct semantic facets.
+
+    low_id = f"F-{first_ordinal:03d}"
+    info_id = f"F-{first_ordinal + 1:03d}"
+    low_line = 10 + first_ordinal
+    info_line = 10 + first_ordinal + 1
+    return (
+        f"### Finding [{low_id}]: Missing event for synthetic action "
+        f"{first_ordinal}\n"
+        "**Severity**: Low\n"
+        f"**Location**: src/Stub.sol:L{low_line}\n"
+        "**Preferred Tag**: [CODE-TRACE]\n"
+        "**Verdict**: NEEDS_VERIFICATION\n"
+        f"**Root Cause**: Setter {first_ordinal} omits its state-change event.\n"
+        f"**Description**: Synthetic action {first_ordinal} changes state "
+        "without emitting its dedicated event.\n"
+        f"**Impact**: Observers can miss synthetic action {first_ordinal}.\n"
+        "**Recommendation**: Emit the dedicated state-change event.\n\n"
+        f"### Finding [{info_id}]: Mutable construction value for synthetic "
+        f"action {first_ordinal + 1}\n"
+        "**Severity**: Informational\n"
+        f"**Location**: src/Stub.sol:L{info_line}\n"
+        "**Preferred Tag**: [CODE-TRACE]\n"
+        "**Verdict**: NEEDS_VERIFICATION\n"
+        f"**Root Cause**: Value {first_ordinal + 1} uses mutable storage.\n"
+        f"**Description**: Synthetic value {first_ordinal + 1} is assigned "
+        "only during construction.\n"
+        f"**Impact**: Value {first_ordinal + 1} incurs avoidable storage cost.\n"
+        "**Recommendation**: Make the construction-only value immutable.\n"
+    )
+
+
+def _analysis_medium_unique(ordinal: int) -> str:
+    # Render one distinct Medium source action for Scenario H.
+
+    return (
+        f"### Finding [F-{ordinal:03d}]: Synthetic medium action {ordinal}\n"
+        "**Severity**: Medium\n"
+        f"**Location**: src/Stub.sol:L{10 + ordinal}\n"
+        "**Preferred Tag**: [CODE-TRACE]\n"
+        "**Verdict**: NEEDS_VERIFICATION\n"
+        f"**Root Cause**: Validation {ordinal} permits an invalid transition.\n"
+        f"**Description**: Synthetic medium action {ordinal} crosses its "
+        "guard without the required check.\n"
+        f"**Impact**: Synthetic state component {ordinal} can become inconsistent.\n"
+        "**Recommendation**: Enforce the transition guard before mutation.\n"
+        + ("padding " * 20) + "\n"
+    )
+
 _STUB_PHASE_CONTEXT = None
 _STUB_WRITE_ORDINAL = 0
 
@@ -407,6 +468,7 @@ def _record_smoke_exact_write_receipt(target, text):
     if resolved not in allowed:
         return
     event = {
+        "hook_event_name": "PreToolUse",
         "session_id": f"smoke-{phase.name}-{attempt}",
         "tool_use_id": f"write-{resolved.name}",
         "cwd": str(Path(config["project_root"]).resolve()),
@@ -917,6 +979,20 @@ def stub_run_phase(phase, config, attempt):
             "totalSupply and the user balance atomically.\n\n"
             "## Architecture\n\nSingle-contract vault pattern.\n"
         )
+        constraint_variables_body = (
+            "# Constraint Variables\n\n"
+            "## Constraint Variables\n\n"
+            "| Variable | Source Location | Bound / Enforcement | Setter | Status |\n"
+            "|---|---|---|---|---|\n"
+            "| fee | src/Protocol.sol:1 | fee <= 100 | setFee | ENFORCED |\n"
+        )
+        modifiers_body = (
+            "# Modifier and Guard Application Map\n\n"
+            "## Modifier Application Map\n\n"
+            "| Function | Source Location | Modifier / Guard | Status |\n"
+            "|---|---|---|---|\n"
+            "| Protocol.setFee | src/Protocol.sol:1 | onlyOwner | GUARDED |\n"
+        )
         for name in names:
             if name == "scope_leftover.md":
                 _write(
@@ -938,6 +1014,10 @@ def stub_run_phase(phase, config, attempt):
                 _write(scratch / name, build_status_body)
             elif name == "design_context.md":
                 _write(scratch / name, design_context_body)
+            elif name == "constraint_variables.md":
+                _write(scratch / name, constraint_variables_body)
+            elif name == "modifiers.md":
+                _write(scratch / name, modifiers_body)
             else:
                 _write(scratch / name, recon_body)
         if config["pipeline"] == "l1":
@@ -980,12 +1060,22 @@ def stub_run_phase(phase, config, attempt):
         if SCENARIO == "C":
             # Pass the manifest-exact Light gate comfortably (4 files). Fresh
             # mode requires COMPLETE markers + ## Findings structure.
-            for name in _MANIFEST_5_OUTPUTS[:4]:
-                _write(scratch / name, _breadth_marked(name, _ANALYSIS_LOW_ONLY, 2))
+            for index, name in enumerate(_MANIFEST_5_OUTPUTS[:4]):
+                _write(
+                    scratch / name,
+                    _breadth_marked(
+                        name,
+                        _analysis_low_pair_unique(1 + (index * 2)),
+                        2,
+                    ),
+                )
             return 0
         if SCENARIO in ("D", "E", "F", "G", "I"):
             for i in range(5):
-                _write(scratch / f"analysis_agent_{i}.md", _ANALYSIS_LOW_ONLY)
+                _write(
+                    scratch / f"analysis_agent_{i}.md",
+                    _analysis_low_pair_unique(1 + (i * 2)),
+                )
             if SCENARIO == "I":
                 # Inventory is now a deterministic Python merge, so exercise
                 # the same later-phase foreign-write boundary from the live
@@ -1001,7 +1091,10 @@ def stub_run_phase(phase, config, attempt):
             return 0
         if SCENARIO == "H":
             for i in range(3):
-                _write(scratch / f"analysis_agent_{i}.md", _ANALYSIS_MEDIUM_ONE)
+                _write(
+                    scratch / f"analysis_agent_{i}.md",
+                    _analysis_medium_unique(i + 1),
+                )
             return 0
 
     if phase.name == "depth":
@@ -1013,19 +1106,12 @@ def stub_run_phase(phase, config, attempt):
             _write(scratch / "depth_state_trace_findings.md", _DEPTH_COMPLETE_BODY)
             _write(scratch / "depth_external_findings.md", _DEPTH_COMPLETE_BODY)
             _write(scratch / "depth_edge_case_findings.md", _DEPTH_COMPLETE_BODY)
-            _write_depth_support_artifacts(scratch)
-            _write(
-                scratch / "depth_exit.md",
-                "\n".join([
-                    "- criterion: 1",
-                    "  verdict: PASS",
-                    "  rationale: Stub depth coverage satisfied for shard smoke test.",
-                    "  explored_paths:",
-                    "    - src/Stub.sol:L10",
-                    "    - src/Stub.sol:L11",
-                    "    - src/Stub.sol:L12",
-                ]) + "\n"
-            )
+            # never_cut_checkpoint.md and depth_exit.md are mechanically
+            # derived DRIVER outputs. Supplying model-owned fixture bytes here
+            # creates a real producer-authority mismatch when the driver
+            # synthesizes their canonical postimages, which prevents Gate P
+            # from publishing its completeness receipt. Scenario C exercises
+            # the same production ownership boundary.
             return 0
         if SCENARIO == "D":
             _write(scratch / "depth_consensus_invariant_findings.md", _DEPTH_COMPLETE_BODY)
@@ -1076,10 +1162,13 @@ def stub_run_phase(phase, config, attempt):
             # denominator.  Its auxiliary depth artifacts must therefore be
             # zero-finding too; the generic smoke body contains synthetic
             # finding blocks and the real promotion engine correctly treats
-            # those as candidates.
-            _write_depth_support_artifacts(
-                scratch, findings_body=_DEPTH_COMPLETE_BODY,
-            )
+            # those as candidates.  Leave checkpoint/depth_exit absent so the
+            # production driver synthesizes and PhaseIO-owns those lifecycle
+            # artifacts; a fixture MODEL owner followed by a DRIVER rewrite is
+            # intentionally rejected by Gate P as a producer mismatch.
+            _write(scratch / "design_stress_findings.md", _DEPTH_COMPLETE_BODY)
+            _write(scratch / "perturbation_findings.md", _DEPTH_COMPLETE_BODY)
+            _write(scratch / "skill_execution_gaps.md", _DEPTH_COMPLETE_BODY)
         return 0
 
     if phase.name == "inventory":
@@ -1182,6 +1271,7 @@ def stub_run_phase(phase, config, attempt):
 
                 title_match = re.search(r"\]\s*:\s*(.+?)\s*$", match.group(0))
                 title = title_match.group(1).strip() if title_match else "Exact smoke candidate"
+                severity = source_field("Severity", "Low")
                 location = source_field("Location", f"src/Stub.sol:L{10 + ordinal}")
                 preferred_tag = source_field("Preferred Tag", "[CODE-TRACE]")
                 verdict = source_field("Verdict", "NEEDS_VERIFICATION")
@@ -1204,13 +1294,13 @@ def stub_run_phase(phase, config, attempt):
                     + str(int(hashlib.sha256(qualified.encode("utf-8")).hexdigest()[:12], 16))
                 )
                 blocks.append(
-                    f"| {local_id} | Low | {title} | {qualified} | {location} |"
+                    f"| {local_id} | {severity} | {title} | {qualified} | {location} |"
                 )
                 details.extend([
                     f"### Finding [{local_id}]: {title}",
                     "",
                     f"**Source IDs**: {qualified}",
-                    "**Severity**: Low",
+                    f"**Severity**: {severity}",
                     f"**Location**: {location}",
                     f"**Preferred Tag**: {preferred_tag}",
                     f"**Verdict**: {verdict}",
@@ -1306,13 +1396,13 @@ def stub_run_phase(phase, config, attempt):
         return 0
     if phase.name == "verify_medium_a" and SCENARIO == "H":
         _write(
-            scratch / "verify_F-01.md",
-            "Preferred Tag: [CODE-TRACE]\nEvidence Tag: [CODE-TRACE]\n"
+            scratch / "verify_INV-001.md",
+            "# INV-001\n\nPreferred Tag: [CODE-TRACE]\nEvidence Tag: [CODE-TRACE]\n"
             "Verdict: CONFIRMED\nEvidence details: " + "trace " * 20 + "\n"
         )
         _write(
-            scratch / "verify_F-02.md",
-            "Preferred Tag: [CODE-TRACE]\nEvidence Tag: [CODE-TRACE]\n"
+            scratch / "verify_INV-002.md",
+            "# INV-002\n\nPreferred Tag: [CODE-TRACE]\nEvidence Tag: [CODE-TRACE]\n"
             "Verdict: CONFIRMED\nEvidence details: " + "trace " * 20 + "\n"
         )
         return 0
@@ -1375,6 +1465,15 @@ pd._ensure_program_facts_stage2_emit_only = lambda **_kwargs: types.SimpleNamesp
     reused=False,
     consumer_activation=False,
 )
+# Native EVM projection/workspace setup is another pre-phase authority owned by
+# its dedicated integration suites.  The fixture has no native materializer or
+# snapshot resolver and must not attempt to mint either capability.
+pd.ensure_committed_evm_analysis_projection = lambda **_kwargs: None
+pd.ensure_evm_analysis_workspace_authority = lambda **_kwargs: None
+# The repository-under-test is not the synthetic audit target, and other test
+# workers may legitimately edit it while these long-running scenarios execute.
+# Snapshot drift has dedicated coverage; pin it out of this phase-loop lane.
+pd._assert_audit_snapshot_still_bound = lambda *_args, **_kwargs: None
 # Auxiliary writable-root startup reconciles host-global provider journals.
 # That boundary has its own integration suite and makes this otherwise-hermetic
 # phase-loop lane depend on unrelated workstation history (including large
@@ -1386,6 +1485,22 @@ pd._run_auxiliary_writable_root_startup_boundary = (
         "allocation_disposition": "ALLOW_NEW_LEASES",
         "runtime_debt": [],
     }
+)
+# Production POSIX startup now accepts audit execution only through either the
+# authenticated native guest ABI or the explicitly requested compatibility
+# ABI.  This generated child is a phase-loop fixture: it has no installed
+# front, native broker, host credential authority, or live provider to
+# authenticate.  Enter through the compatibility-shaped argv below, but keep
+# every compatibility authority/effect inert so the harness cannot acquire
+# ambient credentials, launch a provider, or manufacture native authority.
+# Dedicated native/compat admission suites exercise those production
+# boundaries; this smoke suite continues to own only phase-loop policy.
+pd._admit_posix_v2_compat_config = lambda _config: None
+pd._activate_posix_v2_compat_process_marker = lambda: None
+pd._issue_posix_v2_compat_session = lambda **_kwargs: None
+pd._run_posix_v2_compat_supply_chain_gate = lambda _config: None
+pd._record_posix_v2_compat_runtime_debt = (
+    lambda _scratchpad, _checkpoint, **_kwargs: "smoke-runtime-debt-stub"
 )
 # Verify-recovery is an inter-phase worker subprocess, not routed through
 # run_phase. Keep this phase-loop smoke harness hermetic: return the missing IDs
@@ -1408,12 +1523,103 @@ if SCENARIO == "C":
         if _phase.name in _scenario_c_model_stubs
         else _real_bind_typed_model_phase_inputs(_phase, _scratch, _config)
     )
+    # Gate P and semantic-dedup have dedicated transaction suites.  This lane
+    # owns the empty-verification short circuit, so preserve the exact clean
+    # canonical inventory as a no-delta predecessor instead of rescanning the
+    # fixture's deliberately synthetic breadth prose as promotion orphans.
+    pd._run_gate_p_with_semantic_invalidation = (
+        lambda *_args, **_kwargs: {
+            "safe_to_consume": True,
+            "status": "SMOKE_NO_DELTA",
+            "harvested": 0,
+            "emitted_to_inventory": 0,
+        }
+    )
+    pd._compute_dedup_candidate_blocks = lambda _scratchpad: 0
+    # The scenario's terminal contract is report assembly after an empty
+    # verifier denominator.  Post-assembly disposition/floor and their typed
+    # report-evidence/assurance authorities are covered independently and
+    # require live recon/security-obligation receipts that this synthetic
+    # phase-loop runner intentionally cannot mint.  End the lane at its stated
+    # report_assemble boundary and authenticate the already-assembled bytes as
+    # the terminal smoke digest without weakening any production gate.
+    _report_assemble_index = next(
+        index
+        for index, candidate in enumerate(pd.SC_PHASES)
+        if candidate.name == "report_assemble"
+    )
+    pd.SC_PHASES = pd.SC_PHASES[: _report_assemble_index + 1]
+    pd._refresh_assurance_projection = lambda *_args, **_kwargs: []
+    pd._validate_final_assurance_delivery = lambda *_args, **_kwargs: []
+
+    def _scenario_c_terminal_report_quality(
+        _scratchpad,
+        _config,
+        *,
+        compare_only=False,
+        accepted_report_sha256=None,
+    ):
+        if accepted_report_sha256 is not None:
+            report_path = Path(_config["project_root"]) / "AUDIT_REPORT.md"
+            accepted_report_sha256.clear()
+            accepted_report_sha256.append(
+                hashlib.sha256(report_path.read_bytes()).hexdigest()
+            )
+        return []
+
+    pd._finalize_report_evidence_quality = (
+        _scenario_c_terminal_report_quality
+    )
     # Keep the deterministic chain-prep transactions live. They are the real
     # registered producers of the exact Agent-2 denominator (candidate pairs,
     # variable map, state resolution, and the enabler prefill), so bypassing
     # them would make an otherwise valid model fixture unauthoritative.
 
-sys.argv = ["plamen_driver.py", r'__CONFIG_PATH__']
+# Scenario F predates the typed semantic-invariant producer and exercises only
+# the Thorough depth never-cut retry/degrade contract.  Its synthetic target
+# deliberately has no recon graph and its model outputs are written by the
+# in-process phase stub, so neither can carry the independent PRE/POST receipts
+# required by the production semantic-invariant boundary.  Keep that orthogonal
+# subsystem inert in this one lane (it has dedicated live-driver suites) while
+# leaving the real depth validators, retry path, checkpoint transitions, and
+# post-depth attention-repair scheduling under test.
+if SCENARIO == "F":
+    _real_bind_typed_model_phase_inputs = pd._bind_typed_model_phase_inputs
+    _scenario_f_model_stubs = {"invariants", "invariants_p2"}
+    pd._bind_typed_model_phase_inputs = (
+        lambda _phase, _scratch, _config: []
+        if _phase.name in _scenario_f_model_stubs
+        else _real_bind_typed_model_phase_inputs(_phase, _scratch, _config)
+    )
+    pd._prepare_semantic_invariant_pre_boundary = (
+        lambda _scratch, _config: []
+    )
+    pd._prepare_semantic_invariant_pass2_boundary = (
+        lambda _scratch, _config: []
+    )
+    pd._finalize_semantic_invariant_post_boundary = (
+        lambda _scratch, _config: []
+    )
+    pd._finalize_semantic_invariant_pass2_boundary = (
+        lambda _scratch, _config: []
+    )
+    pd._semantic_invariant_final_input_issues = (
+        lambda _scratch, _config: []
+    )
+    pd._run_semantic_invariant_independent_boundary = (
+        lambda _scratch, _config, _phase: []
+    )
+    pd._semantic_invariant_fallback_replay_issues = (
+        lambda _scratch, _config: []
+    )
+
+sys.argv = [
+    "plamen_driver.py",
+    "--startup-intent", "RESUME_EXISTING",
+    "--startup-decision-receipt", r'__DECISION_PATH__',
+    r'__CONFIG_PATH__',
+    "--posix-compat-v2",
+]
 try:
     pd.main()
 except SystemExit as e:
@@ -1430,6 +1636,7 @@ def _run_driver(tmp: Path, config_path: Path, call_log: Path,
               .replace("__SCRIPTS_DIR__", str(SCRIPTS_DIR))
               .replace("__CALL_LOG__", str(call_log))
               .replace("__CONFIG_PATH__", str(config_path))
+              .replace("__DECISION_PATH__", str(tmp / "_startup-decision.json"))
               .replace("__SCENARIO__", scenario))
     # Write the runner to a temp file rather than passing it inline via
     # `python -c "<script>"`. The template grows as the pipeline gains
@@ -1831,7 +2038,7 @@ def test_scenario_g_depth_exit_validation() -> None:
 
 @pytest.mark.integration
 def test_scenario_h_verify_completeness_gate() -> None:
-    """Verify completeness gate."""
+    """Verify completeness debt remains explicit on the haltless path."""
     tmp, project, scratch, cfg_path, call_log = _make_project(
         "plamen_smoke_h_", pipeline="l1"
     )
@@ -1844,7 +2051,10 @@ def test_scenario_h_verify_completeness_gate() -> None:
         # with no snapshot/run identity is correctly rejected as
         # LEGACY_UNBOUND by the non-destructive startup contract.
         rc = _run_driver(tmp, cfg_path, call_log, "H")
-        _assert(rc == 3, f"H exit: got {rc}, expected 3 (degraded verification)")
+        # Dynamic verification debt is resumable/report-visible and no longer
+        # aborts the pipeline.  The phase remains both completed and degraded
+        # below, with proof authority NONE for every unresolved queue row.
+        _assert(rc == 0, f"H exit: got {rc}, expected 0 (haltless verification debt)")
 
         ckpt = json.loads(
             (scratch / "_v2_checkpoint.json").read_text(encoding="utf-8")
@@ -2065,10 +2275,10 @@ def test_scenario_k_inventory_sharding() -> None:
             "not be re-harvested as promotion gaps",
         )
         _assert(
-            set(ckpt.get("degraded", []))
-            == {"verify_queue", "mechanical_verify", "report_index"},
-            "K: rc=3 may reflect only the explicitly modeled downstream "
-            f"provider debt; got {ckpt.get('degraded', [])}",
+            set(ckpt.get("degraded", [])) == set(),
+            "K: the exact sharded phase path must carry no phase degradation; "
+            "the fixture's rc=3 belongs to its separate modeled terminal "
+            f"acceptance debt; got {ckpt.get('degraded', [])}",
         )
         print("[scenario K] PASS")
     finally:

@@ -341,85 +341,63 @@ def test_osv_malformed_or_missing_typed_shape_fails_closed(
         )
 
 
-def test_npm_critical_and_malicious_prose_is_not_a_malware_marker(
-    tmp_path, monkeypatch
-):
+def test_npm_legacy_parser_critical_prose_is_not_a_malware_marker():
+    """Legacy report parsing is not offline execution/admission evidence."""
     scg = _scg()
-    _gate_scanner_payload(
-        scg,
-        tmp_path,
-        monkeypatch,
-        scanner="npm",
-        lock_name="package-lock.json",
-        payload={
-            "auditReportVersion": 2,
-            "vulnerabilities": {
-                "fixture": {
+    assessment = scg._npm_risk_assessment({
+        "auditReportVersion": 2,
+        "vulnerabilities": {
+            "fixture": {
+                "severity": "critical",
+                "via": [{
+                    "source": 123,
+                    "title": "MAL-2026-1: malicious critical payload",
                     "severity": "critical",
-                    "via": [{
-                        "source": 123,
-                        "title": "MAL-2026-1: malicious critical payload",
-                        "severity": "critical",
-                        "cwe": ["CWE-79"],
-                    }],
-                },
+                    "cwe": ["CWE-79"],
+                }],
             },
-            "metadata": {"vulnerabilities": {
-                "info": 0, "low": 0, "moderate": 0,
-                "high": 0, "critical": 1, "total": 1,
-            }},
         },
-    )
+        "metadata": {"vulnerabilities": {
+            "info": 0, "low": 0, "moderate": 0,
+            "high": 0, "critical": 1, "total": 1,
+        }},
+    })
+    assert assessment.vulnerability_count == 1
+    assert assessment.malicious_evidence == ()
 
 
-def test_npm_exact_embedded_malicious_code_cwe_aborts(
-    tmp_path, monkeypatch
-):
+def test_npm_legacy_parser_identifies_exact_embedded_malicious_code_cwe():
     scg = _scg()
-    with pytest.raises(scg.SupplyChainAbortError, match="typed malicious"):
-        _gate_scanner_payload(
-            scg,
-            tmp_path,
-            monkeypatch,
-            scanner="npm",
-            lock_name="package-lock.json",
-            payload={
-                "auditReportVersion": 2,
-                "vulnerabilities": {
-                    "fixture": {"via": [{"source": 123, "cwe": ["CWE-506"]}]},
-                },
-                "metadata": {"vulnerabilities": {
-                    "info": 0, "low": 0, "moderate": 0,
-                    "high": 0, "critical": 1, "total": 1,
-                }},
-            },
-        )
+    assessment = scg._npm_risk_assessment({
+        "auditReportVersion": 2,
+        "vulnerabilities": {
+            "fixture": {"via": [{"source": 123, "cwe": ["CWE-506"]}]},
+        },
+        "metadata": {"vulnerabilities": {
+            "info": 0, "low": 0, "moderate": 0,
+            "high": 0, "critical": 1, "total": 1,
+        }},
+    })
+    assert assessment.vulnerability_count == 1
+    assert len(assessment.malicious_evidence) == 1
+    assert assessment.malicious_evidence[0].endswith(".cwe=CWE-506")
 
 
 @pytest.mark.parametrize(
     "bad_via",
     [None, {}, [{"title": "missing typed source"}], [{"source": True}]],
 )
-def test_npm_malformed_advisory_shape_fails_closed(
-    tmp_path, monkeypatch, bad_via
-):
+def test_npm_legacy_parser_rejects_malformed_advisory_shape(bad_via):
     scg = _scg()
-    with pytest.raises(scg.SupplyChainAbortError, match="malformed"):
-        _gate_scanner_payload(
-            scg,
-            tmp_path,
-            monkeypatch,
-            scanner="npm",
-            lock_name="package-lock.json",
-            payload={
-                "auditReportVersion": 2,
-                "vulnerabilities": {"fixture": {"via": bad_via}},
-                "metadata": {"vulnerabilities": {
-                    "info": 0, "low": 0, "moderate": 0,
-                    "high": 0, "critical": 1, "total": 1,
-                }},
-            },
-        )
+    with pytest.raises(scg._ScannerSchemaError):
+        scg._npm_risk_assessment({
+            "auditReportVersion": 2,
+            "vulnerabilities": {"fixture": {"via": bad_via}},
+            "metadata": {"vulnerabilities": {
+                "info": 0, "low": 0, "moderate": 0,
+                "high": 0, "critical": 1, "total": 1,
+            }},
+        })
 
 
 @pytest.mark.parametrize(
@@ -437,23 +415,14 @@ def test_npm_malformed_advisory_shape_fails_closed(
              "critical": 0, "total": 1}),
     ],
 )
-def test_npm_version_or_count_inconsistency_fails_closed(
-    tmp_path, monkeypatch, version, counts
-):
+def test_npm_legacy_parser_rejects_version_or_count_inconsistency(version, counts):
     scg = _scg()
-    with pytest.raises(scg.SupplyChainAbortError, match="malformed"):
-        _gate_scanner_payload(
-            scg,
-            tmp_path,
-            monkeypatch,
-            scanner="npm",
-            lock_name="package-lock.json",
-            payload={
-                "auditReportVersion": version,
-                "vulnerabilities": {},
-                "metadata": {"vulnerabilities": counts},
-            },
-        )
+    with pytest.raises(scg._ScannerSchemaError):
+        scg._npm_risk_assessment({
+            "auditReportVersion": version,
+            "vulnerabilities": {},
+            "metadata": {"vulnerabilities": counts},
+        })
 
 
 def test_cargo_critical_and_malicious_prose_is_not_a_malware_marker(
@@ -609,13 +578,15 @@ def test_gate_never_raises_on_unreadable_paths(tmp_path):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# recon_prepass._prepare_evm_build integration
+# recon_prepass.prepare_snapshot_bound_inputs integration
 # ─────────────────────────────────────────────────────────────────────────
 
 def test_recon_poisoned_lockfile_aborts_before_install_mock(tmp_path, monkeypatch):
-    """Wiring test: when the gate raises, _prepare_evm_build must propagate
-    the abort WITHOUT invoking any install step. Gate itself is stubbed here
-    (isolation); the companion test below drives the REAL gate."""
+    """The public pre-snapshot boundary propagates a gate abort before install.
+
+    Gate itself is stubbed here (isolation); the companion test below drives
+    the real gate.
+    """
     rp = _rp()
     root = tmp_path / "proj"
     poisoned_pkg = "plamen-test-evil-pkg"
@@ -632,12 +603,15 @@ def test_recon_poisoned_lockfile_aborts_before_install_mock(tmp_path, monkeypatc
         )
 
     monkeypatch.setattr(rp.shutil, "which", lambda n: "/usr/bin/" + n)
-    monkeypatch.setattr(rp, "_run_forge", lambda args, cwd, t: (install_calls.append(("forge", args)) or (0, "")))
     monkeypatch.setattr(rp, "_run_cmd", lambda cmd, cwd, t: (install_calls.append(("cmd", cmd)) or 0))
     monkeypatch.setattr(rp, "gate_supply_chain", _raise_abort)
 
     with pytest.raises(rp.SupplyChainAbortError):
-        rp._prepare_evm_build(root)
+        rp.prepare_snapshot_bound_inputs({
+            "project_root": str(root),
+            "pipeline": "sc",
+            "language": "evm",
+        })
 
     assert install_calls == [], (
         "install mock(s) must NOT be invoked when the supply-chain gate aborts"
@@ -658,49 +632,55 @@ def test_recon_poisoned_lockfile_via_real_gate_aborts_before_install_mock(tmp_pa
 
     install_calls = []
     monkeypatch.setattr(rp.shutil, "which", lambda n: "/usr/bin/" + n)
-    monkeypatch.setattr(rp, "_run_forge", lambda args, cwd, t: (install_calls.append(("forge", args)) or (0, "")))
     monkeypatch.setattr(rp, "_run_cmd", lambda cmd, cwd, t: (install_calls.append(("cmd", cmd)) or 0))
     # Drive the real gate with the synthetic IoC injected via the module-level
     # denylist (append-only in production; test-local override here).
     monkeypatch.setattr(rp.supply_chain_gate, "DEFAULT_IOC_DENYLIST", frozenset({poisoned_pkg}))
 
     with pytest.raises(rp.SupplyChainAbortError):
-        rp._prepare_evm_build(root)
+        rp.prepare_snapshot_bound_inputs({
+            "project_root": str(root),
+            "pipeline": "sc",
+            "language": "evm",
+        })
 
     assert install_calls == []
 
 
 def test_recon_clean_lockfile_leaves_install_mock_unchanged(tmp_path, monkeypatch):
-    """Zero happy-path regression: a clean lockfile still reaches the real
-    install mock exactly as before this item shipped."""
+    """A clean lockfile reaches npm through the public pre-snapshot boundary."""
     rp = _rp()
     root = tmp_path / "proj"
     _mk(root / "package.json", "{}")
-    _mk(root / "package-lock.json", '{"dependencies": {"left-pad": "1.0.0"}}')
+    _mk(root / "package-lock.json", json.dumps({
+        "lockfileVersion": 3,
+        "packages": {"": {}},
+    }))
     _mk(root / "src" / "A.sol", "contract A {}\n")
 
     cmds = []
-    monkeypatch.setattr(rp.shutil, "which", lambda n: "/usr/bin/" + n if n == "npm" else None)
+    monkeypatch.setattr(
+        rp.shutil, "which",
+        lambda n: "/usr/bin/" + n if n in {"npm", "osv-scanner"} else None,
+    )
     monkeypatch.setattr(rp, "_run_cmd", lambda cmd, cwd, t: (cmds.append(cmd) or 0))
     monkeypatch.setattr(
         rp.supply_chain_gate,
         "_call_offline_scanner",
         lambda binary, lf: rp.supply_chain_gate.OfflineScanResult(
             rp.supply_chain_gate.OfflineScanState.SUCCEEDED,
-            output=json.dumps({
-                "auditReportVersion": 2,
-                "vulnerabilities": {},
-                "metadata": {"vulnerabilities": {
-                    "info": 0, "low": 0, "moderate": 0,
-                    "high": 0, "critical": 0, "total": 0,
-                }},
-            }),
+            output=json.dumps({"results": []}),
         ),
     )
 
-    note = rp._prepare_evm_build(root)
+    receipt = rp.prepare_snapshot_bound_inputs({
+        "project_root": str(root),
+        "pipeline": "sc",
+        "language": "evm",
+    })
     assert ["npm", "ci"] in cmds
-    assert "npm ci ok" in note
+    assert receipt["status"] == "PREPARED"
+    assert "npm ci ok" in receipt["reason"]
 
 
 def test_recon_scanner_absent_with_lockfile_aborts(tmp_path, monkeypatch, caplog):
@@ -712,14 +692,16 @@ def test_recon_scanner_absent_with_lockfile_aborts(tmp_path, monkeypatch, caplog
 
     install_calls = []
     # No binaries at all resolve -> scanner absent AND install tools absent;
-    # the gate must abort before we ever ask whether npm/forge exist for
-    # the install step itself.
+    # the gate must abort before we ever ask whether install tooling exists.
     monkeypatch.setattr(rp.shutil, "which", lambda n: None)
     monkeypatch.setattr(rp, "_run_cmd", lambda cmd, cwd, t: (install_calls.append(cmd) or 0))
-    monkeypatch.setattr(rp, "_run_forge", lambda args, cwd, t: (install_calls.append(args) or (0, "")))
 
     with pytest.raises(rp.SupplyChainAbortError):
-        rp._prepare_evm_build(root)
+        rp.prepare_snapshot_bound_inputs({
+            "project_root": str(root),
+            "pipeline": "sc",
+            "language": "evm",
+        })
     assert install_calls == []
 
 

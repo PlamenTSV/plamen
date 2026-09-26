@@ -111,6 +111,91 @@ def test_completed_phase_reconciliation_keeps_valid_prefix(tmp_path: Path):
     assert checkpoint.completed == ["recon", "inventory"]
 
 
+def test_reconcile_retains_admitted_public_claude_headless_policy(
+    tmp_path: Path, monkeypatch,
+):
+    scratch = tmp_path / ".scratchpad"
+    scratch.mkdir()
+    phase = _phase("report_body_writer_low_info", [])
+    run_id = str(uuid.uuid4())
+    checkpoint = D.Checkpoint(completed=[phase.name], run_id=run_id)
+    current_config = {
+        "pipeline": "sc",
+        "mode": "thorough",
+        "language": "evm",
+        "cli_backend": "claude",
+        "claude_exec_mode": "headless",
+        "project_root": str(tmp_path),
+        "scratchpad": str(scratch),
+        "_run_id": "92345678-1234-4abc-8def-1234567890ab",
+        "_active_model_attempts": {phase.name: 2},
+    }
+    observed = {}
+
+    def capture_resume_config(selected, config, selected_root, project_root):
+        assert selected is phase
+        assert selected_root == scratch
+        assert Path(project_root) == tmp_path
+        observed.update(config)
+        return []
+
+    monkeypatch.setenv("PLAMEN_CLAUDE_EXEC_MODE", "pty")
+    monkeypatch.setattr(D, "_resume_semantic_issues", capture_resume_config)
+    assert D._reconcile_completed_checkpoint_artifacts(
+        scratch,
+        str(tmp_path),
+        checkpoint,
+        [phase],
+        "thorough",
+        "evm",
+        "sc",
+        "claude",
+        current_config=current_config,
+    ) == []
+
+    assert observed["claude_exec_mode"] == "headless"
+    assert "_active_model_attempts" not in observed
+    assert observed["_run_id"] == run_id
+    runtime = D._live_phase_runtime_launch_policy(
+        phase, scratch, dict(observed),
+    )
+    assert runtime["backend"] == "claude"
+    assert runtime["exec_mode"] == "headless"
+    assert runtime["claude_exec_mode_source"] == "config"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("mode", "core"),
+        ("project_root", "/different/project"),
+        ("cli_backend", "codex"),
+    ),
+)
+def test_reconcile_rejects_mismatched_current_public_config(
+    tmp_path: Path, monkeypatch, field: str, value: str,
+):
+    scratch = tmp_path / ".scratchpad"
+    scratch.mkdir()
+    phase = _phase("report_body_writer_low_info", [])
+    checkpoint = D.Checkpoint(completed=[phase.name], run_id=str(uuid.uuid4()))
+    current_config = {
+        "pipeline": "sc", "mode": "thorough", "language": "evm",
+        "cli_backend": "claude", "claude_exec_mode": "headless",
+        "project_root": str(tmp_path), "scratchpad": str(scratch),
+    }
+    current_config[field] = value
+    monkeypatch.setattr(
+        D, "_resume_semantic_issues",
+        lambda *_args, **_kwargs: pytest.fail("mismatch reached resume validation"),
+    )
+    with pytest.raises(RuntimeError, match="differs from reconciliation dimensions"):
+        D._reconcile_completed_checkpoint_artifacts(
+            scratch, str(tmp_path), checkpoint, [phase], "thorough", "evm",
+            "sc", "claude", current_config=current_config,
+        )
+
+
 def test_completed_instantiate_reconciliation_rejects_bad_manifest(tmp_path: Path):
     checkpoint = D.Checkpoint(completed=["recon", "instantiate", "breadth"], degraded=[])
     phases = [

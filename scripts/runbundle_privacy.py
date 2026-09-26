@@ -18,6 +18,8 @@ import stat
 from typing import Any, Callable, Iterable, Mapping, Sequence
 import unicodedata
 
+from portable_path_contract import assert_lexically_bounded_relative_path
+
 
 REAL_AUDIT_V2 = "REAL_AUDIT_V2"
 BUNDLE_INDEX_SCHEMA = "plamen.real-audit-bundle-index.v2"
@@ -580,6 +582,14 @@ def assert_safe_relative_path(value: str, *, label: str = "value") -> str:
 
     if not isinstance(value, str) or not value:
         raise RunBundlePrivacyError(f"{label} is not a safe relative path")
+    try:
+        assert_lexically_bounded_relative_path(
+            value, label=label, max_path_bytes=4096
+        )
+    except ValueError as exc:
+        raise RunBundlePrivacyError(
+            f"{label} is not a safe relative path"
+        ) from exc
     if unicodedata.normalize("NFC", value) != value:
         raise RunBundlePrivacyError(
             f"{label} relative path is not Unicode-normalized"

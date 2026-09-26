@@ -92,6 +92,28 @@ def test_invariant_commitment_exact_zero_denominator_is_not_applicable(tmp_path:
     assert receipt.invariant_commitment_status == "NOT_APPLICABLE"
 
 
+@pytest.mark.parametrize("separator", ("|---|---|---|---|", ""))
+def test_separator_format_drift_preserves_exploration_rows_and_commitments(
+    tmp_path: Path,
+    separator: str,
+) -> None:
+    _write(tmp_path / "repo" / "src" / "Module.sol", "one\ntwo\n")
+    source = _with_commitments(
+        _coverage(
+            "| BASE-1 | Direction | first path | NO-GAP | src/Module.sol:L2 |\n"
+        ),
+        "| BASE-1 | Direction | first path | CI:CI-1 | - |\n",
+        blocks=_ci("CI-1", "BASE-1", "first path"),
+    ).replace("|---|---|---|---|", separator)
+
+    receipt = _compile(tmp_path, source)
+
+    assert receipt.source_row_count == 1
+    assert receipt.invariant_commitment_denominator == 1
+    assert receipt.invariant_commitment_status == "COMPLETE"
+    assert receipt.debt == ()
+
+
 def test_two_clears_cannot_share_one_committed_invariant(tmp_path: Path):
     _write(tmp_path / "repo" / "src" / "Module.sol", "one\ntwo\n")
     source = _with_commitments(
@@ -276,7 +298,83 @@ def test_only_canonical_prior_referent_closes(tmp_path: Path):
     assert rows["invented"].resolution_kind == "INVALID_CLEAR"
 
 
-def test_one_attempt_repair_exact_locus_closes_and_blanket_wording_queues(tmp_path: Path):
+def test_assessed_prior_finding_precedes_supporting_source_locus(tmp_path: Path):
+    """An already-captured bug is not reinterpreted as a safe local clear."""
+    _write(tmp_path / "repo" / "src" / "Module.sol", "one\ntwo\n")
+    receipt = _compile(
+        tmp_path,
+        _coverage(
+            "| BASE-1 | Direction | unsafe sibling | ASSESSED | "
+            "H-01; src/Module.sol:L2 |\n"
+        ),
+        canonical={"H-01": "CID-AAAAAAAAAAAAAAAA"},
+    )
+    assert receipt.rows[0].resolution_kind == "CANONICAL_PRIOR"
+    assert receipt.rows[0].resolved_reference == "CID-AAAAAAAAAAAAAAAA"
+    assert receipt.invariant_commitment_denominator == 0
+    assert receipt.invariant_commitment_status == "NOT_APPLICABLE"
+    assert receipt.obligations == ()
+
+
+def test_unused_assessed_declaration_is_global_debt_not_commitment_status(
+    tmp_path: Path,
+) -> None:
+    """An unrelated declaration must not corrupt the typed CI aggregate."""
+
+    _write(tmp_path / "repo" / "src" / "Module.sol", "one\ntwo\n")
+    source = _with_commitments(
+        _coverage(
+            "| BASE-1 | Direction | exact clear | NO-GAP | src/Module.sol:L2 |\n",
+            "| BASE-2 | Neighbour | prior-covered | ASSESSED | H-01 |\n",
+        ),
+        "| BASE-1 | Direction | exact clear | CI:CI-1 | - |\n",
+        "| BASE-2 | Neighbour | prior-covered | CI:CI-2 | - |\n",
+        blocks=_ci("CI-1", "BASE-1", "exact clear"),
+    )
+    receipt = _compile(
+        tmp_path,
+        source,
+        canonical={"H-01": "CID-AAAAAAAAAAAAAAAA"},
+    )
+
+    assert receipt.invariant_commitment_denominator == 1
+    assert receipt.invariant_commitments[0].status == "COMPLETE"
+    assert receipt.invariant_commitment_status == "COMPLETE"
+    assert receipt.status == "DEGRADED"
+    assert any(
+        "no exact exploration clear identity" in item for item in receipt.debt
+    )
+    E.write_lifecycle_artifacts(tmp_path / "receipt", receipt)
+    assert E.load_lifecycle_receipt(
+        tmp_path / "receipt" / E.RECEIPT_NAME
+    ).invariant_commitment_status == "COMPLETE"
+
+
+def test_committed_invariant_provenance_allows_equivalent_word_order(tmp_path: Path):
+    _write(tmp_path / "repo" / "src" / "Module.sol", "one\ntwo\n")
+    instance = "Empty-swap branch in Module._doMixSwap"
+    source = _with_commitments(
+        _coverage(
+            f"| BASE-1 | Neighbour | {instance} | NO-GAP | src/Module.sol:L2 |\n"
+        ),
+        f"| BASE-1 | Neighbour | {instance} | CI:CI-1 | - |\n",
+        blocks=(
+            "committed-invariant [CI-1]\n"
+            "Locus: src/Module.sol:L2\n"
+            "Shape: REQUESTED_EQ_DELIVERED\n"
+            "Assertion: the empty branch returns exactly the supplied amount\n"
+            "Falsify Class: property\n"
+            "Provenance: skeptic NO-GAP @ Finding BASE-1, Instance "
+            "Module._doMixSwap empty-swap branch\n"
+        ),
+    )
+    receipt = _compile(tmp_path, source)
+    assert receipt.invariant_commitment_status == "COMPLETE"
+    assert receipt.invariant_commitments[0].status == "COMPLETE"
+    assert receipt.obligations == ()
+
+
+def test_repaired_clear_without_committed_invariant_remains_queued(tmp_path: Path):
     _write(tmp_path / "repo" / "src" / "Module.sol", "one\ntwo\nthree\n")
     receipt = _compile(
         tmp_path,
@@ -302,9 +400,53 @@ def test_one_attempt_repair_exact_locus_closes_and_blanket_wording_queues(tmp_pa
     )
     assert repaired.repair_attempts == 1
     assert repaired.status == "DEGRADED"
-    assert {o.instance for o in repaired.obligations} == {"blanket"}
-    assert repaired.obligations[0].disposition == "UNRESOLVED"
+    assert {o.instance for o in repaired.obligations} == {"blanket", "closeable"}
+    obligations = {o.instance: o for o in repaired.obligations}
+    assert obligations["blanket"].disposition == "UNRESOLVED"
+    assert obligations["closeable"].disposition == "MISSING_COMMITTED_INVARIANT"
+    repaired_rows = {row.instance: row for row in repaired.rows}
+    assert repaired_rows["closeable"].resolution_kind == "PRODUCTION_LOCUS"
+    assert repaired.invariant_commitment_status == "DEBT"
     assert E.build_repair_plan(repaired, prior_plan=plan) is None
+
+
+def test_repaired_exact_locus_recompiles_predeclared_invariant(tmp_path: Path):
+    _write(tmp_path / "repo" / "src" / "Module.sol", "one\ntwo\nthree\n")
+    source = _with_commitments(
+        _coverage(
+            "| BASE-1 | Direction | closeable path | NO-GAP | explored |\n"
+        ),
+        "| BASE-1 | Direction | closeable path | CI:CI-1 | exact relation |\n",
+        blocks=_ci("CI-1", "BASE-1", "closeable path"),
+    )
+    receipt = _compile(tmp_path, source)
+    assert receipt.invariant_commitment_denominator == 0
+    assert receipt.invariant_commitment_status == "NOT_APPLICABLE"
+    assert receipt.debt == ()
+
+    plan = E.build_repair_plan(receipt)
+    assert plan is not None
+    oid = receipt.obligations[0].obligation_id
+    repaired = E.reconcile_repair_attempt(
+        receipt,
+        plan,
+        _repair_response(
+            plan,
+            f"| {oid} | CLEAR | src/Module.sol:L2 |  | exact guard locus |\n",
+        ),
+        production_root=tmp_path / "repo",
+        canonical_prior_ids={},
+    )
+
+    assert repaired.rows[0].resolution_kind == "PRODUCTION_LOCUS"
+    assert repaired.rows[0].resolved_reference == "src/Module.sol:L2"
+    assert repaired.invariant_commitment_denominator == 1
+    assert repaired.invariant_commitment_status == "COMPLETE"
+    assert repaired.invariant_commitments[0].status == "COMPLETE"
+    assert repaired.invariant_commitments[0].ci_id == "CI-1"
+    assert repaired.obligations == ()
+    assert repaired.debt == ()
+    assert repaired.status == "CLEAN"
 
 
 def test_repair_can_resolve_canonical_prior_or_emit_additive_action_without_self_certification(tmp_path: Path):
@@ -415,6 +557,39 @@ def test_additive_source_row_is_exported_not_auto_adjudicated(tmp_path: Path):
     assert receipt.additive_actions[0].requires_independent_consumer
     assert receipt.obligations[0].disposition == "UNRESOLVED"
     assert not hasattr(receipt, "verified_findings")
+
+
+def test_emitted_heading_is_action_even_when_coverage_finding_repeats_it(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "# Exploration\n\n"
+        "## Finding [SKEP-1]: exact additive candidate\n\n"
+        "**Severity**: Medium\n\n"
+        "## Coverage Record\n\n"
+        "| Finding | Axis | Instance | Disposition | Evidence |\n"
+        "|---|---|---|---|---|\n"
+        "| SKEP-1 | Neighbour | event branch | GAP-FILLED | "
+        "SKEP-1 (`src/Module.sol:L329-L337`) |\n"
+    )
+
+    receipt = _compile(tmp_path, source)
+
+    assert receipt.status == "ADDITIVE"
+    assert [row.action_id for row in receipt.additive_actions] == ["SKEP-1"]
+
+
+def test_source_line_range_cannot_mint_a_lifecycle_action(tmp_path: Path) -> None:
+    receipt = _compile(
+        tmp_path,
+        _coverage(
+            "| BASE-1 | Neighbour | event branch | GAP-FILLED | "
+            "`src/Module.sol:L329-L337` |\n"
+        ),
+    )
+
+    assert receipt.additive_actions == ()
+    assert receipt.obligations[0].disposition == "UNRESOLVED"
 
 
 def test_generic_instance_cannot_clear_even_with_a_real_locus(tmp_path: Path):

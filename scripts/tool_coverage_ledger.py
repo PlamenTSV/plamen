@@ -17,9 +17,10 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 import toolchain_control_authority as _toolchain_controls
 
@@ -34,7 +35,14 @@ TOOLCHAIN_GOVERNANCE_FILENAME = "toolchain_governance.v1.json"
 TOOLCHAIN_VERSION_LOCK_SCHEMA = "plamen.toolchain_version_lock.v1"
 TOOLCHAIN_VERSION_LOCK_FILENAME = "toolchain_version_lock.v1.json"
 CONTEXT_BOUND_OUTCOME_SCHEMA = "plamen.tool-outcome-envelope.v1"
-GENERIC_SUCCESS_OUTCOME_SCHEMA = "plamen.tool-success-envelope.v1"
+SNAPSHOT_EXECUTION_OUTCOME_SCHEMA = (
+    "plamen.snapshot-execution-tool-outcome-envelope.v1"
+)
+GENERIC_SUCCESS_OUTCOME_SCHEMA = "plamen.tool-success-envelope.v2"
+LEGACY_GENERIC_SUCCESS_OUTCOME_SCHEMA = "plamen.tool-success-envelope.v1"
+EXTERNAL_TOOL_EXECUTION_RECEIPT_SCHEMA = (
+    "plamen.external-tool-execution-receipt.v1"
+)
 TOOLCHAIN_COVERAGE_DEBT_SCHEMA = "plamen.toolchain-coverage-debt.v1"
 TOOLCHAIN_COVERAGE_DEBT_FILENAME = "toolchain_coverage_debt.json"
 TOOLCHAIN_COVERAGE_REPORT_FILENAME = (
@@ -68,7 +76,19 @@ _DEFAULT_GOVERNANCE_PATH = (
     / TOOLCHAIN_GOVERNANCE_FILENAME
 )
 _HEX_SHA256 = re.compile(r"[0-9a-f]{64}")
+_SECRET_ENV_NAME_RE = re.compile(
+    r"(?:TOKEN|SECRET|PASS(?:WORD|WD)?|CREDENTIAL|AUTH|COOKIE|SESSION|PRIVATE)",
+    re.IGNORECASE,
+)
+_SECRET_ARG_RE = re.compile(
+    r"^(?:--?(?:token|secret|pass(?:word|wd)?|credential|auth|api[-_]?key))"
+    r"(?:=|$)",
+    re.IGNORECASE,
+)
 _SAFE_CONTEXT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}")
+_WORKSPACE_OWNER_KEY = re.compile(
+    r"[a-z0-9][a-z0-9_.-]*(?:/[a-z0-9][a-z0-9_.-]*){5}", re.ASCII
+)
 _KNOWN_CVE_CAPABILITIES = frozenset(
     {
         "cargo-audit.dependency-audit",
@@ -90,7 +110,10 @@ def _source_provider_ref(provider_ref: str) -> str:
         return provider_ref
     if (
         isinstance(payload, dict)
-        and payload.get("schema_version") == GENERIC_SUCCESS_OUTCOME_SCHEMA
+        and payload.get("schema_version") in {
+            GENERIC_SUCCESS_OUTCOME_SCHEMA,
+            LEGACY_GENERIC_SUCCESS_OUTCOME_SCHEMA,
+        }
         and isinstance(payload.get("source_provider_ref"), str)
     ):
         return str(payload["source_provider_ref"])
@@ -364,17 +387,27 @@ _EXECUTION_CONTEXT_FIELDS = frozenset(
         "platform",
     }
 )
+_WORKSPACE_EXECUTION_CONTEXT_FIELDS = frozenset({
+    "workspace_receipt_sha256",
+    "workspace_owner_key",
+    "workspace_reference_sha256",
+})
 
 
 def _normalized_execution_context(
     context: Mapping[str, Any],
 ) -> dict[str, str]:
+    allowed_fields = (
+        _EXECUTION_CONTEXT_FIELDS
+        if set(context) == _EXECUTION_CONTEXT_FIELDS
+        else _EXECUTION_CONTEXT_FIELDS | _WORKSPACE_EXECUTION_CONTEXT_FIELDS
+    )
     normalized = {
         key: str(context.get(key) or "")
-        for key in sorted(_EXECUTION_CONTEXT_FIELDS)
+        for key in sorted(allowed_fields)
     }
     if (
-        set(context) != _EXECUTION_CONTEXT_FIELDS
+        set(context) != allowed_fields
         or any(
             _SAFE_CONTEXT.fullmatch(normalized[key]) is None
             for key in (
@@ -388,7 +421,20 @@ def _normalized_execution_context(
         )
         or any(
             _HEX_SHA256.fullmatch(normalized[key]) is None
-            for key in ("snapshot_sha256", "project_root_sha256")
+            for key in (
+                "snapshot_sha256",
+                "project_root_sha256",
+                *(
+                    ("workspace_receipt_sha256", "workspace_reference_sha256")
+                    if allowed_fields != _EXECUTION_CONTEXT_FIELDS else ()
+                ),
+            )
+        )
+        or (
+            allowed_fields != _EXECUTION_CONTEXT_FIELDS
+            and _WORKSPACE_OWNER_KEY.fullmatch(
+                normalized["workspace_owner_key"]
+            ) is None
         )
     ):
         raise ToolCoverageLedgerError(
@@ -414,8 +460,7 @@ def build_tool_execution_context(
     )
     project = Path(str(config.get("project_root") or "")).resolve()
     project_identity = os.path.normcase(str(project)).replace("\\", "/")
-    return _normalized_execution_context(
-        {
+    raw_context = {
             "run_id": str(config.get("_run_id") or ""),
             "phase": str(phase),
             "snapshot_sha256": snapshot_sha256,
@@ -441,7 +486,20 @@ def build_tool_execution_context(
                 else sys.platform
             ),
         }
-    )
+    workspace = config.get("_evm_analysis_workspace_reference")
+    if isinstance(workspace, Mapping):
+        raw_context.update({
+            "workspace_receipt_sha256": str(
+                workspace.get("receipt_sha256") or ""
+            ),
+            "workspace_owner_key": str(
+                workspace.get("owner_work_unit_key") or ""
+            ),
+            "workspace_reference_sha256": str(
+                workspace.get("reference_sha256") or ""
+            ),
+        })
+    return _normalized_execution_context(raw_context)
 
 
 def _governed_capability(
@@ -474,6 +532,65 @@ def _governed_capability(
             "context-bound outcome tool is outside governed capability"
         )
     return row
+
+
+def _workspace_success_reference(
+    scratch: Path,
+    *,
+    tool: str,
+    context: Mapping[str, str],
+    provider_authority: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Require the shared EVM workspace before authorizing tool success."""
+
+    if context.get("ecosystem") != "evm" or tool not in {
+        "forge", "opengrep", "semgrep", "slither", "solc",
+    }:
+        return None
+    if not _WORKSPACE_EXECUTION_CONTEXT_FIELDS.issubset(context):
+        raise ToolCoverageLedgerError(
+            "EVM tool success lacks workspace execution context"
+        )
+    try:
+        from evm_analysis_workspace_authority import (
+            load_evm_analysis_workspace_authority,
+            require_admitted_workspace_tool,
+            workspace_public_reference,
+        )
+
+        receipt = load_evm_analysis_workspace_authority(
+            Path(scratch),
+            expected_run_id=context["run_id"],
+            expected_snapshot_sha256=context["snapshot_sha256"],
+            expected_owner_work_unit_key=context["workspace_owner_key"],
+        )
+        reference = workspace_public_reference(receipt)
+        if (
+            reference.get("receipt_sha256")
+            != context["workspace_receipt_sha256"]
+            or reference.get("reference_sha256")
+            != context["workspace_reference_sha256"]
+        ):
+            raise ToolCoverageLedgerError(
+                "EVM workspace execution context differs from committed receipt"
+            )
+        row = require_admitted_workspace_tool(receipt, tool)
+        if (
+            provider_authority is not None
+            and row.get("signed_runtime_authority")
+            != dict(provider_authority)
+        ):
+            raise ToolCoverageLedgerError(
+                "provider authority differs from the admitted workspace tool row"
+            )
+        return reference
+    except ToolCoverageLedgerError:
+        raise
+    except Exception as exc:
+        raise ToolCoverageLedgerError(
+            "EVM workspace tool admission failed: "
+            f"{type(exc).__name__}:{exc}"
+        ) from exc
 
 
 def build_context_bound_tool_outcome_envelope(
@@ -539,6 +656,12 @@ def build_context_bound_tool_outcome_envelope(
         )
 
     normalized_context = _normalized_execution_context(context)
+    workspace_reference = _workspace_success_reference(
+        root,
+        tool=tool,
+        context=normalized_context,
+        provider_authority=provider,
+    )
 
     artifact_names = tuple(_artifact_name(value) for value in artifacts)
     if artifact_names != PRECISE_GRAPH_ARTIFACTS:
@@ -696,6 +819,7 @@ def build_context_bound_tool_outcome_envelope(
     unsigned = {
         "schema_version": CONTEXT_BOUND_OUTCOME_SCHEMA,
         "context": normalized_context,
+        "workspace_reference": workspace_reference,
         "capability_id": capability_id,
         "governed_capability": capability,
         "governed_capability_sha256": capability_digest,
@@ -714,6 +838,221 @@ def build_context_bound_tool_outcome_envelope(
         "envelope_sha256": hashlib.sha256(
             _canonical_json(unsigned)
         ).hexdigest(),
+    }
+
+
+_SNAPSHOT_EVIDENCE_KEYS = {
+    "schema", "evidence_only", "execution_authority_reusable",
+    "authority_tier", "authentic_content_authority", "can_certify_clean",
+    "request_sha256", "terminal_sha256", "terminal",
+}
+_SNAPSHOT_TERMINAL_KEYS = {
+    "schema", "request_sha256", "run_id", "audit_snapshot_sha256",
+    "tool_id", "source_descriptor_sha256",
+    "materialization_lineage_sha256", "toolchain_governance_sha256",
+    "toolchain_version_lock_sha256", "native_runtime_identity_sha256",
+    "argv_sha256", "environment_sha256", "cwd_sha256", "mounts_sha256",
+    "source_scope_sha256", "post_spawn_dynamic_identity_sha256",
+    "egress_policy", "egress_denied", "exit_state", "returncode",
+    "duration_ms", "peak_memory_bytes", "stdout_sha256",
+    "stdout_observed_bytes", "stdout_retained_bytes", "stderr_sha256",
+    "stderr_observed_bytes", "stderr_retained_bytes", "output_tree_sha256",
+    "output_file_count", "output_bytes", "output_limit_exceeded",
+    "population_zero", "cleanup_complete", "truncation_debt",
+}
+_SNAPSHOT_ASSURANCE_LIMITATIONS = {
+    "authentic_content_authority": False,
+    "can_certify_clean": False,
+    "positive_findings": "REVIEWABLE_CANDIDATES_ONLY",
+    "zero_findings": "INSUFFICIENT_FOR_CLEAN_CONCLUSION",
+}
+
+
+def _validated_snapshot_execution_evidence(
+    evidence: Mapping[str, Any], *, tool: str,
+) -> dict[str, Any]:
+    """Validate evidence without upgrading local bytes into content trust."""
+
+    if not isinstance(evidence, Mapping):
+        raise ToolCoverageLedgerError("snapshot execution evidence is not an object")
+    value = dict(evidence)
+    terminal = value.get("terminal")
+    if (
+        set(value) != _SNAPSHOT_EVIDENCE_KEYS
+        or value.get("schema")
+        != "plamen.snapshot-bound-tool-execution-evidence.v1"
+        or value.get("evidence_only") is not True
+        or value.get("execution_authority_reusable") is not False
+        or value.get("authority_tier") != "SNAPSHOT_BOUND_LOCAL"
+        or value.get("authentic_content_authority") is not False
+        or value.get("can_certify_clean") is not False
+        or not isinstance(terminal, Mapping)
+        or set(terminal) != _SNAPSHOT_TERMINAL_KEYS
+        or terminal.get("schema")
+        != "plamen.snapshot-bound-tool-execution-terminal.v3"
+        or terminal.get("tool_id") != tool
+        or terminal.get("request_sha256") != value.get("request_sha256")
+        or terminal.get("returncode") != 0
+        or terminal.get("exit_state") != "COMPLETED"
+        or terminal.get("egress_policy") != "DENY_ALL"
+        or terminal.get("egress_denied") is not True
+        or terminal.get("population_zero") is not True
+        or terminal.get("cleanup_complete") is not True
+        or terminal.get("output_limit_exceeded") is not False
+        or terminal.get("truncation_debt") is not None
+    ):
+        raise ToolCoverageLedgerError(
+            "snapshot execution evidence lacks exact bounded completion"
+        )
+    for field in (
+        "duration_ms", "peak_memory_bytes",
+        "stdout_observed_bytes", "stdout_retained_bytes",
+        "stderr_observed_bytes", "stderr_retained_bytes",
+        "output_file_count", "output_bytes",
+    ):
+        observed = terminal.get(field)
+        if type(observed) is not int or observed < 0:
+            raise ToolCoverageLedgerError(
+                f"snapshot execution evidence {field} is malformed"
+            )
+    if (
+        type(terminal.get("returncode")) is not int
+        or terminal["stdout_retained_bytes"]
+        != terminal["stdout_observed_bytes"]
+        or terminal["stderr_retained_bytes"]
+        != terminal["stderr_observed_bytes"]
+    ):
+        raise ToolCoverageLedgerError(
+            "snapshot execution evidence stream completion differs"
+        )
+    for field in (
+        "request_sha256", "terminal_sha256",
+        "audit_snapshot_sha256", "source_descriptor_sha256",
+        "materialization_lineage_sha256", "toolchain_governance_sha256",
+        "toolchain_version_lock_sha256", "native_runtime_identity_sha256",
+        "argv_sha256", "environment_sha256", "cwd_sha256", "mounts_sha256",
+        "source_scope_sha256", "post_spawn_dynamic_identity_sha256",
+        "stdout_sha256", "stderr_sha256", "output_tree_sha256",
+    ):
+        observed = value.get(field) if field in value else terminal.get(field)
+        if not isinstance(observed, str) or _HEX_SHA256.fullmatch(observed) is None:
+            raise ToolCoverageLedgerError(
+                f"snapshot execution evidence {field} is malformed"
+            )
+    if value["terminal_sha256"] != hashlib.sha256(
+        _compact_canonical_json(dict(terminal))
+    ).hexdigest():
+        raise ToolCoverageLedgerError("snapshot execution terminal digest differs")
+    return value
+
+
+def build_snapshot_execution_tool_outcome_envelope(
+    scratch: Path,
+    *,
+    capability_id: str,
+    tool: str,
+    evidence: Mapping[str, Any],
+    context: Mapping[str, Any],
+    artifacts: Iterable[str],
+    finding_count: int = 0,
+    registry_path: Path | None = None,
+) -> dict[str, Any]:
+    """Bind native operational coverage without claiming clean authority."""
+
+    root = Path(scratch)
+    if type(finding_count) is not int or finding_count < 0:
+        raise ToolCoverageLedgerError("snapshot execution finding count is invalid")
+    native_evidence = _validated_snapshot_execution_evidence(evidence, tool=tool)
+    terminal = dict(native_evidence["terminal"])
+    controls = _toolchain_controls.load_toolchain_controls(
+        registry_path or _DEFAULT_GOVERNANCE_PATH
+    )
+    if (
+        terminal["toolchain_version_lock_sha256"] != controls.lock_sha256
+        or terminal["toolchain_governance_sha256"] != controls.governance_sha256
+    ):
+        raise ToolCoverageLedgerError(
+            "snapshot execution toolchain controls drifted"
+        )
+    normalized_context = _normalized_execution_context(context)
+    if (
+        terminal["run_id"] != normalized_context["run_id"]
+        or terminal["audit_snapshot_sha256"]
+        != normalized_context["snapshot_sha256"]
+    ):
+        raise ToolCoverageLedgerError(
+            "snapshot execution belongs to another run or audit snapshot"
+        )
+    workspace_reference = _workspace_success_reference(
+        root, tool=tool, context=normalized_context
+    )
+    artifact_names = tuple(_artifact_name(value) for value in artifacts)
+    if capability_id in PRECISE_GRAPH_CAPABILITIES and (
+        artifact_names != PRECISE_GRAPH_ARTIFACTS
+    ):
+        raise ToolCoverageLedgerError(
+            "snapshot graph artifact denominator is incomplete or reordered"
+        )
+    if not artifact_names or len(set(artifact_names)) != len(artifact_names):
+        raise ToolCoverageLedgerError(
+            "snapshot execution artifact denominator is empty or duplicated"
+        )
+    artifact_rows: list[dict[str, Any]] = []
+    for relative in artifact_names:
+        digest, size = _sha256_file(root / relative)
+        if size <= 0:
+            raise ToolCoverageLedgerError(
+                f"snapshot graph artifact is empty: {relative}"
+            )
+        artifact_rows.append(
+            {"path": relative, "sha256": digest, "bytes": size}
+        )
+    capability = _governed_capability(
+        capability_id, tool, registry_path=registry_path
+    )
+    applicability = capability.get("applicability")
+    actual = {
+        "pipelines": normalized_context["pipeline"],
+        "ecosystems": normalized_context["ecosystem"],
+        "platforms": normalized_context["platform"],
+        "modes": normalized_context["mode"],
+        "phases": normalized_context["phase"],
+    }
+    if not isinstance(applicability, Mapping) or any(
+        not _applicability_matches(applicability.get(field), value)
+        for field, value in actual.items()
+    ):
+        raise ToolCoverageLedgerError(
+            "snapshot execution context is outside capability applicability"
+        )
+    evidence_digest = hashlib.sha256(
+        _compact_canonical_json(native_evidence)
+    ).hexdigest()
+    unsigned = {
+        "schema_version": SNAPSHOT_EXECUTION_OUTCOME_SCHEMA,
+        "context": normalized_context,
+        "workspace_reference": workspace_reference,
+        "capability_id": capability_id,
+        "governed_capability": capability,
+        "governed_capability_sha256": hashlib.sha256(
+            _compact_canonical_json(capability)
+        ).hexdigest(),
+        "tool": tool,
+        "finding_count": finding_count,
+        "snapshot_execution_evidence": native_evidence,
+        "snapshot_execution_evidence_sha256": evidence_digest,
+        "assurance_limitations": dict(_SNAPSHOT_ASSURANCE_LIMITATIONS),
+        "toolchain_version_lock_sha256": controls.lock_sha256,
+        "toolchain_governance_sha256": controls.governance_sha256,
+        "artifact_denominator": list(artifact_names),
+        "artifact_denominator_sha256": hashlib.sha256(
+            _compact_canonical_json(list(artifact_names))
+        ).hexdigest(),
+        "artifacts": artifact_rows,
+    }
+    return {
+        **unsigned,
+        "envelope_sha256": hashlib.sha256(_canonical_json(unsigned)).hexdigest(),
     }
 
 
@@ -819,6 +1158,7 @@ def replay_context_bound_tool_outcome_envelope(
     expected_fields = {
         "schema_version",
         "context",
+        "workspace_reference",
         "capability_id",
         "governed_capability",
         "governed_capability_sha256",
@@ -923,29 +1263,27 @@ def replay_context_bound_tool_outcome_envelope(
         )
 
     context = candidate.get("context")
-    if (
-        not isinstance(context, Mapping)
-        or set(context) != _EXECUTION_CONTEXT_FIELDS
-    ):
+    normalized_context: dict[str, str] | None = None
+    if not isinstance(context, Mapping):
         issues.append("precise graph execution context drifted")
     else:
-        if any(
-            _SAFE_CONTEXT.fullmatch(str(context.get(key) or "")) is None
-            for key in (
-                "run_id",
-                "phase",
-                "ecosystem",
-                "pipeline",
-                "mode",
-                "platform",
+        try:
+            normalized_context = _normalized_execution_context(context)
+        except ToolCoverageLedgerError as exc:
+            issues.append(str(exc))
+        try:
+            replayed_workspace = _workspace_success_reference(
+                Path(scratch),
+                tool=tool,
+                context=(normalized_context or dict(context)),
+                provider_authority=(
+                    provider if isinstance(provider, Mapping) else None
+                ),
             )
-        ):
-            issues.append("precise graph execution context is invalid")
-        if any(
-            _HEX_SHA256.fullmatch(str(context.get(key) or "")) is None
-            for key in ("snapshot_sha256", "project_root_sha256")
-        ):
-            issues.append("precise graph context digest is invalid")
+            if candidate.get("workspace_reference") != replayed_workspace:
+                issues.append("EVM workspace reference drifted")
+        except ToolCoverageLedgerError as exc:
+            issues.append(str(exc))
         if isinstance(capability, Mapping):
             applicability = capability.get("applicability")
             actual = {
@@ -1118,11 +1456,568 @@ def replay_context_bound_tool_outcome_envelope(
     return list(dict.fromkeys(issues))
 
 
+def replay_snapshot_execution_tool_outcome_envelope(
+    scratch: Path,
+    envelope: Mapping[str, Any],
+    *,
+    expected_context: Mapping[str, Any] | None = None,
+    registry_path: Path | None = None,
+) -> list[str]:
+    """Replay a positive-only native graph execution and its five outputs."""
+
+    issues: list[str] = []
+    if not isinstance(envelope, Mapping):
+        return ["snapshot execution outcome envelope is not an object"]
+    candidate = dict(envelope)
+    expected_fields = {
+        "schema_version", "context", "workspace_reference", "capability_id",
+        "governed_capability", "governed_capability_sha256", "tool",
+        "finding_count",
+        "snapshot_execution_evidence", "snapshot_execution_evidence_sha256",
+        "assurance_limitations", "toolchain_version_lock_sha256",
+        "toolchain_governance_sha256", "artifact_denominator",
+        "artifact_denominator_sha256", "artifacts", "envelope_sha256",
+    }
+    if set(candidate) != expected_fields:
+        return ["snapshot execution outcome envelope fields drifted"]
+    unsigned = {
+        key: value for key, value in candidate.items()
+        if key != "envelope_sha256"
+    }
+    if (
+        candidate.get("schema_version") != SNAPSHOT_EXECUTION_OUTCOME_SCHEMA
+        or candidate.get("envelope_sha256")
+        != hashlib.sha256(_canonical_json(unsigned)).hexdigest()
+    ):
+        issues.append("snapshot execution outcome envelope digest drifted")
+
+    capability_id = str(candidate.get("capability_id") or "")
+    tool = str(candidate.get("tool") or "")
+    if type(candidate.get("finding_count")) is not int or candidate[
+        "finding_count"
+    ] < 0:
+        issues.append("snapshot execution finding count is invalid")
+    capability = candidate.get("governed_capability")
+    if not isinstance(capability, Mapping):
+        issues.append("governed capability is malformed")
+    else:
+        if (
+            candidate.get("governed_capability_sha256")
+            != hashlib.sha256(
+                _compact_canonical_json(dict(capability))
+            ).hexdigest()
+            or capability.get("capability_id") != capability_id
+        ):
+            issues.append("governed capability digest drifted")
+        try:
+            current = _governed_capability(
+                capability_id, tool, registry_path=registry_path
+            )
+            if dict(capability) != current:
+                issues.append("governed capability control drifted")
+        except ToolCoverageLedgerError as exc:
+            issues.append(str(exc))
+
+    evidence = candidate.get("snapshot_execution_evidence")
+    validated_evidence: dict[str, Any] | None = None
+    try:
+        validated_evidence = _validated_snapshot_execution_evidence(
+            evidence, tool=tool
+        )
+    except ToolCoverageLedgerError as exc:
+        issues.append(str(exc))
+    if validated_evidence is not None and candidate.get(
+        "snapshot_execution_evidence_sha256"
+    ) != hashlib.sha256(
+        _compact_canonical_json(validated_evidence)
+    ).hexdigest():
+        issues.append("snapshot execution evidence digest drifted")
+    if candidate.get("assurance_limitations") != _SNAPSHOT_ASSURANCE_LIMITATIONS:
+        issues.append("snapshot execution assurance limitations drifted")
+
+    try:
+        controls = _toolchain_controls.load_toolchain_controls(
+            registry_path or _DEFAULT_GOVERNANCE_PATH
+        )
+        if (
+            controls.lock_sha256
+            != candidate.get("toolchain_version_lock_sha256")
+            or controls.governance_sha256
+            != candidate.get("toolchain_governance_sha256")
+        ):
+            issues.append("snapshot execution toolchain controls drifted")
+    except Exception as exc:
+        issues.append(
+            "snapshot execution toolchain controls are unavailable: "
+            f"{type(exc).__name__}"
+        )
+
+    context = candidate.get("context")
+    normalized_context: dict[str, str] | None = None
+    if not isinstance(context, Mapping):
+        issues.append("snapshot execution context is malformed")
+    else:
+        try:
+            normalized_context = _normalized_execution_context(context)
+        except ToolCoverageLedgerError as exc:
+            issues.append(str(exc))
+        if normalized_context is not None and validated_evidence is not None:
+            terminal = validated_evidence["terminal"]
+            if (
+                terminal.get("run_id") != normalized_context["run_id"]
+                or terminal.get("audit_snapshot_sha256")
+                != normalized_context["snapshot_sha256"]
+            ):
+                issues.append("snapshot execution belongs to another context")
+        try:
+            replayed_workspace = _workspace_success_reference(
+                Path(scratch),
+                tool=tool,
+                context=normalized_context or dict(context),
+            )
+            if candidate.get("workspace_reference") != replayed_workspace:
+                issues.append("EVM workspace reference drifted")
+        except ToolCoverageLedgerError as exc:
+            issues.append(str(exc))
+        if isinstance(capability, Mapping):
+            applicability = capability.get("applicability")
+            actual = {
+                "pipelines": str(context.get("pipeline") or ""),
+                "ecosystems": str(context.get("ecosystem") or ""),
+                "platforms": str(context.get("platform") or ""),
+                "modes": str(context.get("mode") or ""),
+                "phases": str(context.get("phase") or ""),
+            }
+            if not isinstance(applicability, Mapping) or any(
+                not _applicability_matches(applicability.get(field), value)
+                for field, value in actual.items()
+            ):
+                issues.append(
+                    "snapshot execution context is outside capability applicability"
+                )
+        if expected_context is not None:
+            try:
+                current_context = _normalized_execution_context(expected_context)
+            except ToolCoverageLedgerError as exc:
+                issues.append(str(exc))
+            else:
+                if dict(context) != current_context:
+                    issues.append(
+                        "STALE_CONTEXT: snapshot execution outcome belongs to "
+                        "another run, snapshot, project, or execution boundary"
+                    )
+
+    denominator = candidate.get("artifact_denominator")
+    if not isinstance(denominator, list) or not denominator:
+        issues.append("snapshot execution artifact denominator is malformed")
+        denominator = []
+    else:
+        try:
+            denominator = [_artifact_name(str(value)) for value in denominator]
+        except ToolCoverageLedgerError as exc:
+            issues.append(str(exc))
+            denominator = []
+    if capability_id in PRECISE_GRAPH_CAPABILITIES and denominator != list(
+        PRECISE_GRAPH_ARTIFACTS
+    ):
+        issues.append("snapshot graph artifact denominator drifted")
+    if candidate.get("artifact_denominator_sha256") != hashlib.sha256(
+        _compact_canonical_json(denominator)
+    ).hexdigest():
+        issues.append("snapshot execution artifact denominator digest drifted")
+    rows = candidate.get("artifacts")
+    if not isinstance(rows, list) or len(rows) != len(denominator):
+        issues.append("snapshot execution artifact evidence is incomplete")
+    else:
+        observed_names: list[str] = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                issues.append("snapshot graph artifact evidence is malformed")
+                continue
+            relative = str(row.get("path") or "")
+            observed_names.append(relative)
+            try:
+                normalized = _artifact_name(relative)
+                digest, size = _sha256_file(Path(scratch) / normalized)
+            except (OSError, ToolCoverageLedgerError):
+                issues.append(f"snapshot graph artifact is missing: {relative}")
+                continue
+            if row.get("sha256") != digest or row.get("bytes") != size or size <= 0:
+                issues.append(f"snapshot graph artifact drifted: {relative}")
+        if observed_names != denominator:
+            issues.append("snapshot execution artifact evidence reordered")
+        if capability_id in PRECISE_GRAPH_CAPABILITIES:
+            issues.extend(
+                replay_committed_graph_generation(scratch, artifact_rows=rows)
+            )
+    return list(dict.fromkeys(issues))
+
+
+def _portable_execution_path(value: object) -> str:
+    """Normalize either POSIX or Windows path spelling without host guessing."""
+
+    raw = str(value or "").strip().replace("\\", "/")
+    unc = raw.startswith("//")
+    body = raw[2:] if unc else raw
+    while "//" in body:
+        body = body.replace("//", "/")
+    raw = ("//" if unc else "") + body
+    if re.match(r"^[A-Za-z]:/", raw):
+        raw = raw[0].lower() + raw[1:]
+    return raw.rstrip("/") or "/"
+
+
+def _is_portable_absolute_path(value: str) -> bool:
+    return (
+        value.startswith("/")
+        or value.startswith("//")
+        or re.match(r"^[a-z]:/", value) is not None
+    )
+
+
+def _signed_mapping_replays(value: Mapping[str, Any], digest_key: str) -> bool:
+    unsigned = dict(value)
+    observed = unsigned.pop(digest_key, None)
+    return (
+        isinstance(observed, str)
+        and _HEX_SHA256.fullmatch(observed) is not None
+        and observed
+        == hashlib.sha256(_compact_canonical_json(unsigned)).hexdigest()
+    )
+
+
+def build_external_tool_execution_receipt(
+    *,
+    execution_tool: str,
+    provider_authority_before: Mapping[str, Any],
+    provider_authority_after: Mapping[str, Any],
+    argv: Sequence[str],
+    cwd: str,
+    workspace_root: str,
+    environment_bindings: Mapping[str, str],
+    excluded_secret_key_count: int,
+    started_at: str,
+    finished_at: str,
+    duration_ms: int,
+    returncode: int,
+    accepted_returncodes: Sequence[int],
+    timed_out: bool,
+    stdout: str,
+    stderr: str,
+    stdout_observed_bytes: int,
+    stderr_observed_bytes: int,
+    stdout_retained_bytes: int,
+    stderr_retained_bytes: int,
+    stdout_sha256: str,
+    stderr_sha256: str,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+    process_tree_terminated: bool,
+    containment_capability: Mapping[str, Any],
+    runner_implementation: str,
+    runner_sha256: str,
+    executable_binding_sha256: str,
+) -> dict[str, Any]:
+    """Create a self-authenticating receipt for one owned tool execution.
+
+    Environment values are never accepted here. Callers provide only hashes
+    of non-secret bindings and a count of secret-looking keys that were
+    deliberately omitted.
+    """
+
+    binding_rows = {
+        str(key): str(value)
+        for key, value in sorted(environment_bindings.items())
+    }
+    environment = {
+        "value_encoding": "sha256-only",
+        "bindings": binding_rows,
+        "excluded_secret_key_count": int(excluded_secret_key_count),
+    }
+    environment["fingerprint_sha256"] = hashlib.sha256(
+        _compact_canonical_json(environment)
+    ).hexdigest()
+    unsigned = {
+        "schema_version": EXTERNAL_TOOL_EXECUTION_RECEIPT_SCHEMA,
+        "execution_tool": str(execution_tool),
+        "provider_authority_before": dict(provider_authority_before),
+        "provider_authority_after": dict(provider_authority_after),
+        "argv": [str(value) for value in argv],
+        "argv_sha256": hashlib.sha256(
+            _compact_canonical_json([str(value) for value in argv])
+        ).hexdigest(),
+        "cwd": _portable_execution_path(cwd),
+        "workspace_root": _portable_execution_path(workspace_root),
+        "environment": environment,
+        "started_at": str(started_at),
+        "finished_at": str(finished_at),
+        "duration_ms": int(duration_ms),
+        "terminal": {
+            "state": "TIMED_OUT" if timed_out else "COMPLETED",
+            "returncode": int(returncode),
+            "accepted_returncodes": sorted(
+                {int(value) for value in accepted_returncodes}
+            ),
+            "timed_out": bool(timed_out),
+        },
+        "stdout_receipt": {
+            "digest_scope": "FULL_RAW_STREAM",
+            "sha256": str(stdout_sha256),
+            "observed_bytes": int(stdout_observed_bytes),
+            "retained_bytes": int(stdout_retained_bytes),
+            "truncated": bool(stdout_truncated),
+        },
+        "stderr_receipt": {
+            "digest_scope": "FULL_RAW_STREAM",
+            "sha256": str(stderr_sha256),
+            "observed_bytes": int(stderr_observed_bytes),
+            "retained_bytes": int(stderr_retained_bytes),
+            "truncated": bool(stderr_truncated),
+        },
+        "runner": {
+            "implementation": str(runner_implementation),
+            "implementation_sha256": str(runner_sha256),
+            "process_tree_terminated": bool(process_tree_terminated),
+            "containment_capability": dict(containment_capability),
+            "containment_capability_sha256": hashlib.sha256(
+                _compact_canonical_json(dict(containment_capability))
+            ).hexdigest(),
+            "locked_executable_binding_sha256": str(
+                executable_binding_sha256
+            ),
+        },
+    }
+    receipt = {
+        **unsigned,
+        "receipt_sha256": hashlib.sha256(
+            _compact_canonical_json(unsigned)
+        ).hexdigest(),
+    }
+    issues = replay_external_tool_execution_receipt(receipt)
+    if issues:
+        raise ToolCoverageLedgerError(
+            "external tool execution receipt is invalid: " + "; ".join(issues)
+        )
+    return receipt
+
+
+def replay_external_tool_execution_receipt(
+    receipt: Mapping[str, Any],
+) -> list[str]:
+    """Validate process, provider, terminal, and content-receipt authority."""
+
+    if not isinstance(receipt, Mapping):
+        return ["execution receipt is not an object"]
+    candidate = dict(receipt)
+    expected_fields = {
+        "schema_version", "execution_tool", "provider_authority_before",
+        "provider_authority_after", "argv", "argv_sha256", "cwd",
+        "workspace_root", "environment", "started_at", "finished_at",
+        "duration_ms", "terminal", "stdout_receipt", "stderr_receipt",
+        "runner", "receipt_sha256",
+    }
+    if set(candidate) != expected_fields:
+        return ["execution receipt fields drifted"]
+    issues: list[str] = []
+    unsigned = dict(candidate)
+    receipt_sha256 = unsigned.pop("receipt_sha256", None)
+    if (
+        candidate.get("schema_version")
+        != EXTERNAL_TOOL_EXECUTION_RECEIPT_SCHEMA
+        or receipt_sha256
+        != hashlib.sha256(_compact_canonical_json(unsigned)).hexdigest()
+    ):
+        issues.append("execution receipt digest drifted")
+
+    execution_tool = str(candidate.get("execution_tool") or "")
+    argv = candidate.get("argv")
+    if (
+        _CAPABILITY_ID_RE.fullmatch(execution_tool) is None
+        or not isinstance(argv, list)
+        or not argv
+        or not all(isinstance(item, str) and item for item in argv)
+    ):
+        issues.append("execution argv or tool identity is invalid")
+        argv = []
+    elif candidate.get("argv_sha256") != hashlib.sha256(
+        _compact_canonical_json(argv)
+    ).hexdigest():
+        issues.append("execution argv digest drifted")
+    if argv and any(
+        _SECRET_ARG_RE.search(item) is not None
+        or re.search(r"://[^/@\s:]+:[^/@\s]+@", item) is not None
+        for item in argv
+    ):
+        issues.append("execution argv contains secret-bearing arguments")
+
+    before = candidate.get("provider_authority_before")
+    after = candidate.get("provider_authority_after")
+    for label, authority in (("before", before), ("after", after)):
+        if not isinstance(authority, Mapping):
+            issues.append(f"provider authority {label} is malformed")
+            continue
+        if not _signed_mapping_replays(authority, "authority_digest"):
+            issues.append(f"provider authority {label} digest drifted")
+        if (
+            authority.get("tool_id") != execution_tool
+            or authority.get("identity_kind") != "command"
+            or not str(authority.get("version") or "")
+            or authority.get("version") == "UNAVAILABLE"
+            or _HEX_SHA256.fullmatch(
+                str(authority.get("executable_sha256") or "")
+            ) is None
+            or not isinstance(authority.get("executable_bytes"), int)
+            or int(authority.get("executable_bytes") or 0) <= 0
+            or not _is_portable_absolute_path(
+                _portable_execution_path(
+                    authority.get("resolved_executable")
+                )
+            )
+        ):
+            issues.append(f"provider authority {label} lacks executable identity")
+    if isinstance(before, Mapping) and isinstance(after, Mapping):
+        if dict(before) != dict(after):
+            issues.append("provider authority changed during execution")
+        if argv and _portable_execution_path(argv[0]) != _portable_execution_path(
+            before.get("resolved_executable")
+        ):
+            issues.append("executed argv does not match provider executable")
+
+    for field in ("cwd", "workspace_root"):
+        value = str(candidate.get(field) or "")
+        if (
+            not value
+            or value != _portable_execution_path(value)
+            or not _is_portable_absolute_path(value)
+        ):
+            issues.append(f"execution {field} is not a normalized path")
+
+    environment = candidate.get("environment")
+    if not isinstance(environment, Mapping):
+        issues.append("execution environment receipt is malformed")
+    else:
+        env_unsigned = dict(environment)
+        env_digest = env_unsigned.pop("fingerprint_sha256", None)
+        bindings = environment.get("bindings")
+        if (
+            set(environment) != {
+                "value_encoding", "bindings", "excluded_secret_key_count",
+                "fingerprint_sha256",
+            }
+            or environment.get("value_encoding") != "sha256-only"
+            or not isinstance(bindings, Mapping)
+            or any(
+                not isinstance(key, str)
+                or not key
+                or _SECRET_ENV_NAME_RE.search(key) is not None
+                or _HEX_SHA256.fullmatch(str(value)) is None
+                for key, value in (bindings.items() if isinstance(bindings, Mapping) else ())
+            )
+            or not isinstance(environment.get("excluded_secret_key_count"), int)
+            or int(environment.get("excluded_secret_key_count") or 0) < 0
+            or env_digest
+            != hashlib.sha256(_compact_canonical_json(env_unsigned)).hexdigest()
+        ):
+            issues.append("execution environment fingerprint drifted")
+
+    try:
+        started = datetime.fromisoformat(
+            str(candidate.get("started_at") or "").replace("Z", "+00:00")
+        )
+        finished = datetime.fromisoformat(
+            str(candidate.get("finished_at") or "").replace("Z", "+00:00")
+        )
+        if started.tzinfo is None or finished.tzinfo is None or finished < started:
+            raise ValueError
+    except (TypeError, ValueError):
+        issues.append("execution timestamps are invalid")
+    duration_ms = candidate.get("duration_ms")
+    if not isinstance(duration_ms, int) or duration_ms < 0:
+        issues.append("execution duration is invalid")
+
+    terminal = candidate.get("terminal")
+    if not isinstance(terminal, Mapping):
+        issues.append("execution terminal is malformed")
+    else:
+        accepted = terminal.get("accepted_returncodes")
+        if (
+            set(terminal) != {
+                "state", "returncode", "accepted_returncodes", "timed_out"
+            }
+            or terminal.get("state") != "COMPLETED"
+            or terminal.get("timed_out") is not False
+            or not isinstance(terminal.get("returncode"), int)
+            or not isinstance(accepted, list)
+            or not accepted
+            or not all(isinstance(value, int) for value in accepted)
+            or terminal.get("returncode") not in accepted
+        ):
+            issues.append("execution did not reach an accepted terminal state")
+
+    for stream_name in ("stdout_receipt", "stderr_receipt"):
+        stream = candidate.get(stream_name)
+        if (
+            not isinstance(stream, Mapping)
+            or set(stream) != {
+                "digest_scope", "sha256", "observed_bytes",
+                "retained_bytes", "truncated",
+            }
+            or stream.get("digest_scope") != "FULL_RAW_STREAM"
+            or _HEX_SHA256.fullmatch(str(stream.get("sha256") or "")) is None
+            or not isinstance(stream.get("observed_bytes"), int)
+            or int(stream.get("observed_bytes") or 0) < 0
+            or not isinstance(stream.get("retained_bytes"), int)
+            or int(stream.get("retained_bytes") or 0) < 0
+            or int(stream.get("retained_bytes") or 0)
+            > int(stream.get("observed_bytes") or 0)
+            or not isinstance(stream.get("truncated"), bool)
+            or stream.get("truncated")
+            is not (
+                int(stream.get("observed_bytes") or 0)
+                > int(stream.get("retained_bytes") or 0)
+            )
+        ):
+            issues.append(f"{stream_name} is malformed")
+
+    runner = candidate.get("runner")
+    if not isinstance(runner, Mapping):
+        issues.append("execution runner authority is malformed")
+    else:
+        containment = runner.get("containment_capability")
+        if (
+            set(runner) != {
+                "implementation", "implementation_sha256",
+                "process_tree_terminated", "containment_capability",
+                "containment_capability_sha256",
+                "locked_executable_binding_sha256",
+            }
+            or not str(runner.get("implementation") or "")
+            or _HEX_SHA256.fullmatch(
+                str(runner.get("implementation_sha256") or "")
+            ) is None
+            or runner.get("process_tree_terminated") is not True
+            or not isinstance(containment, Mapping)
+            or not containment
+            or runner.get("containment_capability_sha256")
+            != hashlib.sha256(
+                _compact_canonical_json(
+                    dict(containment) if isinstance(containment, Mapping) else {}
+                )
+            ).hexdigest()
+            or _HEX_SHA256.fullmatch(str(
+                runner.get("locked_executable_binding_sha256") or ""
+            )) is None
+        ):
+            issues.append("execution runner authority drifted")
+    return list(dict.fromkeys(issues))
+
+
 def build_generic_success_outcome_envelope(
     scratch: Path,
     outcome: ToolOutcome,
     *,
     context: Mapping[str, Any],
+    execution_receipt: Mapping[str, Any] | None = None,
     registry_path: Path | None = None,
 ) -> dict[str, Any]:
     """Bind a non-graph success to current context and exact artifact bytes."""
@@ -1135,12 +2030,36 @@ def build_generic_success_outcome_envelope(
         raise ToolCoverageLedgerError(
             "precise graph outcomes require provider-authority envelopes"
         )
+    execution_issues = replay_external_tool_execution_receipt(
+        execution_receipt or {}
+    )
+    if execution_issues:
+        raise ToolCoverageLedgerError(
+            "SUCCEEDED lacks valid execution authority: "
+            + "; ".join(execution_issues)
+        )
     normalized_context = _normalized_execution_context(context)
+    workspace_reference = _workspace_success_reference(
+        Path(scratch),
+        tool=outcome.tool,
+        context=normalized_context,
+    )
     capability = _governed_capability(
         outcome.capability_id,
         outcome.tool,
         registry_path=registry_path,
     )
+    execution_tool = str(execution_receipt.get("execution_tool") or "")
+    governed_execution_tools = {
+        str(tool_id)
+        for invocation in capability.get("invocations", [])
+        if isinstance(invocation, Mapping)
+        for tool_id in invocation.get("tool_ids", [])
+    }
+    if execution_tool not in governed_execution_tools:
+        raise ToolCoverageLedgerError(
+            "execution receipt tool is outside governed capability"
+        )
     applicability = capability.get("applicability")
     actual = {
         "pipelines": normalized_context["pipeline"],
@@ -1192,6 +2111,7 @@ def build_generic_success_outcome_envelope(
     unsigned = {
         "schema_version": GENERIC_SUCCESS_OUTCOME_SCHEMA,
         "context": normalized_context,
+        "workspace_reference": workspace_reference,
         "capability_id": outcome.capability_id,
         "governed_capability": capability,
         "governed_capability_sha256": capability_digest,
@@ -1205,6 +2125,7 @@ def build_generic_success_outcome_envelope(
         ).hexdigest(),
         "artifacts": artifact_rows,
         "source_provider_ref": outcome.provider_ref,
+        "execution_receipt": dict(execution_receipt or {}),
     }
     return {
         **unsigned,
@@ -1229,6 +2150,7 @@ def replay_generic_success_outcome_envelope(
     expected_fields = {
         "schema_version",
         "context",
+        "workspace_reference",
         "capability_id",
         "governed_capability",
         "governed_capability_sha256",
@@ -1240,6 +2162,7 @@ def replay_generic_success_outcome_envelope(
         "artifact_denominator_sha256",
         "artifacts",
         "source_provider_ref",
+        "execution_receipt",
         "envelope_sha256",
     }
     if set(candidate) != expected_fields:
@@ -1257,6 +2180,13 @@ def replay_generic_success_outcome_envelope(
         != hashlib.sha256(_canonical_json(unsigned)).hexdigest()
     ):
         issues.append("generic success outcome envelope digest drifted")
+    execution_receipt = candidate.get("execution_receipt")
+    if not isinstance(execution_receipt, Mapping):
+        issues.append("generic success execution receipt is missing")
+    else:
+        issues.extend(
+            replay_external_tool_execution_receipt(execution_receipt)
+        )
     capability_id = str(candidate.get("capability_id") or "")
     tool = str(candidate.get("tool") or "")
     capability = candidate.get("governed_capability")
@@ -1272,6 +2202,20 @@ def replay_generic_success_outcome_envelope(
             or capability_dict.get("capability_id") != capability_id
         ):
             issues.append("governed capability digest drifted")
+        governed_execution_tools = {
+            str(tool_id)
+            for invocation in capability_dict.get("invocations", [])
+            if isinstance(invocation, Mapping)
+            for tool_id in invocation.get("tool_ids", [])
+        }
+        if (
+            isinstance(execution_receipt, Mapping)
+            and execution_receipt.get("execution_tool")
+            not in governed_execution_tools
+        ):
+            issues.append(
+                "execution receipt tool is outside governed capability"
+            )
         try:
             current = _governed_capability(
                 capability_id,
@@ -1307,6 +2251,16 @@ def replay_generic_success_outcome_envelope(
         except ToolCoverageLedgerError as exc:
             issues.append(str(exc))
         else:
+            try:
+                replayed_workspace = _workspace_success_reference(
+                    Path(scratch),
+                    tool=tool,
+                    context=normalized_context,
+                )
+                if candidate.get("workspace_reference") != replayed_workspace:
+                    issues.append("EVM workspace reference drifted")
+            except ToolCoverageLedgerError as exc:
+                issues.append(str(exc))
             if isinstance(capability, Mapping):
                 applicability = capability.get("applicability")
                 actual = {
@@ -1399,6 +2353,7 @@ def bind_succeeded_tool_outcome(
     outcome: ToolOutcome,
     *,
     context: Mapping[str, Any],
+    execution_receipt: Mapping[str, Any] | None = None,
     registry_path: Path | None = None,
 ) -> ToolOutcome:
     """Return a SUCCEEDED outcome carrying replayable non-graph authority."""
@@ -1407,6 +2362,7 @@ def bind_succeeded_tool_outcome(
         scratch,
         outcome,
         context=context,
+        execution_receipt=execution_receipt,
         registry_path=registry_path,
     )
     return ToolOutcome.succeeded(
@@ -1439,10 +2395,10 @@ def _success_outcome_replay_issues(
             "LEGACY_UNBOUND_SUCCESS: SUCCEEDED outcome lacks a "
             "context-bound envelope"
         ]
-    expected_schema = (
-        CONTEXT_BOUND_OUTCOME_SCHEMA
+    expected_schemas = (
+        {CONTEXT_BOUND_OUTCOME_SCHEMA, SNAPSHOT_EXECUTION_OUTCOME_SCHEMA}
         if outcome.capability_id in PRECISE_GRAPH_CAPABILITIES
-        else GENERIC_SUCCESS_OUTCOME_SCHEMA
+        else {GENERIC_SUCCESS_OUTCOME_SCHEMA, SNAPSHOT_EXECUTION_OUTCOME_SCHEMA}
     )
     if not isinstance(envelope, Mapping):
         return [
@@ -1450,7 +2406,12 @@ def _success_outcome_replay_issues(
             "not a context-bound envelope"
         ]
     observed_schema = str(envelope.get("schema_version") or "")
-    if observed_schema != expected_schema:
+    if observed_schema == LEGACY_GENERIC_SUCCESS_OUTCOME_SCHEMA:
+        return [
+            "LEGACY_UNBOUND_EXECUTION: SUCCEEDED outcome predates "
+            "process-bound execution receipts"
+        ]
+    if observed_schema not in expected_schemas:
         if observed_schema in {
             "",
             "plamen.advisory_source.v1",
@@ -1460,14 +2421,25 @@ def _success_outcome_replay_issues(
                 "predates the context-bound envelope"
             ]
         return [
-            "SUCCESS_ENVELOPE_SCHEMA_DRIFT: expected "
-            f"{expected_schema}, got {observed_schema or '<missing>'}"
+            "SUCCESS_ENVELOPE_SCHEMA_DRIFT: expected one of "
+            f"{sorted(expected_schemas)}, got {observed_schema or '<missing>'}"
         ]
+    if observed_schema == SNAPSHOT_EXECUTION_OUTCOME_SCHEMA:
+        issues = replay_snapshot_execution_tool_outcome_envelope(
+            scratch, envelope, expected_context=expected_context,
+            registry_path=registry_path,
+        )
+        if list(outcome.artifacts) != envelope.get("artifact_denominator"):
+            issues.append("snapshot execution ledger artifact denominator drifted")
+        if outcome.finding_count != envelope.get("finding_count"):
+            issues.append("snapshot execution ledger finding count drifted")
+        return list(dict.fromkeys(issues))
     if outcome.capability_id in PRECISE_GRAPH_CAPABILITIES:
-        issues = replay_context_bound_tool_outcome_envelope(
-            scratch,
-            envelope,
-            expected_context=expected_context,
+        replay = (
+            replay_context_bound_tool_outcome_envelope
+        )
+        issues = replay(
+            scratch, envelope, expected_context=expected_context,
             registry_path=registry_path,
         )
         if outcome.artifacts != PRECISE_GRAPH_ARTIFACTS:

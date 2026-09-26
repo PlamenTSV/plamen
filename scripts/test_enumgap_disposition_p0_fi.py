@@ -120,6 +120,45 @@ def test_union_worklist_and_exact_dispositions_close(tmp_path: Path) -> None:
     assert residual_enumgap_queue(receipt)["count"] == 0
 
 
+@pytest.mark.parametrize(
+    "separator",
+    (
+        "|---|---|---|",  # provider omitted one presentation cell
+        "",  # GFM permits the semantic rows to remain unambiguous to us
+    ),
+)
+def test_separator_format_drift_cannot_erase_exact_enumgap_dispositions(
+    tmp_path: Path,
+    separator: str,
+) -> None:
+    project = tmp_path / "project"
+    root = project / ".scratchpad"
+    root.mkdir(parents=True)
+    _, clear_id = _seed_inputs(root, project)
+    worklist = compile_enumgap_worklist(root)
+    enum_id = next(
+        item["work_item_id"]
+        for item in worklist["items"]
+        if item["kind"] == "ENUMERATION_COREFERENCE"
+    )
+    output = _output(
+        enum_id,
+        clear_id,
+        clear_evidence="src/Unit.sol:L2",
+    ).replace("|---|---|---|---|", separator)
+
+    receipt = reconcile_enumgap_output(
+        worklist,
+        output,
+        production_root=project,
+        canonical_prior_ids={},
+    )
+
+    assert receipt["status"] == "CLEAN"
+    assert receipt["unresolved_work_item_ids"] == []
+    assert len(receipt["dispositions"]) == 2
+
+
 def test_missing_duplicate_vague_clear_and_absent_heading_stay_exact_debt(
     tmp_path: Path,
 ) -> None:
@@ -154,6 +193,39 @@ def test_missing_duplicate_vague_clear_and_absent_heading_stay_exact_debt(
     residual = residual_enumgap_queue(receipt)
     assert residual["count"] == 2
     assert residual["tail"] == residual["items"][-1]["work_item_id"]
+
+
+def test_bare_source_basename_is_not_accepted_as_clear_authority(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    root = project / ".scratchpad"
+    root.mkdir(parents=True)
+    _, clear_id = _seed_inputs(root, project)
+    worklist = compile_enumgap_worklist(root)
+    enum_id = next(
+        item["work_item_id"]
+        for item in worklist["items"]
+        if item["kind"] == "ENUMERATION_COREFERENCE"
+    )
+
+    receipt = reconcile_enumgap_output(
+        worklist,
+        _output(enum_id, clear_id, clear_evidence="Unit.sol:L2"),
+        production_root=project,
+        canonical_prior_ids={},
+    )
+
+    clear_row = next(
+        row for row in receipt["dispositions"]
+        if row["work_item_id"] == clear_id
+    )
+    assert clear_row["resolution_kind"] == "INVALID_CLEAR"
+    assert clear_id in receipt["unresolved_work_item_ids"]
+    assert any(
+        "exact resolvable evidence" in item.lower()
+        for item in receipt["debt"]
+    )
 
 
 def test_input_tamper_is_debt_and_receipt_roundtrip_fails_closed(

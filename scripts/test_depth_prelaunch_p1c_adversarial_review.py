@@ -7,6 +7,7 @@ acquire terminal security-obligation authority.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ from artifact_ledger import (
     read_artifact_ledger,
     record_work_unit_artifacts,
 )
+from depth_dispatch_delta_authority import delta_name
 from phase_io_contracts import LaunchSpec, resolve_phase_io_contract
 import plamen_driver as D
 import security_obligation_authority as A
@@ -116,6 +118,80 @@ def _depth_contract_file(root: Path) -> None:
     )
 
 
+DA_JOB = {
+    # Exactly the shape `_depth_da_job_if_required` mints in production.  The
+    # `da` category is load-bearing: `depth_dispatch_delta_authority` rejects a
+    # delta whose job row is not category `da`, and `_exec_da_job` derives the
+    # worker work-category from this field.
+    "agent_id": "depth-da-iter2",
+    "role": "da_iter2",
+    "output": "depth_da_iter2_findings.md",
+    "category": "da",
+    "focus": "adversarial second pass",
+}
+
+
+def _write_da_dispatch_bases(root: Path) -> None:
+    """Materialize the two immutable base inputs the DA delta binds against.
+
+    ``_write_and_record_depth_da_dispatch_delta`` reads ``skill_dispatch.json``
+    and ``_depth_worker_pool_contract.json`` as exact PhaseIO inputs *before*
+    any worker prelaunch runs.  Without them the DA leaf aborts at the delta
+    with ``FileNotFoundError`` and never reaches the binding/launch seam these
+    tests exist to assert, so the fixture must supply both.
+    """
+
+    (root / "skill_dispatch.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "plamen.skill-dispatch.v1",
+                "phase": "depth",
+                "entries": [
+                    {
+                        "worker_id": JOB["agent_id"],
+                        "output": OUTPUT,
+                        "methodologies": [],
+                    }
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _depth_contract_file(root)
+
+
+def _da_plan_rows(jobs) -> list[dict[str, object]]:
+    """Return plan rows shaped exactly like ``_depth_dispatch_plan`` output.
+
+    The production planner emits ``prompt_sha256``/``dispatch_contract_sha256``
+    alongside the job and prompt, and the delta authority validates both as
+    64-hex.  A stub that omits them silently degrades the DA delta to a
+    malformed-entry rejection, which is indistinguishable from a real gate
+    failure — so the stub mirrors the real row shape.
+    """
+
+    rows: list[dict[str, object]] = []
+    for job in jobs:
+        prompt = "bounded prompt"
+        rows.append(
+            {
+                "job": dict(job),
+                "prompt": prompt,
+                "prompt_sha256": hashlib.sha256(
+                    prompt.encode("utf-8")
+                ).hexdigest(),
+                "methodology_dispatch": [],
+                "dispatch_contract_sha256": hashlib.sha256(
+                    f"dispatch:{job.get('output')}".encode("utf-8")
+                ).hexdigest(),
+            }
+        )
+    return rows
+
+
 def _patch_serial_fanout(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -130,6 +206,17 @@ def _patch_serial_fanout(
         lambda **_kwargs: [{"job": dict(JOB), "prompt": "bounded prompt"}],
     )
     monkeypatch.setattr(D, "_write_depth_dispatch_contract", lambda *_a, **_k: None)
+    # These tests isolate scheduler/prelaunch ordering.  The exact staged
+    # candidate/security gates have their own suites and require complete
+    # production sidecars, so bind a neutral already-compiled test context.
+    monkeypatch.setattr(
+        D, "_typed_worker_registered_input_paths", lambda **_kwargs: ()
+    )
+    monkeypatch.setattr(
+        D,
+        "_compile_depth_worker_staged_gate_context",
+        lambda **_kwargs: ({}, ()),
+    )
     monkeypatch.setattr(D, "phase_model", lambda *_a, **_k: "runtime-model")
     monkeypatch.setattr(D, "scale_timeout", lambda *_a, **_k: timeout)
     monkeypatch.setattr(
@@ -162,7 +249,7 @@ def test_all_pty_prelaunch_receipts_precede_first_pool_spawn(
             "reasons": [],
         }
 
-    monkeypatch.setattr(D, "_bind_typed_model_worker_inputs", bind)
+    monkeypatch.setattr(D, "_prepare_typed_model_worker_launch", bind)
     monkeypatch.setattr(D, "_run_single_depth_worker_pty", execute)
     monkeypatch.setattr(D, "_depth_worker_output_complete", lambda *_a, **_k: False)
     monkeypatch.setattr(D.display, "print_phase_heartbeat", lambda *_a, **_k: None)
@@ -214,7 +301,7 @@ def test_serialized_backend_binds_before_launch_with_exact_timeout_and_model(
         state["complete"] = True
         return 0
 
-    monkeypatch.setattr(D, "_bind_typed_model_worker_inputs", bind)
+    monkeypatch.setattr(D, "_prepare_typed_model_worker_launch", bind)
     if backend == "codex":
         monkeypatch.setattr(D, "_run_one_codex_exec", execute)
         monkeypatch.setattr(
@@ -373,7 +460,7 @@ def test_serial_incomplete_output_retry_requires_actual_backend_invocation(
     assert binds == [1, 2]
     assert launches == [1, 2]
     assert retry_reasons == [
-        {OUTPUT: []},
+        {},
         {OUTPUT: ["status=incomplete", f"output={OUTPUT}"]},
     ]
 
@@ -385,13 +472,8 @@ def test_da_prelaunch_block_is_terminal_for_that_leaf_without_retry(
     root = tmp_path / ".scratchpad"
     root.mkdir()
     config = _config(root, backend=backend)
-    da_job = {
-        "agent_id": "depth-da-iter2",
-        "role": "da_iter2",
-        "output": "depth_da_iter2_findings.md",
-        "category": "standard",
-        "focus": "adversarial second pass",
-    }
+    da_job = dict(DA_JOB)
+    _write_da_dispatch_bases(root)
     _patch_serial_fanout(
         monkeypatch,
         complete=lambda _root, _phase, job: job["output"] == OUTPUT,
@@ -400,10 +482,7 @@ def test_da_prelaunch_block_is_terminal_for_that_leaf_without_retry(
     monkeypatch.setattr(
         D,
         "_depth_dispatch_plan",
-        lambda **kwargs: [
-            {"job": dict(job), "prompt": "bounded prompt"}
-            for job in kwargs["jobs"]
-        ],
+        lambda **kwargs: _da_plan_rows(kwargs["jobs"]),
     )
     binds: list[int] = []
     launches: list[int] = []
@@ -433,6 +512,11 @@ def test_da_prelaunch_block_is_terminal_for_that_leaf_without_retry(
     assert D._run_depth_codex_fanout(
         phase=_phase(), config=config, scratchpad=root, attempt=1
     ) == 0
+    # The DA delta must have bound successfully: otherwise the leaf would abort
+    # *before* the prelaunch binder and this test would be asserting the wrong
+    # terminal reason.  Proving the delta published makes the block attributable
+    # to the binder alone.
+    assert (root / delta_name(1)).is_file()
     assert binds == [1]
     assert launches == []
     debt = (root / "depth.degraded").read_text(encoding="utf-8")
@@ -446,13 +530,8 @@ def test_da_incomplete_output_retry_requires_actual_backend_invocation(
     root = tmp_path / ".scratchpad"
     root.mkdir()
     config = _config(root, backend=backend)
-    da_job = {
-        "agent_id": "depth-da-iter2",
-        "role": "da_iter2",
-        "output": "depth_da_iter2_findings.md",
-        "category": "standard",
-        "focus": "adversarial second pass",
-    }
+    da_job = dict(DA_JOB)
+    _write_da_dispatch_bases(root)
     state = {"complete": False}
     _patch_serial_fanout(
         monkeypatch,
@@ -464,10 +543,7 @@ def test_da_incomplete_output_retry_requires_actual_backend_invocation(
     monkeypatch.setattr(
         D,
         "_depth_dispatch_plan",
-        lambda **kwargs: [
-            {"job": dict(job), "prompt": "bounded prompt"}
-            for job in kwargs["jobs"]
-        ],
+        lambda **kwargs: _da_plan_rows(kwargs["jobs"]),
     )
     binds: list[int] = []
     launches: list[int] = []
@@ -493,6 +569,10 @@ def test_da_incomplete_output_retry_requires_actual_backend_invocation(
     ) == 0
     assert binds == [1, 2]
     assert launches == [1, 2]
+    # Each DA attempt publishes its own attempt-scoped, immutable delta; a
+    # retry must not rewrite the first attempt's committed delta.
+    assert (root / delta_name(1)).is_file()
+    assert (root / delta_name(2)).is_file()
 
 
 def test_missing_pre_sidecar_is_visible_input_debt_and_never_terminal(
@@ -658,11 +738,17 @@ def test_completed_depth_resume_cannot_ignore_all_missing_p1c_sidecars(
     F._checkpoint(root)
     F._graph(root)
     config = _config(root)
-    D._record_security_obligation_phase_io(
-        root, config, stage="post_depth"
+    checkpoint = json.loads(
+        (root / "_v2_checkpoint.json").read_text(
+            encoding="utf-8", errors="strict"
+        )
     )
+    config["_audit_snapshot"] = checkpoint["audit_snapshot"]
+    assert D._record_security_obligation_phase_io(
+        root, config, stage="post_depth"
+    ) == []
     for name in PRE_SIDECARS:
-        (root / name).unlink()
+        (root / name).unlink(missing_ok=True)
 
     phase = D.Phase(
         "depth",

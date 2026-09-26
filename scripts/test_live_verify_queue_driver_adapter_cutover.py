@@ -57,6 +57,7 @@ from artifact_ledger import (
     record_work_unit_inputs,
 )
 from finding_producer_registry import (
+    materialized_producer_paths,
     write_application_skeptic_proposal_projection,
 )
 from phase_io_contracts import (
@@ -128,6 +129,136 @@ def _error_type() -> type[BaseException]:
     return candidate
 
 
+def test_inventory_source_discovery_uses_only_structured_locations(
+    tmp_path: Path,
+) -> None:
+    """Finding prose ending in a source token must never become a pathname."""
+
+    sut = _load_sut()
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    cited = contracts / "GatewayTransferNative.sol"
+    prose_only = contracts / "DescriptionOnly.sol"
+    cited.write_text("contract GatewayTransferNative {}\n", encoding="utf-8")
+    prose_only.write_text("contract DescriptionOnly {}\n", encoding="utf-8")
+    inventory = tmp_path / "findings_inventory.md"
+    records = tmp_path / "finding_records.json"
+    long_prose = (
+        "safeTransfer is a low-level call. "
+        + "callback re-enters before deletion. " * 24
+        + "The duplicate implementation is at contracts/DescriptionOnly.sol:L9"
+    )
+    inventory.write_text(
+        "### Finding [INV-001]: refund reentrancy\n"
+        "**Location**: contracts/GatewayTransferNative.sol:L661\n"
+        f"**Description**: {long_prose}\n",
+        encoding="utf-8",
+    )
+    records.write_text(
+        json.dumps({
+            "records": [{
+                "inventory_id": "INV-001",
+                "location": "contracts/GatewayTransferNative.sol:L661",
+                "description": long_prose,
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    discovered = sut._inventory_source_paths(
+        tmp_path,
+        inventory_path=inventory,
+        records_path=records,
+    )
+
+    assert discovered == {cited}
+
+
+def test_context_capture_includes_registered_source_action_producers(
+    tmp_path: Path,
+) -> None:
+    sut = _load_sut()
+    root = tmp_path / ".scratchpad"
+    root.mkdir()
+    inventory = root / "findings_inventory.md"
+    inventory.write_text(
+        "### Finding [INV-001]: example\n"
+        "**Source Actions**: analysis_core_state.md:B1-1@sha256:abc\n",
+        encoding="utf-8",
+    )
+    producer = root / "analysis_core_state.md"
+    producer.write_text("# Real producer evidence\n", encoding="utf-8")
+    unrelated = root / "unregistered_advisory.md"
+    unrelated.write_text("# Not a producer\n", encoding="utf-8")
+
+    assert producer in materialized_producer_paths(root, "resume_hashing")
+    assert sut._inventory_scratchpad_artifacts(
+        root, inventory_path=inventory
+    ) == {"analysis_core_state.md"}
+
+
+def test_context_capture_rejects_registered_symlink(
+    tmp_path: Path,
+) -> None:
+    sut = _load_sut()
+    root = tmp_path / ".scratchpad"
+    root.mkdir()
+    inventory = root / "findings_inventory.md"
+    inventory.write_text("# Inventory\n", encoding="utf-8")
+    target = root / "target.md"
+    target.write_text("# Target\n", encoding="utf-8")
+    (root / "analysis_core_state.md").symlink_to(target)
+
+    with pytest.raises(_error_type(), match="registered producer is a symlink"):
+        sut._inventory_scratchpad_artifacts(root, inventory_path=inventory)
+
+
+def test_publication_refuses_context_that_live_verifiers_would_reject(
+    tmp_path: Path,
+) -> None:
+    sut = _load_sut()
+    root = tmp_path / ".scratchpad"
+    root.mkdir()
+    (root / "verification_queue.work_items.json").write_text(
+        '{"rows":[]}', encoding="utf-8"
+    )
+    (root / "verification_context_packets.json").write_text(
+        '{}', encoding="utf-8"
+    )
+
+    with pytest.raises(_error_type(), match="T7 context differs"):
+        sut._validate_live_context_replay(root, tmp_path)
+
+
+def test_live_adapter_rejects_oversized_path_components_before_io(
+    tmp_path: Path,
+) -> None:
+    sut = _load_sut()
+    inventory = tmp_path / "findings_inventory.md"
+    records = tmp_path / "finding_records.json"
+    prose = (
+        "a" * 400
+        + "/GatewayTransferNative.sol:L661"
+    )
+    inventory.write_text(
+        "### Finding [INV-001]: prose only\n"
+        f"**Description**: {prose}\n",
+        encoding="utf-8",
+    )
+    records.write_text(
+        json.dumps({"records": [{"description": prose, "location": ""}]}),
+        encoding="utf-8",
+    )
+
+    assert sut._inventory_source_paths(
+        tmp_path,
+        inventory_path=inventory,
+        records_path=records,
+    ) == set()
+    with pytest.raises(_error_type(), match="unsafe live adapter relative path"):
+        sut._safe_relative("a" * 256 + "/GatewayTransferNative.sol")
+
+
 def _dimensions(
     *,
     pipeline: str,
@@ -165,6 +296,39 @@ def _claim_group(
     phase: str = "preverify_adapter_fixture",
     writer: str = "DRIVER",
 ) -> None:
+    # The canonical inventory is not an arbitrary adapter fixture root.  Model
+    # its real predecessor so DRIVER inventory successors exercise the exact
+    # registered canonical_aggregate handoff used in production.
+    if (
+        work_unit_id == "final_mutable_roots"
+        and "findings_inventory.md" in paths
+        and not (phase == "inventory" and work_unit_id == "canonical_aggregate")
+    ):
+        _claim_group(
+            root=root,
+            project=project,
+            config=config,
+            run_id=run_id,
+            paths=("findings_inventory.md",),
+            work_unit_id="canonical_aggregate",
+            phase="inventory",
+            writer=writer,
+        )
+        remainder = tuple(
+            value for value in paths if value != "findings_inventory.md"
+        )
+        if remainder:
+            _claim_group(
+                root=root,
+                project=project,
+                config=config,
+                run_id=run_id,
+                paths=remainder,
+                work_unit_id=work_unit_id,
+                phase=phase,
+                writer=writer,
+            )
+        return
     if not paths:
         return
     pipeline = str(config["pipeline"])
@@ -532,6 +696,8 @@ def _assert_success(
     assert set(capture["exact_inputs"]) == {
         *LIVE.CONTEXT_INPUTS,
         *result["preverify_frozen_projection"]["required_paths"],
+        *(path.relative_to(root).as_posix() for path in materialized_producer_paths(root, "resume_hashing")),
+        *(name for name in ("findings_inventory.md", "finding_records.json") if (root / name).is_file()),
     }
     assert set(capture["exact_inputs"]) <= set(
         plan["external_input_denominator"]

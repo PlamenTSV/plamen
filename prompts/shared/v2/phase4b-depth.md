@@ -34,6 +34,13 @@ one SO-ID. For `STATUS:R`, copy the complete generated marker
 finding section. The marker binds the exact subject, object, relation, and
 symbol; normalized prose or identifier overlap is not application evidence.
 If the marker cannot be emitted exactly, the alias remains queueable.
+The receipt target must be the bare ID from exactly one H2/H3/H4
+`Finding [<ID>]` heading in this worker's current output. A table-only ID, an
+upstream ID mentioned only in prose, or an `Obligation evidence bindings`
+heading is not a finding-section referent. Put the exact marker inside the
+referenced finding's Markdown section. When reviewing an upstream candidate
+without emitting a local finding section, do not emit `STATUS:R`; retain a
+bounded `STATUS:C`/`STATUS:D` disposition or leave the alias queueable.
 
 ## Light Mode Override
 
@@ -422,11 +429,23 @@ external):
 > `[OBLIG:security_obligations.md:<SO-ID>] ALIAS:<SOT-ID> STATUS:R|D|C KEY:<one-line> -> <finding_id|reason|phase>`.
 > Emit one receipt per evaluated alias when multiple aliases are listed; omit
 > `ALIAS:` only when the obligation has exactly one alias.
+> For an alias-bearing receipt, copy the complete canonical SO-ID/ALIAS
+> prefix from the generated `### Exact receipt prefixes` block byte-for-byte.
+> Never retype, shorten, case-normalize, or reconstruct an alias. If no exact
+> supplied prefix applies, omit the receipt-like line entirely so the alias
+> remains queueable; a near-match is malformed and rejects the staged output.
 > For every `STATUS:R` receipt, copy the complete generated marker
 > `PLAMEN_SECURITY_OBLIGATION_EVIDENCE` from that alias row into the
 > referenced finding section. Do not reconstruct it from memory or substitute
 > normalized prose. A missing, partial, or changed marker leaves the alias
 > unbound and it remains queueable for repair.
+> The target must be the bare ID declared by exactly one H2/H3/H4
+> `Finding [<ID>]` heading in this worker's current output. A table-only ID,
+> upstream ID mentioned only in prose, or `Obligation evidence bindings`
+> heading cannot bind a reported receipt. Place the exact marker inside the
+> referenced finding section. If no local finding section is emitted, use a
+> bounded `STATUS:C`/`STATUS:D` disposition or leave the alias queueable; do
+> not emit `STATUS:R` merely to retain or review an upstream candidate.
 > Use `R` only when you reported a finding, `D` only with concrete code
 > evidence for safety/refutation, and `C` only when a named later phase owns
 > the remaining work.

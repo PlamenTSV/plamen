@@ -382,11 +382,13 @@ def test_phaseio_receipt_is_exact_and_unchanged_replay_is_idempotent(tmp_path):
         scratchpad=sp, config=config, phase=phase
     ) == []
     # PhaseIO paths are registry-owned; capture all generated contract bytes,
-    # then prove an identical call does not mutate them.
+    # then prove an unchanged replay is recognized before execution and does
+    # not issue a second output-commit authority.
     before = json.loads((sp / "_artifact_state.json").read_text())
-    assert d._record_chain_state_resolution_phase_io(
+    execute, issues = d._arm_chain_state_resolution_phase_io(
         scratchpad=sp, config=config, phase=phase
-    ) == []
+    )
+    assert not execute and issues == []
     after = json.loads((sp / "_artifact_state.json").read_text())
     key = "sc/thorough/evm/claude/chain/state_resolution"
     for field in ("contract_digest", "input_set_digest", "launch_digest"):

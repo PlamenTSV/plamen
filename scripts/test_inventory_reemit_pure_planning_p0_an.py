@@ -49,9 +49,9 @@ def _debt_fixture(root: Path) -> None:
     (root / "findings_inventory_chunk_a.md").write_text(
         "# Chunk\n\n" + chunk, encoding="utf-8"
     )
-    inventory = _finding("INV-001", "rewritten mechanism").replace(
+    inventory = _finding("INV-001", "unrelated retained mechanism").replace(
         "**Verdict**: NEEDS_VERIFICATION\n",
-        "**Source IDs**: TF-1, CC-1\n"
+        "**Source IDs**: OTHER-1\n"
         "**Verdict**: NEEDS_VERIFICATION\n",
     )
     (root / "findings_inventory.md").write_text(
@@ -61,6 +61,30 @@ def _debt_fixture(root: Path) -> None:
     assert reconciliation.reconcile_inventory(root, persist=False)["summary"][
         "HUMAN_REVIEW_DEBT"
     ] == 1
+
+
+def test_reemit_refuses_to_duplicate_existing_one_to_one_delivery(
+    tmp_path: Path,
+) -> None:
+    _debt_fixture(tmp_path)
+    inventory = _finding("INV-001", "rewritten mechanism").replace(
+        "**Verdict**: NEEDS_VERIFICATION\n",
+        "**Source IDs**: TF-1, CC-1\n"
+        "**Verdict**: NEEDS_VERIFICATION\n",
+    )
+    (tmp_path / "findings_inventory.md").write_text(
+        "# Finding Inventory\n\n## Findings\n\n" + inventory,
+        encoding="utf-8",
+    )
+    before = _snapshot(tmp_path)
+
+    with pytest.raises(
+        R.InventoryReemitError,
+        match="refuses to duplicate one-to-one final deliveries",
+    ):
+        R.build_inventory_reemit_plan(tmp_path)
+
+    assert _snapshot(tmp_path) == before
 
 
 def _snapshot(root: Path) -> dict[str, bytes]:

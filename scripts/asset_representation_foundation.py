@@ -19,6 +19,8 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from portable_path_contract import assert_lexically_bounded_relative_path
+
 try:
     from enumeration_type_ir import normalize_source_binding_path
 except ImportError:  # pragma: no cover - package import path
@@ -509,6 +511,12 @@ def enumerate_asset_representation_candidates(graph: Mapping[str, Any]) -> dict[
 
 def _safe_relative_source_path(value: object) -> str:
     path = normalize_bound_path(value)
+    try:
+        assert_lexically_bounded_relative_path(
+            path, label="asset representation source path"
+        )
+    except ValueError:
+        return ""
     if (
         not path
         or path.startswith("/")

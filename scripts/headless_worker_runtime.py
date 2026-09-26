@@ -172,6 +172,35 @@ def _normalize_claude_launch_contract(
                 "stream authority"
             )
         return None, None, None
+    if os.name != "nt" and policy is None and request is None:
+        if stream_configuration is None:
+            raise HeadlessWorkerRuntimeError(
+                "POSIX Claude WorkPlans require stream evidence"
+            )
+        try:
+            normalized_stream_init = normalize_expected_init_contract(
+                stream_configuration.get("expected_init_contract")
+            )
+        except (
+            ClaudeStreamJsonEvidenceError,
+            AttributeError,
+            TypeError,
+        ) as exc:
+            raise HeadlessWorkerRuntimeError(
+                f"POSIX Claude stream contract is invalid: {exc}"
+            ) from exc
+        if (
+            normalized_stream_init["cwd"] != str(cwd)
+            or launch_model not in normalized_stream_init["accepted_models"]
+        ):
+            raise HeadlessWorkerRuntimeError(
+                "POSIX Claude stream contract differs from the launch"
+            )
+        normalized_stream = dict(stream_configuration)
+        normalized_stream["expected_init_contract"] = (
+            normalized_stream_init
+        )
+        return None, None, normalized_stream
     if (
         policy is None
         or request is None
@@ -861,6 +890,11 @@ def prepare_headless_worker(
     runtime_attachment_inputs: _ClaudeRuntimeAttachmentInputs | None = None
     normalized_codex_auth: bytes | None = None
     if backend == "claude":
+        if os.name != "nt" and codex_auth_bytes is not None:
+            raise HeadlessWorkerRuntimeError(
+                "POSIX Codex authentication must come from the authenticated "
+                "outer-supervisor backend authority"
+            )
         if codex_auth_bytes is not None:
             raise HeadlessWorkerRuntimeError(
                 "Claude WorkPlans cannot carry Codex authentication material"
@@ -870,32 +904,47 @@ def prepare_headless_worker(
                 "Claude adapter environment must be empty; WER compiles the "
                 "exact child environment from the claimed provider parent"
             )
-        assert normalized_claude_security is not None
-        assert normalized_claude_request is not None
         assert normalized_stdout_configuration is not None
-        (
-            provider_preparation,
-            runtime_attachment_inputs,
-            names,
-        ) = _compile_claude_provider_parent_authority(
-            value=claude_runtime_local_inputs,
-            provider_preparation=claude_provider_preparation,
-            launch_security=normalized_claude_security,
-            launch_security_request=normalized_claude_request,
-            stream_configuration=normalized_stdout_configuration,
-            project_root=project,
-            run_id=run_id,
-            phase=phase_io_contract.phase,
-            launch_model=phase_io_launch.model,
-            cwd=working_directory,
-            startup_authority_binding=startup_binding,
-            source_snapshot_sha256=source_snapshot_sha256,
-            declared_environment_allowlist=environment_allowlist,
-            bound_settings_bytes=claude_bound_settings_bytes,
-            selected_mcp_config_bytes=(
-                claude_selected_mcp_config_bytes
-            ),
-        )
+        if os.name != "nt":
+            if any(
+                value is not None
+                for value in (
+                    claude_provider_preparation,
+                    claude_runtime_local_inputs,
+                    claude_bound_settings_bytes,
+                    claude_selected_mcp_config_bytes,
+                )
+            ):
+                raise HeadlessWorkerRuntimeError(
+                    "POSIX Claude cannot carry an ambient provider parent"
+                )
+            names = tuple(environment_allowlist)
+        else:
+            assert normalized_claude_security is not None
+            assert normalized_claude_request is not None
+            (
+                provider_preparation,
+                runtime_attachment_inputs,
+                names,
+            ) = _compile_claude_provider_parent_authority(
+                value=claude_runtime_local_inputs,
+                provider_preparation=claude_provider_preparation,
+                launch_security=normalized_claude_security,
+                launch_security_request=normalized_claude_request,
+                stream_configuration=normalized_stdout_configuration,
+                project_root=project,
+                run_id=run_id,
+                phase=phase_io_contract.phase,
+                launch_model=phase_io_launch.model,
+                cwd=working_directory,
+                startup_authority_binding=startup_binding,
+                source_snapshot_sha256=source_snapshot_sha256,
+                declared_environment_allowlist=environment_allowlist,
+                bound_settings_bytes=claude_bound_settings_bytes,
+                selected_mcp_config_bytes=(
+                    claude_selected_mcp_config_bytes
+                ),
+            )
     else:
         if (
             claude_provider_preparation is not None
@@ -1321,6 +1370,8 @@ def _execute_prepared_headless_worker(
     cancel_token: Any,
     *,
     attempt_id: str | None,
+    native_backend_execution_authority: object | None,
+    backend_install_generation_authority: object | None,
 ) -> HeadlessWorkerResult:
     if not isinstance(prepared, PreparedHeadlessWorker):
         raise HeadlessWorkerRuntimeError(
@@ -1373,33 +1424,42 @@ def _execute_prepared_headless_worker(
     provider_preparation = prepared._claude_provider_preparation
     attachment_inputs = prepared._claude_runtime_attachment_inputs
     if launch.backend == "claude":
-        if (
-            type(provider_preparation) is not ClaudeProviderPreparation
-            or attachment_inputs is None
-        ):
+        # Windows retains the existing provider-home adapter.  POSIX consumes
+        # credentials/settings only from the outer-supervisor launch plan,
+        # after the worker attempt arm is durable; attaching the ambient
+        # provider home here would create a second launch authority.
+        if os.name == "nt":
+            if (
+                type(provider_preparation) is not ClaudeProviderPreparation
+                or attachment_inputs is None
+            ):
+                raise HeadlessWorkerRuntimeError(
+                    "prepared Claude provider parent is incomplete"
+                )
+            try:
+                bound_claude_provider_runtime = attach_claude_provider_runtime(
+                    provider_preparation,
+                    ambient_environment=dict(
+                        attachment_inputs.ambient_environment_items
+                    ),
+                    source_config_dir=attachment_inputs.source_config_dir,
+                    project_root=project,
+                    trusted_cwds=attachment_inputs.trusted_cwds,
+                    bound_settings_bytes=(
+                        attachment_inputs.bound_settings_bytes
+                    ),
+                    selected_mcp_config_bytes=(
+                        attachment_inputs.selected_mcp_config_bytes
+                    ),
+                )
+            except (ClaudeProviderPreparationError, TypeError) as exc:
+                raise HeadlessWorkerRuntimeError(
+                    f"Claude provider runtime attachment was rejected: {exc}"
+                ) from exc
+        elif provider_preparation is not None or attachment_inputs is not None:
             raise HeadlessWorkerRuntimeError(
-                "prepared Claude provider parent is incomplete"
+                "POSIX Claude prepared worker carries ambient provider state"
             )
-        try:
-            bound_claude_provider_runtime = attach_claude_provider_runtime(
-                provider_preparation,
-                ambient_environment=dict(
-                    attachment_inputs.ambient_environment_items
-                ),
-                source_config_dir=attachment_inputs.source_config_dir,
-                project_root=project,
-                trusted_cwds=attachment_inputs.trusted_cwds,
-                bound_settings_bytes=(
-                    attachment_inputs.bound_settings_bytes
-                ),
-                selected_mcp_config_bytes=(
-                    attachment_inputs.selected_mcp_config_bytes
-                ),
-            )
-        except (ClaudeProviderPreparationError, TypeError) as exc:
-            raise HeadlessWorkerRuntimeError(
-                f"Claude provider runtime attachment was rejected: {exc}"
-            ) from exc
     elif provider_preparation is not None or attachment_inputs is not None:
         raise HeadlessWorkerRuntimeError(
             "non-Claude prepared worker carries a Claude provider parent"
@@ -1467,7 +1527,17 @@ def _execute_prepared_headless_worker(
     )
     staged_context = prepared.staged_output_context
     try:
-        execution = execute_worker_transaction(plan, adapter, cancel_token)
+        execution = execute_worker_transaction(
+            plan,
+            adapter,
+            cancel_token,
+            native_backend_execution_authority=(
+                native_backend_execution_authority
+            ),
+            backend_install_generation_authority=(
+                backend_install_generation_authority
+            ),
+        )
         incorporation = incorporate_worker_execution(
             execution,
             contract,
@@ -1551,6 +1621,9 @@ def execute_prepared_headless_worker(
     prepared: PreparedHeadlessWorker,
     phase_work_roster: Mapping[str, Any],
     cancel_token: Any = None,
+    *,
+    native_backend_execution_authority: object | None = None,
+    backend_install_generation_authority: object | None = None,
 ) -> HeadlessWorkerResult:
     """Validate a final roster, create a fresh attempt, execute, and publish."""
 
@@ -1559,6 +1632,12 @@ def execute_prepared_headless_worker(
         phase_work_roster,
         cancel_token,
         attempt_id=None,
+        native_backend_execution_authority=(
+            native_backend_execution_authority
+        ),
+        backend_install_generation_authority=(
+            backend_install_generation_authority
+        ),
     )
 
 
@@ -1599,6 +1678,8 @@ def execute_headless_worker(
     claude_selected_mcp_config_bytes: bytes | None = None,
     codex_auth_bytes: bytes | None = None,
     cancel_token: Any = None,
+    native_backend_execution_authority: object | None = None,
+    backend_install_generation_authority: object | None = None,
 ) -> HeadlessWorkerResult:
     """Singleton-compatible facade over prepare -> freeze roster -> execute."""
 
@@ -1694,6 +1775,12 @@ def execute_headless_worker(
         supplied_roster,
         cancel_token,
         attempt_id=attempt_id,
+        native_backend_execution_authority=(
+            native_backend_execution_authority
+        ),
+        backend_install_generation_authority=(
+            backend_install_generation_authority
+        ),
     )
 
 

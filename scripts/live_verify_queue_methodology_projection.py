@@ -30,6 +30,7 @@ from phase_io_contracts import (
     PhaseIOContract,
     canonical_work_unit_key,
 )
+from portable_path_contract import assert_lexically_bounded_relative_path
 
 
 SCHEMA_VERSION = "plamen.live_verify_queue_methodology_projection.v1"
@@ -89,6 +90,12 @@ def _implementation_root() -> Path:
 def _safe_relative(value: Any, *, field: str) -> str:
     text = str(value or "").strip().replace("\\", "/")
     relative = PurePosixPath(text)
+    try:
+        assert_lexically_bounded_relative_path(text, label=field)
+    except ValueError as exc:
+        raise LiveVerifyQueueMethodologyProjectionError(
+            f"{field} is not a safe canonical relative path: {value!r}"
+        ) from exc
     if (
         not text
         or relative.is_absolute()

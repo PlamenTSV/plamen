@@ -73,7 +73,7 @@ Supports **EVM/Solidity**, **Solana/Anchor**, **Aptos Move**, **Sui Move**, **So
 > truncation is only a web-UI listing limit. The source tree intentionally keeps
 > tests, fault fixtures, architecture records, and continuation research beside
 > the implementation. A production install publishes the exact governed
-> 823-row closure (792 runtime rows plus 31 Codex-adapter rows); normal CLI/audit
+> 1,090-row closure (1,059 runtime rows plus 31 Codex-adapter rows); normal CLI/audit
 > launch does not recursively enumerate every source test or research file.
 > Dependency and integrity census work is concentrated at install/update time.
 
@@ -149,7 +149,6 @@ plamen doctor                       # verify install (no audit run, no API calls
 plamen setup                        # toolchain wizard + optional RAG build
 plamen migrate                      # upgrade a v1.x install layout
 plamen rag                          # rebuild RAG database only
-plamen compare                      # diff two audit reports
 plamen uninstall                    # remove the managed installation
 plamen help                         # full command + option reference
 ```
@@ -163,11 +162,14 @@ must add `--yes`; model fallback remains disabled unless
 > **Important**: Use `plamen` after installation. Invoke `plamen.py install`
 > only from a complete source release; never execute or edit installed internals.
 
-The installer validates the exact governed 823-row source closure before any
+The installer validates the exact governed 1,090-row source closure before any
 publication. It transactionally commits the authenticated package at
 `~/.plamen`, a private hash-locked Python environment, managed Node.js
-24.20.0/npm 11.19.0, and exact Claude Code 2.1.252 and Codex 0.152.0 payloads.
-A signed current selection binds the runtime generation, receipts, policy,
+24.20.0/npm 11.19.0, and the upstream-latest Claude Code and Codex CLI
+releases resolved once during that install/update. Registry signatures,
+publisher/provenance, archive integrity, native publisher identity, and CLI
+conformance are checked before publication. A signed current selection freezes
+those exact versions and bytes and binds the runtime generation, receipts, policy,
 backend resource closures, and permitted MCP launches.
 
 The initial materialization may take several minutes. Normal launches are
@@ -286,7 +288,7 @@ hardening paths:
   assembly project accepted evidence. Report workers cannot silently mint,
   delete, omit, or rerate canonical findings.
 - **Packaging is source-governed.** The current installer admits an exact
-  823-row source closure, hash-locked Python wheels, reviewed Node/npm and
+  1,090-row source closure, hash-locked Python wheels, reviewed Node/npm and
   backend payloads, immutable installed bytes, and receipt-bound selections
   instead of ambient tools or an editable installed checkout.
 - **Claude and Codex share logical denominators.** Claude retains its PTY and
@@ -468,8 +470,9 @@ fresh packaged Codex E2E completion remains an open V3 acceptance gate.
 ```
 
 The standard install publishes authenticated Claude and Codex projections from
-the same committed package. Codex uses the exact 0.152.0 executable in the
-signed current selection; it does not consult a global Codex installation.
+the same committed package. Codex uses the exact install-time release frozen in
+the signed current selection; an audit never re-resolves `latest` or consults a
+global Codex installation.
 
 | Claude Code | Codex CLI | Purpose |
 |-------------|-----------|---------|

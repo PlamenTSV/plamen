@@ -19,7 +19,7 @@ from claude_stream_json_evidence import (
     RESTRICTED_WEB_ANALYSIS_CAPABILITY,
     REVIEWED_RESTRICTED_INIT_AGENTS,
     REVIEWED_RESTRICTED_INIT_CAPABILITIES,
-    REVIEWED_RESTRICTED_INIT_VERSION,
+    LEGACY_REVIEWED_RESTRICTED_INIT_VERSION,
     ClaudeStreamJsonEvidenceError,
     normalize_expected_init_contract,
 )
@@ -27,6 +27,10 @@ from claude_stream_json_evidence import (
 
 PROFILE_SCHEMA = "plamen.claude_headless_profile.v1"
 TYPED_PROFILE_SCHEMA = "plamen.claude_headless_profile.v2"
+POSIX_NATIVE_PROFILE_SCHEMA = (
+    "plamen.claude_posix_native_headless_profile.v1"
+)
+POSIX_NATIVE_SETTINGS_CONTRACT = "POSIX_NATIVE_SANDBOX_DONTASK_V1"
 SETTINGS_AUTHORITY_SCHEMA = "plamen.claude_settings_authority.v1"
 MCP_AUTHORITY_SCHEMA = "plamen.claude_mcp_authority.v1"
 MCP_AUTHORITY_SELECTION_SCHEMA = "plamen.claude_mcp_authority.v2"
@@ -52,7 +56,7 @@ _RESTRICTED_NON_WRITE_ALLOWED_TOOLS = ("Glob", "Grep", "Read")
 # reviewed row gates every flag it directly enumerates; this exact companion
 # row covers the path-bearing attachment that cannot appear in an
 # attempt-independent argv.
-_REVIEWED_RUNTIME_AUTHORITY_FLAGS_BY_VERSION = {
+_LEGACY_REVIEWED_RUNTIME_AUTHORITY_FLAGS_BY_VERSION = {
     "2.1.220": frozenset({"--settings"}),
     "2.1.250": frozenset({"--settings"}),
     "2.1.252": frozenset({"--settings"}),
@@ -134,16 +138,16 @@ def _profile_cli_flags(
     if permission_mode == "bypassPermissions":
         flags.append("--dangerously-skip-permissions")
     elif restricted_analysis or restricted_web_analysis:
-        if claude_code_version != "2.1.252":
+        if claude_code_version != LEGACY_REVIEWED_RESTRICTED_INIT_VERSION:
             raise ClaudeHeadlessProfileError(
-                "restricted analysis requires reviewed Claude Code 2.1.252"
+                "legacy restricted analysis requires its reviewed Claude release"
             )
         # Claude Code >=2.1.248 makes this a real shared-machine harness
         # boundary: ambient user/project configuration is not loaded, command
         # and code tools are absent unless named explicitly, and built-in file
-        # tools remain confined to working directories.  Plamen only uses the
-        # non-interactive default-deny denominator together with this
-        # restriction and explicit bound-settings allow rules.
+        # tools remain confined to working directories.  This legacy profile
+        # is qualified only with the default-mode hook/settings contract.  The
+        # POSIX native-sandbox/dontAsk contract has a separate compiler below.
         expected_mode = "default"
         if permission_mode != expected_mode:
             raise ClaudeHeadlessProfileError(
@@ -170,10 +174,9 @@ def _profile_cli_flags(
         )
     )
     if restricted_web_analysis:
-        # Claude Code 2.1.252 deliberately forces default while
-        # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is enabled.  Keep that hardening
-        # and bind its explicit permission allowlist to the reviewed non-write
-        # subset. Edit/Write remain settings-scoped; Web remains hook-scoped.
+        # The settings file remains default-deny.  Bind the explicit permission
+        # allowlist to the reviewed non-write subset. Edit/Write remain
+        # settings-scoped; Web remains hook-scoped in this legacy web lane.
         flags.extend((
             "--allowedTools",
             ",".join(_RESTRICTED_NON_WRITE_ALLOWED_TOOLS),
@@ -203,8 +206,10 @@ def _typed_profile_required_capabilities(
         ),
     }
     if restricted_analysis or restricted_web_analysis:
-        expected_mode = "default"
-        if permission_mode != expected_mode or claude_code_version != "2.1.252":
+        if (
+            permission_mode != "default"
+            or claude_code_version != LEGACY_REVIEWED_RESTRICTED_INIT_VERSION
+        ):
             raise ClaudeHeadlessProfileError(
                 "restricted analysis capability is inconsistent"
             )
@@ -227,7 +232,7 @@ def _runtime_authority_flags(
 ) -> list[str]:
     if customization_mode == "SAFE_MODE":
         return []
-    reviewed = _REVIEWED_RUNTIME_AUTHORITY_FLAGS_BY_VERSION.get(
+    reviewed = _LEGACY_REVIEWED_RUNTIME_AUTHORITY_FLAGS_BY_VERSION.get(
         claude_code_version
     )
     required = {"--settings"}
@@ -509,14 +514,14 @@ def compile_claude_headless_profile(
             "default permission mode is restricted to reviewed analysis"
         )
     if restricted_analysis and (
-        claude_code_version != REVIEWED_RESTRICTED_INIT_VERSION
+        claude_code_version != LEGACY_REVIEWED_RESTRICTED_INIT_VERSION
         or permission_mode != "default"
     ):
         raise ClaudeHeadlessProfileError(
             "restricted analysis requires pinned default-deny authority"
         )
     if restricted_web_analysis and (
-        claude_code_version != REVIEWED_RESTRICTED_INIT_VERSION
+        claude_code_version != LEGACY_REVIEWED_RESTRICTED_INIT_VERSION
         or permission_mode != "default"
     ):
         raise ClaudeHeadlessProfileError(
@@ -581,6 +586,250 @@ def compile_claude_headless_profile(
         "expected_init_contract": expected,
     }
     return {**core, "profile_sha256": _digest(core)}
+
+
+def compile_posix_native_claude_headless_profile(
+    *,
+    claude_code_version: str,
+    cwd: str,
+    accepted_models: Sequence[str],
+    builtin_tools: Sequence[str],
+    required_tools: Sequence[str],
+    forbidden_tools: Sequence[str],
+    install_generation_authority: object | None = None,
+    _allow_test_only_install_generation: bool = False,
+) -> dict[str, Any]:
+    """Compile the secret-free Linux-guest native-sandbox semantic lane.
+
+    This deliberately does not reuse the legacy restricted profile: that lane
+    derives authority from a default-mode hook/settings overlay, whereas this
+    one is paired with the launch policy's hook-free native sandbox + dontAsk.
+    """
+
+    projection = None
+    if install_generation_authority is not None:
+        from posix_backend_launch_policy import (  # local: avoid import cycle
+            PosixBackendLaunchPolicyError,
+            TEST_ONLY_project_backend_install_generation,
+            require_backend_install_generation,
+        )
+        try:
+            projection = (
+                TEST_ONLY_project_backend_install_generation(
+                    install_generation_authority
+                )
+                if _allow_test_only_install_generation
+                else require_backend_install_generation(
+                    install_generation_authority
+                )
+            )
+        except PosixBackendLaunchPolicyError as exc:
+            raise ClaudeHeadlessProfileError(
+                "POSIX native profile install-generation authority is invalid"
+            ) from exc
+    if (
+        claude_code_version != LEGACY_REVIEWED_RESTRICTED_INIT_VERSION
+        and (
+            projection is None
+            or projection.backend != "claude"
+            or projection.resolved_version != claude_code_version
+        )
+    ):
+        raise ClaudeHeadlessProfileError(
+            "current POSIX native profile requires authenticated install-generation conformance"
+        )
+    if not isinstance(cwd, str) or not cwd or cwd != cwd.strip() or "\x00" in cwd:
+        raise ClaudeHeadlessProfileError("cwd is malformed")
+    models = _unique_strings(
+        accepted_models,
+        label="accepted_models",
+        pattern=_MODEL_RE,
+        require_nonempty=True,
+    )
+    tools = _unique_strings(
+        builtin_tools,
+        label="builtin_tools",
+        pattern=_TOOL_RE,
+        require_nonempty=True,
+    )
+    required = _unique_strings(
+        required_tools,
+        label="required_tools",
+        pattern=_TOOL_RE,
+        require_nonempty=True,
+    )
+    forbidden = _unique_strings(
+        forbidden_tools,
+        label="forbidden_tools",
+        pattern=_TOOL_RE,
+    )
+    if not set(required).issubset(tools) or set(tools) & set(forbidden):
+        raise ClaudeHeadlessProfileError(
+            "POSIX native tool denominator is inconsistent"
+        )
+    expected = {
+        "schema": EXPECTED_INIT_SECURITY_SCHEMA,
+        "claude_code_version": claude_code_version,
+        "cwd": cwd,
+        "accepted_models": models,
+        "permission_mode": "dontAsk",
+        "allowed_tools": tools,
+        "allowed_tool_prefixes": [],
+        "required_tools": required,
+        "forbidden_tools": forbidden,
+        "allowed_mcp_servers": [],
+        "required_mcp_servers": [],
+        "expected_plugins": [],
+        "expected_skills": [],
+        "expected_agents": list(REVIEWED_RESTRICTED_INIT_AGENTS),
+        "accepted_api_key_sources": ["none"],
+        "required_capabilities": [RESTRICTED_ANALYSIS_CAPABILITY],
+        "expected_native_capabilities": list(
+            REVIEWED_RESTRICTED_INIT_CAPABILITIES
+        ),
+        "forbidden_capabilities": ["remote-agents"],
+        "expected_slash_commands": [],
+        "accepted_output_styles": ["default"],
+    }
+    try:
+        if _allow_test_only_install_generation and projection is not None:
+            from claude_stream_json_evidence import (  # local test seam
+                TEST_ONLY_normalize_expected_init_contract,
+            )
+            expected = TEST_ONLY_normalize_expected_init_contract(
+                expected,
+                install_generation_authority=install_generation_authority,
+            )
+        else:
+            expected = normalize_expected_init_contract(
+                expected,
+                install_generation_authority=install_generation_authority,
+            )
+    except ClaudeStreamJsonEvidenceError as exc:
+        raise ClaudeHeadlessProfileError(
+            f"POSIX native expected-init policy is invalid: {exc}"
+        ) from exc
+    core = {
+        "schema": POSIX_NATIVE_PROFILE_SCHEMA,
+        "settings_contract": POSIX_NATIVE_SETTINGS_CONTRACT,
+        "claude_code_version": claude_code_version,
+        "cli_flags": [
+            "--restricted",
+            "--permission-mode",
+            "dontAsk",
+            "--disable-slash-commands",
+            "--setting-sources=",
+            "--no-chrome",
+            "--prompt-suggestions",
+            "false",
+            "--tools",
+            ",".join(tools),
+        ],
+        "expected_init_contract": expected,
+    }
+    if projection is not None:
+        core.update({
+            "install_generation_sha256": projection.install_generation_sha256,
+            "cli_behavior_contract_sha256": (
+                projection.cli_behavior_contract_sha256
+            ),
+            "cli_conformance_sha256": projection.cli_conformance_sha256,
+        })
+    return {**core, "profile_sha256": _digest(core)}
+
+
+def TEST_ONLY_compile_posix_native_claude_headless_profile(
+    **kwargs: Any,
+) -> dict[str, Any]:
+    kwargs["_allow_test_only_install_generation"] = True
+    return compile_posix_native_claude_headless_profile(**kwargs)
+
+
+def replay_posix_native_claude_headless_profile(
+    value: Mapping[str, Any],
+    *,
+    install_generation_authority: object | None = None,
+    _allow_test_only_install_generation: bool = False,
+) -> dict[str, Any]:
+    """Replay the exact hook-free native-sandbox profile."""
+
+    if not isinstance(value, Mapping):
+        raise ClaudeHeadlessProfileError("POSIX native profile must be an object")
+    try:
+        clone = json.loads(_canonical_json(dict(value)).decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise ClaudeHeadlessProfileError("POSIX native profile JSON is invalid") from exc
+    expected_fields = {
+        "schema",
+        "settings_contract",
+        "claude_code_version",
+        "cli_flags",
+        "expected_init_contract",
+        "profile_sha256",
+    }
+    if "install_generation_sha256" in clone:
+        expected_fields.update({
+            "install_generation_sha256",
+            "cli_behavior_contract_sha256",
+            "cli_conformance_sha256",
+        })
+    if not isinstance(clone, dict) or set(clone) != expected_fields:
+        raise ClaudeHeadlessProfileError(
+            "POSIX native profile field denominator drifted"
+        )
+    digest = clone.pop("profile_sha256")
+    if (
+        clone.get("schema") != POSIX_NATIVE_PROFILE_SCHEMA
+        or clone.get("settings_contract") != POSIX_NATIVE_SETTINGS_CONTRACT
+        or not _valid_sha256(digest)
+        or digest != _digest(clone)
+    ):
+        raise ClaudeHeadlessProfileError(
+            "POSIX native profile digest or contract drifted"
+        )
+    try:
+        if _allow_test_only_install_generation:
+            from claude_stream_json_evidence import (
+                TEST_ONLY_normalize_expected_init_contract,
+            )
+            expected = TEST_ONLY_normalize_expected_init_contract(
+                clone.get("expected_init_contract"),
+                install_generation_authority=install_generation_authority,
+            )
+        else:
+            expected = normalize_expected_init_contract(
+                clone.get("expected_init_contract"),
+                install_generation_authority=install_generation_authority,
+            )
+    except ClaudeStreamJsonEvidenceError as exc:
+        raise ClaudeHeadlessProfileError(
+            f"POSIX native expected-init policy does not replay: {exc}"
+        ) from exc
+    rebuilt = compile_posix_native_claude_headless_profile(
+        claude_code_version=str(clone.get("claude_code_version") or ""),
+        cwd=str(expected.get("cwd") or ""),
+        accepted_models=expected.get("accepted_models", []),
+        builtin_tools=expected.get("allowed_tools", []),
+        required_tools=expected.get("required_tools", []),
+        forbidden_tools=expected.get("forbidden_tools", []),
+        install_generation_authority=install_generation_authority,
+        _allow_test_only_install_generation=_allow_test_only_install_generation,
+    )
+    if rebuilt != {**clone, "profile_sha256": digest}:
+        raise ClaudeHeadlessProfileError(
+            "POSIX native profile differs from its compiled authority"
+        )
+    return rebuilt
+
+
+def TEST_ONLY_replay_posix_native_claude_headless_profile(
+    value: Mapping[str, Any], *, install_generation_authority: object,
+) -> dict[str, Any]:
+    return replay_posix_native_claude_headless_profile(
+        value,
+        install_generation_authority=install_generation_authority,
+        _allow_test_only_install_generation=True,
+    )
 
 
 def compile_claude_headless_profile_from_authorities(
@@ -853,6 +1102,8 @@ def replay_claude_headless_profile(
 
     if not isinstance(value, Mapping):
         raise ClaudeHeadlessProfileError("profile must be an object")
+    if value.get("schema") == POSIX_NATIVE_PROFILE_SCHEMA:
+        return replay_posix_native_claude_headless_profile(value)
     if value.get("schema") == TYPED_PROFILE_SCHEMA:
         return _replay_typed_claude_headless_profile(value)
     try:
@@ -914,10 +1165,14 @@ def replay_claude_headless_profile(
 
 __all__ = [
     "ClaudeHeadlessProfileError",
+    "POSIX_NATIVE_PROFILE_SCHEMA",
+    "POSIX_NATIVE_SETTINGS_CONTRACT",
     "PROFILE_SCHEMA",
     "TYPED_PROFILE_SCHEMA",
     "compile_claude_headless_profile",
     "compile_claude_headless_profile_from_authorities",
+    "compile_posix_native_claude_headless_profile",
     "parse_claude_code_version",
     "replay_claude_headless_profile",
+    "replay_posix_native_claude_headless_profile",
 ]

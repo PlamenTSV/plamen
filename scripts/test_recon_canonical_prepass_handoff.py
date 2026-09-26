@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -97,7 +98,13 @@ def _workspace(
     source.mkdir(parents=True)
     scratchpad.mkdir()
     (source / "Protocol.sol").write_text(
-        "pragma solidity ^0.8.20; contract Protocol {}\n", encoding="utf-8"
+        "pragma solidity ^0.8.20;\n"
+        "contract Protocol {\n"
+        "    uint256 public limit;\n"
+        "    modifier bounded(uint256 next) { require(next <= 100); _; }\n"
+        "    function setLimit(uint256 next) external bounded(next) { limit = next; }\n"
+        "}\n",
+        encoding="utf-8",
     )
     config = {
         "pipeline": "sc",
@@ -123,6 +130,19 @@ def _workspace(
         name: (f"# {name}\n\nexact committed worker evidence\n").encode()
         for name in mechanical._canonical_merge_input_names("sc", "thorough")
     }
+    # The canonical renderer derives these projections from the inventory
+    # worker. Generic prose is not a substitute for their required row roles.
+    shard_payloads["recon_inventory_surface.md"] += (
+        "\n## Constraint Variables\n\n"
+        "| Variable | Source Location | Bound / Enforcement | Setter | Status |\n"
+        "|---|---|---|---|---|\n"
+        "| limit | src/Protocol.sol:3 | next <= 100 via bounded | "
+        "Protocol.setLimit | ENFORCED |\n\n"
+        "## Modifier Application Map\n\n"
+        "| Function | Source Location | Modifier / Guard | Status |\n"
+        "|---|---|---|---|\n"
+        "| Protocol.setLimit | src/Protocol.sol:5 | bounded(next) | GUARDED |\n"
+    ).encode()
     if template_shard is not None:
         shard_payloads["recon_templates_patterns.md"] = template_shard
     _driver_generation(
@@ -152,8 +172,18 @@ def test_real_prepass_projection_and_public_output_denominator_are_exact() -> No
     successor = canonical_work_unit_key(
         "sc", "thorough", "evm", "claude", "recon", "canonical_merge"
     )
-    for name in mechanical._RECON_CANONICAL_OUTPUTS:
+    prepass_outputs = set(recon_prepass._SC_PREPASS_PUBLIC_OUTPUTS)
+    canonical_outputs = set(mechanical._RECON_CANONICAL_OUTPUTS)
+    overlap = prepass_outputs & canonical_outputs
+    assert overlap
+    for name in overlap:
         assert registered_projection_handoff(
+            predecessor, successor, f"scratchpad:{name}"
+        )
+    # Newly derived canonical outputs have no prepass generation to replace.
+    assert "constraint_variables.md" in canonical_outputs - prepass_outputs
+    for name in canonical_outputs - prepass_outputs:
+        assert not registered_projection_handoff(
             predecessor, successor, f"scratchpad:{name}"
         )
     dependency_successor = canonical_work_unit_key(
@@ -223,7 +253,17 @@ def test_canonical_merge_replaces_exact_registered_prepass_generation(
     for name in mechanical._RECON_CANONICAL_OUTPUTS:
         assert unit["output_prestates"][f"scratchpad:{name}"]["status"] == (
             "ACTIVE_REGISTERED_PREDECESSOR"
+            if name in recon_prepass._SC_PREPASS_PUBLIC_OUTPUTS
+            else "ABSENT"
         )
+    meta_identity = "scratchpad:meta_buffer.md"
+    assert meta_identity in unit["artifacts"]
+    assert state["artifact_bindings"][meta_identity]["owner_key"] == unit[
+        "work_unit_key"
+    ]
+    assert unit["artifacts"][meta_identity]["sha256"] == hashlib.sha256(
+        (scratchpad / "meta_buffer.md").read_bytes()
+    ).hexdigest()
 
 
 def test_dependency_reconcile_replaces_real_provider_prepass_generation(
@@ -244,6 +284,57 @@ def test_dependency_reconcile_replaces_real_provider_prepass_generation(
     assert unit["output_prestates"][
         "scratchpad:external_dependency_research.md"
     ]["status"] == "ACTIVE_REGISTERED_PREDECESSOR"
+
+
+def test_rescan_prelaunch_binds_meta_buffer_after_canonical_handoff(
+    tmp_path: Path,
+) -> None:
+    project, scratchpad, config = _workspace(tmp_path)
+    assert mechanical._merge_recon_worker_shards(scratchpad, config) == list(
+        mechanical._RECON_CANONICAL_OUTPUTS
+    )
+    driver._ensure_recon_dependency_parity(scratchpad, str(project), config)
+    (scratchpad / "rescan_manifest.md").write_text(
+        "# Rescan Manifest\n\n- analysis_rescan_1.md\n", encoding="utf-8"
+    )
+    (scratchpad / "opengrep_findings.md").write_text(
+        "# OpenGrep findings\n\nNo fixture findings.\n", encoding="utf-8"
+    )
+    phase = next(row for row in driver.SC_PHASES if row.name == "rescan")
+    exact_inputs = driver._typed_worker_registered_input_paths(
+        phase_name="rescan",
+        scratchpad=scratchpad,
+        config=config,
+        agent_id="R1",
+        agent_role="rescan",
+        output="analysis_rescan_1.md",
+        work_category="rescan",
+        focus_area="global",
+        attempt=1,
+    )
+    assert "meta_buffer.md" in exact_inputs
+    kwargs = {
+        "phase": phase,
+        "config": config,
+        "scratchpad": scratchpad,
+        "project_root": str(project),
+        "agent_id": "R1",
+        "agent_role": "rescan",
+        "output": "analysis_rescan_1.md",
+        "timeout_s": 120,
+        "work_category": "rescan",
+        "focus_area": "global",
+        "exact_inputs": exact_inputs,
+        "attempt": 1,
+    }
+    assert driver._prepare_typed_model_worker_launch(**kwargs) == []
+    contract, _launch = driver._typed_model_worker_contract_and_launch(**kwargs)
+    unit = ledger.read_artifact_ledger(scratchpad)["work_units"][contract.key]
+    binding = unit["input_bindings"]["scratchpad:meta_buffer.md"]
+    assert binding["status"] == "ACTIVE"
+    assert binding["producer_work_unit_key"] == canonical_work_unit_key(
+        "sc", "thorough", "evm", "claude", "recon", "canonical_merge"
+    )
 
 
 def test_atomic_control_temps_stay_in_driver_private_namespace(
@@ -350,7 +441,11 @@ def test_worker_pool_returns_containment_failure_for_dependency_authority_debt(
     monkeypatch.setattr(
         driver, "_recon_worker_complete", lambda *_args, **_kwargs: (True, [])
     )
-    monkeypatch.setattr(driver, "_merge_recon_worker_shards", lambda *_args: [])
+    monkeypatch.setattr(
+        driver,
+        "_merge_recon_worker_shards",
+        lambda *_args, **_kwargs: [],
+    )
     monkeypatch.setattr(
         driver,
         "_run_recon_dependency_research_wave",

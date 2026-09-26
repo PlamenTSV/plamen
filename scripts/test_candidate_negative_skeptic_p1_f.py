@@ -8,6 +8,7 @@ import pytest
 
 import application_skeptic as A
 import candidate_negative_authority as N
+import mandatory_reverification as M
 from finding_producer_registry import write_application_skeptic_proposal_projection
 
 
@@ -110,6 +111,105 @@ def test_exact_candidate_context_reaches_independent_prompt(tmp_path: Path) -> N
     assert "CANDIDATE_NEGATIVE" in rendered["prompt"]
 
 
+def test_pc6_not_applicable_proposal_reaches_independent_reopen_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the exact producer shape emitted by Run16 PC6."""
+
+    method = _method(tmp_path)
+    output = "scratchpad:analysis_percontract_IUniswapV2Router01.md"
+    source = (
+        "### Finding [PC6-1]: Interface-only router declaration\n"
+        "**Verdict**: NOT_APPLICABLE_PROPOSAL\n"
+        "**Evidence**: contracts/interfaces/IUniswapV2Router01.sol:L4\n"
+        "**Reason**: the assigned artifact has declarations but no executable "
+        "implementation\n"
+    ).encode("utf-8")
+    context = N.compile_candidate_negative_staged_context(
+        method.read_bytes(),
+        output,
+        "PC6",
+        phase="rescan",
+        invocation_id="RUN16-PC6-ATTEMPT-1",
+    )
+    assert N.staged_candidate_negative_receipt_validator(
+        {output: source}, context
+    ) == ()
+
+    ledger = N.build_candidate_negative_ledger(
+        phase="rescan",
+        artifacts=[
+            N.ArtifactInput(
+                relative_path=output,
+                content=source,
+                producer_identity="PC6",
+                producer_invocation_id="RUN16-PC6-ATTEMPT-1",
+            )
+        ],
+        methodology_path=method,
+    )
+    assert ledger["status"] == "CLEAN"
+    N.write_candidate_negative_ledger(tmp_path, ledger)
+    plan = N.build_candidate_negative_application_plan(
+        tmp_path, phases=("rescan",), max_items_per_shard=4
+    )
+    assert plan["status"] == "READY"
+    item = plan["work_items"][0]
+    assert item["candidate_proposed_dispositions"] == [
+        "NOT_APPLICABLE_PROPOSAL"
+    ]
+    assert item["semantic_outcome"] == "NOT_APPLICABLE"
+    assert item["candidate_terminal_requested_effect"] == "OUT_OF_SCOPE"
+
+    requested_effects: list[str] = []
+
+    def no_mechanical_scope_authority(**kwargs):
+        requested_effects.append(kwargs["requested_effect"])
+        return False, "NO_PROVIDER_AUTHORITY"
+
+    monkeypatch.setattr(
+        N, "terminal_negative_authorized", no_mechanical_scope_authority
+    )
+    delivered: list[dict[str, object]] = []
+    receipt = N.adjudicate_candidate_negative(
+        plan,
+        [_assessment(item, outcome="AGREE_NEGATIVE")],
+        candidate_sink=delivered.append,
+    )
+    assert requested_effects == ["OUT_OF_SCOPE"]
+    assert receipt["work_dispositions"][0]["disposition"] == (
+        "REGISTRY_CANDIDATE_PROPOSED"
+    )
+    assert receipt["work_dispositions"][0]["terminal_negative_authorized"] is False
+    assert receipt["work_dispositions"][0]["proof_scope"] == "NONE"
+    assert delivered == receipt["registry_candidate_proposals"]
+
+    projection = tmp_path / "candidate_negative_skeptic_proposals.md"
+    write_application_skeptic_proposal_projection(
+        tmp_path,
+        delivered,
+        projection_name=projection.name,
+    )
+    assert projection.is_file()
+    reverify_candidates, reverify_debt, observed = (
+        M._parse_primary_projection_candidates(
+            projection, producer="candidate_negative_skeptic"
+        )
+    )
+    assert observed == 1
+    assert reverify_debt == []
+    assert reverify_candidates == delivered
+    denominator = N.validate_candidate_negative_denominator(
+        ledgers=[ledger],
+        plan=plan,
+        receipt=receipt,
+        projection_path=projection,
+    )
+    assert denominator["status"] == "COMPLETE"
+    assert denominator["reopened_candidate_count"] == 1
+    assert denominator["supported_exclusion_count"] == 0
+
+
 def _assessment(
     item: dict[str, object],
     *,
@@ -131,6 +231,163 @@ def _assessment(
         "rationale": "independent candidate-level assessment",
         "candidate": candidate,
     }
+
+
+def _candidate_effect_plan(
+    tmp_path: Path,
+    *,
+    proposed_dispositions: list[str] | None = None,
+    requested_effect: str | None = None,
+) -> tuple[dict[str, object], dict[str, object]]:
+    _write_ledger(tmp_path)
+    plan = N.build_candidate_negative_application_plan(
+        tmp_path, phases=("depth",), max_items_per_shard=4
+    )
+    item = plan["work_items"][0]
+    if proposed_dispositions is not None:
+        item["candidate_proposed_dispositions"] = proposed_dispositions
+    if requested_effect is not None:
+        item["candidate_terminal_requested_effect"] = requested_effect
+    unsigned = {
+        key: value for key, value in plan.items() if key != "work_plan_digest"
+    }
+    plan["work_plan_digest"] = A._digest(unsigned)
+    return plan, item
+
+
+def test_authorized_all_nap_uses_out_of_scope_for_both_broker_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, item = _candidate_effect_plan(
+        tmp_path,
+        proposed_dispositions=["NOT_APPLICABLE_PROPOSAL"],
+        requested_effect="OUT_OF_SCOPE",
+    )
+    requested_effects: list[str] = []
+
+    def authorize(**kwargs):
+        requested_effects.append(kwargs["requested_effect"])
+        return True, "CENTRAL_REPLAYED_NEGATIVE_CLOSURE_AUTHORITY"
+
+    def resolve(_authority, **kwargs):
+        requested_effects.append(kwargs["requested_effect"])
+        return {
+            "resolution_digest": "a" * 64,
+            "provider_completion_sha256": "b" * 64,
+            "provider_publish_sha256": "c" * 64,
+        }
+
+    monkeypatch.setattr(A, "terminal_negative_authorized", authorize)
+    monkeypatch.setattr(A, "resolve_central_negative_closure", resolve)
+    receipt = A.adjudicate_application_skeptic(
+        plan,
+        [_assessment(item, outcome="AGREE_NEGATIVE")],
+        closure_authority=object(),
+    )
+
+    assert requested_effects == ["OUT_OF_SCOPE", "OUT_OF_SCOPE"]
+    disposition = receipt["work_dispositions"][0]
+    assert disposition["disposition"] == "NEGATIVE_AGREEMENT"
+    assert disposition["negative_closure_authority_digest"] == "a" * 64
+
+
+def test_unauthorized_all_nap_reopens_with_out_of_scope_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, item = _candidate_effect_plan(
+        tmp_path,
+        proposed_dispositions=["NOT_APPLICABLE_PROPOSAL"],
+        requested_effect="OUT_OF_SCOPE",
+    )
+    requested_effects: list[str] = []
+
+    def reject(**kwargs):
+        requested_effects.append(kwargs["requested_effect"])
+        return False, "NO_PROVIDER_AUTHORITY"
+
+    monkeypatch.setattr(A, "terminal_negative_authorized", reject)
+    delivered: list[dict[str, object]] = []
+    receipt = A.adjudicate_application_skeptic(
+        plan,
+        [_assessment(item, outcome="AGREE_NEGATIVE")],
+        candidate_sink=delivered.append,
+    )
+
+    assert requested_effects == ["OUT_OF_SCOPE"]
+    assert receipt["work_dispositions"][0]["disposition"] == (
+        "REGISTRY_CANDIDATE_PROPOSED"
+    )
+    assert delivered == receipt["registry_candidate_proposals"]
+
+
+def test_refutation_family_retains_full_refutation_broker_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, item = _candidate_effect_plan(tmp_path)
+    requested_effects: list[str] = []
+
+    def reject(**kwargs):
+        requested_effects.append(kwargs["requested_effect"])
+        return False, "NO_PROVIDER_AUTHORITY"
+
+    monkeypatch.setattr(A, "terminal_negative_authorized", reject)
+    receipt = A.adjudicate_application_skeptic(
+        plan,
+        [_assessment(item, outcome="AGREE_NEGATIVE")],
+        candidate_sink=lambda _proposal: None,
+    )
+
+    assert item["candidate_proposed_dispositions"] == ["REFUTATION_PROPOSAL"]
+    assert item["candidate_terminal_requested_effect"] == "REFUTED_FULL"
+    assert requested_effects == ["REFUTED_FULL"]
+    assert receipt["work_dispositions"][0]["disposition"] == (
+        "REGISTRY_CANDIDATE_PROPOSED"
+    )
+
+
+@pytest.mark.parametrize(
+    ("proposed_dispositions", "requested_effect"),
+    [
+        (["NOT_APPLICABLE_PROPOSAL", "REFUTATION_PROPOSAL"], "OUT_OF_SCOPE"),
+        (["NOT_APPLICABLE_PROPOSAL"], "REFUTED_FULL"),
+        (["NOT_APPLICABLE_PROPOSAL"], "out_of_scope"),
+        (["REFUTATION_PROPOSAL"], "OUT_OF_SCOPE"),
+        (["REFUTATION_PROPOSAL"], ""),
+        (["UNRESOLVED"], "REFUTED_FULL"),
+        (["UNKNOWN"], "REFUTED_FULL"),
+    ],
+)
+def test_ambiguous_or_invalid_candidate_effect_binding_reopens_without_broker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    proposed_dispositions: list[str],
+    requested_effect: str,
+) -> None:
+    plan, item = _candidate_effect_plan(
+        tmp_path,
+        proposed_dispositions=proposed_dispositions,
+        requested_effect=requested_effect,
+    )
+    broker_called = False
+
+    def must_not_call(**_kwargs):
+        nonlocal broker_called
+        broker_called = True
+        return True, "SHOULD_NOT_BE_REACHED"
+
+    monkeypatch.setattr(A, "terminal_negative_authorized", must_not_call)
+    delivered: list[dict[str, object]] = []
+    receipt = A.adjudicate_application_skeptic(
+        plan,
+        [_assessment(item, outcome="AGREE_NEGATIVE")],
+        candidate_sink=delivered.append,
+    )
+
+    assert broker_called is False
+    disposition = receipt["work_dispositions"][0]
+    assert disposition["disposition"] == "REGISTRY_CANDIDATE_PROPOSED"
+    assert disposition["terminal_negative_authorized"] is False
+    assert delivered == receipt["registry_candidate_proposals"]
 
 
 def test_same_producer_cannot_self_close_candidate_negative(tmp_path: Path) -> None:

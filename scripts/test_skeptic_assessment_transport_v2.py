@@ -14,6 +14,8 @@ from skeptic_assessment_transport import (
     application_skeptic_output_schema,
     application_skeptic_packet_context,
     application_skeptic_stdout_digest,
+    compile_application_skeptic_staged_context,
+    staged_application_skeptic_assessment_validator,
 )
 
 
@@ -104,6 +106,35 @@ def test_schema_binds_wire_denominator_and_assessor(tmp_path: Path) -> None:
         jsonschema.Draft202012Validator(schema).validate(payload)
 
 
+def test_codex_schema_does_not_advertise_forbidden_terminal_negative(
+    tmp_path: Path,
+) -> None:
+    plan, _home, _root, _project = _plan(tmp_path)
+    shard = plan["shards"][0]
+    schema = application_skeptic_output_schema(
+        plan,
+        shard,
+        assessor_id="ASSESSOR_A",
+        assessor_invocation_id="INVOCATION_A",
+        allow_agree_negative=False,
+    )
+    payload = _valid_payload(plan, shard, "ASSESSOR_A", "INVOCATION_A")
+    payload["assessments"][0].update({
+        "outcome": "AGREE_NEGATIVE",
+        "evidence": "src/A.sol:L3",
+        "rationale": "negative conclusion",
+    })
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(schema).validate(payload)
+
+    payload["assessments"][0].update({
+        "outcome": "INCONCLUSIVE",
+        "evidence": "",
+        "rationale": "terminal-negative authority unavailable",
+    })
+    jsonschema.Draft202012Validator(schema).validate(payload)
+
+
 def test_packet_context_contains_exact_plan_source_and_methodology_bytes(
     tmp_path: Path,
 ) -> None:
@@ -118,12 +149,14 @@ def test_packet_context_contains_exact_plan_source_and_methodology_bytes(
     )
     assigned = context["assigned_work_items"][0]
     assert assigned["work_item"] == plan["work_items"][0]
-    assert assigned["methodology_utf8"].encode("utf-8") == Path(
-        plan["work_items"][0]["methodology_path"]
-    ).read_bytes()
     assert assigned["methodology_bytes_sha256"] == plan["work_items"][0][
         "methodology_sha256"
     ]
+    assert assigned["methodology_context_mode"] == "CONTENT_ADDRESSED_BLOB"
+    assert len(context["methodology_blobs"]) == 1
+    assert context["methodology_blobs"][0]["content_utf8"].encode("utf-8") == Path(
+        plan["work_items"][0]["methodology_path"]
+    ).read_bytes()
     assert context["source_context_state"] == (
         "COMPLETE_FOR_ALL_RESOLVED_CITATIONS"
     )
@@ -131,6 +164,10 @@ def test_packet_context_contains_exact_plan_source_and_methodology_bytes(
     assert "contract A" in context["source_context"][0]["content_utf8"]
     assert context["bound_source_queues"][0]["relative_path"] == (
         "methodology_skeptic_queue_breadth.json"
+    )
+    assert "content_utf8" not in context["bound_source_queues"][0]
+    assert context["bound_source_queues"][0]["content_projection"] == (
+        "DIGEST_BOUND_ASSIGNED_ROWS_IN_WORK_ITEMS"
     )
 
 
@@ -163,6 +200,46 @@ def test_bound_queue_change_after_context_capture_is_rejected(tmp_path: Path) ->
     assert "Write only:" not in rendered["prompt"]
     assert "# exact state methodology" not in rendered["prompt"]
     assert rendered["output_path"] == "PROVIDER_OWNED_STDOUT"
+
+
+def test_candidate_packet_projects_assigned_rows_without_repeating_large_sources(
+    tmp_path: Path,
+) -> None:
+    plan, _home, root, project = _plan(tmp_path)
+    item = plan["work_items"][0]
+    methodology = Path(item["methodology_path"])
+    methodology.write_text("# bound worklist\n" + ("x" * 600_000), encoding="utf-8")
+    item["methodology_sha256"] = hashlib.sha256(
+        methodology.read_bytes()
+    ).hexdigest()
+    item["application_subject"] = "CANDIDATE_NEGATIVE"
+    queue_name = item["source_queues"][0]
+    queue = root / queue_name
+    queue.write_bytes(queue.read_bytes() + (b" " * 3_000_000))
+    plan["source_queues"][queue_name]["artifact_sha256"] = hashlib.sha256(
+        queue.read_bytes()
+    ).hexdigest()
+    unsigned = {
+        key: value for key, value in plan.items() if key != "work_plan_digest"
+    }
+    plan["work_plan_digest"] = A._digest(unsigned)
+
+    context = application_skeptic_packet_context(
+        plan,
+        plan["shards"][0],
+        trusted_methodology_roots=[methodology.parent.parent.parent],
+        project_root=project,
+        scratchpad=root,
+        max_context_bytes=256 * 1024,
+    )
+
+    assert context["methodology_blobs"] == []
+    assert context["assigned_work_items"][0]["methodology_context_mode"] == (
+        "CONTENT_ADDRESSED_REFERENCE_WITH_TYPED_WORK_ITEM_PROJECTION"
+    )
+    assert context["bound_source_queues"][0]["size_bytes"] > 3_000_000
+    assert "content_utf8" not in context["bound_source_queues"][0]
+    assert context["total_bound_context_bytes"] < 256 * 1024
 
 
 def test_consumer_parser_rejects_duplicate_keys_and_non_finite_values(
@@ -248,3 +325,83 @@ def test_consumer_parser_enforces_exact_order_before_provider_completion(
     ).encode()
     with pytest.raises(A.ApplicationSkepticError, match="exact ordered"):
         application_skeptic_stdout_digest(path, raw)
+
+
+def test_codex_staged_gate_is_filesystem_free_and_rejects_agree_negative(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    packet = {
+        "schema_version": "plamen.skeptic_execution_packet.v2",
+        "plan": {"work_plan_digest": "p" * 64},
+        "shard": {"shard_id": "shard-1", "work_item_ids": ["W-1"]},
+        "assessor": {"identity": "A-1", "invocation_id": "I-1"},
+    }
+    packet_raw = json.dumps(packet, sort_keys=True, separators=(",", ":")).encode()
+    identity = "scratchpad:application_skeptic_assessments_0001.json"
+    context = compile_application_skeptic_staged_context(
+        packet_raw, identity, reject_agree_negative=True
+    )
+
+    def payload(outcome: str) -> bytes:
+        return json.dumps(
+            {
+                "schema_version": A.ASSESSMENT_SCHEMA,
+                "work_plan_digest": "p" * 64,
+                "shard_id": "shard-1",
+                "assessments": [{
+                    "work_item_id": "W-1",
+                    "assessor_id": "A-1",
+                    "assessor_invocation_id": "I-1",
+                    "outcome": outcome,
+                    "evidence_basis": "IN_SCOPE_SOURCE",
+                    "evidence": "src/A.sol:L3" if outcome != "INCONCLUSIVE" else "",
+                    "rationale": "independent assessment",
+                    "candidate": (
+                        {"title": "t", "mechanism": "m", "harm": "h"}
+                        if outcome == "DISAGREE_CANDIDATE" else None
+                    ),
+                }],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("staged validator consulted the filesystem")
+        ),
+    )
+    assert staged_application_skeptic_assessment_validator(
+        {identity: payload("DISAGREE_CANDIDATE")}, context
+    ) == ()
+    reasons = staged_application_skeptic_assessment_validator(
+        {identity: payload("AGREE_NEGATIVE")}, context
+    )
+    assert reasons and "lacks equivalent terminal-negative authority" in reasons[0]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        b'{"schema_version":"plamen.application_skeptic_assessments.v1",'
+        b'"work_plan_digest":"x","work_plan_digest":"y"}',
+        b'{"schema_version":"plamen.application_skeptic_assessments.v1",'
+        b'"work_plan_digest":NaN}',
+    ),
+)
+def test_codex_staged_gate_rejects_duplicate_and_nonfinite_json(raw: bytes) -> None:
+    packet = {
+        "schema_version": "plamen.skeptic_execution_packet.v2",
+        "plan": {"work_plan_digest": "p" * 64},
+        "shard": {"shard_id": "shard-1", "work_item_ids": ["W-1"]},
+        "assessor": {"identity": "A-1", "invocation_id": "I-1"},
+    }
+    identity = "scratchpad:application_skeptic_assessments_0001.json"
+    context = compile_application_skeptic_staged_context(
+        json.dumps(packet).encode(), identity, reject_agree_negative=True
+    )
+    assert staged_application_skeptic_assessment_validator(
+        {identity: raw}, context
+    )

@@ -18,6 +18,22 @@ from windows_low_integrity_lease import (
 )
 
 
+def _host_has_proof_grade_owned_process_scope() -> bool:
+    capability = O.process_tree_termination_capability()
+    return bool(
+        capability.get("pre_execution_assignment") is True
+        and capability.get("exhaustive_descendant_termination_authority") is True
+        and (
+            capability.get("exhaustive_write_confinement_authority") is True
+            or capability.get("serialized_low_integrity_stage_authority") is True
+        )
+    )
+
+
+@pytest.mark.skipif(
+    not _host_has_proof_grade_owned_process_scope(),
+    reason="host has no proof-grade owned-process scope",
+)
 def test_owned_runner_captures_streams_and_closes_scope() -> None:
     result = O.run_owned_process(
         [
@@ -111,6 +127,10 @@ def test_windows_resolution_rejects_ambiguous_casefolded_path_keys(
         )
 
 
+@pytest.mark.skipif(
+    not _host_has_proof_grade_owned_process_scope(),
+    reason="host has no proof-grade owned-process scope",
+)
 def test_timeout_terminates_descendant_before_it_can_write(
     tmp_path,
 ) -> None:
@@ -142,6 +162,10 @@ def test_timeout_terminates_descendant_before_it_can_write(
     assert not sentinel.exists()
 
 
+@pytest.mark.skipif(
+    not _host_has_proof_grade_owned_process_scope(),
+    reason="host has no proof-grade owned-process scope",
+)
 def test_output_retention_is_bounded() -> None:
     result = O.run_owned_process(
         [sys.executable, "-c", "print('x' * 10000)"],

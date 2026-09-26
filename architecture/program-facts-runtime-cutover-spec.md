@@ -1979,7 +1979,7 @@ S17 exact pins:
 | `.github/workflows/install-smoke.yml` | 6,012 | `a7e97af285c7f222c2bba759e4c56d21ab4bd2305f05dc4c9aaf6ba27cfd3388` |
 | `verification_policy/toolchain_runtime_closure.v1.json` | 59,542 | `7ca33afa1609b4e7c7f81ec7ff71c059e53ec7309c3c4f02db55958d4bc41501` |
 
-The currently reviewed ownership registry itself is `architecture/canonical-requirement-ownership.v1.json`, 18,770 bytes, SHA-256 `04f7af72fbe840872ec2c00cfac7f28bb4823a98206e01c083df60f89350ca85`; it is predecessor evidence for the required v2 amendment, not v3 ownership authority.
+The currently reviewed ownership registry itself is `architecture/canonical-requirement-ownership.v1.json`, 18,770 bytes, SHA-256 `edf6c09889ebe9c3ebc6f744f9590c909855b07bfb5705b5bcc8de9a37ccd61c`; it is predecessor evidence for the required v2 amendment, not v3 ownership authority.
 
 ## 18. Eight-residual implementation-readiness repair map
 

@@ -15,6 +15,7 @@ import re
 from typing import Any, Mapping
 
 from inventory_reconciliation import (
+    driver_restorable_preservation_row,
     REEMIT_FILE,
     REEMIT_SCHEMA,
     _canonical_blocks,
@@ -78,6 +79,11 @@ def _strict_json(path: Path) -> dict[str, Any]:
 
 def _atomic_write(path: Path, raw: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if path.is_file() and path.read_bytes() == raw:
+            return
+    except OSError:
+        pass
     temporary = path.with_name(f".{path.name}.reemit.tmp")
     with temporary.open("wb") as handle:
         handle.write(raw)
@@ -216,6 +222,11 @@ def _render_block(row: Mapping[str, Any], target_id: str) -> str:
         f"**Location**: {_safe_field(row.get('source_location'), 'UNKNOWN')}",
         "**Preferred Tag**: [RECONCILIATION-REEMIT]",
         f"**Source IDs**: {source_ref}",
+        # The receipt already binds this exact source generation. Carry that
+        # authority into the canonical projection so later delivery/promotion
+        # consumers recognize this existing identity instead of allocating it
+        # again. A qualified Source ID alone is not delivery authority.
+        f"**Source Actions**: {source_ref}@sha256:{row['source_sha256']}",
         "**Verdict**: NEEDS_VERIFICATION",
         f"**Root Cause**: {root}",
         f"**Description**: {description}",
@@ -247,6 +258,40 @@ def _build_intent(root: Path) -> tuple[dict[str, Any], bytes]:
         ),
         key=lambda row: str(row.get("candidate_key") or ""),
     )
+    # Refuse only for rows the canonical projection CAN actually repair.
+    #
+    # The instruction this refusal gives -- "repair the canonical projection
+    # instead" -- is correct for a row whose source really holds the bytes:
+    # `inventory_aggregate_authority._restore_unpreserved_source_facets`
+    # splices them, and duplicating the delivery here would be the wrong fix.
+    #
+    # But a row carrying only `UNPARSEABLE_*` names a facet the SOURCE never
+    # rendered. No splice can copy bytes that do not exist, and no retry can
+    # invent them, so refusing on it demands a repair that cannot exist and the
+    # aggregate can never commit. DODO run39 cleared all three inventory chunks
+    # on attempt 1 and then died here on exactly one such row
+    # (`analysis_rescan_2.md:RS2-1`, `UNPARSEABLE_IMPACT`) after the other
+    # eight had been restored.
+    #
+    # Such a row stays HUMAN_REVIEW_DEBT and stays visible in
+    # `inventory_reconciliation_human_review.md` with its source block
+    # retained; it simply stops blocking a phase that has no way to satisfy it.
+    duplicate_repairs = [
+        row for row in debt
+        if row.get("proposed_relation_kind")
+        == "ONE_TO_ONE_RETENTION_PROPOSAL"
+        and row.get("proposed_target_finding_id")
+        and driver_restorable_preservation_row(row)
+    ]
+    if duplicate_repairs:
+        identities = ", ".join(
+            str(row.get("candidate_key") or "")
+            for row in duplicate_repairs[:8]
+        )
+        raise InventoryReemitError(
+            "additive re-emission refuses to duplicate one-to-one final "
+            f"deliveries; repair the canonical projection instead: {identities}"
+        )
     before = inventory.read_bytes()
     (
         id_ledger_preimage_exists,
@@ -565,13 +610,27 @@ def validate_inventory_reemit_materialization(
                 "materialized re-emission receipt rows are malformed"
             )
         matches = replay_by_key.get(str(row.get("candidate_key") or ""), [])
-        if (
-            len(matches) != 1
-            or matches[0].get("disposition") != "RETAINED"
-            or matches[0].get("reason_code") != "RETAINED_BY_ADDITIVE_REEMIT"
-            or str(matches[0].get("target_inventory_id") or "")
-            != str(row.get("target_finding_id") or "")
-        ):
+        target = str(row.get("target_finding_id") or "")
+        delivered = len(matches) == 1 and (
+            (
+                matches[0].get("disposition") == "RETAINED"
+                and matches[0].get("reason_code") == "RETAINED_BY_ADDITIVE_REEMIT"
+                and str(matches[0].get("target_inventory_id") or "") == target
+            )
+            or (
+                # Delivered with visible source-facet debt: the block exists,
+                # is bound to this exact source, and preserves every facet the
+                # source encoded; the facet the source never rendered stays
+                # human-review + mandatory re-verification debt.  Not a
+                # laundering path: the disposition is still HUMAN_REVIEW_DEBT.
+                matches[0].get("disposition") == "HUMAN_REVIEW_DEBT"
+                and matches[0].get("reason_code")
+                == "REEMIT_UNPARSEABLE_SOURCE_DEBT"
+                and str(matches[0].get("proposed_target_finding_id") or "")
+                == target
+            )
+        )
+        if not delivered:
             raise InventoryReemitError(
                 "materialized re-emission does not replay exact candidate delivery"
             )

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -478,6 +479,39 @@ def _obligations() -> dict:
     }
 
 
+def _run17_obligations() -> dict:
+    rows = []
+    for index in range(25):
+        group = index % 7
+        kind = f"dependency-kind-{group}"
+        dependency = f"vendor/group-{group}"
+        source_location = f"src/Integration{index:02d}.sol:L{index + 1}"
+        obligation_id = "DEP-" + hashlib.sha256(
+            (
+                kind + "\0" + dependency.casefold() + "\0"
+                + source_location.casefold()
+            ).encode("utf-8")
+        ).hexdigest()[:12].upper()
+        rows.append({
+            "obligation_id": obligation_id,
+            "dependency": dependency,
+            "kind": kind,
+            "source_location": source_location,
+            "declaration_evidence": f"declares {dependency}",
+            "research_question": f"What is the group {group} guarantee?",
+        })
+    rows.sort(key=lambda row: row["obligation_id"])
+    return {
+        "schema": "plamen.external-dependency-obligations.v1",
+        "provider": "deterministic-direct-nonlocal-referenced-v1",
+        "obligations": rows,
+        "observed_count": len(rows),
+        "retained_count": len(rows),
+        "truncated": False,
+        "overflow_ids": [],
+    }
+
+
 def _fallback_mocks(monkeypatch: pytest.MonkeyPatch, obligations: dict) -> list[str]:
     calls: list[str] = []
     monkeypatch.setattr(D, "_publish_dependency_obligations", lambda *_a, **_k: obligations)
@@ -519,6 +553,7 @@ def test_codex_rext_invokes_provider_and_degrades_failed_attempt_conservatively(
 ) -> None:
     config = _config(tmp_path, backend="codex")
     calls = _fallback_mocks(monkeypatch, _obligations())
+    monkeypatch.setattr(D, "_prepare_typed_model_worker_launch", lambda **_k: [])
     provider_calls: list[dict] = []
 
     def _failed_codex_provider(**kwargs: object) -> int:
@@ -544,6 +579,113 @@ def test_codex_rext_invokes_provider_and_degrades_failed_attempt_conservatively(
     assert provider_calls[0]["expected_outputs"] == [
         "recon_external_dependency_research.md"
     ]
+    effective_prompt = str(provider_calls[0]["prompt"])
+    assert (
+        "exact canonical\nHTTPS URL as the literal `open[].ref_id`"
+        in effective_prompt
+    )
+    assert "never use an opaque search-result\nreference" in effective_prompt
+    assert "`turn0search0`" in effective_prompt
+    obligation_id = _obligations()["obligations"][0]["obligation_id"]
+    projection = D.codex_dependency_research_authority.compile_model_visible_projection(
+        _obligations()
+    )
+    assert obligation_id in effective_prompt
+    assert projection["query_groups"][0]["query"] in effective_prompt
+    assert "Read external_dependency_obligations.json" not in effective_prompt
+    assert "Read only the immutable and bounded lookup inputs" not in effective_prompt
+    assert "For this Codex R-EXT role, do not" in effective_prompt
+    assert "project or PhaseIO files" in effective_prompt
+    assert "commands or any other commands" not in effective_prompt
+
+
+def test_run17_codex_effective_prompt_contains_complete_concrete_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path, backend="codex")
+    obligations = _run17_obligations()
+    _fallback_mocks(monkeypatch, obligations)
+    monkeypatch.setattr(D, "_prepare_typed_model_worker_launch", lambda **_k: [])
+    provider_calls: list[dict[str, Any]] = []
+
+    def provider(**kwargs: Any) -> int:
+        provider_calls.append(kwargs)
+        return -4
+
+    monkeypatch.setattr(D, "_run_one_codex_exec", provider)
+    phase = next(row for row in D.SC_PHASES if row.name == "recon")
+    result = D._run_recon_dependency_research_headless(
+        backend="codex", phase=phase, config=config,
+        scratchpad=Path(config["scratchpad"]), attempt=1, timeout=1,
+        effective_model="fixture",
+    )
+    assert result["provider_invocations"] == 1
+    assert len(provider_calls) == 1
+    prompt = str(provider_calls[0]["prompt"])
+    projection = D.codex_dependency_research_authority.compile_model_visible_projection(
+        obligations
+    )
+    ids = [row["obligation_id"] for row in obligations["obligations"]]
+    assert projection["obligation_count"] == 25
+    assert projection["query_group_count"] == 7
+    assert all(prompt.count(obligation_id) >= 1 for obligation_id in ids)
+    assert all(group["query"] in prompt for group in projection["query_groups"])
+    assert "complete obligation and query authority" in prompt
+    assert "Read external_dependency_obligations.json" not in prompt
+    assert "Read only the immutable and bounded lookup inputs" not in prompt
+    assert "For this Codex R-EXT role, do not" in prompt
+    assert "project or PhaseIO files" in prompt
+    assert "commands or any other commands" not in prompt
+
+
+@pytest.mark.parametrize("failure", ("count", "duplicate", "group"))
+def test_malformed_codex_projection_precludes_provider_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    config = _config(tmp_path, backend="codex")
+    obligations = _run17_obligations()
+    if failure == "count":
+        obligations["retained_count"] = 24
+    elif failure == "duplicate":
+        obligations["obligations"][1] = dict(obligations["obligations"][0])
+    _fallback_mocks(monkeypatch, obligations)
+    monkeypatch.setattr(D, "_prepare_typed_model_worker_launch", lambda **_k: [])
+    if failure == "group":
+        original = (
+            D.codex_dependency_research_authority.compile_model_visible_projection
+        )
+
+        def malformed_projection(value: dict[str, Any]) -> dict[str, Any]:
+            projection = original(value)
+            projection["query_groups"][0]["obligation_ids"].pop()
+            projection["projection_digest"] = (
+                D.codex_dependency_research_authority._projection_digest(
+                    projection
+                )
+            )
+            return projection
+
+        monkeypatch.setattr(
+            D.codex_dependency_research_authority,
+            "compile_model_visible_projection",
+            malformed_projection,
+        )
+    monkeypatch.setattr(
+        D,
+        "_run_one_codex_exec",
+        lambda **_k: pytest.fail("malformed projection must preclude spawn"),
+    )
+    phase = next(row for row in D.SC_PHASES if row.name == "recon")
+    result = D._run_recon_dependency_research_headless(
+        backend="codex", phase=phase, config=config,
+        scratchpad=Path(config["scratchpad"]), attempt=1, timeout=1,
+        effective_model="fixture",
+    )
+    assert result["status"] == "provider_boundary_debt"
+    assert result["provider_invocations"] == 0
+    assert result["unresolved"] == 25
 
 
 def test_legacy_pty_rext_degrades_without_launch(
@@ -805,10 +947,53 @@ def test_claude_rext_boundary_uses_written_bounded_web_policy(
     flags = D._claude_exact_consumer_cli_flags(boundary)
     assert set(flags[flags.index("--tools") + 1].split(",")) == set(tools)
     assert flags[flags.index("--allowedTools") + 1] == "Glob,Grep,Read"
-    assert "--permission-mode" in flags and "default" in flags
+    assert flags[flags.index("--permission-mode") + 1] == "default"
     settings = json.loads(Path(boundary["settings_path"]).read_text(encoding="utf-8"))
     assert set(settings["hooks"]) == {"PreToolUse", "PostToolUse", "PostToolUseFailure"}
     assert settings["mcpServers"] == {}
+
+    if os.name != "nt":
+        class ForbiddenAmbientEnvironment(dict):
+            def get(self, *_args, **_kwargs):
+                raise AssertionError("POSIX observed ambient environment")
+
+            def __iter__(self):
+                raise AssertionError("POSIX enumerated ambient environment")
+
+            def items(self):
+                raise AssertionError("POSIX enumerated ambient environment")
+
+        def forbidden_legacy_compiler(**_kwargs):
+            raise AssertionError("POSIX observed ambient legacy compiler")
+
+        monkeypatch.setattr(D.os, "environ", ForbiddenAmbientEnvironment())
+        monkeypatch.setattr(
+            D,
+            "compile_claude_provider_semantic_intent",
+            forbidden_legacy_compiler,
+        )
+        monkeypatch.setattr(
+            D,
+            "compile_claude_phase_tool_policy",
+            forbidden_legacy_compiler,
+        )
+        with pytest.raises(
+            D.HeadlessWorkerRuntimeError,
+            match="web lane is not admitted",
+        ) as caught:
+            D._compile_claude_driver_provider_authority(
+                phase=phase,
+                config=config,
+                scratchpad=scratchpad,
+                project_root=project,
+                cwd=project,
+                launch=launch,
+                session_id="12345678-1234-4234-8234-123456789abc",
+                startup_authority_binding={},
+                source_snapshot_sha256="a" * 64,
+            )
+        assert caught.value.reason_code == "POSIX_CLAUDE_WEB_LANE_UNSUPPORTED"
+        return
 
     captured: dict[str, Any] = {}
 
@@ -843,3 +1028,111 @@ def test_claude_rext_boundary_uses_written_bounded_web_policy(
     )
     assert captured["permission_mode"] == "default"
     assert set(captured["builtin_tools"]) == set(tools)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX semantic lane")
+def test_posix_filesystem_lane_never_observes_ambient_provider_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ForbiddenAmbientEnvironment(dict):
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("POSIX observed ambient environment")
+
+        def __iter__(self):
+            raise AssertionError("POSIX enumerated ambient environment")
+
+        def items(self):
+            raise AssertionError("POSIX enumerated ambient environment")
+
+    def forbidden_legacy_compiler(**_kwargs):
+        raise AssertionError("POSIX observed ambient legacy compiler")
+
+    boundary_path = tmp_path / "logical-policy.json"
+    native_runtime_authority = object()
+    generation_authority = object()
+    generation = SimpleNamespace(
+        backend="claude",
+        resolved_version="2.1.252",
+    )
+
+    def project_native_generation(value):
+        if value is not native_runtime_authority:
+            raise AssertionError("POSIX substituted native runtime authority")
+        return generation_authority
+
+    def require_generation(value):
+        if value is not generation_authority:
+            raise AssertionError("POSIX substituted backend generation authority")
+        return generation
+
+    monkeypatch.setattr(
+        D,
+        "native_guest_backend_install_generation_authority",
+        project_native_generation,
+    )
+    monkeypatch.setattr(
+        D,
+        "require_backend_install_generation",
+        require_generation,
+    )
+    config = D._DriverConfig({
+        "cli_backend": "claude",
+        "_claude_phase_tool_boundaries": {
+            "breadth": {"policy_path": str(boundary_path)}
+        }
+    }, native_guest_runtime_authorities=native_runtime_authority)
+    phase = SimpleNamespace(name="breadth")
+    launch = SimpleNamespace(
+        backend="claude",
+        model="claude-opus-4-1",
+        tool_policy=("filesystem",),
+        work_unit_key="sc/core/evm/claude/breadth/worker.fixture",
+    )
+    monkeypatch.setattr(D.os, "environ", ForbiddenAmbientEnvironment())
+    monkeypatch.setattr(
+        D,
+        "compile_claude_provider_semantic_intent",
+        forbidden_legacy_compiler,
+    )
+    monkeypatch.setattr(
+        D,
+        "compile_claude_phase_tool_policy",
+        forbidden_legacy_compiler,
+    )
+    monkeypatch.setattr(
+        D.claude_phase_tool_policy,
+        "load_policy",
+        lambda _path: {},
+    )
+    monkeypatch.setattr(
+        D.claude_phase_tool_policy,
+        "provider_builtin_tools",
+        lambda _policy: ("Edit", "Glob", "Grep", "Read", "Write"),
+    )
+
+    authority = D._compile_claude_driver_provider_authority(
+        phase=phase,
+        config=config,
+        scratchpad=tmp_path,
+        project_root=tmp_path,
+        cwd=tmp_path,
+        launch=launch,
+        session_id="12345678-1234-4234-8234-123456789abc",
+        startup_authority_binding={},
+        source_snapshot_sha256="a" * 64,
+    )
+
+    assert authority.preparation is None
+    assert authority.runtime_local_inputs is None
+    assert authority.bound_settings_bytes is None
+    assert authority.selected_mcp_config_bytes is None
+    assert authority.public_arguments["environment"] == {}
+    expected = authority.public_arguments[
+        "provider_stdout_evidence_configuration"
+    ]["expected_init_contract"]
+    assert expected["permission_mode"] == "dontAsk"
+    assert expected["required_capabilities"] == [
+        "vendor-restricted-analysis"
+    ]
+    assert expected["accepted_api_key_sources"] == ["none"]

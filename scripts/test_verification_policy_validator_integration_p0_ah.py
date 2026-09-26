@@ -223,6 +223,85 @@ def test_shared_policy_owns_attempt_threshold_for_every_backend_and_pipeline():
     assert mismatches == []
 
 
+@pytest.mark.parametrize(
+    "claim_class", (ClaimClass.UNIT, ClaimClass.PROPERTY, ClaimClass.STRUCTURAL)
+)
+def test_queue_class_does_not_manufacture_testability_or_harness_availability(
+    claim_class: ClaimClass,
+):
+    work = V._verification_policy_work_item(
+        _row("ROW-UNKNOWN", Severity.MEDIUM, claim_class)
+    )
+    assert work.claim_class is claim_class
+    assert work.locally_testable is None
+    assert work.harness_available is None
+
+
+@pytest.mark.parametrize("reported_build", (None, False, True))
+def test_build_signal_is_not_projected_as_harness_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    reported_build: bool | None,
+):
+    calls = 0
+
+    def observed_build(_scratchpad: Path) -> bool | None:
+        nonlocal calls
+        calls += 1
+        return reported_build
+
+    monkeypatch.setattr(V, "_build_succeeded", observed_build)
+    row = _row("ROW-BUILD", Severity.MEDIUM, ClaimClass.PROPERTY)
+    assert V._poc_contract_required(
+        row,
+        AuditMode.CORE.value,
+        scratchpad=tmp_path,
+        execution_policy=_policy(AuditMode.CORE),
+    )
+    assert calls == 0
+
+
+def test_unknown_assessment_debts_survive_mandatory_and_optional_modes():
+    row = _row("ROW-DEBT", Severity.LOW, ClaimClass.PROPERTY)
+    work = V._verification_policy_work_item(row)
+
+    mandatory = evaluate_obligation(_policy(AuditMode.THOROUGH), work)
+    assert mandatory.decision is Decision.ATTEMPT_REQUIRED
+    assert set(mandatory.debts) >= {
+        "LOCAL_TESTABILITY_UNASSESSED",
+        "HARNESS_AVAILABILITY_UNASSESSED",
+    }
+
+    optional = evaluate_obligation(_policy(AuditMode.LIGHT), work)
+    assert optional.decision is Decision.OPTIONAL_BY_MODE
+    assert set(optional.debts) >= {
+        "LOCAL_TESTABILITY_UNASSESSED",
+        "HARNESS_AVAILABILITY_UNASSESSED",
+    }
+
+
+def test_unknown_assessments_cannot_support_environment_blocker_waiver():
+    policy = _policy(AuditMode.THOROUGH)
+    work = V._verification_policy_work_item(
+        _row("ROW-UNKNOWN-BLOCKER", Severity.HIGH, ClaimClass.PROPERTY)
+    )
+    blocker = ExecutionBlocker(
+        code=BlockerCode.NO_BUILD_ENVIRONMENT,
+        authority=BlockerAuthority.VERIFIER,
+        evidence_digest="e" * 64,
+        evidence_refs=("scratchpad/blocker_adjudication.json",),
+        independently_validated=True,
+        validated_by=BlockerAuthority.INDEPENDENT_ADJUDICATOR,
+    )
+    obligation = evaluate_obligation(policy, work, blocker)
+    assert obligation.decision is Decision.ATTEMPT_REQUIRED
+    assert set(obligation.debts) >= {
+        "LOCAL_TESTABILITY_UNASSESSED",
+        "HARNESS_AVAILABILITY_UNASSESSED",
+        "INVALID_BLOCKER",
+    }
+
+
 @pytest.mark.parametrize("severity", (Severity.LOW, Severity.INFORMATIONAL))
 def test_thorough_hard_shard_gate_opens_low_and_info_verify_files(
     tmp_path: Path, severity: Severity

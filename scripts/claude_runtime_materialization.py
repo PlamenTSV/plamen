@@ -63,6 +63,7 @@ import claude_launch_security as _launch
 from claude_launch_security import ClaudeLaunchSecurityError
 import claude_phase_tool_policy as _phase_tool_policy
 import provider_command_authority as _provider_command
+import posix_backend_launch_policy as _backend_launch_policy
 import claude_stored_subscription_source as _stored
 from claude_stored_subscription_source import (
     ClaudeStoredSubscriptionSourceError,
@@ -98,6 +99,7 @@ CLAUDE_MCP_SOURCE_AUTHORITY_SCHEMA = (
 _MCP_RUNTIME_ENVIRONMENT_NAMES = "plamenRuntimeEnvironmentNames"
 _MCP_RUNTIME_SOURCE_AUTHORITY = "plamenRuntimeSourceAuthority"
 _MCP_SOURCE_STORE_CLASS = "CLAUDE_MCP_JSON"
+_LEGACY_WINDOWS_JOB_RESTRICTED_VERSION = "2.1.252"
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
@@ -1958,6 +1960,7 @@ class ClaudeRuntimeMaterializationRequest:
         "__identity",
         "__integrity_key",
         "__integrity_tag",
+        "__install_generation_authority",
         "__launch_security_request",
         "__lock",
         "__project_root",
@@ -1990,6 +1993,7 @@ class ClaudeRuntimeMaterializationRequest:
         ),
         integrity_key: bytearray,
         integrity_tag: bytes,
+        install_generation_authority: object | None,
         identity: Mapping[str, Any],
         _issuance_id: str | None = None,
     ) -> ClaudeRuntimeMaterializationRequest:
@@ -2024,6 +2028,8 @@ class ClaudeRuntimeMaterializationRequest:
             is not auxiliary_reservation
             or pending["integrity_key"] is not integrity_key
             or pending["integrity_tag"] != integrity_tag
+            or pending["install_generation_authority"]
+            is not install_generation_authority
             or pending["identity"] != _clone(identity)
         ):
             raise TypeError(
@@ -2050,6 +2056,9 @@ class ClaudeRuntimeMaterializationRequest:
         instance.__auxiliary_reservation = auxiliary_reservation
         instance.__integrity_key = integrity_key
         instance.__integrity_tag = bytes(integrity_tag)
+        instance.__install_generation_authority = (
+            install_generation_authority
+        )
         instance.__identity = MappingProxyType(_clone(identity))
         instance.__claimed = False
         instance.__discard_receipt = None
@@ -2130,6 +2139,7 @@ class ClaudeRuntimeMaterializationRequest:
         _zeroize(self.__integrity_key)
         self.__integrity_key = bytearray()
         self.__integrity_tag = b""
+        self.__install_generation_authority = None
         self.__values = MappingProxyType({})
         self.__launch_security_request = MappingProxyType({})
         self.__auth_route = ""
@@ -2713,6 +2723,9 @@ class ClaudeRuntimeMaterializationRequest:
                     "selected_mcp_config_bytes": (
                         selected_mcp_config_bytes
                     ),
+                    "install_generation_authority": (
+                        self.__install_generation_authority
+                    ),
                 }
                 state["claimed"] = True
                 state["transition"] = "CLAIMED"
@@ -2779,6 +2792,7 @@ def _compile_claude_runtime_materialization_request(
     work_plan_sha256: str,
     attempt_id: str,
     process_scope_identity: str,
+    install_generation_authority: object | None = None,
     auxiliary_reservation: (
         _aux.AuxiliaryWritableRootReservation | None
     ) = None,
@@ -2786,6 +2800,42 @@ def _compile_claude_runtime_materialization_request(
     """Internal compiler shared by the provider and isolated legacy fixtures."""
 
     request, policy = _first_lane_policy(launch_security_request)
+    generation_projection = None
+    if install_generation_authority is not None:
+        try:
+            generation_projection = (
+                _backend_launch_policy.require_backend_install_generation(
+                    install_generation_authority
+                )
+            )
+        except _backend_launch_policy.PosixBackendLaunchPolicyError as exc:
+            raise ClaudeRuntimeMaterializationError(
+                "RUNTIME_INSTALL_GENERATION_INVALID",
+                "runtime install-generation authority is invalid",
+            ) from exc
+        headless = policy.get("headless_profile", {})
+        if (
+            generation_projection.backend != "claude"
+            or generation_projection.resolved_version
+            != policy.get("claude_code_version")
+            or headless.get("install_generation_sha256")
+            != generation_projection.install_generation_sha256
+            or headless.get("cli_behavior_contract_sha256")
+            != generation_projection.cli_behavior_contract_sha256
+            or headless.get("cli_conformance_sha256")
+            != generation_projection.cli_conformance_sha256
+        ):
+            raise ClaudeRuntimeMaterializationError(
+                "RUNTIME_INSTALL_GENERATION_MISMATCH",
+                "runtime policy differs from its authenticated install generation",
+            )
+    elif policy.get("claude_code_version") not in (
+        _child.LEGACY_FUNCTIONAL_CONTROLS_BY_VERSION
+    ):
+        raise ClaudeRuntimeMaterializationError(
+            "RUNTIME_INSTALL_GENERATION_REQUIRED",
+            "current Claude runtime requires authenticated install-generation authority",
+        )
     run = _required_id(run_id, label="run_id")
     attempt = _required_id(attempt_id, label="attempt_id")
     scope = _required_id(
@@ -2918,6 +2968,21 @@ def _compile_claude_runtime_materialization_request(
             if provider_claim is None
             else provider_claim["attachment_sha256"]
         ),
+        "install_generation_sha256": (
+            None
+            if generation_projection is None
+            else generation_projection.install_generation_sha256
+        ),
+        "cli_behavior_contract_sha256": (
+            None
+            if generation_projection is None
+            else generation_projection.cli_behavior_contract_sha256
+        ),
+        "cli_conformance_sha256": (
+            None
+            if generation_projection is None
+            else generation_projection.cli_conformance_sha256
+        ),
         "credential_values_recorded": False,
         "credential_content_hashes_recorded": False,
         "host_paths_recorded": False,
@@ -2972,6 +3037,7 @@ def _compile_claude_runtime_materialization_request(
         "auxiliary_reservation": auxiliary_reservation,
         "integrity_key": integrity_key,
         "integrity_tag": integrity_tag,
+        "install_generation_authority": install_generation_authority,
         "identity": _clone(identity),
     }
     with _REQUEST_ISSUANCE_LOCK:
@@ -2993,6 +3059,7 @@ def _compile_claude_runtime_materialization_request(
             auxiliary_reservation=auxiliary_reservation,
             integrity_key=integrity_key,
             integrity_tag=integrity_tag,
+            install_generation_authority=install_generation_authority,
             identity=identity,
             _issuance_id=issuance_id,
         )
@@ -3014,6 +3081,7 @@ def compile_claude_runtime_materialization_request(
     work_plan_sha256: str,
     attempt_id: str,
     process_scope_identity: str,
+    install_generation_authority: object | None = None,
     auxiliary_reservation: (
         _aux.AuxiliaryWritableRootReservation | None
     ) = None,
@@ -3041,6 +3109,7 @@ def compile_claude_runtime_materialization_request(
         work_plan_sha256=work_plan_sha256,
         attempt_id=attempt_id,
         process_scope_identity=process_scope_identity,
+        install_generation_authority=install_generation_authority,
         auxiliary_reservation=auxiliary_reservation,
     )
 
@@ -5191,6 +5260,7 @@ def _materialize_claude_runtime(
     trusted_cwds: Sequence[str | Path],
     source_config_dir: str | Path | None,
     runtime_request_sha256: str,
+    install_generation_authority: object | None = None,
     bound_settings_bytes: bytes | None = None,
     selected_mcp_config_bytes: bytes | None = None,
     auxiliary_reservation: (
@@ -5200,6 +5270,42 @@ def _materialize_claude_runtime(
     """Materialize one attempt-private Claude runtime, but never launch it."""
 
     request, policy = _first_lane_policy(launch_security_request)
+    generation_projection = None
+    if install_generation_authority is not None:
+        try:
+            generation_projection = (
+                _backend_launch_policy.require_backend_install_generation(
+                    install_generation_authority
+                )
+            )
+        except _backend_launch_policy.PosixBackendLaunchPolicyError as exc:
+            raise ClaudeRuntimeMaterializationError(
+                "RUNTIME_INSTALL_GENERATION_INVALID",
+                "runtime install-generation authority is invalid",
+            ) from exc
+        headless = policy.get("headless_profile", {})
+        if (
+            generation_projection.backend != "claude"
+            or generation_projection.resolved_version
+            != policy.get("claude_code_version")
+            or headless.get("install_generation_sha256")
+            != generation_projection.install_generation_sha256
+            or headless.get("cli_behavior_contract_sha256")
+            != generation_projection.cli_behavior_contract_sha256
+            or headless.get("cli_conformance_sha256")
+            != generation_projection.cli_conformance_sha256
+        ):
+            raise ClaudeRuntimeMaterializationError(
+                "RUNTIME_INSTALL_GENERATION_MISMATCH",
+                "runtime policy differs from its authenticated install generation",
+            )
+    elif policy.get("claude_code_version") not in (
+        _child.LEGACY_FUNCTIONAL_CONTROLS_BY_VERSION
+    ):
+        raise ClaudeRuntimeMaterializationError(
+            "RUNTIME_INSTALL_GENERATION_REQUIRED",
+            "current Claude runtime requires authenticated install-generation authority",
+        )
     selected_auth_route = policy["auth_route_policy"]["desired_route"]
     semantic_argv = _compile_final_argv(
         base_argv,
@@ -5360,10 +5466,12 @@ def _materialize_claude_runtime(
             "permission_mode": policy["headless_profile"][
                 "expected_init_contract"
             ]["permission_mode"],
+            # Historical Windows compatibility lane only.  Current POSIX
+            # runtime admission is install-generation/conformance bound.
             "windows_job_only_restricted": (
                 os.name == "nt"
                 and policy["headless_profile"].get("claude_code_version")
-                == "2.1.252"
+                == _LEGACY_WINDOWS_JOB_RESTRICTED_VERSION
                 and policy["headless_profile"]["expected_init_contract"].get(
                     "permission_mode"
                 )
@@ -5392,6 +5500,13 @@ def _materialize_claude_runtime(
             ),
             "auth_route": selected_auth_route,
         }
+        if install_generation_authority is not None:
+            profile_arguments.update({
+                "claude_code_version": policy["claude_code_version"],
+                "install_generation_authority": (
+                    install_generation_authority
+                ),
+            })
         try:
             profile = materialize_claude_attempt_profile(
                 **profile_arguments
@@ -5463,6 +5578,7 @@ def _materialize_claude_runtime(
             ],
             home_variable_policy=policy["home_variable_policy"],
             functional_controls=policy["functional_controls"],
+            install_generation_authority=install_generation_authority,
         )
         child_receipt = _child.reconcile_claude_child_environment(
             compiled

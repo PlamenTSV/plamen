@@ -10,6 +10,7 @@ import inspect
 import json
 import multiprocessing
 from pathlib import Path
+import re
 import sys
 import textwrap
 import uuid
@@ -155,9 +156,9 @@ def _manifest(root: Path, phase_name: str, sources: tuple[str, ...]) -> None:
         "",
         f"Assigned files: {len(sources)}",
         "",
-        "| File |",
-        "|---|",
-        *(f"| {name} |" for name in sources),
+        "| File | Estimated signals |",
+        "|---|---|",
+        *(f"| {name} | 1 |" for name in sources),
         "",
     ]
     (root / f"{phase_name}.manifest.md").write_text(
@@ -193,9 +194,41 @@ def _seed_active_chunk(
     rows: tuple[tuple[str, str, tuple[str, ...]], ...],
     sources: tuple[str, ...],
     attempt: int = 1,
+    extra_inputs: tuple[str, ...] = (),
+    qualify_source_actions: bool = True,
 ) -> str:
     _manifest(scratch, phase_name, sources)
-    exact_inputs = (f"{phase_name}.manifest.md", *sources)
+    qualified_rows: list[tuple[str, str, tuple[str, ...]]] = []
+    for chunk_id, title, source_ids in rows:
+        qualified_ids: list[str] = []
+        for source_id in source_ids:
+            if ":" in source_id:
+                qualified_ids.append(source_id)
+                continue
+            owners = [
+                name
+                for name in sources
+                if re.search(
+                    rf"(?im)^#{{2,3}}\s+Finding\s+"
+                    rf"\[{re.escape(source_id)}\]",
+                    (scratch / name).read_text(
+                        encoding="utf-8", errors="replace"
+                    ),
+                )
+            ]
+            qualified_ids.append(
+                f"{owners[0]}:{source_id}"
+                if qualify_source_actions and len(owners) == 1
+                else source_id
+            )
+        qualified_rows.append(
+            (chunk_id, title, tuple(qualified_ids))
+        )
+    exact_inputs = (
+        f"{phase_name}.manifest.md",
+        *sources,
+        *extra_inputs,
+    )
     output = f"findings_{phase_name}.md"
     contract = resolve_phase_io_contract(
         pipeline=config["pipeline"],
@@ -221,7 +254,9 @@ def _seed_active_chunk(
     record_work_unit_inputs(
         scratch, project, contract, launch, run_id=config["_run_id"]
     )
-    (scratch / output).write_text(_chunk_text(rows), encoding="utf-8")
+    (scratch / output).write_text(
+        _chunk_text(tuple(qualified_rows)), encoding="utf-8"
+    )
     record_work_unit_artifacts(
         scratch,
         project,
@@ -388,7 +423,7 @@ def _seed_for_aggregate(
     kind: str,
 ) -> None:
     if kind == "multi_shard":
-        for letter in ("a", "b"):
+        for index, letter in enumerate(("a", "b"), start=1):
             source = f"analysis_{letter}.md"
             source_id = f"{letter.upper()}-01"
             _source(scratch, source, source_id, f"candidate {letter}")
@@ -397,7 +432,7 @@ def _seed_for_aggregate(
                 scratch,
                 config,
                 f"inventory_chunk_{letter}",
-                rows=((f"CC-{letter.upper()}1", f"candidate {letter}", (source_id,)),),
+                rows=((f"CC-{index:02d}", f"candidate {letter}", (source_id,)),),
                 sources=(source,),
             )
     elif kind == "single_shard":
@@ -407,7 +442,7 @@ def _seed_for_aggregate(
             scratch,
             config,
             "inventory_chunk_a",
-            rows=(("CC-A1", "candidate a", ("A-01",)),),
+            rows=(("CC-01", "candidate a", ("A-01",)),),
             sources=("analysis_a.md",),
         )
     elif kind == "typed_empty":
@@ -476,6 +511,88 @@ def test_canonical_aggregate_routes_all_derivation_kinds(
     ]
     assert unit["semantic_status"] == "ACTIVE"
     assert unit["execution_state"] == "OUTPUT_COMMITTED"
+
+
+def test_single_shard_retry_controls_do_not_widen_semantic_denominator(
+    tmp_path: Path,
+) -> None:
+    project, scratch, config = _fixture(tmp_path, backend="codex")
+    _source(scratch, "analysis_a.md", "A-01", "candidate a")
+    (scratch / "inventory_shard_plan.md").write_text(
+        "# Inventory Shard Plan\n\n- Active shard count: 1\n",
+        encoding="utf-8",
+    )
+    for letter in ("b", "c"):
+        phase_name = f"inventory_chunk_{letter}"
+        _manifest(scratch, phase_name, ())
+        D.write_inventory_chunk_placeholder(
+            scratch,
+            phase_name,
+            "0 assigned analysis files in shard manifest",
+        )
+    retry_plan = (
+        scratch
+        / "_retry_plans/inventory_chunk_a/phase.attempt-0002.json"
+    )
+    retry_plan.parent.mkdir(parents=True)
+    retry_plan.write_text(
+        '{"schema":"fixture.retry-plan"}\n', encoding="utf-8"
+    )
+    _seed_active_chunk(
+        project,
+        scratch,
+        config,
+        "inventory_chunk_a",
+        rows=(("CC-01", "candidate a", ("A-01",)),),
+        sources=("analysis_a.md",),
+        attempt=2,
+        extra_inputs=(
+            "inventory_shard_plan.md",
+            "_retry_plans/inventory_chunk_a/phase.attempt-0002.json",
+        ),
+    )
+
+    roster = D._inventory_aggregate_source_roster(
+        scratch, derivation_kind="single_shard"
+    )
+    result, issues = D._run_inventory_canonical_aggregate_transaction(
+        scratchpad=scratch,
+        config=config,
+        phase=_phase("inventory"),
+        derivation_kind="single_shard",
+    )
+
+    assert (
+        "_retry_plans/inventory_chunk_a/phase.attempt-0002.json"
+        not in roster
+    )
+    assert set(roster) == {
+        "analysis_a.md",
+        "findings_inventory_chunk_a.md",
+        "inventory_chunk_a.manifest.md",
+        "inventory_shard_plan.md",
+    }
+    assert all("chunk_b" not in name for name in roster)
+    assert all("chunk_c" not in name for name in roster)
+    assert issues == []
+    assert result["finding_count"] == 1
+    assert {
+        row["artifact"] for row in result["source_artifacts"]
+    } == set(roster)
+
+    retry_plan.write_text(
+        '{"schema":"fixture.retry-plan","drifted":true}\n',
+        encoding="utf-8",
+    )
+    replay_issues = D._validate_inventory_canonical_aggregate_phase_io(
+        scratchpad=scratch,
+        config=config,
+        phase=_phase("inventory"),
+    )
+    assert any(
+        "chunk MODEL exact input changed" in issue
+        for issue in replay_issues
+    )
 
 
 def test_late_chunk_change_invalidates_canonical_aggregate(tmp_path: Path) -> None:
@@ -553,12 +670,12 @@ def test_additive_reemit_requires_active_canonical_aggregate(
     _source(scratch, "analysis_a.md", "A-01", "candidate a")
     _manifest(scratch, "inventory_chunk_a", ("analysis_a.md",))
     (scratch / "findings_inventory_chunk_a.md").write_text(
-        _chunk_text((("CC-A1", "candidate a", ("A-01",)),)),
+        _chunk_text((("CC-01", "candidate a", ("A-01",)),)),
         encoding="utf-8",
     )
     (scratch / "findings_inventory.md").write_text(
         "# Finding Inventory\n\n## Findings\n\n"
-        + _finding("INV-001", "candidate a", ("A-01", "CC-A1")),
+        + _finding("INV-001", "candidate a", ("A-01", "CC-01")),
         encoding="utf-8",
     )
 
@@ -717,7 +834,7 @@ def _seed_canonical_with_one_omitted_candidate(
     }
 
 
-def _assert_mixed_invalid_source_reference_remains_debt(root: Path) -> None:
+def _assert_mixed_invalid_source_reference_is_rejected(root: Path) -> None:
     project, scratch, config = _fixture(root)
     (scratch / "analysis_a.md").write_text(
         "# Findings\n\n"
@@ -734,8 +851,9 @@ def _assert_mixed_invalid_source_reference_remains_debt(root: Path) -> None:
         scratch,
         config,
         "inventory_chunk_a",
-        rows=(("CC-A1", "candidate a", ("A-01",)),),
+        rows=(("CC-01", "candidate a", ("A-01",)),),
         sources=("analysis_a.md",),
+        qualify_source_actions=False,
     )
     _result, issues = D._run_inventory_canonical_aggregate_transaction(
         scratchpad=scratch,
@@ -743,17 +861,11 @@ def _assert_mixed_invalid_source_reference_remains_debt(root: Path) -> None:
         phase=_phase("inventory"),
         derivation_kind="single_shard",
     )
-    assert issues == []
-    poisoned = D._reconcile_exact_inventory(scratch, persist=False)
-    assert poisoned["summary"]["RETAINED"] == 0
-    assert poisoned["summary"]["HUMAN_REVIEW_DEBT"] == 2
-    assert {
-        row["source_finding_id"]: row["disposition"]
-        for row in poisoned["candidates"]
-    } == {
-        "A-01": "HUMAN_REVIEW_DEBT",
-        "A-02": "HUMAN_REVIEW_DEBT",
-    }
+    assert any(
+        "authenticated source action" in issue.lower()
+        for issue in issues
+    )
+    assert not (scratch / "findings_inventory.md").exists()
 
 
 def test_additive_reemit_reserves_sparse_retained_id_ledger_allocations(
@@ -898,7 +1010,7 @@ def _projected_inventory_ids(scratch: Path) -> tuple[set[str], set[str], set[str
 def test_additive_reemit_advances_inventory_records_and_id_ledger(
     tmp_path: Path,
 ) -> None:
-    _assert_mixed_invalid_source_reference_remains_debt(
+    _assert_mixed_invalid_source_reference_is_rejected(
         tmp_path / "mixed-invalid"
     )
     project, scratch, config = _fixture(tmp_path)
@@ -1319,9 +1431,10 @@ def test_additive_reemit_recovery_rejects_rebind_history_tamper(
         for issue in issues
     )
 
-    # A valid rebind substitutes only the directory-entry identity.  Current
-    # predecessor bytes remain mandatory, and another identical replacement
-    # is not accepted until a causal recovery row records it.
+    # A valid historical rebind remains integrity-checked, while live
+    # cross-epoch identity is content/provenance-addressed. Current
+    # predecessor bytes remain mandatory; an exact safe rematerialization
+    # is semantically idempotent and does not need another recovery row.
     AL.write_artifact_ledger(scratch, clean_ledger)
     target = scratch / "findings_inventory.md"
     original = target.read_bytes()
@@ -1356,19 +1469,15 @@ def test_additive_reemit_recovery_rejects_rebind_history_tamper(
     replacement.write_bytes(original)
     replacement.replace(target)
     assert AL._physical_file_identity(target) != recorded_physical
-    with pytest.raises(
-        AL.ArtifactLedgerError,
-        match="historical producer does not replay",
-    ):
-        AL._replay_driver_successor_authority(
-            scratch,
-            project,
-            clean_ledger,
-            clean_unit,
-            contract,
-            launch,
-            run_id=config["_run_id"],
-        )
+    assert AL._replay_driver_successor_authority(
+        scratch,
+        project,
+        clean_ledger,
+        clean_unit,
+        contract,
+        launch,
+        run_id=config["_run_id"],
+    )
 
 
 def test_additive_reemit_two_quarantines_chain_recovery_attempts(
@@ -1936,6 +2045,40 @@ def test_canonical_debt_boundary_forbids_model_fallback_and_preserves_bytes(
     )
 
 
+def test_canonical_debt_boundary_is_fail_closed_before_plan_arm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, scratch, config = _fixture(tmp_path)
+    assert D._canonical_inventory_transaction_started(scratch, config) is False
+    model_launches: list[str] = []
+    monkeypatch.setattr(
+        D,
+        "run_phase",
+        lambda phase, _config, _attempt: model_launches.append(phase.name),
+    )
+
+    class _Checkpoint:
+        saved = False
+
+        def save(self, root: Path) -> None:
+            assert root == scratch
+            self.saved = True
+
+    checkpoint = _Checkpoint()
+    with pytest.raises(SystemExit) as stopped:
+        D._enforce_canonical_inventory_debt_boundary(
+            scratchpad=scratch,
+            config=config,
+            checkpoint=checkpoint,
+        )
+
+    assert stopped.value.code == D.EXIT_DEGRADED
+    assert checkpoint.saved is True
+    assert model_launches == []
+    assert not (scratch / "findings_inventory.md").exists()
+
+
 @pytest.mark.parametrize(
     "failpoint",
     ["after_arm", "after_receipt", "after_write"],
@@ -2177,7 +2320,7 @@ def test_canonical_allocation_preserves_full_hash_for_long_title(
         scratch,
         config,
         "inventory_chunk_a",
-        rows=(("CC-A1", title, ("A-01",)),),
+        rows=(("CC-01", title, ("A-01",)),),
         sources=("analysis_a.md",),
     )
 

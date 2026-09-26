@@ -8,11 +8,36 @@ import sys
 
 import pytest
 
+import attention_repair_shards as attention
 import candidate_negative_authority as N
 import plamen_driver as D
+import worker_execution_receipts as W
 from phase_io_contracts import resolve_phase_io_contract
-from plamen_types import Phase, SC_PHASES
+from plamen_types import Phase, SC_PHASES, attention_queue_binding_sha256
 from test_support_startup_permit import durable_startup_permit
+
+
+def _admitted_linux_process_authority_available() -> bool:
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        capability = W.process_tree_termination_capability()
+    except Exception:
+        return False
+    return (
+        capability.get("platform") == "LINUX"
+        and capability.get("exhaustive_descendant_termination_authority") is True
+        and W._transaction_write_authority(capability) == "EXHAUSTIVE"
+    )
+
+
+_SUPPORTED_PHYSICAL_PROCESS_ONLY = pytest.mark.skipif(
+    os.name != "nt" and not _admitted_linux_process_authority_available(),
+    reason=(
+        "positive physical-provider receipt coverage requires Windows Job/MIC "
+        "authority or an admitted Linux cgroup-v2 plus Landlock authority"
+    ),
+)
 
 
 def _home(tmp_path: Path) -> Path:
@@ -237,6 +262,59 @@ def test_empty_active_phase_still_writes_explicit_zero_denominator(
         base_timeout_s=60,
         min_artifact_bytes=1,
     )
+    queue_row = {
+        "row": 1,
+        "kind": "gap",
+        "target": "src/A.sol",
+        "reason": "fixture gap",
+        "source": "fixture",
+        "evidence": "src/A.sol",
+    }
+    queue_binding = attention_queue_binding_sha256([queue_row])
+    queue_bytes = (
+        "\n".join(
+            [
+                "# Attention Repair Queue",
+                "",
+                f"QUEUE_BINDING_SHA256: {queue_binding}",
+                "",
+                "| # | Kind | Target | Reason | Source | Evidence |",
+                "|---|---|---|---|---|---|",
+                "| 1 | gap | src/A.sol | fixture gap | fixture | src/A.sol |",
+            ]
+        )
+        + "\n"
+    ).encode()
+    queue_path = scratch / "attention_repair_queue.md"
+    queue_path.write_bytes(queue_bytes)
+    plan = attention.build_plan(queue_path)
+    (scratch / "attention_repair_shard_plan.json").write_text(
+        json.dumps(plan, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    receipt = {
+        "schema": "plamen.attention-repair-application.v1",
+        "status": "COMPLETE",
+        "queue_binding_sha256": queue_binding,
+        "queue_file_sha256": attention._sha256(queue_bytes),
+        "rows": [
+            {
+                "row": 1,
+                "kind": "gap",
+                "target": "src/A.sol",
+                "verdict": "CONFIRMED",
+                "evidence": "src/A.sol:L1 finding A-1",
+                "notes": "finding A-1",
+                "coverage_accepted": True,
+            }
+        ],
+        "accepted_paths": ["src/A.sol"],
+        "unresolved_paths": [],
+    }
+    (scratch / "attention_repair_application_receipt.json").write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     (scratch / "attention_repair_summary.md").write_text(
         "| Queue # | Kind | Target | Verdict | Evidence | Notes |\n"
         "|---|---|---|---|---|---|\n"
@@ -317,6 +395,7 @@ def _seed_candidate_ledger(tmp_path: Path, scratch: Path, home: Path) -> None:
     N.write_candidate_negative_ledger(scratch, ledger)
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_separate_runtime_discriminator_reopens_candidate(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -340,39 +419,6 @@ def test_separate_runtime_discriminator_reopens_candidate(
         D, "_record_candidate_negative_skeptic_io", lambda **_kwargs: []
     )
 
-    def launch(**kwargs):
-        plan = json.loads(
-            (scratch / "candidate_negative_skeptic_work_plan.json").read_text()
-        )
-        shard = plan["shards"][0]
-        assessor, invocation = D._candidate_negative_assessor_identity(
-            config, plan["work_plan_digest"], shard["shard_id"]
-        )
-        payload = {
-            "schema_version": "plamen.application_skeptic_assessments.v1",
-            "work_plan_digest": plan["work_plan_digest"],
-            "shard_id": shard["shard_id"],
-            "assessments": [
-                {
-                    "work_item_id": shard["work_item_ids"][0],
-                    "assessor_id": assessor,
-                    "assessor_invocation_id": invocation,
-                    "outcome": "DISAGREE_CANDIDATE",
-                    "evidence_basis": "IN_SCOPE_SOURCE",
-                    "evidence": "src/A.sol:L4 independent alternate-path trace",
-                    "rationale": "the producer premise is incomplete",
-                    "candidate": {
-                        "title": "Reopened candidate",
-                        "mechanism": "The proposed guard omits a reachable transition.",
-                        "harm": "A protected state property may be violated.",
-                    },
-                }
-            ],
-        }
-        (scratch / kwargs["job"]["output"]).write_text(json.dumps(payload))
-        return 0
-
-    monkeypatch.setattr(D, "_run_one_claude_headless_breadth_worker", launch)
     receipt, issues = D._run_candidate_negative_skeptic_boundary(
         _discriminator_phase(), config, scratch
     )
@@ -385,6 +431,7 @@ def test_separate_runtime_discriminator_reopens_candidate(
     assert "Finding [ASKP-1]" in projection
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_candidate_negative_arms_plan_provider_and_reconcile_before_publish(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -464,16 +511,79 @@ def test_empty_or_missing_runtime_denominator_never_self_certifies(
     monkeypatch.setattr(
         D, "_record_candidate_negative_skeptic_io", lambda **_kwargs: []
     )
-    monkeypatch.setattr(
-        D,
-        "_run_one_claude_headless_breadth_worker",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("no work")),
-    )
     receipt, issues = D._run_candidate_negative_skeptic_boundary(
         _discriminator_phase(), config, scratch
     )
     assert receipt["status"] == "COMPLETED_WITH_DEBT"
     assert any("MISSING_CANDIDATE_NEGATIVE_LEDGER" in issue for issue in issues)
+
+
+def test_invalid_planning_authority_never_launches_provider_shards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    home = _home(tmp_path)
+    _seed_candidate_ledger(tmp_path, scratch, home)
+    config = _config(tmp_path, active=("breadth", "application_skeptic"))
+    monkeypatch.setattr(D, "plamen_home", lambda: home)
+
+    real_arm = D._arm_application_skeptic_io
+
+    def arm(**kwargs):
+        result = real_arm(**kwargs)
+        if kwargs.get("work_unit_id") == "negative.planning":
+            contract, launch, _execute, _issues = result
+            return contract, launch, False, [
+                "scratchpad:candidate_negative_proposals_breadth.json: "
+                "semantic input binding is PRODUCER_AUTHORITY_MISMATCH"
+            ]
+        return result
+
+    launches: list[str] = []
+
+    def launch_provider(**kwargs):
+        launches.append(str(kwargs.get("output_name") or "unknown"))
+        raise AssertionError("provider launch crossed invalid planning authority")
+
+    monkeypatch.setattr(D, "_arm_application_skeptic_io", arm)
+    monkeypatch.setattr(
+        D, "_execute_application_skeptic_provider_shard", launch_provider
+    )
+
+    receipt, issues = D._run_candidate_negative_skeptic_boundary(
+        _discriminator_phase(), config, scratch
+    )
+
+    assert launches == []
+    assert receipt["status"] == "COMPLETED_WITH_DEBT"
+    assert any("PRODUCER_AUTHORITY_MISMATCH" in issue for issue in issues)
+    assert any("provider shards were not launched" in issue for issue in issues)
+    assert (scratch / "candidate_negative_skeptic_receipt.json").is_file()
+    assert not (scratch / N.CANDIDATE_PLAN_FILE).exists()
+    assert receipt["model_invoked"] is False
+    assert receipt["registry_candidate_proposals"] == []
+    assert {
+        row["disposition"] for row in receipt["work_dispositions"]
+    } == {"UNRESOLVED_DEBT"}
+    denominator = json.loads(
+        (scratch / N.CANDIDATE_DENOMINATOR_FILE).read_text()
+    )
+    assert denominator["status"] == "INPUT_DEBT"
+    assert denominator["supported_exclusion_count"] == 0
+    assert denominator["human_review_count"] == denominator["event_count"]
+    ledger = D.read_artifact_ledger(scratch)
+    bindings = ledger["artifact_bindings"]
+    assert bindings[
+        f"scratchpad:{N.CANDIDATE_PLANNING_DEBT_FILE}"
+    ]["owner_key"].endswith("/application_skeptic/negative.planning_debt")
+    assert bindings[
+        "scratchpad:candidate_negative_skeptic_receipt.json"
+    ]["owner_key"].endswith("/application_skeptic/negative.reconcile")
+    assert not any(
+        key.endswith("/negative.worker.0001")
+        for key in ledger["work_units"]
+    )
 
 
 def test_child_containment_detects_project_file_deletion(tmp_path: Path) -> None:
@@ -491,6 +601,7 @@ def test_child_containment_detects_project_file_deletion(tmp_path: Path) -> None
     assert offenders == ["../source.sol"]
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_legacy_model_authored_assessment_is_quarantined_before_provider_launch(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -509,38 +620,16 @@ def test_legacy_model_authored_assessment_is_quarantined_before_provider_launch(
         D, "_record_candidate_negative_skeptic_io", lambda **_kwargs: []
     )
 
-    def launch(**kwargs):
-        plan = json.loads(
-            (scratch / "candidate_negative_skeptic_work_plan.json").read_text()
-        )
-        shard = plan["shards"][0]
-        assessor, invocation = D._candidate_negative_assessor_identity(
-            config, plan["work_plan_digest"], shard["shard_id"]
-        )
-        payload = {
-            "schema_version": "plamen.application_skeptic_assessments.v1",
-            "work_plan_digest": plan["work_plan_digest"],
-            "shard_id": shard["shard_id"],
-            "assessments": [
-                {
-                    "work_item_id": shard["work_item_ids"][0],
-                    "assessor_id": assessor,
-                    "assessor_invocation_id": invocation,
-                    "outcome": "AGREE_NEGATIVE",
-                    "evidence_basis": "IN_SCOPE_SOURCE",
-                    "evidence": "src/A.sol:L4 independent source trace",
-                    "rationale": "independent assessment",
-                    "candidate": None,
-                }
-            ],
-        }
-        (scratch / kwargs["job"]["output"]).write_text(json.dumps(payload))
+    real_execute = D.execute_or_resume_skeptic_execution
+
+    def execute(request, **kwargs):
+        observed = real_execute(request, **kwargs)
         (scratch / "verify_foreign.md").write_text("foreign", encoding="utf-8")
-        return 0
+        return observed
 
     legacy = scratch / "candidate_negative_skeptic_assessments_0001.json"
     legacy.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(D, "_run_one_claude_headless_breadth_worker", launch)
+    monkeypatch.setattr(D, "execute_or_resume_skeptic_execution", execute)
     receipt, issues = D._run_candidate_negative_skeptic_boundary(
         _discriminator_phase(), config, scratch
     )
@@ -570,34 +659,14 @@ def test_failed_quarantine_cannot_leave_terminal_negative_agreement(
         D, "_record_candidate_negative_skeptic_io", lambda **_kwargs: []
     )
 
-    def launch(**kwargs):
-        plan = json.loads(
-            (scratch / "candidate_negative_skeptic_work_plan.json").read_text()
-        )
-        shard = plan["shards"][0]
-        assessor, invocation = D._candidate_negative_assessor_identity(
-            config, plan["work_plan_digest"], shard["shard_id"]
-        )
-        payload = {
-            "schema_version": "plamen.application_skeptic_assessments.v1",
-            "work_plan_digest": plan["work_plan_digest"],
-            "shard_id": shard["shard_id"],
-            "assessments": [{
-                "work_item_id": shard["work_item_ids"][0],
-                "assessor_id": assessor,
-                "assessor_invocation_id": invocation,
-                "outcome": "AGREE_NEGATIVE",
-                "evidence_basis": "IN_SCOPE_SOURCE",
-                "evidence": "src/A.sol:L4 independent source trace",
-                "rationale": "independent assessment",
-                "candidate": None,
-            }],
-        }
-        (scratch / kwargs["job"]["output"]).write_text(json.dumps(payload))
-        (scratch / "verify_foreign.md").write_text("foreign", encoding="utf-8")
-        return 0
+    real_execute = D.execute_or_resume_skeptic_execution
 
-    monkeypatch.setattr(D, "_run_one_claude_headless_breadth_worker", launch)
+    def execute(request, **kwargs):
+        observed = real_execute(request, **kwargs)
+        (scratch / "verify_foreign.md").write_text("foreign", encoding="utf-8")
+        return observed
+
+    monkeypatch.setattr(D, "execute_or_resume_skeptic_execution", execute)
     monkeypatch.setattr(
         D,
         "_quarantine_foreign_phase_writes",
@@ -618,6 +687,7 @@ def test_failed_quarantine_cannot_leave_terminal_negative_agreement(
     assert any("remains live" in issue for issue in issues)
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_lost_provider_authority_degrades_instead_of_self_relaunching(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -636,35 +706,13 @@ def test_lost_provider_authority_degrades_instead_of_self_relaunching(
         D, "_record_candidate_negative_skeptic_io", lambda **_kwargs: []
     )
     launches: list[str] = []
+    real_execute = D.execute_or_resume_skeptic_execution
 
-    def launch(**kwargs):
-        launches.append(kwargs["job"]["output"])
-        plan = json.loads(
-            (scratch / "candidate_negative_skeptic_work_plan.json").read_text()
-        )
-        shard = plan["shards"][0]
-        assessor, invocation = D._candidate_negative_assessor_identity(
-            config, plan["work_plan_digest"], shard["shard_id"]
-        )
-        payload = {
-            "schema_version": "plamen.application_skeptic_assessments.v1",
-            "work_plan_digest": plan["work_plan_digest"],
-            "shard_id": shard["shard_id"],
-            "assessments": [{
-                "work_item_id": shard["work_item_ids"][0],
-                "assessor_id": assessor,
-                "assessor_invocation_id": invocation,
-                "outcome": "AGREE_NEGATIVE",
-                "evidence_basis": "IN_SCOPE_SOURCE",
-                "evidence": "src/A.sol:L4 independent source trace",
-                "rationale": "independent assessment",
-                "candidate": None,
-            }],
-        }
-        (scratch / kwargs["job"]["output"]).write_text(json.dumps(payload))
-        return 0
+    def execute(request, **kwargs):
+        launches.append(request.layout.canonical_output_path.name)
+        return real_execute(request, **kwargs)
 
-    monkeypatch.setattr(D, "_run_one_claude_headless_breadth_worker", launch)
+    monkeypatch.setattr(D, "execute_or_resume_skeptic_execution", execute)
     first, first_issues = D._run_candidate_negative_skeptic_boundary(
         _discriminator_phase(), config, scratch
     )
@@ -679,8 +727,10 @@ def test_lost_provider_authority_degrades_instead_of_self_relaunching(
     )
     assert second["status"] == "COMPLETED_WITH_DEBT"
     assert any("skeptic provider" in row for row in second_issues)
+    assert launches == ["candidate_negative_skeptic_assessments_0001.json"]
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_valid_driver_execution_completion_allows_byte_exact_resume(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -699,35 +749,13 @@ def test_valid_driver_execution_completion_allows_byte_exact_resume(
         D, "_record_candidate_negative_skeptic_io", lambda **_kwargs: []
     )
     launches: list[str] = []
+    real_execute = D.execute_or_resume_skeptic_execution
 
-    def launch(**kwargs):
-        launches.append(kwargs["job"]["output"])
-        plan = json.loads(
-            (scratch / "candidate_negative_skeptic_work_plan.json").read_text()
-        )
-        shard = plan["shards"][0]
-        assessor, invocation = D._candidate_negative_assessor_identity(
-            config, plan["work_plan_digest"], shard["shard_id"]
-        )
-        payload = {
-            "schema_version": "plamen.application_skeptic_assessments.v1",
-            "work_plan_digest": plan["work_plan_digest"],
-            "shard_id": shard["shard_id"],
-            "assessments": [{
-                "work_item_id": shard["work_item_ids"][0],
-                "assessor_id": assessor,
-                "assessor_invocation_id": invocation,
-                "outcome": "AGREE_NEGATIVE",
-                "evidence_basis": "IN_SCOPE_SOURCE",
-                "evidence": "src/A.sol:L4 independent source trace",
-                "rationale": "independent assessment",
-                "candidate": None,
-            }],
-        }
-        (scratch / kwargs["job"]["output"]).write_text(json.dumps(payload))
-        return 0
+    def execute(request, **kwargs):
+        launches.append(request.layout.canonical_output_path.name)
+        return real_execute(request, **kwargs)
 
-    monkeypatch.setattr(D, "_run_one_claude_headless_breadth_worker", launch)
+    monkeypatch.setattr(D, "execute_or_resume_skeptic_execution", execute)
     first, _ = D._run_candidate_negative_skeptic_boundary(
         _discriminator_phase(), config, scratch
     )
@@ -749,8 +777,13 @@ def test_valid_driver_execution_completion_allows_byte_exact_resume(
     assert first["status"] == second["status"] == "COMPLETE"
     assert second_issues == []
     assert before == after and len(after) == 1
+    assert launches == [
+        "candidate_negative_skeptic_assessments_0001.json",
+        "candidate_negative_skeptic_assessments_0001.json",
+    ]
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_failed_resume_reassessment_preserves_last_good_reopened_candidate(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -774,39 +807,14 @@ def test_failed_resume_reassessment_preserves_last_good_reopened_candidate(
         D, "_record_candidate_negative_skeptic_io", lambda **_kwargs: []
     )
 
-    def successful_launch(**kwargs):
-        plan = json.loads(
-            (scratch / "candidate_negative_skeptic_work_plan.json").read_text()
-        )
-        shard = plan["shards"][0]
-        assessor, invocation = D._candidate_negative_assessor_identity(
-            config, plan["work_plan_digest"], shard["shard_id"]
-        )
-        payload = {
-            "schema_version": "plamen.application_skeptic_assessments.v1",
-            "work_plan_digest": plan["work_plan_digest"],
-            "shard_id": shard["shard_id"],
-            "assessments": [{
-                "work_item_id": shard["work_item_ids"][0],
-                "assessor_id": assessor,
-                "assessor_invocation_id": invocation,
-                "outcome": "DISAGREE_CANDIDATE",
-                "evidence_basis": "IN_SCOPE_SOURCE",
-                "evidence": "src/A.sol:L4 independent alternate-path trace",
-                "rationale": "the producer premise remains open",
-                "candidate": {
-                    "title": "Reopened candidate",
-                    "mechanism": "The claimed guard omits a reachable transition.",
-                    "harm": "A protected state property may be violated.",
-                },
-            }],
-        }
-        (scratch / kwargs["job"]["output"]).write_text(json.dumps(payload))
-        return 0
+    executions: list[str] = []
+    real_execute = D.execute_or_resume_skeptic_execution
 
-    monkeypatch.setattr(
-        D, "_run_one_claude_headless_breadth_worker", successful_launch
-    )
+    def execute(request, **kwargs):
+        executions.append(request.layout.canonical_output_path.name)
+        return real_execute(request, **kwargs)
+
+    monkeypatch.setattr(D, "execute_or_resume_skeptic_execution", execute)
     first, first_issues = D._run_candidate_negative_skeptic_boundary(
         _discriminator_phase(), config, scratch
     )
@@ -828,11 +836,6 @@ def test_failed_resume_reassessment_preserves_last_good_reopened_candidate(
         fail=True,
     )
 
-    monkeypatch.setattr(
-        D,
-        "_run_one_claude_headless_breadth_worker",
-        lambda **_kwargs: 1,
-    )
     second, second_issues = D._run_candidate_negative_skeptic_boundary(
         _discriminator_phase(), config, scratch
     )
@@ -848,6 +851,10 @@ def test_failed_resume_reassessment_preserves_last_good_reopened_candidate(
     assert (
         scratch / "candidate_negative_skeptic_proposals.md"
     ).read_bytes() == prior_projection
+    assert executions == [
+        "candidate_negative_skeptic_assessments_0001.json",
+        "candidate_negative_skeptic_assessments_0001.json",
+    ]
 
 
 def test_driver_source_wires_harvest_after_accepted_producer_boundary() -> None:

@@ -16,7 +16,11 @@ import pytest
 from artifact_ledger import read_artifact_ledger
 import plamen_driver as D
 import plamen_validators as V
+from plamen_parsers import render_verification_queue_work_item_markdown
 from plamen_types import L1_PHASES, SC_PHASES
+from queue_work_items import build_queue_work_plan, queue_records_to_json
+import test_live_verify_queue_transaction_semantic_closure as LIVE_QUEUE
+import verify_queue_transaction as VERIFY_QUEUE
 
 
 class _SimulatedCrash(BaseException):
@@ -108,6 +112,83 @@ def _seed_model_inputs(config: dict) -> None:
         (root / name).write_bytes(payload)
 
 
+def _seed_current_r10_report_prework(config: dict) -> None:
+    """Publish an empty live queue, then commit genuine R10/prework inputs.
+
+    Summary-parity cases intentionally use synthetic report rows, so their
+    verification denominator is empty.  The empty denominator still enters
+    through the production T0--T9, R10, and report-prework transactions; no
+    report or verifier evidence is invented for those synthetic rows.
+    """
+
+    pipeline = str(config["pipeline"])
+    backend = str(config["cli_backend"])
+    root = Path(config["scratchpad"])
+    project = Path(config["project_root"])
+    plan = LIVE_QUEUE._plan(pipeline, backend)
+    LIVE_QUEUE._seed_inputs(root, project, pipeline, backend)
+
+    class _EmptyQueueExecutor(LIVE_QUEUE._LiveSemanticExecutor):
+        def _public_bytes(self) -> dict[str, bytes]:
+            rows = super()._public_bytes()
+            items = ()
+            work_plan = build_queue_work_plan(
+                items,
+                {"fixture-0": ()},
+                planner_version="summary-parity-empty-t9-fixture-v1",
+            )
+            rows["verification_queue.work_items.json"] = (
+                queue_records_to_json(items) + "\n"
+            ).encode("utf-8")
+            rows["verification_queue.work_plan.json"] = (
+                work_plan.to_json() + "\n"
+            ).encode("utf-8")
+            rows["verification_queue.md"] = (
+                render_verification_queue_work_item_markdown(items)
+                .encode("utf-8")
+            )
+            return rows
+
+    run_id = str(plan["run_id"])
+    config["_run_id"] = run_id
+    result = VERIFY_QUEUE.execute_live_verify_queue_transaction(
+        scratchpad=root,
+        project_root=project,
+        plan=plan,
+        run_id=run_id,
+        semantic_executor=_EmptyQueueExecutor(plan),
+    )
+    assert result["state"] == "OUTPUT_COMMITTED", result
+    publication = VERIFY_QUEUE.validate_live_verify_queue_publication(
+        scratchpad=root,
+        project_root=project,
+        plan=plan,
+        run_id=run_id,
+    )
+    assert publication["safe_to_consume"] is True, publication["issues"]
+
+    aggregate_name = (
+        "sc_verify_aggregate" if pipeline == "sc" else "verify_aggregate"
+    )
+    aggregate = next(
+        phase
+        for phase in (SC_PHASES if pipeline == "sc" else L1_PHASES)
+        if phase.name == aggregate_name
+    )
+    compute, r10_issues = D._write_and_record_r10_phase_io(
+        scratchpad=root,
+        config=config,
+        phase=aggregate,
+    )
+    assert r10_issues == [], r10_issues
+    assert compute["outcome"] == "CLEAN_ZERO"
+    ready, prework_issues = D._run_report_index_prework_transaction(
+        root, config
+    )
+    assert ready is True, prework_issues
+    assert prework_issues == []
+
+
 def _write_model_outputs(config: dict, report_index: bytes) -> None:
     root = Path(config["scratchpad"])
     (root / "report_index.md").write_bytes(report_index)
@@ -126,7 +207,12 @@ def _prepare_model_attempt(
     raw: bytes,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _seed_model_inputs(config)
+    if config["pipeline"] == "sc":
+        _seed_current_r10_report_prework(config)
+    else:
+        # R10 reconciles SC verification only. These L1 parity unit cases use
+        # the original explicit input fixture, not an invented SC predecessor.
+        _seed_model_inputs(config)
     if config["cli_backend"] == "claude":
         # This simulates a successful production Claude write-boundary receipt.
         # Production remains fail-closed; the fixture does not relax it.
@@ -331,7 +417,7 @@ def test_retry_attempt_identity_is_immutable_and_prior_model_is_not_overwritten(
 ):
     config = _config(tmp_path)
     root = Path(config["scratchpad"])
-    _seed_model_inputs(config)
+    _seed_current_r10_report_prework(config)
     assert D._bind_typed_model_phase_inputs(_phase(config), root, config) == []
     _write_model_outputs(config, b"# incomplete attempt one\n")
     first, _first_launch = D._typed_model_phase_contract_and_launch(

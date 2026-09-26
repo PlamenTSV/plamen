@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from test_support.tool_execution_receipt import fixture_execution_receipt
 
 import plamen as INSTALLER
 import audit_snapshot as SNAPSHOT
@@ -595,6 +596,7 @@ def test_b5_nonprecise_success_replays_context_and_artifact_hashes(
             provider_ref="rules@fixture",
         ),
         context=context,
+        execution_receipt=fixture_execution_receipt(),
     )
     LEDGER.record_tool_outcome(scratch, bound)
     assert (
@@ -852,6 +854,9 @@ def test_b5_sec3_success_loses_authority_when_sarif_drifts(
             provider_ref="sec3@sha256:" + "5" * 64,
         ),
         context=context,
+        execution_receipt=fixture_execution_receipt(
+            "docker", executable_path="/usr/bin/docker"
+        ),
     )
     LEDGER.record_tool_outcome(scratch, success)
     (scratch / "sec3_results.sarif").write_text(
@@ -921,6 +926,11 @@ def test_b5_dependency_lanes_bind_the_same_shared_artifact(
                 provider_ref=advisory(source_id, provider),
             ),
             context=context,
+            execution_receipt=fixture_execution_receipt(
+                tool,
+                executable_path=f"/opt/plamen/bin/{tool}",
+                accepted_returncodes=(0, 1, 3),
+            ),
         )
         LEDGER.record_tool_outcome(scratch, bound)
     artifact.write_text("# shared drift\n", encoding="utf-8")

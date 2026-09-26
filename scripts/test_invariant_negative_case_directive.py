@@ -128,7 +128,10 @@ def test_invariant_prompts_did_not_explode_in_size():
     # Medusa prompt was ~100 lines pre-fix; new cap 200.
     max_lines = {
         "phase4b-invariant-fuzz.md": 350,
-        "phase4b-medusa-fuzz.md": 290,
+        # The bounded generated-harness compile/recovery contract adds one
+        # small preflight section; retain modest headroom without permitting
+        # the methodology to grow without bound.
+        "phase4b-medusa-fuzz.md": 330,
     }
     for p in INVARIANT_PROMPTS:
         lines = len(_read(p).splitlines())

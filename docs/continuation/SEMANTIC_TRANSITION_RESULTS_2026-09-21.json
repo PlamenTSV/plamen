@@ -1,0 +1,734 @@
+{
+  "schema": "plamen.selected-validation-evidence.v1",
+  "date": "2026-09-21",
+  "checkpoint": "read-only-assessment-passed-title-projection-fix-pending",
+  "scope": "Selected offline checks across explicitly recorded runtime revisions. Not a full repository run, production audit, global E2E acceptance, or recall measurement. Failed full-tail evidence remains included.",
+  "totals": {
+    "passed": 1477,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 1
+  },
+  "runs": [
+    {
+      "raw_results": "/tmp/plamen-semantic-final-20260921-02/results.json",
+      "schema": "plamen.offline-semantic-transition-checks.v1",
+      "started_at": "2026-09-21T10:00:33.304371+00:00",
+      "python": "/opt/homebrew/opt/python@3.12/bin/python3.12",
+      "runtime_closure_sha256": "6ba74959859cbfa3cdfb265e4a9665c99f386dab96ae3e611237c9e79e01f0cd",
+      "production_e2e": false,
+      "provider_calls": false,
+      "audit_launched": false,
+      "results": [
+        {
+          "suite": "test_artifact_surface.py",
+          "selection": "",
+          "test_source_sha256": "005df31e88b84e9a4f62d9f1acd0a54744d395c58afb3828bd6d5b8f5e2a1717",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 262,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 4.33,
+          "log": "test_artifact_surface.py.log"
+        },
+        {
+          "suite": "test_artifact_surface_conformance.py",
+          "selection": "",
+          "test_source_sha256": "2e578538f46ee304621ad5825fed5560a4af50ff9f55fea3469c6cb1f6185e64",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 209,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 11.872,
+          "log": "test_artifact_surface_conformance.py.log"
+        },
+        {
+          "suite": "test_artifact_surface_semantic_conflicts.py",
+          "selection": "",
+          "test_source_sha256": "873ad68fd16457c33d2f75e4599894158f7afacc24df759dca1d8ec43d12f900",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 23,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 0.809,
+          "log": "test_artifact_surface_semantic_conflicts.py.log"
+        },
+        {
+          "suite": "test_disposition_semantic_conflicts.py",
+          "selection": "",
+          "test_source_sha256": "3ec879a9ad20ffa9d788765535ae0b678a88e251067a4f999a28cfbee55cf0b3",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 15,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 0.924,
+          "log": "test_disposition_semantic_conflicts.py.log"
+        },
+        {
+          "suite": "test_representation_purge_parsers.py",
+          "selection": "",
+          "test_source_sha256": "666ca0fa07cf9ddf3e423e046e5352fd5ce56f0887e541fff57e0a277979829a",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 103,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 1.12,
+          "log": "test_representation_purge_parsers.py.log"
+        },
+        {
+          "suite": "test_representation_bound_gates_p0_am.py",
+          "selection": "",
+          "test_source_sha256": "d20856ad161b35b22b2ee46a8ec3fc7a4ff6da0386e0c1b2e8830d8d6a88978c",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 173,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 10.801,
+          "log": "test_representation_bound_gates_p0_am.py.log"
+        },
+        {
+          "suite": "test_representation_tolerant_driver_gates.py",
+          "selection": "",
+          "test_source_sha256": "dfe8002c67dd84aefe1fd3d1a0b20e4aa2ec163e9cafb0d7ee6d741b9ed03db5",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 66,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 11.55,
+          "log": "test_representation_tolerant_driver_gates.py.log"
+        },
+        {
+          "suite": "test_candidate_negative_representation_purge_p0.py",
+          "selection": "",
+          "test_source_sha256": "5db52eab189136e0b1b49d284a7d8c4fc0e02dc5dc088da4aa24423099422c6f",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 134,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 1.544,
+          "log": "test_candidate_negative_representation_purge_p0.py.log"
+        },
+        {
+          "suite": "test_security_obligation_representation_purge.py",
+          "selection": "",
+          "test_source_sha256": "a97391fe703440bf1a5b1835dc125dcb736551991681fb6758b647793e452528",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 62,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 1.207,
+          "log": "test_security_obligation_representation_purge.py.log"
+        },
+        {
+          "suite": "test_material_harm_floor.py",
+          "selection": "",
+          "test_source_sha256": "eeda6aa1216ac3f00f1d4fd85cb069bcfd418e8faefe32c06a9a7505d287437f",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 19,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 10.825,
+          "log": "test_material_harm_floor.py.log"
+        },
+        {
+          "suite": "test_worker_prelaunch_matrix.py",
+          "selection": "",
+          "test_source_sha256": "2bf43532d31b623e91e3df3d8fcd3a52d47eb477462630f6eef7b0994dfef135",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 44,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 13.697,
+          "log": "test_worker_prelaunch_matrix.py.log"
+        },
+        {
+          "suite": "test_recon_canonical_prepass_handoff.py",
+          "selection": "",
+          "test_source_sha256": "053e1cd4281e34f1a283a9f18be21355833cdeef3232c3b9dea91ff445059be1",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 9,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 15.716,
+          "log": "test_recon_canonical_prepass_handoff.py.log"
+        }
+      ]
+    },
+    {
+      "raw_results": "/tmp/plamen-transitions-final-20260921-01/results.json",
+      "schema": "plamen.offline-semantic-transition-checks.v1",
+      "started_at": "2026-09-21T09:50:14.275548+00:00",
+      "python": "/opt/homebrew/opt/python@3.12/bin/python3.12",
+      "runtime_closure_sha256": "6ba74959859cbfa3cdfb265e4a9665c99f386dab96ae3e611237c9e79e01f0cd",
+      "production_e2e": false,
+      "provider_calls": false,
+      "audit_launched": false,
+      "results": [
+        {
+          "suite": "test_depth_additive_successor_transaction.py",
+          "selection": "every_postimage_boundary or partial_resume or source_cas or unresolved_niche",
+          "test_source_sha256": "90bde0b64d2d6b3fa80035e853fd57e6688ecaaccce0457b7af56259dc929e08",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 8,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 28.443,
+          "log": "test_depth_additive_successor_transaction.py.log"
+        },
+        {
+          "suite": "test_chain_tail_transaction_failpoint_matrix_p0_t.py",
+          "selection": "",
+          "test_source_sha256": "f51d0054745bd6d28e7b0dd96caa1406d8e173aa7fb3bf8b5199b579072d4c94",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 2,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 2.66,
+          "log": "test_chain_tail_transaction_failpoint_matrix_p0_t.py.log"
+        },
+        {
+          "suite": "test_chain_tail_isolated_phase_io_p0_t.py",
+          "selection": "primary_exact_chain_agent2 or isolated_driver_commits or committed_model_is_not_rerun or zero_work_final",
+          "test_source_sha256": "f608d6571cf2d4e14181386184e7ce4a8bd681106701d3fa0f8fd76d5c1c3291",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 5,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 23.116,
+          "log": "test_chain_tail_isolated_phase_io_p0_t.py.log"
+        },
+        {
+          "suite": "test_live_verify_queue_main_boundary_a0.py",
+          "selection": "",
+          "test_source_sha256": "2a2730af5c4bb2420238970e8957189a6fdabb3ec172016a9bfb9b9a4fe2596a",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 11,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 186.735,
+          "log": "test_live_verify_queue_main_boundary_a0.py.log"
+        },
+        {
+          "suite": "test_report_index_phase_io_p0_ae.py",
+          "selection": "",
+          "test_source_sha256": "58fdcbc7f0f0dfe14e62b2521b0c524c4d3d1ed516e197384984ee4984c51d96",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 9,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 317.891,
+          "log": "test_report_index_phase_io_p0_ae.py.log"
+        },
+        {
+          "suite": "test_report_index_mechanical_commit_p0_ae.py",
+          "selection": "",
+          "test_source_sha256": "a6ce4096a2bf03fe5188033c8c80d7b1bc1b36be7347075fc41a5411092eb8d3",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 8,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 10.19,
+          "log": "test_report_index_mechanical_commit_p0_ae.py.log"
+        },
+        {
+          "suite": "test_report_body_pure_derivation.py",
+          "selection": "",
+          "test_source_sha256": "ef89abc3092b7095b4d22e1d0216868be78b1b988ec2245dd2cfb924b072e153",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 3,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 9.411,
+          "log": "test_report_body_pure_derivation.py.log"
+        },
+        {
+          "suite": "test_report_body_attempt_authority.py",
+          "selection": "",
+          "test_source_sha256": "8783e7cd32552862aa8d2dd333dcaf477a35079bef5d021129573c2ea63e99b1",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 69,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 2.575,
+          "log": "test_report_body_attempt_authority.py.log"
+        },
+        {
+          "suite": "test_report_body_bridge_routing.py",
+          "selection": "",
+          "test_source_sha256": "51b2c4aeb2e97e52d7950a9e09adc824ad088d87f5ad0a7a6ede8765436ed14c",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 9,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 0.732,
+          "log": "test_report_body_bridge_routing.py.log"
+        },
+        {
+          "suite": "test_audit_completion_receipt.py",
+          "selection": "",
+          "test_source_sha256": "2c551158f066aacf4050e029299104891ee9be2ebef3a8e0c9be7f77474ddf33",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 27,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 0.812,
+          "log": "test_audit_completion_receipt.py.log"
+        },
+        {
+          "suite": "test_e2e_acceptance_verifier.py",
+          "selection": "",
+          "test_source_sha256": "fc0a65f7e07acbf6b0765b7e630299fa9a4e3d287e9ba947de3b42e86175d8f4",
+          "exit_code": 0,
+          "state": "PASSED_WITH_SKIPS",
+          "counts": {
+            "tests": 19,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 1
+          },
+          "elapsed_seconds": 0.798,
+          "log": "test_e2e_acceptance_verifier.py.log"
+        }
+      ]
+    },
+    {
+      "raw_results": "/tmp/plamen-readiness-final-20260921-02/results.json",
+      "schema": "plamen.offline-semantic-transition-checks.v1",
+      "started_at": "2026-09-21T10:00:34.456935+00:00",
+      "python": "/opt/homebrew/opt/python@3.12/bin/python3.12",
+      "runtime_closure_sha256": "6ba74959859cbfa3cdfb265e4a9665c99f386dab96ae3e611237c9e79e01f0cd",
+      "production_e2e": false,
+      "provider_calls": false,
+      "audit_launched": false,
+      "results": [
+        {
+          "suite": "test_report_quality_empty_authority.py",
+          "selection": "",
+          "test_source_sha256": "20d67ac14658fa73c4fd42653e0b21492fe1e598967928570b2c0f864f4288da",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 12,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 10.998,
+          "log": "test_report_quality_empty_authority.py.log"
+        },
+        {
+          "suite": "test_claude_transport_wizard.py",
+          "selection": "",
+          "test_source_sha256": "8b7f0ff95a7ef677c57cb9dbc53c28c18c441440dda4747e0bbbd3815199cb10",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 34,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 105.435,
+          "log": "test_claude_transport_wizard.py.log"
+        },
+        {
+          "suite": "test_macos_public_wizard_entry.py",
+          "selection": "",
+          "test_source_sha256": "6871295802cb68526066ecbac7b1b71fd4db730f70bf8ef704843b640294f6a6",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 12,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 34.275,
+          "log": "test_macos_public_wizard_entry.py.log"
+        }
+      ]
+    },
+    {
+      "raw_results": "/tmp/plamen-ledger-replay-evidence-20260921-02/results.json",
+      "schema": "plamen.offline-semantic-transition-checks.v1",
+      "started_at": "2026-09-21T10:00:35.658552+00:00",
+      "python": "/opt/homebrew/opt/python@3.12/bin/python3.12",
+      "runtime_closure_sha256": "6ba74959859cbfa3cdfb265e4a9665c99f386dab96ae3e611237c9e79e01f0cd",
+      "production_e2e": false,
+      "provider_calls": false,
+      "audit_launched": false,
+      "results": [
+        {
+          "suite": "test_artifact_ledger_noop_publication.py",
+          "selection": "",
+          "test_source_sha256": "527276321e27b3892c60999d06f33e3699b9bdc6a9764984641a0163a19f6156",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 12,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 1.278,
+          "log": "test_artifact_ledger_noop_publication.py.log"
+        },
+        {
+          "suite": "test_artifact_ledger_transaction_cas.py",
+          "selection": "",
+          "test_source_sha256": "2d9344b279165eeddf298c0125a13b4191ad95ecdd8202fb8b3ea623b9f44c86",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 7,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 1.915,
+          "log": "test_artifact_ledger_transaction_cas.py.log"
+        }
+      ]
+    },
+    {
+      "raw_results": "/tmp/plamen-assurance-handoff-20260921-01/results.json",
+      "schema": "plamen.offline-semantic-transition-checks.v1",
+      "started_at": "2026-09-21T09:49:30.695569+00:00",
+      "python": "/opt/homebrew/opt/python@3.12/bin/python3.12",
+      "runtime_closure_sha256": "6ba74959859cbfa3cdfb265e4a9665c99f386dab96ae3e611237c9e79e01f0cd",
+      "production_e2e": false,
+      "provider_calls": false,
+      "audit_launched": false,
+      "results": [
+        {
+          "suite": "test_assurance_recovery_diagnostics.py",
+          "selection": "",
+          "test_source_sha256": "7fe2bbd9ee06bbda55f2ecc8b981a7ddc2527e1b958111d6e9196a1abcd7eed4",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 3,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 12.026,
+          "log": "test_assurance_recovery_diagnostics.py.log"
+        },
+        {
+          "suite": "test_assurance_byte_identical_handoff.py",
+          "selection": "",
+          "test_source_sha256": "95e0a2ad5e240d06e7e43b1cb6cd58c5ab2e6983180b11d2faa7438cd7813b60",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 4,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 10.524,
+          "log": "test_assurance_byte_identical_handoff.py.log"
+        },
+        {
+          "suite": "test_report_transaction_producer_handoff_p0_ac.py",
+          "selection": "",
+          "test_source_sha256": "6ae61099329f6b8c97cd83c01e4b2a800737e527534f89ba5438f8e397a05021",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 24,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 4.214,
+          "log": "test_report_transaction_producer_handoff_p0_ac.py.log"
+        }
+      ]
+    },
+    {
+      "raw_results": "/tmp/plamen-evidence-quality-20260921-01/results.json",
+      "schema": "plamen.offline-semantic-transition-checks.v1",
+      "started_at": "2026-09-21T10:16:45.649023+00:00",
+      "python": "/opt/homebrew/opt/python@3.12/bin/python3.12",
+      "runtime_closure_sha256": "a6cbdbdec6210b196e75d505b4548dbe27902350411ec939f0a03901ca8a6446",
+      "production_e2e": false,
+      "provider_calls": false,
+      "audit_launched": false,
+      "results": [
+        {
+          "suite": "test_report_evidence_assessment_publication.py",
+          "selection": "",
+          "test_source_sha256": "e499654b2baa21c3f2598bb0bc275025a7c5ebd131b9f90740fc5aad63654fe4",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 6,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 10.37,
+          "log": "test_report_evidence_assessment_publication.py.log"
+        },
+        {
+          "suite": "test_report_evidence_delivery_legacy_oracle.py",
+          "selection": "",
+          "test_source_sha256": "0658cd581d5c9e57e2b9a951bbd2940380dca48f5649cc47d8144ad7ad78d26b",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 4,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 9.605,
+          "log": "test_report_evidence_delivery_legacy_oracle.py.log"
+        },
+        {
+          "suite": "test_report_evidence_delivery_pure.py",
+          "selection": "",
+          "test_source_sha256": "17424316367a333f340b270f425a6a6acc80e0dfa1ae68c2c78c84a7059dc297",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 10,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 0.739,
+          "log": "test_report_evidence_delivery_pure.py.log"
+        },
+        {
+          "suite": "test_report_evidence_runtime_p1_k.py",
+          "selection": "",
+          "test_source_sha256": "556a32dc08c9d7eb77e5e0c6886c9224eb4b93478255df19ef9b9f573f6bff27",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 29,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 17.735,
+          "log": "test_report_evidence_runtime_p1_k.py.log"
+        },
+        {
+          "suite": "test_report_evidence_adversarial_review_p1_k.py",
+          "selection": "",
+          "test_source_sha256": "9c485871acd5bd35ac08ae20a66f424c6b70c6e5f7929be5a6f3b76661de9ab7",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 29,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 12.855,
+          "log": "test_report_evidence_adversarial_review_p1_k.py.log"
+        }
+      ]
+    },
+    {
+      "raw_results": "/tmp/plamen-empty-report-20260921-03/results.json",
+      "schema": "plamen.offline-semantic-transition-checks.v1",
+      "started_at": "2026-09-21T09:21:31.980169+00:00",
+      "python": "/opt/homebrew/opt/python@3.12/bin/python3.12",
+      "runtime_closure_sha256": "e27992ae65c723262226c806676b021e39ad0e00e6c9b335e4ad6267171f358f",
+      "production_e2e": false,
+      "provider_calls": false,
+      "audit_launched": false,
+      "results": [
+        {
+          "suite": "test_core_empty_report_assembly_integration.py",
+          "selection": "",
+          "test_source_sha256": "274e361f736f3b9fc671a1a4a7cc607d3caf9c86cf34ef54251c3cbdda41f194",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 1,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 626.967,
+          "log": "test_core_empty_report_assembly_integration.py.log"
+        }
+      ]
+    },
+    {
+      "raw_results": "/tmp/plamen-depth-report-20260921-03/results.json",
+      "schema": "plamen.offline-semantic-transition-checks.v1",
+      "started_at": "2026-09-21T09:33:33.114813+00:00",
+      "python": "/opt/homebrew/opt/python@3.12/bin/python3.12",
+      "runtime_closure_sha256": "e27992ae65c723262226c806676b021e39ad0e00e6c9b335e4ad6267171f358f",
+      "production_e2e": false,
+      "provider_calls": false,
+      "audit_launched": false,
+      "results": [
+        {
+          "suite": "test_depth_to_empty_report_same_run.py",
+          "selection": "",
+          "test_source_sha256": "8521961a22c00e50b3c0057c3ba618714acb666da919082060e794f0e123d132",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 1,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 395.167,
+          "log": "test_depth_to_empty_report_same_run.py.log"
+        }
+      ]
+    },
+    {
+      "raw_results": "/tmp/plamen-depth-queue-20260921-01/results.json",
+      "schema": "plamen.offline-semantic-transition-checks.v1",
+      "started_at": "2026-09-21T08:39:04.505013+00:00",
+      "python": "/opt/homebrew/opt/python@3.12/bin/python3.12",
+      "runtime_closure_sha256": "93f21f1dbad0c68b1deec054d8353957e58a619be3f77fcd7c4d1532f09d8bf3",
+      "production_e2e": false,
+      "provider_calls": false,
+      "audit_launched": false,
+      "results": [
+        {
+          "suite": "test_depth_to_queue_same_run_semantics.py",
+          "selection": "",
+          "test_source_sha256": "8be41decc005092b4ea639c19907a299600d35e1c72c969142d20b23464588e2",
+          "exit_code": 0,
+          "state": "PASSED",
+          "counts": {
+            "tests": 1,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 102.972,
+          "log": "test_depth_to_queue_same_run_semantics.py.log"
+        }
+      ]
+    },
+    {
+      "raw_results": "/tmp/plamen-semantic-report-tail-20260921-05/results.json",
+      "schema": "plamen.offline-semantic-transition-checks.v1",
+      "started_at": "2026-09-21T09:50:13.116397+00:00",
+      "python": "/opt/homebrew/opt/python@3.12/bin/python3.12",
+      "runtime_closure_sha256": "6ba74959859cbfa3cdfb265e4a9665c99f386dab96ae3e611237c9e79e01f0cd",
+      "production_e2e": false,
+      "provider_calls": false,
+      "audit_launched": false,
+      "results": [
+        {
+          "suite": "test_nonempty_report_straight_line.py",
+          "selection": "",
+          "test_source_sha256": "22af2f74c67d21e4eba8acc4ebe6d0b3209b72d6577c2d81a75dcca396c214d8",
+          "exit_code": 1,
+          "state": "FAILED",
+          "counts": {
+            "tests": 1,
+            "failures": 1,
+            "errors": 0,
+            "skipped": 0
+          },
+          "elapsed_seconds": 1122.08,
+          "log": "test_nonempty_report_straight_line.py.log"
+        }
+      ]
+    }
+  ]
+}

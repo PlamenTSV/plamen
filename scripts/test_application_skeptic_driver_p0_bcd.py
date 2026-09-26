@@ -14,6 +14,7 @@ import pytest
 import methodology_application_states as S
 import plamen_driver as D
 import skeptic_execution_work as E
+import worker_execution_receipts as W
 from phase_io_contracts import resolve_phase_io_contract
 from plamen_types import L1_PHASES, SC_PHASES
 from test_skeptic_execution_work_provider_v2 import (
@@ -112,6 +113,29 @@ def _install_provider_fixture(
     )
 
 
+def _admitted_linux_process_authority_available() -> bool:
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        capability = W.process_tree_termination_capability()
+    except Exception:
+        return False
+    return (
+        capability.get("platform") == "LINUX"
+        and capability.get("exhaustive_descendant_termination_authority") is True
+        and W._transaction_write_authority(capability) == "EXHAUSTIVE"
+    )
+
+
+_SUPPORTED_PHYSICAL_PROCESS_ONLY = pytest.mark.skipif(
+    os.name != "nt" and not _admitted_linux_process_authority_available(),
+    reason=(
+        "positive physical-provider receipt coverage requires Windows Job/MIC "
+        "authority or an admitted Linux cgroup-v2 plus Landlock authority"
+    ),
+)
+
+
 def test_phase_is_before_candidate_queue_freeze_for_sc_and_l1():
     sc = [phase.name for phase in SC_PHASES]
     l1 = [phase.name for phase in L1_PHASES]
@@ -124,6 +148,7 @@ def test_phase_is_before_candidate_queue_freeze_for_sc_and_l1():
     assert _phase().modes == {"core", "thorough"}
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_provider_arm_requires_exact_current_environment_binding_schema(
     tmp_path: Path,
 ) -> None:
@@ -339,6 +364,7 @@ def test_runtime_phase_io_binds_planning_and_reconcile_input_denominators(
     }
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_application_skeptic_arms_plan_provider_and_reconcile_before_publish(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -444,6 +470,7 @@ def test_application_queue_drift_rewinds_phase_and_untyped_descendant(
     assert checkpoint.completed == []
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_claude_shard_agreement_without_terminal_provider_is_reopened_durably(
     tmp_path: Path, monkeypatch
 ):
@@ -540,6 +567,7 @@ def test_claude_shard_agreement_without_terminal_provider_is_reopened_durably(
     ).exists()
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_claude_disagreement_uses_registered_askp_projection(
     tmp_path: Path, monkeypatch
 ):
@@ -632,6 +660,7 @@ def test_missing_active_queue_is_input_debt_not_silent_not_triggered(
     assert receipt["model_invoked"] is False
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_provider_published_assessment_tamper_preserves_last_good_additive_candidate(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -684,7 +713,7 @@ def test_provider_published_assessment_tamper_preserves_last_good_additive_candi
     )
 
 
-def test_codex_backend_is_explicit_additive_debt_without_launch(
+def test_codex_backend_uses_native_packet_bound_model_transaction(
     tmp_path: Path, monkeypatch
 ) -> None:
     scratchpad = tmp_path / "scratch"
@@ -696,26 +725,82 @@ def test_codex_backend_is_explicit_additive_debt_without_launch(
     _seed_base_queues(scratchpad, [_negative_state(skill)])
     config = _config(tmp_path, backend="codex")
     monkeypatch.setattr(D, "plamen_home", lambda: home)
-    monkeypatch.setattr(D, "_record_application_skeptic_io", lambda **_kwargs: [])
+    plan = D.write_application_skeptic_work_plan(
+        scratchpad, queue_phases=("breadth", "depth")
+    )
+    shard = plan["shards"][0]
+    assessor, invocation = D._application_skeptic_assessor_identity(
+        config, plan["work_plan_digest"], shard["shard_id"]
+    )
+    captured = {}
+
     monkeypatch.setattr(
         D,
-        "_run_one_codex_exec",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("unsupported Codex skeptic backend must not launch")
-        ),
+        "_arm_application_skeptic_io",
+        lambda **_kwargs: (object(), object(), True, []),
     )
 
-    receipt, issues = D._run_application_skeptic_phase(
-        _phase(), config, scratchpad
+    def fake_codex(**kwargs):
+        captured.update(kwargs)
+        context = kwargs["staged_output_context"]
+        output = kwargs["expected_outputs"][0]
+        payload = {
+            "schema_version": "plamen.application_skeptic_assessments.v1",
+            "work_plan_digest": context["work_plan_digest"],
+            "shard_id": context["shard_id"],
+            "assessments": [
+                {
+                    "work_item_id": work_id,
+                    "assessor_id": context["assessor_id"],
+                    "assessor_invocation_id": context[
+                        "assessor_invocation_id"
+                    ],
+                    "outcome": "DISAGREE_CANDIDATE",
+                    "evidence_basis": "IN_SCOPE_SOURCE",
+                    "evidence": "src/Oracle.sol:L9",
+                    "rationale": "the negative premise is not established",
+                    "candidate": {
+                        "title": "Unchecked oracle transition",
+                        "mechanism": "the cited state transition remains open",
+                        "harm": "incorrect value can propagate",
+                    },
+                }
+                for work_id in context["work_item_ids"]
+            ],
+        }
+        (scratchpad / output).write_text(json.dumps(payload), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(D, "_run_one_codex_exec", fake_codex)
+    loaded, invoked, issues = D._execute_application_skeptic_provider_shard(
+        workflow="application_skeptic",
+        phase=_phase(),
+        config=config,
+        scratchpad=scratchpad,
+        plan=plan,
+        plan_name="application_skeptic_work_plan.json",
+        shard=shard,
+        output_name="application_skeptic_assessments_0001.json",
+        assessor_id=assessor,
+        assessor_invocation_id=invocation,
+        effective_model="gpt-5",
+        timeout_seconds=120,
     )
-    assert receipt["status"] == "COMPLETED_WITH_DEBT"
-    assert receipt["model_invoked"] is False
-    assert receipt["work_dispositions"][0]["disposition"] == (
-        "REGISTRY_CANDIDATE_PROPOSED"
+
+    assert invoked is True and issues == []
+    assert loaded and loaded[0]["outcome"] == "DISAGREE_CANDIDATE"
+    assert captured["phase"].needs_mcp is False
+    assert captured["staged_output_validator"] is (
+        D.staged_application_skeptic_assessment_validator
     )
-    assert receipt["work_dispositions"][0]["proof_scope"] == "NONE"
-    assert receipt["work_dispositions"][0]["terminal_negative_authorized"] is False
-    assert any("CODEX_BACKEND_UNSUPPORTED_DEBT" in issue for issue in issues)
+    assert captured["staged_output_input_identities"] == (
+        "scratchpad:" + next(
+            path.relative_to(scratchpad).as_posix()
+            for path in scratchpad.glob(
+                ".skeptic_execution_work/*/*/inputs/packet.json"
+            )
+        ),
+    )
 
 
 @pytest.mark.skipif(

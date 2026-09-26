@@ -285,6 +285,7 @@ def test_headless_rescan_fanout_executes_every_manifest_row_transactionally(
     ]
     _manifest(sp, declared)
     calls = []
+    attempts = []
 
     monkeypatch.setattr(
         D, "_prepare_typed_model_worker_launch", lambda **_kwargs: []
@@ -300,6 +301,7 @@ def test_headless_rescan_fanout_executes_every_manifest_row_transactionally(
             else kwargs["job"]["output"]
         )
         calls.append(output)
+        attempts.append(kwargs["attempt"])
         (sp / output).write_text(FRESH_SUB, encoding="utf-8")
         return 0
 
@@ -318,13 +320,48 @@ def test_headless_rescan_fanout_executes_every_manifest_row_transactionally(
             "_run_id": "fixture-run",
         },
         scratchpad=sp,
-        attempt=1,
+        attempt=2,
         timeout=30,
         effective_model="fixture-model",
     )
 
     assert rc == 0
     assert calls == declared
+    # Worker rounds are bound to a durable TRANSPORT GENERATION, not to the
+    # semantic phase attempt, so that transport recovery re-dispatching the
+    # same attempt cannot replay consumed leaf identities.  Assert the
+    # invariant -- one disjoint, monotonic band per dispatch -- rather than
+    # the old attempt-derived constants.
+    assert len(attempts) == len(declared)
+    assert len(set(attempts)) == 1, "one dispatch must use one band"
+    first_band = set(attempts)
+
+    calls.clear()
+    attempts.clear()
+    for output in declared:
+        (sp / output).unlink(missing_ok=True)
+    # Re-dispatch the SAME semantic attempt, exactly as rate-limit recovery
+    # does after a provider throttle.
+    assert D._run_rescan_backend_fanout(
+        backend=backend,
+        phase=RESCAN,
+        config={
+            "pipeline": "sc",
+            "mode": "thorough",
+            "language": "evm",
+            "cli_backend": ("codex" if backend == "codex" else "claude"),
+            "project_root": str(tmp_path),
+            "_run_id": "fixture-run",
+        },
+        scratchpad=sp,
+        attempt=2,
+        timeout=30,
+        effective_model="fixture-model",
+    ) == 0
+    assert attempts and set(attempts).isdisjoint(first_band), (
+        "re-dispatching the same semantic attempt replayed worker rounds; "
+        "this is the INVOCATION_REPLAY failure that killed DODO run25"
+    )
 
 
 def test_rescan_worker_pool_repairs_only_manifest_open_rows(tmp_path, monkeypatch):

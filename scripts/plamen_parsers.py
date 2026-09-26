@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Optional
 
@@ -45,6 +46,7 @@ from compound_plan_adapter import (
     adapt_chain_composition_candidates,
     adapt_chain_hypotheses,
 )
+import artifact_surface
 from artifact_ledger import ArtifactLedgerError, read_artifact_ledger
 from bounded_artifact_io import read_bounded_regular_bytes
 from operational_markdown import operational_markdown_view
@@ -52,6 +54,7 @@ from finding_producer_registry import (
     FINDING_PRODUCERS as _REGISTERED_FINDING_PRODUCERS,
     classify_producer_id as _classify_producer_id,
     producer_accepts_local_id as _registered_producer_accepts_local_id,
+    producer_accepts_current_local_id as _registered_producer_accepts_current_local_id,
     producer_for_artifact as _registered_producer_for_artifact,
     producer_id_pattern as _registered_producer_id_pattern,
     producer_numeric_id_pattern as _registered_numeric_id_pattern,
@@ -70,6 +73,7 @@ import fuzz_workspace_authority as _fuzz_workspace_authority
 
 __all__ = [
     "DedupSignature",
+    "_canonical_verifier_status_enum",
     "_dedup_source_ids_by_report_id",
     "_deliver_compound_candidates_to_queue",
     "_ensure_typed_queue_authority",
@@ -584,6 +588,23 @@ _INTERNAL_ID_TOKEN_RE = re.compile(
 )
 
 
+#: Unicode codepoints that RENDER as a hyphen inside an identifier.
+_ID_HYPHEN_CHARS = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d"
+_ID_HYPHEN_RE = re.compile("[" + _ID_HYPHEN_CHARS + "]")
+
+
+def _fold_id_hyphens(text: object) -> str:
+    """Canonical ASCII-hyphen form of arbitrary text. Total; never raises."""
+    if not isinstance(text, str):
+        if text is None:
+            return ""
+        try:
+            text = str(text)
+        except Exception:  # pragma: no cover - defensive totality
+            return ""
+    return _ID_HYPHEN_RE.sub("-", text)
+
+
 def extract_unambiguous_internal_ids(
     text: str,
     *,
@@ -596,6 +617,14 @@ def extract_unambiguous_internal_ids(
     ledger/public-report policy in ``_report_internal_hypothesis_ids``.
     """
     found: dict[str, str] = {}
+    # Fold Unicode hyphen-like codepoints to ASCII `-` BEFORE matching. The
+    # measured flip was `See DT\u20111 ...` (U+2011 NON-BREAKING HYPHEN): the
+    # identity became invisible rather than flagged. This is representation
+    # only — the closed producer-prefix allowlist is UNCHANGED, because widening
+    # it would manufacture false internal-ID leaks out of ordinary prose
+    # (`ERC-20`, `EIP-1559`, `CVE-2021`). An unregistered producer prefix is a
+    # REGISTRY gap, not a regex gap (see finding_producer_registry).
+    text = _fold_id_hyphens(text)
     for match in _INTERNAL_ID_TOKEN_RE.finditer(text or ""):
         token = match.group(0)
         found.setdefault(token.upper(), token)
@@ -611,6 +640,12 @@ _INVENTORY_SOURCE_PATTERNS: tuple[str, ...] = (
     "analysis_*.md",
     "analysis_rescan_*.md",
     "analysis_percontract_*.md",
+    # Deterministic recon-prepass niche producers run before inventory and
+    # have exact registered artifact identities.  Keep these filenames
+    # explicit: arbitrary niche worker markdown is not an inventory-planning
+    # authority merely because it happens to exist in the scratchpad.
+    "niche_interface_parity_findings.md",
+    "niche_permissionless_setters_findings.md",
     # L1 graph-sweep outputs are breadth-equivalent discovery artifacts and
     # run before inventory in thorough mode.
     "graph_sweep*.md",
@@ -717,6 +752,32 @@ def _breadth_roster_text(text: str) -> str:
         return text
 
 
+#: Column ROLES that identify the breadth roster table. The old gate demanded
+#: the header line contain BOTH substrings "template" AND "required"; renaming
+#: `Required?` to `Mandatory` or `Template` to `Skill` returned None, and the
+#: caller then fell back to the hardcoded floor — reopening exactly the hole
+#: this function exists to close (a Thorough audit spawning 6-9 agents
+#: false-passing with 3 artifacts).
+_BREADTH_ROSTER_ROLE_WORDS: tuple[tuple[str, ...], ...] = (
+    ("template", "skill", "agent template", "role", "agent role"),
+    ("required", "mandatory", "requirement", "spawn", "status", "required?"),
+)
+
+
+def _breadth_roster_header(line: str) -> bool:
+    """True when this header row declares the breadth roster, by ROLE."""
+    cells = [
+        artifact_surface.normalize_label(cell)
+        for cell in _split_markdown_table_row(line)
+    ]
+    if not cells:
+        return False
+    return all(
+        any(any(word in cell for cell in cells) for word in group)
+        for group in _BREADTH_ROSTER_ROLE_WORDS
+    )
+
+
 def parse_breadth_manifest_count(scratchpad: Path) -> Optional[int]:
     """Return the number of breadth agents declared in spawn_manifest.md.
 
@@ -748,7 +809,7 @@ def parse_breadth_manifest_count(scratchpad: Path) -> Optional[int]:
         s = raw.strip()
         if not in_table:
             s_lc = s.lower()
-            if s.startswith("|") and "template" in s_lc and "required" in s_lc:
+            if s.startswith("|") and _breadth_roster_header(s):
                 headers = [_normalize_manifest_header(c) for c in _split_markdown_table_row(s)]
                 in_table = True
             continue
@@ -780,13 +841,57 @@ def parse_breadth_manifest_count(scratchpad: Path) -> Optional[int]:
     return count if count > 0 else None
 
 
+def _is_escaped_pipe(text: str, index: int) -> bool:
+    """True when `text[index]` is a pipe preceded by an ODD number of backslashes."""
+
+    backslashes = 0
+    cursor = index - 1
+    while cursor >= 0 and text[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return backslashes % 2 == 1
+
+
+_UNESCAPED_TABLE_PIPE_RE = re.compile(r"(?<!\\)\|")
+
+
 def _split_markdown_table_row(row: str) -> list[str]:
-    cells = row.strip().strip("|").split("|")
-    return [_strip_md(c).strip() for c in cells]
+    """Split one GFM table row into cells, honouring escaped pipes.
+
+    GitHub-Flavoured Markdown REQUIRES a literal `|` inside a table cell to be
+    written `\\|`. Splitting naively on every `|` therefore inflates the column
+    count and reports a correctly-authored row as malformed. That is not
+    hypothetical: a live DODO recon run failed its phase gate because a worker
+    wrote `require(bots[msg.sender] \\|\\| msg.sender==receiver)` in a Modifier
+    Application Map cell -- the model followed the spec and the parser did not.
+    """
+
+    stripped = row.strip()
+    # Preserve the original `strip("|")` semantics EXACTLY -- it strips
+    # repeated edge pipes greedily, and callers depend on that -- while
+    # refusing to strip an ESCAPED trailing pipe, which is cell content.
+    start = 0
+    while start < len(stripped) and stripped[start] == "|":
+        start += 1
+    end = len(stripped)
+    while (
+        end > start
+        and stripped[end - 1] == "|"
+        and not _is_escaped_pipe(stripped, end - 1)
+    ):
+        end -= 1
+    inner = stripped[start:end]
+    return [
+        _strip_md(cell.replace("\\|", "|")).strip()
+        for cell in _UNESCAPED_TABLE_PIPE_RE.split(inner)
+    ]
 
 
 def _normalize_manifest_header(header: str) -> str:
-    header = _strip_md(header).lower()
+    # `_strip_md` removes backticks/asterisks only. Route through the shared
+    # boundary first so HTML space entities, zero-width characters and `_`
+    # emphasis fold too (`Finding&nbsp;ID` used to key as `finding_nbsp_id`).
+    header = _strip_md(artifact_surface.strip_decoration(header)).lower()
     return re.sub(r"[^a-z0-9]+", "_", header).strip("_")
 
 
@@ -977,7 +1082,7 @@ def parse_breadth_manifest_outputs(scratchpad: Path) -> Optional[list[str]]:
         s = raw.strip()
         if not in_table:
             s_lc = s.lower()
-            if s.startswith("|") and "template" in s_lc and "required" in s_lc:
+            if s.startswith("|") and _breadth_roster_header(s):
                 headers = [_normalize_manifest_header(c) for c in _split_markdown_table_row(s)]
                 in_table = True
             continue
@@ -1075,7 +1180,7 @@ def parse_breadth_manifest_agents(scratchpad: Path) -> list[dict[str, str]]:
         s = raw.strip()
         if not in_table:
             s_lc = s.lower()
-            if s.startswith("|") and "template" in s_lc and "required" in s_lc:
+            if s.startswith("|") and _breadth_roster_header(s):
                 headers = [
                     _normalize_manifest_header(c)
                     for c in _split_markdown_table_row(s)
@@ -1210,7 +1315,7 @@ def parse_depth_manifest_count(scratchpad: Path) -> Optional[int]:
             s = raw.strip()
             if not in_table:
                 s_lc = s.lower()
-                if s.startswith("|") and "template" in s_lc and "required" in s_lc:
+                if s.startswith("|") and _breadth_roster_header(s):
                     headers = [_normalize_manifest_header(c) for c in _split_markdown_table_row(s)]
                     in_table = True
                 continue
@@ -1368,10 +1473,18 @@ _FINDING_MAPPING_HEADER_ROLES: dict[str, dict[str, int]] = {
         "source_id": 0,
         "constituent_finding_id": 0,
         "constituent_id": 0,
+        "agent_finding_id": 0,
+        "raw_finding_id": 0,
+        "candidate_id": 0,
+        "issue_id": 0,
         "source_finding": 1,
         "constituent_finding": 1,
         "constituent": 1,
+        "agent_finding": 1,
+        "raw_finding": 1,
         "finding": 2,
+        "candidate": 2,
+        "issue": 2,
         # Legacy two-column tables use `Source | Hyp`.  This is intentionally
         # weakest so a provenance column named Source cannot beat Finding ID.
         "source": 2,
@@ -1381,10 +1494,16 @@ _FINDING_MAPPING_HEADER_ROLES: dict[str, dict[str, int]] = {
         "hypothesis_id_s": 0,
         "mapped_hypothesis_id": 0,
         "internal_hypothesis_id": 0,
+        "grouped_into_hypothesis": 0,
+        "absorbed_into_hypothesis": 0,
         "hypothesis": 1,
         "mapped_hypothesis": 1,
         "internal_hypothesis": 1,
         "target_hypothesis": 1,
+        "grouped_into": 1,
+        "absorbed_into": 1,
+        "mapped_to": 1,
+        "maps_to": 1,
         "hyp": 2,
     },
     "status": {
@@ -1444,84 +1563,106 @@ def _finding_mapping_cell_ids(cell: str, *, hypothesis: bool) -> tuple[str, ...]
     return tuple(found)
 
 
-def parse_finding_mapping_rows(text: str) -> list[dict[str, object]]:
-    """Return typed constituent→hypothesis rows from finding_mapping Markdown.
+def _finding_mapping_roles_from_cells(cells) -> dict[str, int | None]:
+    """Resolve mapping column ROLES from a header row, by MEANING.
 
-    Only tables with normalized source-ID and hypothesis-ID header roles plus a
-    real Markdown separator are eligible.  IDs are read exclusively from those
-    two columns; status, Notes, narrative prose, and unrelated tables cannot
-    contribute edges.  The result is directional so consumers cannot confuse a
-    hypothesis lookup alias with one of its constituent source IDs.
+    The old gate normalized the header through `_normalize_manifest_header`
+    and looked it up in a closed vocabulary. Renaming two columns to the plain
+    synonyms `| Agent Finding | Grouped Into |` — identical roles — dropped the
+    ENTIRE mapping to zero rows. Synonyms are matched on the
+    `artifact_surface.normalize_label` value, so decoration, `&nbsp;` and a
+    parenthetical qualifier cannot hide a column either.
     """
-    lines = _llm_norm(text).splitlines()
+    normalized = [
+        artifact_surface.normalize_label(cell).replace(" ", "_").replace("-", "_")
+        for cell in cells
+    ]
+    out: dict[str, int | None] = {}
+    for role, aliases in _FINDING_MAPPING_HEADER_ROLES.items():
+        best: tuple[int, int] | None = None
+        for index, header in enumerate(normalized):
+            rank = aliases.get(header)
+            if rank is None:
+                continue
+            if best is None or rank < best[0]:
+                best = (rank, index)
+        out[role] = best[1] if best else None
+    return out
+
+
+def parse_finding_mapping_rows(text: str) -> list[dict[str, object]]:
+    """Return typed constituent->hypothesis rows from finding_mapping Markdown.
+
+    Property: `identity.constituent_hypothesis_edge` -> FAIL_CLOSED. The
+    conservative rule is unchanged — an edge is created ONLY from two columns
+    whose ROLE is known, and a cell containing prose yields no edge, so status
+    and Notes can never manufacture a relation. What changed is WHAT the check
+    reads: the normalized surface instead of raw line bytes. Purged
+    representation dependencies: the closed header vocabulary (now
+    role-synonym matching on normalized labels), the MANDATORY separator row
+    directly under the header (a table without `|---|---|` is still a table),
+    missing outer pipes, and decorated headers/cells.
+    """
+    surf = _surface_cached(_llm_norm(text))
     parsed: list[dict[str, object]] = []
-    i = 0
-    while i + 1 < len(lines):
-        header_line = lines[i].strip()
-        separator_line = lines[i + 1].strip()
-        if not header_line.startswith("|") or not _is_separator_row(separator_line):
-            i += 1
-            continue
-        headers = [
-            _normalize_manifest_header(cell)
-            for cell in _split_markdown_table_row(header_line)
-        ]
-        source_idx = _finding_mapping_role_index(headers, "source")
-        hypothesis_idx = _finding_mapping_role_index(headers, "hypothesis")
-        if (
-            source_idx is None
-            or hypothesis_idx is None
-            or source_idx == hypothesis_idx
-        ):
-            i += 2
-            continue
-        status_idx = _finding_mapping_role_index(headers, "status")
-        notes_idx = _finding_mapping_role_index(headers, "notes")
-        j = i + 2
-        while j < len(lines):
-            row_line = lines[j].strip()
-            if not row_line.startswith("|"):
-                break
-            # A second table can follow without a blank line.  Stop before its
-            # header so it is reclassified by its own typed column contract;
-            # otherwise the previous table's indices leak into the new rows.
-            if (
-                j + 1 < len(lines)
-                and _is_separator_row(lines[j + 1].strip())
-            ):
-                break
-            if _is_separator_row(row_line):
-                j += 1
+    grouped: dict[int, list] = {}
+    for line in surf.lines:
+        if line.table_index >= 0 and not line.in_fence:
+            grouped.setdefault(line.table_index, []).append(line)
+
+    for tidx in sorted(grouped):
+        roles: dict[str, int | None] = {}
+        for line in grouped[tidx]:
+            if line.kind == artifact_surface.TABLE_SEPARATOR:
                 continue
-            cells = _split_markdown_table_row(row_line)
-            if max(source_idx, hypothesis_idx) >= len(cells):
-                j += 1
+            cells = list(line.cells)
+            if not cells:
                 continue
-            source_ids = _finding_mapping_cell_ids(
-                cells[source_idx], hypothesis=False
+            candidate_roles = _finding_mapping_roles_from_cells(cells)
+            source_idx = candidate_roles.get("source")
+            hypothesis_idx = candidate_roles.get("hypothesis")
+            is_header = (
+                source_idx is not None
+                and hypothesis_idx is not None
+                and source_idx != hypothesis_idx
             )
+            if is_header:
+                # Header, or a SECOND table's header embedded in the same
+                # block without a blank line. Either way the roles it declares
+                # govern the rows that follow it.
+                roles = candidate_roles
+                continue
+            if not roles:
+                continue
+            source_idx = roles.get("source")
+            hypothesis_idx = roles.get("hypothesis")
+            if source_idx is None or hypothesis_idx is None:
+                continue
+            if max(source_idx, hypothesis_idx) >= len(cells):
+                continue
+            source_ids = _finding_mapping_cell_ids(cells[source_idx], hypothesis=False)
             hypothesis_ids = _finding_mapping_cell_ids(
                 cells[hypothesis_idx], hypothesis=True
             )
-            if source_ids and hypothesis_ids:
-                parsed.append({
-                    "source_ids": source_ids,
-                    "hypothesis_ids": hypothesis_ids,
-                    "status": (
-                        _strip_md(cells[status_idx])
-                        if status_idx is not None and status_idx < len(cells)
-                        else ""
-                    ),
-                    "notes": (
-                        _strip_md(cells[notes_idx])
-                        if notes_idx is not None and notes_idx < len(cells)
-                        else ""
-                    ),
-                })
-            j += 1
-        i = max(j, i + 2)
+            if not (source_ids and hypothesis_ids):
+                continue
+            status_idx = roles.get("status")
+            notes_idx = roles.get("notes")
+            parsed.append({
+                "source_ids": source_ids,
+                "hypothesis_ids": hypothesis_ids,
+                "status": (
+                    _strip_md(cells[status_idx])
+                    if status_idx is not None and status_idx < len(cells)
+                    else ""
+                ),
+                "notes": (
+                    _strip_md(cells[notes_idx])
+                    if notes_idx is not None and notes_idx < len(cells)
+                    else ""
+                ),
+            })
     return parsed
-
 
 _QUEUE_HEADER_ALIASES = {
     # canonical -> tuple of substring aliases the LLM might emit. Match is
@@ -1672,6 +1813,27 @@ def _typed_queue_item_legacy_row(item: QueueWorkItem) -> dict[str, Any]:
     return row
 
 
+def _looks_like_typed_queue_projection(raw_text: str) -> bool:
+    """True when the first table declares the canonical typed queue schema.
+
+    Property: `queue.typed_schema_detection` -> DEBT. Tolerant by design: the
+    header must NAME every canonical column (normalized), in any order, with
+    any decoration, with or without outer pipes, and extra columns are ignored.
+    """
+    try:
+        wanted = {artifact_surface.normalize_label(h) for h in MARKDOWN_HEADERS}
+    except Exception:  # pragma: no cover - defensive totality
+        return False
+    if not wanted:
+        return False
+    for table in artifact_surface.read_tables(raw_text):
+        present = {artifact_surface.normalize_label(h) for h in table.headers}
+        if wanted.issubset(present):
+            return True
+        return False
+    return False
+
+
 def parse_verification_queue_rows(scratchpad: Path) -> list[dict[str, str]]:
     """Parse verification_queue.md into structured rows.
 
@@ -1696,21 +1858,28 @@ def parse_verification_queue_rows(scratchpad: Path) -> list[dict[str, str]]:
         raw_text = p.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return json_rows
-    first_line = next(
-        (line.strip() for line in raw_text.splitlines() if line.strip()), ""
-    )
-    typed_header = "| " + " | ".join(MARKDOWN_HEADERS) + " |"
-    if first_line == typed_header:
+    # Typed-schema DETECTION reads the header's MEANING, not its bytes. The
+    # old test was `first_line == "| " + " | ".join(MARKDOWN_HEADERS) + " |"` —
+    # whole-line STRING EQUALITY. Omitting the outer pipes, adding one extra
+    # informative column or reordering two names silently rerouted a canonical
+    # projection to the loose legacy reader.
+    if _looks_like_typed_queue_projection(raw_text):
         try:
             return [
                 _typed_queue_item_legacy_row(item)
                 for item in parse_queue_markdown(raw_text)
             ]
         except (TypeError, ValueError) as exc:
-            # A projection claiming the exact typed schema is never re-read as
-            # a looser legacy table or hidden behind a stale JSON sidecar.
-            log.error("typed verification queue is malformed: %s", exc)
-            return []
+            # REPAIR, DON'T REJECT. The old branch returned [] here, and the
+            # module's own docstring records what that cost: "every verify
+            # shard had zero rows -> zero verify_*.md files -> silent halt at
+            # verify completion gate". A malformed typed body now degrades to
+            # the loose reader below with visible debt instead of erasing every
+            # row in the queue.
+            log.error(
+                "typed verification queue is malformed (%s); degrading to the "
+                "tolerant reader instead of returning zero rows", exc
+            )
     if json_rows:
         try:
             if p.with_suffix(".json").stat().st_mtime_ns >= p.stat().st_mtime_ns:
@@ -4024,7 +4193,17 @@ def _render_queue_subset_manifest(rows: list[dict[str, str]]) -> str:
 def _queue_work_item_legacy_rows(
     items: Iterable[QueueWorkItem],
 ) -> tuple[tuple[QueueWorkItem, ...], list[dict[str, str]]]:
-    records = validate_queue_work_items(tuple(items))
+    # JSON record sets and subset manifests both canonically order by queue
+    # priority. Apply that ordering at the shared projection boundary so a
+    # caller's assignment order cannot create contradictory authorities.
+    records = tuple(sorted(
+        validate_queue_work_items(tuple(items)),
+        key=lambda item: (
+            item.queue_priority,
+            item.work_item_id.casefold(),
+            item.work_item_id,
+        ),
+    ))
     rows: list[dict[str, str]] = []
     for item in records:
         location = ""
@@ -4158,7 +4337,78 @@ def _write_queue_excluded_manifest(path: Path, rows: list[dict[str, str]]):
     _write_queue_json_sidecar(path, rows, kind="excluded")
 
 
+def _replay_live_published_verify_shards(
+    scratchpad: Path,
+    pipeline: str,
+) -> dict[str, list[dict[str, Any]]] | None:
+    """Replay a sealed T9 queue without invoking legacy queue producers.
+
+    A live T9 publication is one atomic producer bundle.  Re-entering the
+    legacy compound adapter after publication can rewrite a sibling receipt
+    and thereby invalidate producer authority for every otherwise unchanged
+    queue artifact.  Once the T9 receipt exists, this path is deliberately
+    read-only: it validates the typed queue, persisted work plan, and every
+    shard manifest against one deterministic in-memory partition.
+    """
+
+    root = Path(scratchpad)
+    receipt_path = root / "verify_queue_transaction.receipt.json"
+    if not receipt_path.is_file():
+        return None
+    try:
+        receipt = json.loads(
+            receipt_path.read_text(encoding="utf-8", errors="strict")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"sealed live verify-queue receipt is unreadable: {exc}"
+        ) from exc
+    if not (
+        isinstance(receipt, Mapping)
+        and receipt.get("schema_version")
+        == "plamen.live_verify_queue_receipt.v1"
+        and receipt.get("state") == "OUTPUT_COMMITTED"
+        and receipt.get("pipeline") == pipeline
+        and isinstance(receipt.get("run_id"), str)
+        and bool(str(receipt.get("run_id") or "").strip())
+    ):
+        raise ValueError(
+            "sealed live verify-queue receipt is malformed or belongs to "
+            "a different pipeline"
+        )
+
+    queue_path = root / "verification_queue.md"
+    typed_items = _read_typed_queue_work_items(queue_path)
+    shards = compute_verify_shards_from_typed(typed_items, pipeline=pipeline)
+    plan = read_queue_work_plan(root)
+    manifests = (
+        SC_VERIFY_SHARD_MANIFESTS
+        if pipeline == "sc"
+        else L1_VERIFY_SHARD_MANIFESTS
+    )
+    if set(shards) != set(manifests):
+        raise ValueError("sealed live verify-queue shard denominator drifted")
+    for phase_name, expected_rows in shards.items():
+        expected_ids = tuple(
+            str(row.get("finding id") or "") for row in expected_rows
+        )
+        if plan.shard(phase_name).ordered_work_item_ids != expected_ids:
+            raise ValueError(
+                f"sealed live verify-queue work plan drifted for {phase_name}"
+            )
+        manifest_path = root / manifests[phase_name]
+        actual_items = _read_typed_queue_work_items(manifest_path)
+        if tuple(item.work_item_id for item in actual_items) != expected_ids:
+            raise ValueError(
+                f"sealed live verify-queue manifest drifted for {phase_name}"
+            )
+    return shards
+
+
 def ensure_verify_shard_manifests(scratchpad: Path) -> dict[str, list[dict[str, str]]]:
+    published = _replay_live_published_verify_shards(scratchpad, "l1")
+    if published is not None:
+        return published
     queue_path = scratchpad / "verification_queue.md"
     _require_typed_queue_authority(
         queue_path, parse_verification_queue_rows(scratchpad)
@@ -4201,6 +4451,9 @@ def ensure_sc_verify_shard_manifests(
     p0af_runtime_config: Mapping[str, Any] | None = None,
 ) -> dict[str, list[dict[str, str]]]:
     root = Path(scratchpad)
+    published = _replay_live_published_verify_shards(root, "sc")
+    if published is not None:
+        return published
     queue_projection_names = (
         "verification_queue.md",
         "verification_queue.json",
@@ -4440,6 +4693,27 @@ def _matches_l1_nondeterminism_class(*texts: str) -> bool:
     return any(p in t for t in texts for p in _L1_NONDETERMINISM_PATTERNS)
 
 
+_POC_FOLD_RE = re.compile(r"(?<=[A-Za-z])-(?=[A-Za-z])")
+
+
+def _poc_fold(text: object) -> str:
+    """Orthography-folded text for PoC-class keyword matching.
+
+    Strips Markdown decoration and joins an intra-word hyphen, so
+    `Re-entrancy`, `re entrancy`, `**reentrancy**` and `` `reentrancy` `` are
+    one token. Hyphens BETWEEN words with surrounding spaces are untouched, so
+    "cross-client" style patterns keep matching their own spelling.
+    """
+    value = artifact_surface.strip_decoration(text).lower()
+    if not value:
+        return ""
+    folded = _POC_FOLD_RE.sub("", value)
+    # Keep BOTH forms visible to substring scans: the hyphenated patterns in
+    # `structural_patterns` (e.g. "cross-client", "crash-recovery") must still
+    # match, and so must the folded spelling of a hyphenated input.
+    return value if folded == value else value + " " + folded
+
+
 def classify_poc_testability(
     bug_class: str,
     preferred_tag: str,
@@ -4460,9 +4734,15 @@ def classify_poc_testability(
     `property` instead of `structural` — see `_L1_NONDETERMINISM_PATTERNS`
     above. SC pipelines never take this branch.
     """
-    bc = (bug_class or "").lower()
-    tag = (preferred_tag or "").lower()
-    title_lc = (title or "").lower()
+    # Normalize ONCE. The measured flip was pure orthography: "Reentrancy in
+    # withdraw" routed to `property`, while the equally standard hyphenated
+    # "Re-entrancy in withdraw" routed to `unit` — and a unit route mandates a
+    # single-call harness a reentrancy finding cannot satisfy, producing an
+    # unjustified [POC-FAIL]/[CODE-TRACE] on a real bug. Folding the internal
+    # hyphen makes the two spellings ONE token without widening the vocabulary.
+    bc = _poc_fold(bug_class)
+    tag = _poc_fold(preferred_tag)
+    title_lc = _poc_fold(title)
     pipeline_lc = (pipeline or "").lower()
 
     structural_patterns = [
@@ -4496,7 +4776,10 @@ def classify_poc_testability(
     property_patterns = [
         "state corruption", "invariant", "accumulator", "counter",
         "monotonic", "idempotent", "commutativ",
-        "reentrancy", "accounting", "liquidation", "oracle", "price",
+        # `reenter` is the morphological sibling of `reentrancy`, not a new
+        # vocabulary item: with `_poc_fold` it also covers `re-enter(s)` and
+        # `re-entrancy`. Same mechanism, same harness class.
+        "reentrancy", "reenter", "accounting", "liquidation", "oracle", "price",
         "collateral", "debt", "ltv", "solvency", "interest", "reward",
         "custody", "escrow", "residual", "dust", "share price",
     ]
@@ -4634,6 +4917,42 @@ def _closed_grouping_policy(
     return "STANDARD", relation, ""
 
 
+def _inventory_primary_artifact(
+    block: str,
+    explicit_artifact: str,
+) -> str:
+    """Resolve one real evidence artifact for the verification queue.
+
+    ``Source IDs`` are semantic identities, not paths.  Older queue routing
+    preferred that field over the artifact provenance and consequently wrote
+    values such as ``RS2-1, CC-02`` into ``Primary Artifact``.  The verifier
+    context binder quite correctly treated that composite identity as a
+    missing file.  Prefer the explicit promoted-artifact field, then recover
+    the first exact artifact from the mechanically emitted ``Source Actions``
+    provenance.  The inventory itself is the honest bounded fallback.
+    """
+
+    explicit = _strip_md(explicit_artifact)
+    if explicit:
+        return explicit
+    source_actions = _field_from_markdown(
+        block, ("Source Actions", "Source Action")
+    )
+    for match in re.finditer(
+        r"(?<![A-Za-z0-9_.-])"
+        r"(?P<artifact>[A-Za-z0-9][A-Za-z0-9_./-]{0,255}\.[A-Za-z0-9]{1,12})"
+        r":[A-Za-z][A-Za-z0-9_-]{0,79}"
+        r"(?:@sha256:[0-9a-f]{64})?"
+        r"(?=$|[^A-Za-z0-9_.:@/\\-])",
+        source_actions,
+        re.IGNORECASE | re.ASCII,
+    ):
+        artifact = match.group("artifact").replace("\\", "/")
+        if not artifact.startswith("/") and ".." not in artifact.split("/"):
+            return artifact
+    return "findings_inventory.md"
+
+
 def _queue_rows_from_inventory_with_exclusions(
     scratchpad: Path,
     pipeline: str = "",
@@ -4685,11 +5004,7 @@ def _queue_rows_from_inventory_with_exclusions(
         primary_artifact_field = _field_from_markdown(
             raw, ("Primary Artifact", "Source Artifact", "Artifact")
         )
-        source = (
-            block.get("source_ids", "")
-            or primary_artifact_field
-            or "findings_inventory.md"
-        )
+        source = _inventory_primary_artifact(raw, primary_artifact_field)
         title_val = block.get("title", "") or fid
         bug_class_val = _strip_md(bug_class)
         preferred_tag_val = _strip_md(preferred).strip("[]") or "CODE-TRACE"
@@ -4701,7 +5016,7 @@ def _queue_rows_from_inventory_with_exclusions(
             try:
                 producer = _registered_producer_for_artifact(
                     Path(primary_artifact_field).name,
-                    consumer="pre_dedup_promotion",
+                    consumer="canonical_identity",
                 )
             except Exception:
                 producer = None
@@ -5190,33 +5505,169 @@ _CHAIN_ID_FIELD_RE = re.compile(
     r"\*\*ID\*\*\s*:\s*\[?\s*(" + _ID_ALL_CONTEXT_FREE + r")\s*\]?",
     re.IGNORECASE,
 )
-_CHAIN_MACHINE_LINE_RE = re.compile(
-    r"Constituents\s*:\s*(?P<ids>[^|]+)\|"
-    r"\s*Severity-Upgrade-Justified\s*:\s*(?P<just>YES|NO)\b"
-    r"(?:\s*\|\s*Combined-Impact\s*:\s*(?P<impact>.*))?",
-    re.IGNORECASE,
-)
+# STEP 8 (representation purge): `_CHAIN_MACHINE_LINE_RE` is DELETED. It
+# required ONE physical line carrying three UNDECORATED labels in a FIXED
+# order joined by literal pipes. Measured flips, each a zero-semantic-change
+# edit to a chain that carried a real Combined-Impact: bolding the labels,
+# reordering the fields, rendering the same three fields as a Markdown table,
+# and backticking the value all returned justified=False — which raises a hard
+# self-restatement issue and force-collapses a GENUINE compound finding into a
+# constituent at the LOWER tier. That is a presentation-driven severity
+# downgrade, i.e. `severity.chain_upgrade_justification` decided by punctuation.
+#
+# Property: `severity.chain_upgrade_justification` -> FAIL_CLOSED. Fail-closed
+# on SEVERITY means the DECISION stays conservative (absent justification =>
+# not justified => collapse, the anti-inflation direction), NOT that the bytes
+# must be exact. So: normalize first, then apply the conservative test to the
+# NORMALIZED value.
+_CHAIN_MACHINE_FIELD_ROLES: dict[str, tuple[str, ...]] = {
+    "severity_upgrade_justified": (
+        "severity upgrade justified", "severity upgrade justification",
+        "upgrade justified", "severity-upgrade-justified",
+    ),
+    "combined_impact": (
+        "combined impact", "combined-impact", "compound impact",
+    ),
+    "constituents": (
+        "constituents", "constituent ids", "constituent", "components",
+    ),
+}
+
+_CHAIN_JUSTIFIED_TOKENS = frozenset({"YES", "Y", "TRUE", "JUSTIFIED"})
+
+
+def _chain_machine_fields(section: str) -> dict[str, str]:
+    """Read the chain machine-parseable fields by MEANING, not by line shape.
+
+    Handles, because all of these mean the same thing: the canonical one-line
+    pipe-joined form, any FIELD ORDER, bold/backtick/underscore decoration, a
+    leading list marker or blockquote, the fields split across separate lines,
+    a two-column `| Label | Value |` table, and a header/row table.
+    """
+    surf = _surface_cached(section or "")
+    out: dict[str, str] = {}
+
+    def _offer(label: object, value: object) -> None:
+        key = artifact_surface.normalize_label(label).replace("-", " ")
+        for role, synonyms in _CHAIN_MACHINE_FIELD_ROLES.items():
+            if key in {syn.replace("-", " ") for syn in synonyms}:
+                if role not in out:
+                    out[role] = artifact_surface.normalize_cell(value)
+                return
+
+    for line in surf.lines:
+        if line.in_fence:
+            continue
+        if line.is_table_row:
+            cells = list(line.cells)
+            if len(cells) == 2:
+                _offer(cells[0], cells[1])
+            continue
+        text = line.text or ""
+        if not text:
+            continue
+        for segment in text.split("|"):
+            match = re.match(
+                r"^\s*([A-Za-z][A-Za-z0-9 _/()-]{0,48}?)\s*[:=\u2013\u2014]\s*(.*)$",
+                segment,
+            )
+            if match:
+                _offer(match.group(1), match.group(2))
+
+    # Header/row table form: `| Constituents | Severity-Upgrade-Justified | ... |`
+    if "severity_upgrade_justified" not in out:
+        table = artifact_surface.find_table(
+            surf,
+            required_roles=("severity_upgrade_justified",),
+            roles=_CHAIN_MACHINE_FIELD_ROLES,
+        )
+        if table is not None and table.rows:
+            for role in _CHAIN_MACHINE_FIELD_ROLES:
+                value = table.rows[0].get(role)
+                if value is not None and role not in out:
+                    out[role] = artifact_surface.normalize_cell(value)
+    return out
 
 
 def _chain_severity_upgrade_justified(section: str) -> bool:
     """True when the chain section carries an explicit, justified upgrade.
 
-    Per the STEP 3 guard, a chain is treated as a GENUINE compound finding
-    (and therefore NOT linked to its constituents for collapse) only when the
-    machine-parseable line shows `Severity-Upgrade-Justified: YES` AND a
-    non-empty `Combined-Impact` (not 'NONE'/blank).
+    Per the STEP 3 guard, a chain is a GENUINE compound finding (and therefore
+    NOT linked to its constituents for collapse) only when it asserts
+    `Severity-Upgrade-Justified: YES` AND a non-empty `Combined-Impact`.
     """
-    m = _CHAIN_MACHINE_LINE_RE.search(section)
-    if not m:
+    fields = _chain_machine_fields(section)
+    justified = artifact_surface.normalize_enum(
+        fields.get("severity_upgrade_justified", "")
+    )
+    if justified not in _CHAIN_JUSTIFIED_TOKENS:
         return False
-    if (m.group("just") or "").strip().upper() != "YES":
+    impact = fields.get("combined_impact", "")
+    if not impact.strip():
         return False
-    impact = (m.group("impact") or "").strip()
-    if not impact:
-        return False
-    if impact.strip().lower() in ("none", "n/a", "na", "-", "—"):
-        return False
-    return True
+    # `is_zero_candidate_placeholder` covers every dash codepoint, N/A, none,
+    # (none), &mdash; and 0 — the two-string allowlist this replaces minted a
+    # false "justified" for `Combined-Impact: –`.
+    return not artifact_surface.is_zero_candidate_placeholder(impact)
+
+
+def _chain_machine_constituent_ids(section: str) -> list[str]:
+    """Constituent IDs from the chain machine line, read by meaning."""
+    raw = _chain_machine_fields(section).get("constituents", "")
+    out: list[str] = []
+    for token in re.split(r"[,;+\s]+", raw or ""):
+        token = token.strip().strip("[]").upper()
+        if not token:
+            continue
+        if re.fullmatch(r"(?:" + _ID_ALL_CONTEXT_FREE + r")", token, re.IGNORECASE):
+            if token not in out:
+                out.append(token)
+    return out
+class _ChainMachineLineMatch:
+    """Minimal `re.Match`-shaped view over the meaning-based chain fields."""
+
+    __slots__ = ("_fields",)
+
+    def __init__(self, fields: dict[str, str]) -> None:
+        self._fields = fields
+
+    def group(self, name: object = 0) -> str:
+        if name in (0, "0"):
+            return " | ".join(f"{k}: {v}" for k, v in self._fields.items())
+        return self._fields.get(str(name), "")
+
+
+class _ChainMachineLineCompat:
+    """Deprecated adapter for the DELETED `_CHAIN_MACHINE_LINE_RE`.
+
+    One call site outside this module (`plamen_validators`
+    `_chain_forced_body_rows`) imports that regex inside a
+    ``try/except Exception: return {}``. A bare deletion would turn a genuine
+    recall feature (force-including a justified High/Critical chain into the
+    body) into a SILENT no-op. So the old name survives as an adapter that
+    routes to the meaning-based reader: the external call site keeps working
+    AND inherits the fix. Retire it once that call site moves to
+    `_chain_machine_constituent_ids` / `_chain_severity_upgrade_justified`.
+    """
+
+    @staticmethod
+    def search(section: object):
+        text = section if isinstance(section, str) else str(section or "")
+        fields = _chain_machine_fields(text)
+        if not fields:
+            return None
+        return _ChainMachineLineMatch(
+            {
+                "ids": " ".join(_chain_machine_constituent_ids(text)),
+                "just": artifact_surface.normalize_enum(
+                    fields.get("severity_upgrade_justified", "")
+                ),
+                "impact": fields.get("combined_impact", ""),
+            }
+        )
+
+
+_CHAIN_MACHINE_LINE_RE = _ChainMachineLineCompat()
 
 
 def _parse_chain_constituents(
@@ -5281,13 +5732,9 @@ def _parse_chain_constituents(
 
         # Fallback: the machine-parseable Constituents line.
         if not constituents:
-            mm = _CHAIN_MACHINE_LINE_RE.search(section)
-            if mm:
-                for tok in re.split(r"[,\s]+", mm.group("ids") or ""):
-                    tok = tok.strip().upper()
-                    if tok and re.fullmatch(r"(?:" + _ID_ALL_CONTEXT_FREE + r")", tok, re.IGNORECASE):
-                        if tok != chain_id and tok not in constituents:
-                            constituents.append(tok)
+            for tok in _chain_machine_constituent_ids(section):
+                if tok != chain_id and tok not in constituents:
+                    constituents.append(tok)
 
         # Genuine compound finding (justified severity upgrade) → keep separate
         # (do not link) UNLESS it is a pure double-count: every constituent also
@@ -6258,10 +6705,16 @@ def _read_finding_artifact_bytes(path: Path) -> bytes:
 # or without the word Finding, bare `Finding ID` headings, optional separators,
 # colonless titles, and case variants. Identity registration remains a
 # separate artifact-scoped decision.
+_FINDING_ACTION_LABEL_PATTERN = (
+    r"(?:Finding|Candidate|Issue|Hypothesis|Vulnerability|Obligation|Chain)"
+)
+
 _EXPLICIT_FINDING_HEADING_RE = re.compile(
     r"^\s*#{2,4}\s*(?:"
-    r"(?:Finding\s*)?\[\s*(?P<bracket_id>[^\]\r\n]{1,96}?)\s*\]"
-    r"|Finding\s+(?P<bare_id>[^\s:\r\n]{1,96})"
+    r"(?:" + _FINDING_ACTION_LABEL_PATTERN + r"\s*)?"
+    r"\[\s*(?P<bracket_id>[^\]\r\n]{1,96}?)\s*\]"
+    r"|" + _FINDING_ACTION_LABEL_PATTERN
+    + r"\s+(?P<bare_id>[A-Za-z][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)+)"
     r")\s*(?:(?P<separator>[:\-])\s*)?(?P<title>.*?)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -6496,16 +6949,25 @@ def parse_inventory_shard_manifest(scratchpad: Path, phase_name: str) -> list[st
         text = _llm_norm(manifest.read_text(encoding="utf-8", errors="replace"))
     except Exception:
         return files
-    for line in text.splitlines():
-        s = line.strip()
-        if not s.startswith("|") or _is_separator_row(s):
-            continue
-        s_up = s.upper()
-        if "FILE" in s_up and ("ROLE" in s_up or "MODEL" in s_up or "STATUS" in s_up):
-            continue
-        parts = [c.strip() for c in s.strip("|").split("|")]
-        if len(parts) >= 2 and parts[0].endswith(".md"):
-            files.append(parts[0])
+    # Property: `manifest.shard_artifact_enumeration` -> DEBT. The old gate
+    # tested `parts[0].endswith(".md")` — a COLUMN-POSITION plus raw-suffix
+    # test. Backticking a path emptied the shard; bolding ONE path silently
+    # dropped that artifact from the denominator while the shard still looked
+    # populated. Every cell of every row is now searched for an artifact
+    # filename on the NORMALIZED value, so decoration and an extra index
+    # column cannot hide one.
+    seen: set[str] = set()
+    for table in artifact_surface.read_tables(text):
+        for row in table.rows:
+            for cell in row.cells:
+                name = artifact_surface.normalize_cell(cell)
+                if not name or " " in name or not name.lower().endswith(".md"):
+                    continue
+                if name in seen:
+                    continue
+                seen.add(name)
+                files.append(name)
+                break
     return files
 
 
@@ -7248,6 +7710,30 @@ def _record_inventory_negative_proposal(
     return True
 
 
+def _extract_source_action_referents(value: str) -> list[tuple[str, str]]:
+    """Preserve explicit ``artifact:producer-local-id`` chunk provenance.
+
+    This parser is intentionally syntax-only.  The canonical aggregate later
+    intersects these claims with its exact PhaseIO source denominator and the
+    registered producer's on-disk finding blocks before rendering them as
+    delivery authority.
+    """
+
+    referents: list[tuple[str, str]] = []
+    for match in re.finditer(
+        r"(?<![A-Za-z0-9_.-])"
+        r"(?P<artifact>[A-Za-z0-9][A-Za-z0-9_.-]{0,191})"
+        r":(?P<action>[A-Za-z][A-Za-z0-9_-]{0,79})"
+        r"(?![A-Za-z0-9_-])",
+        value or "",
+        re.ASCII,
+    ):
+        pair = (match.group("artifact"), match.group("action").upper())
+        if pair not in referents:
+            referents.append(pair)
+    return referents
+
+
 def _parse_chunk_heading_inventory(text: str) -> list[dict[str, object]]:
     lines = text.splitlines()
     entries: list[dict[str, object]] = []
@@ -7268,6 +7754,7 @@ def _parse_chunk_heading_inventory(text: str) -> list[dict[str, object]]:
             "severity": "",
             "location": "",
             "source_ids": [],
+            "source_actions": [],
             "preferred_tag": "",
             "verdict": "",
             "root_cause": "",
@@ -7324,12 +7811,66 @@ def _parse_chunk_heading_inventory(text: str) -> list[dict[str, object]]:
                 entry["description"] = _strip_md(val_raw)
             elif label_lc in ("source ids", "source id"):
                 entry["source_ids"] = _extract_ids_from_text(val_raw)
+                entry["source_actions"] = _extract_source_action_referents(
+                    val_raw
+                )
             else:
                 opt_field = _optional_finding_metadata_field_for_label(label_lc)
                 if opt_field:
                     entry[opt_field] = _strip_md(val_raw)
         entries.append(entry)
     return entries
+
+
+def _table_source_action_column(key: str) -> bool:
+    """Return whether a table column carries upstream provenance.
+
+    Inventory tables commonly place ``ID`` and ``Source ID`` beside one
+    another.  Both values look like finding identities, so content alone
+    cannot distinguish their roles.  Classify the provenance header first and
+    keep the two column namespaces disjoint; otherwise ``Source ID`` can
+    overwrite the row's local ``CC-*`` identity and manufacture a second,
+    unauthenticated row when the detail block is merged.
+    """
+
+    normalized = _norm_key(key)
+    if normalized == "source":
+        return True
+    words = set(normalized.split())
+    provenance = bool(words & {"source", "upstream", "origin", "producer"})
+    referent = bool(words & {"id", "ids", "action", "actions", "finding", "findings"})
+    return provenance and referent
+
+
+def _table_local_id_column(key: str, value: str) -> bool:
+    """Is this table column the finding-identity column?
+
+    `finding-output-format.md` names four canonical headers -- `Finding ID`,
+    `Candidate ID`, `Issue ID`, `ID` -- and the old test accepted only
+    "finding id" or exactly "id". A shard that wrote `| CC ID |` therefore
+    produced table rows with NO local_id, which could not merge with their
+    detail blocks: `_parse_inventory_chunk` returned 74 rows for 37 findings,
+    every source id appeared twice, and the chunk failed with "source-action
+    denominator contains duplicates" while the aggregate rejected it outright
+    ("accepted chunk material denominator differs from parsed rows"). DODO
+    run37 chunk_b died exactly this way, and chunk_a survived only by accident
+    -- its table lacked a Location column, so it was not parsed at all.
+
+    The failure is silent, catastrophic and unrelated to anything the shard
+    could see, so widen to any `"... id"` header -- BUT only when the cell
+    actually holds a finding ID. `_normalize_finding_id` returns "" for
+    ordinary prose, so a `Valid ID` column of "yes"/"no" cannot capture the
+    identity slot. That keeps this generic (no protocol or column name is
+    hardcoded) while staying strictly narrower than "any header containing id".
+    """
+
+    if _table_source_action_column(key):
+        return False
+    if "finding id" in key or key == "id":
+        return True
+    if not (key == "id" or key.endswith(" id")):
+        return False
+    return bool(_normalize_finding_id(value))
 
 
 def _parse_chunk_table_inventory(text: str) -> list[dict[str, object]]:
@@ -7342,6 +7883,7 @@ def _parse_chunk_table_inventory(text: str) -> list[dict[str, object]]:
                 "severity": "",
                 "location": "",
                 "source_ids": [],
+                "source_actions": [],
                 "preferred_tag": "",
                 "verdict": "",
                 "root_cause": "",
@@ -7355,7 +7897,12 @@ def _parse_chunk_table_inventory(text: str) -> list[dict[str, object]]:
             for idx, cell in enumerate(row):
                 key = key_map.get(idx, "")
                 val = _strip_md(cell)
-                if "finding id" in key or key == "id":
+                if _table_source_action_column(key):
+                    entry["source_ids"] = _extract_ids_from_text(val)
+                    entry["source_actions"] = _extract_source_action_referents(
+                        cell
+                    )
+                elif _table_local_id_column(key, val):
                     entry["local_id"] = val
                 elif "title" in key:
                     entry["title"] = val
@@ -7366,8 +7913,6 @@ def _parse_chunk_table_inventory(text: str) -> list[dict[str, object]]:
                         entry["severity"] = val.capitalize()
                 elif "location" in key:
                     entry["location"] = _norm_loc(val)
-                elif "source id" in key or key == "source":
-                    entry["source_ids"] = _extract_ids_from_text(val)
                 elif "evidence" in key:
                     entry["preferred_tag"] = _extract_first_tag(val) or val
                 elif "verdict" in key:
@@ -7394,7 +7939,11 @@ def _parse_chunk_table_inventory(text: str) -> list[dict[str, object]]:
 
 def _parse_inventory_chunk(path: Path) -> list[dict[str, object]]:
     try:
-        text = _llm_norm(path.read_text(encoding="utf-8", errors="replace"))
+        # Reconciliation has already admitted these exact MODEL bytes.  Smart
+        # punctuation normalization here rewrites evidence before the DRIVER
+        # aggregate and can manufacture false semantic-preservation debt.
+        text = path.read_text(encoding="utf-8", errors="replace")
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
     except Exception:
         return []
     parsed = _parse_chunk_table_inventory(text) + _parse_chunk_heading_inventory(text)
@@ -7519,6 +8068,11 @@ def _merge_inventory_records_shared_provenance(
     if local and local not in source_ids:
         source_ids.append(local)
     survivor["source_ids"] = source_ids
+    source_actions = list(survivor.get("source_actions", []) or [])
+    for raw in absorbed.get("source_actions", []) or []:
+        if raw not in source_actions:
+            source_actions.append(raw)
+    survivor["source_actions"] = source_actions
 
 
 def _merge_inventory_verdicts(left: str, right: str) -> str:
@@ -7553,6 +8107,7 @@ def _merge_inventory_entries(entries: list[dict[str, object]]) -> list[dict[str,
         item = dict(entry)
         item["location"] = loc
         item["source_ids"] = list(entry.get("source_ids", []) or [])
+        item["source_actions"] = list(entry.get("source_actions", []) or [])
         local_id = item.get("local_id")
         if local_id and local_id not in item["source_ids"]:
             item["source_ids"].append(local_id)
@@ -9102,7 +9657,7 @@ _PROMOTABLE_FEEDER_ID_PATTERN = _registered_producer_id_pattern(
     "pre_dedup_promotion"
 )
 _PROMOTABLE_CONTEXT_FREE_FEEDER_ID_PATTERN = _registered_producer_id_pattern(
-    "pre_dedup_promotion",
+    "canonical_identity",
     producers=_CONTEXT_FREE_REGISTERED_PRODUCERS,
 )
 
@@ -9113,11 +9668,123 @@ _UNADORNED_FINDING_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 
+_FINDING_ACTION_HEADING_LABEL_RE = re.compile(
+    r"^(?:finding|candidate|issue|hypothesis|vulnerability|obligation|chain)\b",
+    re.IGNORECASE,
+)
+_FINDING_ACTION_HEADING_SEPARATOR_RE = re.compile(
+    r"^[ \t]*[:=\-\u2013\u2014]*[ \t]*"
+)
+_FINDING_ACTION_ID_SHAPE_RE = re.compile(
+    r"[A-Za-z][A-Za-z0-9]{0,15}(?:-[A-Za-z0-9]{1,24}){1,3}", re.ASCII
+)
+
+
+def _finding_action_heading_components(
+    heading_text: object,
+    *,
+    registered_producer: object | None = None,
+) -> dict[str, object] | None:
+    """Read one producer action heading by meaning, not presentation.
+
+    Inventory reconciliation already treats Finding/Candidate/Issue and the
+    other methodology-declared labels as equivalent action surfaces.  The
+    registered source-action parser historically accepted only ``Finding``.
+    That split created an impossible phase contract: a Candidate was placed in
+    the driver-owned reconciliation denominator but could never authenticate
+    at the inventory gate.  Use the shared normalized surface and identity
+    reader here so every later consumer observes the same action identity.
+
+    A heading that merely mentions an ID remains excluded.  It must either
+    open with an action label or open with a producer-shaped identity; producer
+    registration and local-ID grammar are still checked by the caller.
+    """
+
+    normalized = artifact_surface.strip_decoration(heading_text).strip()
+    if not normalized:
+        return None
+    identity = artifact_surface.candidate_identity(normalized)
+    if identity is None:
+        # The normalized identity reader intentionally rejects malformed IDs.
+        # An explicitly labelled/bracketed malformed token must nevertheless
+        # remain in the typed debt denominator; only unlabelled prose is
+        # excluded.  Preserve its exact token for the producer classifier.
+        malformed = re.match(
+            r"^(?:(?:finding|candidate|issue|hypothesis|vulnerability|"
+            r"obligation|chain)\s*)?\[([^\]\n]+)\]",
+            normalized,
+            re.IGNORECASE,
+        )
+        if malformed is None:
+            return None
+        tail = normalized[malformed.end():]
+        separator = _FINDING_ACTION_HEADING_SEPARATOR_RE.match(tail)
+        title = (
+            tail[separator.end():].strip()
+            if separator is not None
+            else tail.strip()
+        )
+        return {
+            "raw_id": malformed.group(1),
+            "title": title,
+            "explicit_heading": True,
+        }
+    opens_with_label = bool(_FINDING_ACTION_HEADING_LABEL_RE.match(normalized))
+    opens_with_bracket = normalized.startswith("[")
+    opens_with_id = identity.offset <= 1 and bool(
+        _FINDING_ACTION_ID_SHAPE_RE.fullmatch(identity.value)
+    )
+    if (
+        opens_with_id
+        and identity.form == "BARE"
+        and not opens_with_label
+        and not opens_with_bracket
+    ):
+        # A hyphenated prose compound at the start of a section (for example
+        # ``Access-Control and Semantic-Operator Coverage``) has the same
+        # lexical shape as a bare finding ID.  It is not an action identity
+        # unless the current producer namespace actually admits it.  Explicit
+        # Finding/Candidate labels and bracketed IDs stay visible as identity
+        # debt, while registered legacy aliases remain readable in the exact
+        # artifact that owns them.
+        # A catch-all discovery producer owns arbitrary manifest-selected IDs,
+        # but ownership alone cannot turn every bare standards/version heading
+        # in that artifact (OZ-4626, WETH-9, EIP-20) into a finding.  Dynamic
+        # producer-local IDs therefore require an explicit action label or
+        # bracket.  Only namespaces whose registry grammar is independently
+        # safe in context-free prose retain the concise bare-ID heading form.
+        opens_with_id = bool(
+            re.fullmatch(
+                _PROMOTABLE_CONTEXT_FREE_FEEDER_ID_PATTERN,
+                identity.value,
+                re.IGNORECASE,
+            )
+        )
+    if not (opens_with_label or opens_with_id):
+        return None
+
+    end = identity.offset + len(identity.value)
+    tail = normalized[end:]
+    if tail.startswith("]"):
+        tail = tail[1:]
+    separator = _FINDING_ACTION_HEADING_SEPARATOR_RE.match(tail)
+    title = tail[separator.end():].strip() if separator is not None else tail.strip()
+    return {
+        "raw_id": identity.value,
+        "title": title,
+        # Preserve the old distinction: an unlabelled bare-ID heading is the
+        # context-current grammar, while labelled/bracketed forms are explicit.
+        "explicit_heading": bool(
+            opens_with_label or opens_with_bracket or identity.form != "BARE"
+        ),
+    }
+
 
 def _canonical_finding_blocks(
     text: str,
     *,
     structural_text: str | None = None,
+    registered_producer: object | None = None,
 ) -> list[dict[str, object]]:
     """Enumerate the normalized finding grammar with canonical boundaries.
 
@@ -9137,45 +9804,42 @@ def _canonical_finding_blocks(
     ).split("\n")
     if len(structural_lines) != len(lines):
         raise ValueError("operational finding view changed physical line count")
-    headings: list[tuple[int, re.Match[str]]] = []
+    headings: list[tuple[int, dict[str, object]]] = []
     review_starts: list[int] = []
-    for line_index, line in enumerate(structural_lines):
-        match = (
-            _EXPLICIT_FINDING_HEADING_RE.match(line)
-            or _UNADORNED_FINDING_HEADING_RE.match(line)
+    structural_surface = artifact_surface.surface("\n".join(structural_lines))
+    for heading in structural_surface.headings():
+        line_index = int(heading.physical_start) - 1
+        components = _finding_action_heading_components(
+            heading.heading_text,
+            registered_producer=registered_producer,
         )
-        if match is not None:
-            headings.append((line_index, match))
-        if re.search(
-            r"^\s*#{2,4}\s+Review\s+Disposition\s+\[",
-            line,
+        if components is not None:
+            headings.append((line_index, components))
+        normalized_heading = artifact_surface.strip_decoration(
+            heading.heading_text
+        ).strip()
+        if re.match(
+            r"^Review\s+Disposition\s+\[",
+            normalized_heading,
             re.IGNORECASE,
         ):
             review_starts.append(line_index)
 
     blocks: list[dict[str, object]] = []
     action_starts = [line_index for line_index, _match in headings]
-    for index, (start_line, match) in enumerate(headings):
+    for index, (start_line, components) in enumerate(headings):
         later_boundaries = [
             boundary
             for boundary in (*action_starts[index + 1 :], *review_starts)
             if boundary > start_line
         ]
         end_line = min(later_boundaries) if later_boundaries else len(lines)
-        groups = match.groupdict()
-        raw_id = str(
-            groups.get("bracket_id")
-            or groups.get("bare_id")
-            or groups.get("context_current")
-            or ""
-        ).strip()
+        raw_id = str(components.get("raw_id") or "").strip()
         blocks.append(
             {
                 "raw_id": raw_id,
-                "title": str(groups.get("title") or "").strip(),
-                "explicit_heading": bool(
-                    groups.get("bracket_id") or groups.get("bare_id")
-                ),
+                "title": str(components.get("title") or "").strip(),
+                "explicit_heading": bool(components.get("explicit_heading")),
                 "start_line": start_line,
                 "end_line": end_line,
                 "block": "\n".join(lines[start_line:end_line]).strip(),
@@ -9324,7 +9988,7 @@ def _strict_bounded_json_object(path: Path, *, limit: int = 16 * 1024 * 1024) ->
     return payload
 
 
-def _fuzz_execution_authority_for_artifact(path: Path) -> dict[str, str] | None:
+def _fuzz_execution_authority_for_artifact(path: Path) -> dict[str, object] | None:
     """Resolve mechanical fuzz evidence without suppressing the candidate."""
 
     if path.name not in _FUZZ_AUTHORITY_ARTIFACTS:
@@ -9334,6 +9998,9 @@ def _fuzz_execution_authority_for_artifact(path: Path) -> dict[str, str] | None:
         return {
             "status": "UNSCORED",
             "proof_authority": "NONE",
+            "campaign_execution_status": "NOT_EXECUTED",
+            "violation_observation_count": 0,
+            "violation_ids": [],
             "reason": "FUZZ_RESULT_INDEX_MISSING",
         }
     validation = _fuzz_workspace_authority.validate_fuzz_workspace_result_index(
@@ -9343,6 +10010,9 @@ def _fuzz_execution_authority_for_artifact(path: Path) -> dict[str, str] | None:
         return {
             "status": "UNSCORED",
             "proof_authority": "NONE",
+            "campaign_execution_status": "NOT_EXECUTED",
+            "violation_observation_count": 0,
+            "violation_ids": [],
             "reason": "FUZZ_RESULT_INDEX_INVALID:" + ";".join(validation[:8]),
         }
     try:
@@ -9363,6 +10033,16 @@ def _fuzz_execution_authority_for_artifact(path: Path) -> dict[str, str] | None:
         return {
             "status": str(row.get("status") or "UNSCORED").upper(),
             "proof_authority": str(row.get("proof_authority") or "NONE").upper(),
+            "campaign_execution_status": str(
+                row.get("campaign_execution_status") or "NOT_EXECUTED"
+            ).upper(),
+            "violation_observation_count": int(
+                row.get("violation_observation_count") or 0
+            ),
+            "violation_ids": [
+                str(value) for value in (row.get("violation_ids") or [])[:64]
+                if str(value).strip()
+            ],
             "reason": ";".join(
                 str(value) for value in (row.get("issue_codes") or [])[:8]
             ),
@@ -9371,21 +10051,56 @@ def _fuzz_execution_authority_for_artifact(path: Path) -> dict[str, str] | None:
         return {
             "status": "UNSCORED",
             "proof_authority": "NONE",
+            "campaign_execution_status": "NOT_EXECUTED",
+            "violation_observation_count": 0,
+            "violation_ids": [],
             "reason": f"FUZZ_RESULT_INDEX_UNREADABLE:{type(exc).__name__}:{exc}",
         }
+
+
+def _fuzz_violation_ids_matching_block(
+    authority: Mapping[str, object] | None,
+    block: str,
+) -> list[str]:
+    """Bind a tool-reported property identity to the model's candidate block."""
+
+    if not authority:
+        return []
+    if authority.get("campaign_execution_status") != "EXECUTED_VIOLATION":
+        return []
+    if int(authority.get("violation_observation_count") or 0) <= 0:
+        return []
+    block_token = re.sub(r"[^A-Z0-9]+", "", str(block).upper())
+    matched: list[str] = []
+    identities = authority.get("violation_ids")
+    for raw in identities if isinstance(identities, list) else []:
+        identity = str(raw).strip()
+        if not identity:
+            continue
+        # Exact test function names are required in the producer block.  Strip
+        # the contract qualifier and argument list, but retain semantic prefixes
+        # (`invariant_`, `property_`, `fuzz_`) to avoid loose word matching.
+        leaf = identity.rsplit(".", 1)[-1].split("(", 1)[0]
+        token = re.sub(r"[^A-Z0-9]+", "", leaf.upper())
+        if len(token) >= 8 and token in block_token:
+            matched.append(identity)
+    return sorted(set(matched))
 
 
 def _parse_depth_finding_blocks(
     path: Path,
     *,
     _captured_bytes: bytes | None = None,
+    consumer: str = "canonical_identity",
 ) -> list[dict[str, object]]:
     """Parse one finding artifact, optionally from an already-pinned capture.
 
     ``_captured_bytes`` is the authority-safe niche lifecycle path: the caller
     owns namespace and file-handle retention, and this parser must not reopen
     the producer pathname after that one-pass capture.  Ordinary callers keep
-    the existing bounded-path behavior.
+    the existing bounded-path behavior. Parsing authenticates identity; phase
+    publishers must select their input paths separately through their specific
+    registry consumer projection.
     """
     captured_supplied = _captured_bytes is not None
     try:
@@ -9415,7 +10130,7 @@ def _parse_depth_finding_blocks(
     lines = text.split("\n")
     raw_line_starts = _raw_physical_line_starts(raw_artifact)
     registered_producer = _registered_producer_for_artifact(
-        path.name, consumer="pre_dedup_promotion"
+        path.name, consumer=consumer
     )
     # A colliding legacy alias is readable only after this artifact-specific
     # producer authority has been resolved.  Global promotion/report grammars
@@ -9424,6 +10139,7 @@ def _parse_depth_finding_blocks(
     canonical_blocks = _canonical_finding_blocks(
         text,
         structural_text=structural_text,
+        registered_producer=registered_producer,
     )
     structural_lines = structural_text.split("\n")
     out: list[dict[str, object]] = []
@@ -9483,9 +10199,19 @@ def _parse_depth_finding_blocks(
         )
         parsed_tag = _extract_first_tag(tag) or _strip_md(tag) or "CODE-TRACE"
         original_fuzz_tag = ""
-        if (
+        matched_fuzz_violation_ids = _fuzz_violation_ids_matching_block(
+            fuzz_execution_authority, block
+        )
+        normalized_parsed_tag = str(parsed_tag).strip().strip("[]").upper()
+        if fuzz_execution_authority is not None and matched_fuzz_violation_ids:
+            parsed_tag = (
+                "MEDUSA-PASS"
+                if path.name == "medusa_fuzz_findings.md"
+                else "FUZZ-PASS"
+            )
+        elif (
             fuzz_execution_authority is not None
-            and fuzz_execution_authority.get("status") != "MEASURED"
+            and normalized_parsed_tag in {"FUZZ-PASS", "MEDUSA-PASS"}
         ):
             original_fuzz_tag = str(parsed_tag).strip().strip("[]")
             parsed_tag = "CODE-TRACE"
@@ -9508,10 +10234,15 @@ def _parse_depth_finding_blocks(
             sev_clean = "Informational"
             if not verdict_clean:
                 verdict_clean = "UNRESOLVED"
+        # Contrastive DA cards use Untested Path for the mechanism and
+        # Material Harm for the consequence. Both are substantive source
+        # fields, not unlabeled prose or an inferred answer. Parse them at
+        # this shared producer boundary so delivery, promotion and report
+        # consumers agree on the same content-bearing action.
         raw_desc = _field_from_markdown(
-            block, ("Description", "Root Cause", "Impact")
+            block, ("Description", "Root Cause", "Untested Path", "Impact")
         )
-        raw_impact = _field_from_markdown(block, ("Impact",))
+        raw_impact = _field_from_markdown(block, ("Impact", "Material Harm"))
         missing_required_fields = [
             field_name
             for field_name, field_value in (
@@ -9541,13 +10272,14 @@ def _parse_depth_finding_blocks(
         action_kind = str(metadata.get("action_kind") or "").strip().upper()
         action_kind = action_kind.replace("_", "-").replace("REOPEN", "RE-OPEN")
         if action_kind not in {"NEW", "UPGRADE", "RE-OPEN"}:
-            action_match = re.search(
-                r"(?i)\b(NEW|UPGRADE|RE[- ]?OPEN)\b", block
-            )
-            action_kind = (
-                action_match.group(1).upper().replace(" ", "-")
-                if action_match else ""
-            )
+            # Amendment authority is an explicit producer contract, not a
+            # keyword classifier.  Finding bodies and trailing coverage
+            # sections routinely discuss upgrades or newly-created state;
+            # scanning the whole block turned ordinary NEW findings into
+            # target-less amendments.  Explicit ``Action``/``Action Kind``
+            # fields are parsed above.  Anything else remains unset and the
+            # registered NEW/UPGRADE/RE-OPEN contract defaults it to NEW.
+            action_kind = ""
         if registered_producer and registered_producer.action_contract == "NEW_UPGRADE_REOPEN":
             action_kind = action_kind or "NEW"
         target_raw = str(metadata.get("target_id") or "").strip()
@@ -9598,6 +10330,17 @@ def _parse_depth_finding_blocks(
                     "fuzz_proof_authority": str(
                         fuzz_execution_authority.get("proof_authority") or "NONE"
                     ),
+                    "fuzz_campaign_execution_status": str(
+                        fuzz_execution_authority.get(
+                            "campaign_execution_status"
+                        ) or "NOT_EXECUTED"
+                    ),
+                    "fuzz_violation_observation_count": str(
+                        fuzz_execution_authority.get(
+                            "violation_observation_count"
+                        ) or 0
+                    ),
+                    "fuzz_matched_violation_ids": matched_fuzz_violation_ids,
                     "fuzz_authority_reason": str(
                         fuzz_execution_authority.get("reason") or ""
                     ),
@@ -11698,8 +12441,13 @@ def classify_body_or_appendix(
     """
     title = title or ""
     harm_text = harm_text or ""
-    blob = f"{title}\n{harm_text}"
-    if _HARM_CONSEQUENCE_RE.search(blob):
+    raw_blob = f"{title}\n{harm_text}"
+    # Normalize ONCE, then classify. The harm scan runs against BOTH the raw
+    # and the normalized text (union) so decoration can only ever make a harm
+    # EASIER to see — the recall-safe direction — while the quality scan reads
+    # the normalized text alone.
+    blob = artifact_surface.strip_decoration(raw_blob) or raw_blob
+    if _HARM_CONSEQUENCE_RE.search(raw_blob) or _HARM_CONSEQUENCE_RE.search(blob):
         return ("BODY", "real security consequence")
     cls = _classify_keyword(blob, _PURE_QUALITY_VOCAB)
     if cls:
@@ -11711,8 +12459,11 @@ def classify_body_or_appendix(
         # APPENDIX path below (prevents hardening-note bloat), so the
         # zero-consequence → appendix floor still wins for pure quality.
         if (
-            _F5_EXTERNAL_ASSUMPTION_TAG in blob.lower()
-            and _F5_CONCRETE_HARM_RE.search(blob)
+            _F5_EXTERNAL_ASSUMPTION_TAG in raw_blob.lower()
+            and (
+                _F5_CONCRETE_HARM_RE.search(raw_blob)
+                or _F5_CONCRETE_HARM_RE.search(blob)
+            )
         ):
             return ("BODY", "external-assumption with concrete harm (R10)")
         label = _DISPOSITION_CLASS_TITLES.get(cls, cls)
@@ -11720,20 +12471,65 @@ def classify_body_or_appendix(
     return ("BODY", "default (recall-safe: no quality-only match)")
 
 
-_DISPOSITION_ROW_RE = re.compile(
-    r"^\|\s*([CHMLI]-\d+)\s*\|\s*(BODY|APPENDIX)\s*\|\s*(.*?)\s*\|?\s*$",
-    re.IGNORECASE,
-)
+# STEP 8 (representation purge): `_DISPOSITION_ROW_RE` is DELETED. It pinned
+# the report ID to column 0 and the disposition to column 1, undecorated, with
+# an exact enum: backticking the ID, prepending an index column, or writing
+# `Appendix-only` silently produced an EMPTY map, and a 4th column merged into
+# the reason. Rows are now addressed by column ROLE.
+_DISPOSITION_ROLE_MAP: dict[str, tuple[str, ...]] = {
+    "candidate_id": (
+        "report id", "finding id", "id", "finding", "report", "candidate id",
+    ),
+    "disposition": (
+        "disposition", "body/appendix", "placement", "routing", "決定",
+        "determination", "status", "verdict", "decision",
+    ),
+    "notes": ("reason", "rationale", "notes", "note", "comment", "why"),
+}
+
+#: Normalized enum -> canonical disposition. `disposition` is a FAIL_CLOSED
+#: family, so tolerance here is deliberately CLOSED: an unrecognised token
+#: falls back to BODY (open), never to APPENDIX.
+_DISPOSITION_ENUM_ALIASES: dict[str, str] = {
+    "APPENDIX": "APPENDIX",
+    "APPENDIX_ONLY": "APPENDIX",
+    "APPENDIXONLY": "APPENDIX",
+    "BODY": "BODY",
+    "BODY_ONLY": "BODY",
+    "REPORTABLE": "BODY",
+}
+
+_REPORT_ID_RE = re.compile(r"^[CHMLI]-\d{1,3}$", re.IGNORECASE)
+
+
+def _disposition_report_id_value(
+    value: str,
+) -> str | None | artifact_surface.IgnoredRoleValue:
+    """Normalize existing report-ID spellings; an ordinal asserts no ID."""
+    cell = artifact_surface.normalize_cell(value)
+    if re.fullmatch(r"\d+[.)]?", cell):
+        return artifact_surface.IGNORE_ROLE_VALUE
+    identity = artifact_surface.candidate_identity(cell)
+    if identity is None or not _REPORT_ID_RE.fullmatch(identity.key):
+        return None
+    return identity.key
+
+
+def _disposition_placement_value(value: str) -> str | None:
+    return _DISPOSITION_ENUM_ALIASES.get(artifact_surface.normalize_enum(value))
 
 
 def parse_disposition_md(scratchpad: Path) -> dict[str, tuple[str, str]]:
     """Parse ``disposition.md`` into ``{REPORT_ID: (disposition, reason)}``.
 
-    Defensive by construction: a missing or malformed file returns ``{}`` so
-    every consumer degrades to current behaviour (everything stays in the
-    body). Keys are upper-cased report IDs (``C-01`` …). Disposition is
-    normalised to ``BODY`` / ``APPENDIX``; any unrecognised token is treated as
-    ``BODY`` (recall-safe).
+    Property: `disposition.report_placement_proposal` -> FAIL_CLOSED. Being
+    fail-closed on disposition means the DECISION stays conservative — an
+    unreadable or unrecognised value yields BODY, never APPENDIX — NOT that the
+    row must be byte-exact. So the identity and the enum are both read on the
+    NORMALIZED value first, then the closed comparison is applied to it.
+
+    A missing or unparseable file still returns ``{}``, so every consumer
+    degrades to "everything stays in the body".
     """
     p = scratchpad / "disposition.md"
     if not p.exists():
@@ -11742,17 +12538,66 @@ def parse_disposition_md(scratchpad: Path) -> dict[str, tuple[str, str]]:
         text = p.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return {}
-    out: dict[str, tuple[str, str]] = {}
-    for line in text.splitlines():
-        m = _DISPOSITION_ROW_RE.match(line.strip())
-        if not m:
+    placements: dict[str, set[str]] = {}
+    unresolved: set[str] = set()
+    reasons: dict[str, list[str]] = {}
+    source_rows: dict[str, list[tuple[int, tuple[str, ...]]]] = {}
+    for table in artifact_surface.read_tables(text, roles=_DISPOSITION_ROLE_MAP):
+        if not table.has_role("candidate_id") or not table.has_role("disposition"):
             continue
-        rid = m.group(1).upper()
-        disp = m.group(2).upper()
-        if disp not in ("BODY", "APPENDIX"):
-            disp = "BODY"
-        reason = re.sub(r"\s+", " ", m.group(3) or "").strip()
-        out[rid] = (disp, reason)
+        for row in table.rows:
+            identity = table.resolve_role(
+                row,
+                "candidate_id",
+                normalizer=_disposition_report_id_value,
+                property_name="identity.report_placement_subject",
+            )
+            report_ids = {
+                assertion.normalized
+                for assertion in identity.assertions
+                if assertion.state == "RESOLVED" and assertion.normalized is not None
+            }
+            if not report_ids:
+                continue
+            placement = table.resolve_role(
+                row,
+                "disposition",
+                normalizer=_disposition_placement_value,
+                property_name="disposition.report_placement_proposal",
+            )
+            asserted_placements = {
+                assertion.normalized
+                for assertion in placement.assertions
+                if assertion.state == "RESOLVED" and assertion.normalized is not None
+            }
+            reason = artifact_surface.normalize_cell(row.get("notes", "") or "")
+            diagnostics = [defect.render() for defect in (*identity.defects, *placement.defects)]
+            for rid in sorted(report_ids):
+                placements.setdefault(rid, set()).update(asserted_placements)
+                source_rows.setdefault(rid, []).append(
+                    (row.physical_line, tuple(sorted(asserted_placements)))
+                )
+                if identity.state != "RESOLVED" or placement.state != "RESOLVED":
+                    unresolved.add(rid)
+                retained_reasons = reasons.setdefault(rid, [])
+                for detail in (reason, *diagnostics):
+                    if detail and detail not in retained_reasons:
+                        retained_reasons.append(detail)
+    out: dict[str, tuple[str, str]] = {}
+    for rid, asserted in placements.items():
+        if len(source_rows[rid]) > 1 and len(asserted) > 1:
+            reasons[rid].append(artifact_surface.Defect(
+                property_violated="disposition.report_placement_proposal.conflict",
+                physical_line=source_rows[rid][-1][0],
+                observed=f"{rid}: {source_rows[rid]!r}",
+                expected="equivalent placement assertions across rows",
+                repair_hint="Reconcile the conflicting rows; retain this report ID in BODY.",
+                closure=artifact_surface.FAIL_CLOSED,
+            ).render())
+        disposition = (
+            "APPENDIX" if rid not in unresolved and asserted == {"APPENDIX"} else "BODY"
+        )
+        out[rid] = (disposition, " | ".join(reasons[rid]))
     return out
 
 
@@ -12158,7 +13003,11 @@ _TOTAL_FINDINGS_RE = re.compile(
 )
 
 
-def _inventory_blocks(text: str) -> list[dict[str, str]]:
+def _inventory_blocks(
+    text: str,
+    *,
+    structural_text: str | None = None,
+) -> list[dict[str, str]]:
     """Return inventory finding blocks with stable IDs and raw markdown.
 
     Input is normalized via `_llm_norm` so drift formats (smart quotes,
@@ -12171,11 +13020,19 @@ def _inventory_blocks(text: str) -> list[dict[str, str]]:
     sample). Pre-fence-awareness, those got counted as phantom findings.
     """
     text = _llm_norm(text)
+    structural = (
+        text if structural_text is None else _llm_norm(structural_text)
+    )
     lines = text.splitlines()
+    structural_lines = structural.splitlines()
+    if len(structural_lines) != len(lines):
+        raise ValueError(
+            "inventory structural view changed the physical line denominator"
+        )
     starts: list[tuple[int, str]] = []
     in_fence = False
     fence_marker: str | None = None
-    for idx, line in enumerate(lines):
+    for idx, line in enumerate(structural_lines):
         stripped = line.lstrip()
         # Triple-backtick / triple-tilde fence toggle. Match opening/closing
         # by the same marker char to be permissive about info strings
@@ -12812,6 +13669,119 @@ def _strip_fenced_code_blocks(text: str) -> str:
             out.append(line)
     return "\n".join(out)
 
+# ── Representation-tolerant PLAMEN marker reading (artifact_surface) ────────
+#
+# Gate purged: `_extract_artifact_status` / `_PLAMEN_MARKER_RE` /
+# `_strip_fenced_code_blocks` tested exact marker spelling instead of the
+# PROPERTY it protects — "has this worker finished writing?". Presentation
+# variants include `**PLAMEN_STATUS:
+# COMPLETE**`, a bare `PLAMEN_STATUS: COMPLETE`, `Complete`, `COMPLETED`,
+# `COMPLETE.` and `DONE` all reported IN_PROGRESS, and the driver then waited
+# on a worker that had already exited. Balanced code fences, however, change
+# an assertion into a quotation and cannot establish completion. Another
+# hazard reproduced too: a
+# prose sentence NAMING the marker ("I will end with `<!-- PLAMEN_STATUS:
+# COMPLETE -->` when done, but I am NOT done") was promoted to authority.
+#
+# Property: `completion.status_marker` -> DEBT (see
+# `artifact_surface.closure_for_property`). The reader below normalizes ONCE
+# through `artifact_surface.surface` and then asks the meaning question:
+#   * does this line ASSERT the marker, or merely MENTION it?  (the run48
+#     "malformed structured obligation evidence ignored" family)
+#   * balanced code fences quote examples; they do not assert lifecycle state.
+#     Unclosed fences are recovered by the shared surface with visible debt.
+_PLAMEN_KEY_RE = re.compile(r"\bPLAMEN_([A-Z][A-Z0-9_]*)", re.IGNORECASE)
+
+
+@lru_cache(maxsize=24)
+def _surface_cached(text: str) -> "artifact_surface.ArtifactSurface":
+    """`artifact_surface.surface` memoized by exact content.
+
+    Principle 2 says normalize ONCE at the boundary. Several gates in this
+    module read the same artifact bytes in one gate-poll cycle (completion,
+    findings, candidate envelope), and the disk-gate loop re-reads the same
+    file repeatedly while a worker runs. `ArtifactSurface` is a frozen
+    dataclass, so sharing one instance is safe.
+    """
+    return artifact_surface.surface(text)
+
+#: STATUS values that mean "the worker finished". Compared AFTER
+#: `artifact_surface.normalize_enum`, so `COMPLETE.`, `Complete` and
+#: `**COMPLETE**` are one value. `IN_PROGRESS`, `INCOMPLETE`, `NOT_COMPLETE`
+#: and `FAILED` normalize to themselves and remain distinct (adversarial
+#: control: widening the spellings must not widen the MEANING).
+_ARTIFACT_COMPLETE_STATUS_VALUES = frozenset(
+    {"COMPLETE", "COMPLETED", "DONE", "FINISHED"}
+)
+
+
+def _marker_value_from_tail(tail: str) -> str:
+    """Normalize the text after a `PLAMEN_<KEY>` token into its marker value."""
+    value = (tail or "").strip()
+    value = value.lstrip(":=\u2013\u2014- \t")
+    value = value.replace("-->", " ")
+    return artifact_surface.normalize_cell(value)
+
+
+def _artifact_marker_records(
+    text: str | artifact_surface.ArtifactSurface,
+) -> tuple[dict[str, str], dict[str, str], set[str]]:
+    """Return ``(asserted, fenced, mentioned_keys)`` PLAMEN markers.
+
+    ``asserted`` and ``fenced`` are last-wins maps of KEY -> raw value (the
+    value is deliberately NOT enum-normalized: `PLAMEN_ARTIFACT` carries a
+    filename and ownership validation compares it verbatim). ``mentioned_keys``
+    records keys that appear only inside narrative prose — a MENTION is never
+    harvested AND never rejected.
+    """
+    surf = text if isinstance(text, artifact_surface.ArtifactSurface) else _surface_cached(text)
+    asserted: dict[str, str] = {}
+    fenced: dict[str, str] = {}
+    mentioned: set[str] = set()
+    marker_lines = []
+    for line in surf.lines:
+        # A producer may put multiple independent comment records on one
+        # physical line. Preserve their order and physical source location.
+        # Never detach a comment from narrative text that merely mentions it.
+        raw = artifact_surface.strip_decoration(line.raw)
+        comments = list(re.finditer(r"<!--.*?-->", raw, re.DOTALL))
+        remainder = re.sub(r"<!--.*?-->", "", raw, flags=re.DOTALL)
+        if line.in_comment and len(comments) > 1 and not remainder.strip(" \t\n>*+-0123456789.)"):
+            marker_lines.extend(
+                replace(line, raw=m.group(), text=m.group()) for m in comments
+            )
+        else:
+            marker_lines.append(line)
+    for line in marker_lines:
+        for key in sorted({m.group(1).upper() for m in _PLAMEN_KEY_RE.finditer(line.text)}):
+            occ = artifact_surface.classify_token(
+                line,
+                "PLAMEN_" + key,
+                case_sensitive=False,
+                # Inside a fence, ask the REAL question (is this line a marker
+                # or a sentence?) and record the answer separately, instead of
+                # blanket-demoting every fenced line to a quotation.
+                fence_is_quotation=not line.in_fence,
+            )
+            if occ is None:
+                continue
+            if not occ.is_assertion:
+                mentioned.add(key)
+                continue
+            value = _marker_value_from_tail(occ.tail)
+            if line.in_fence:
+                fenced[key] = value
+            else:
+                asserted[key] = value
+    return asserted, fenced, mentioned
+
+
+def _extract_artifact_status_from_text(text: str) -> dict[str, str]:
+    """Last asserted value per key; quoted examples are never authority."""
+    asserted, _fenced, _mentioned = _artifact_marker_records(text)
+    return asserted
+
+
 # Site 4 (regex-fragility plan): heading-LEVEL tolerant. The completion gate
 # `_structural_completeness_ok` calls `_NO_FINDINGS_HEADING_RE.search` to decide
 # whether a complete-marked artifact carries an explicit negative-result
@@ -12849,64 +13819,362 @@ _FINDINGS_SECTION_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 
+# Run20: rescan/per-contract workers may preserve a real candidate as a
+# producer-negative proposal instead of minting a positive ``Finding``.  The
+# bound finding-format contract explicitly permits ``Candidate [ID]`` headings,
+# but the generic completion gate historically recognized only ``Finding``.
+# Keep this grammar deliberately narrower than a prose search: H2/H3 only,
+# literal ``Candidate``, one bracketed ASCII ID, and only an optional colon
+# title after it.  Producer ownership, current ID grammar, fields, and verdict
+# are checked separately below before this heading can satisfy completion.
+# STEP 8 (representation purge): `_CANDIDATE_PROPOSAL_HEADING_RE` and
+# `_CANDIDATE_LIKE_HEADING_RE` are DELETED. They encoded the same property at
+# two different tolerances (exact `## Candidate [ID]` vs any `#{2,3} Candidate`)
+# and the near-miss between them was punished harder than omitting the heading
+# entirely. Identity now comes from `artifact_surface.candidate_identity`,
+# which is heading-depth- and decoration-agnostic.
+_CANDIDATE_PROPOSAL_VERDICTS = frozenset(
+    {"REFUTATION_PROPOSAL", "NOT_APPLICABLE_PROPOSAL", "UNRESOLVED"}
+)
+
+
+#: Field ROLES for a rescan candidate-negative proposal, MOST SPECIFIC FIRST.
+#: The old gate counted lines fullmatching `^\*\*<Field>\*\*\s*:\s*\S...$`
+#: and required EXACTLY ONE. That rejected `**Material Harm** (MANDATORY):` —
+#: the exact spelling printed in the pipeline's OWN bound contract
+#: (rules/finding-output-format.md) — plus `- **Verdict**:` (list item),
+#: `**Verdict:**` (colon inside the bold), a value soft-wrapped onto the next
+#: physical line, and any restatement of a field later in the block.
+_CANDIDATE_FIELD_ROLES: dict[str, tuple[str, ...]] = {
+    "material harm": ("material harm", "harm"),
+    "step execution": ("step execution", "step trace", "steps"),
+    "rules applied": ("rules applied", "rules"),
+    "preferred tag": ("preferred tag", "evidence tag"),
+    "verdict": (
+        "verdict", "producer disposition", "disposition", "determination",
+    ),
+    "severity": ("severity", "risk level", "tier"),
+    "location": ("location", "source location", "code location", "locus"),
+    "description": ("description", "mechanism", "root cause"),
+    "impact": ("impact", "consequence"),
+    "evidence": ("evidence", "proof"),
+}
+
+#: Canonical severity tokens, compared AFTER `normalize_enum`, so `medium`,
+#: `**Medium**` and `Medium (High x Low)` are one value while `Catastrophic`
+#: stays outside the enum (adversarial control).
+_CANDIDATE_SEVERITY_ENUM = frozenset(
+    {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL", "INFO"}
+)
+
+_CANDIDATE_WORD_RE = re.compile(r"(?i)\bcandidate\b")
+
+
+def _candidate_proposal_defects(
+    path: Path, text: str
+) -> tuple[int, list["artifact_surface.Defect"]]:
+    """Validate rescan ``Candidate [ID]`` proposals on the NORMALIZED view.
+
+    Returns ``(valid_count, defects)``. Exactly one property here is
+    FAIL_CLOSED — ``identity.candidate_producer_scope``: whether this candidate
+    ID belongs to THIS artifact's registered producer namespace. Getting that
+    wrong silently binds a candidate to the wrong artifact. Every other
+    property (field envelope, occurrence count, verdict/severity vocabulary,
+    heading shape) is ``completion.*`` / ``proposal.*`` and therefore DEBT: it
+    is reported with a repair hint and never discards the worker's analysis.
+    """
+    surf = _surface_cached(text or "")
+    defects: list[artifact_surface.Defect] = []
+    try:
+        producer = _registered_producer_for_artifact(path.name)
+    except (TypeError, ValueError):
+        producer = None
+
+    fields = artifact_surface.read_fields(surf, roles=_CANDIDATE_FIELD_ROLES)
+
+    headings = [
+        line
+        for line in surf.headings()
+        if not line.in_fence and _CANDIDATE_WORD_RE.search(line.heading_text or "")
+    ]
+    candidates: list[tuple[artifact_surface.LogicalLine, artifact_surface.Identity]] = []
+    for line in headings:
+        identity = artifact_surface.candidate_identity(line.heading_text)
+        # ``candidate_identity`` deliberately accepts bare hyphenated IDs so
+        # table cells such as ``PC2-1`` remain representation tolerant.  In a
+        # heading, however, the lexical role phrase can have the same shape:
+        # ``Candidate-negative review ...`` used to be read as the foreign ID
+        # ``CANDIDATE-NEGATIVE`` and hard-reject an otherwise complete depth
+        # artifact.  A bare token at offset zero beginning with ``Candidate-``
+        # is the heading's prose role, not an asserted producer identity.  A
+        # later bracketed or labelled ID still wins in ``candidate_identity``
+        # and therefore remains fully validated below.
+        if (
+            identity is not None
+            and identity.form == "BARE"
+            and identity.offset == 0
+            and identity.key.startswith("CANDIDATE-")
+        ):
+            identity = None
+        if identity is None:
+            # Near-miss: a `Candidate`-shaped heading with no readable ID. The
+            # old gate punished this HARDER than omitting the heading. It is a
+            # repair hint, not grounds to discard an artifact full of findings.
+            defects.append(
+                artifact_surface.Defect(
+                    property_violated="completion.candidate_heading_identity",
+                    physical_line=line.physical_start,
+                    observed=artifact_surface.normalize_cell(line.heading_text),
+                    expected="Candidate [<ID>]",
+                    repair_hint=(
+                        "candidate-like heading is not an exact H2/H3 "
+                        "'Candidate [ID]' proposal: "
+                        + (line.raw or "").strip()
+                    ),
+                    closure=artifact_surface.DEBT,
+                )
+            )
+            continue
+        candidates.append((line, identity))
+
+    valid_count = 0
+    for line, identity in candidates:
+        candidate_id = identity.key
+        prefix = f"Candidate [{candidate_id}]"
+        blocking = False
+        if producer is None or producer.owner_phase != "rescan":
+            defects.append(
+                artifact_surface.Defect(
+                    property_violated="identity.candidate_producer_scope",
+                    physical_line=line.physical_start,
+                    observed=f"{path.name} -> "
+                    + (producer.owner_phase if producer else "unregistered"),
+                    expected="a registered rescan artifact",
+                    repair_hint=(
+                        f"{prefix} is not owned by a registered rescan artifact"
+                    ),
+                    closure=artifact_surface.FAIL_CLOSED,
+                )
+            )
+            blocking = True
+        elif not _registered_producer_accepts_current_local_id(
+            producer, candidate_id
+        ):
+            defects.append(
+                artifact_surface.Defect(
+                    property_violated="identity.candidate_producer_scope",
+                    physical_line=line.physical_start,
+                    observed=candidate_id,
+                    expected=f"an ID inside {path.name}'s producer namespace",
+                    repair_hint=(
+                        f"{prefix} ID is outside the current artifact-scoped "
+                        "producer grammar"
+                    ),
+                    closure=artifact_surface.FAIL_CLOSED,
+                )
+            )
+            blocking = True
+
+        # Identity-scoped section, not depth-scoped: a sibling heading naming
+        # the SAME candidate extends the block instead of truncating it.
+        section = {l.index for l in surf.section_containing(candidate_id)}
+        if not section:
+            section = {line.index}
+        scoped = [f for f in fields if f.line.index in section]
+        by_role: dict[str, list[artifact_surface.Field]] = {}
+        for found in scoped:
+            by_role.setdefault(found.role, []).append(found)
+
+        for role in _CANDIDATE_FIELD_ROLES:
+            seen = by_role.get(role, [])
+            if len(seen) == 1:
+                continue
+            label = role.title() if role != "id" else role
+            defects.append(
+                artifact_surface.Defect(
+                    property_violated="completion.candidate_field_envelope",
+                    physical_line=(
+                        seen[0].physical_line if seen else line.physical_start
+                    ),
+                    observed=f"{len(seen)} occurrence(s)",
+                    expected="exactly 1",
+                    repair_hint=(
+                        f"{prefix} requires exactly one **{label}** field "
+                        f"(observed {len(seen)})"
+                    ),
+                    closure=artifact_surface.DEBT,
+                )
+            )
+
+        verdicts = by_role.get("verdict", [])
+        if len(verdicts) == 1:
+            token = artifact_surface.normalize_enum(verdicts[0].value)
+            if token not in _CANDIDATE_PROPOSAL_VERDICTS:
+                defects.append(
+                    artifact_surface.Defect(
+                        property_violated="completion.candidate_verdict_vocabulary",
+                        physical_line=verdicts[0].physical_line,
+                        observed=token or "(empty)",
+                        expected="/".join(sorted(_CANDIDATE_PROPOSAL_VERDICTS)),
+                        repair_hint=(
+                            f"{prefix} Verdict must be REFUTATION_PROPOSAL, "
+                            "NOT_APPLICABLE_PROPOSAL, or UNRESOLVED"
+                        ),
+                        closure=artifact_surface.DEBT,
+                    )
+                )
+        severities = by_role.get("severity", [])
+        if len(severities) == 1:
+            token = artifact_surface.normalize_enum(severities[0].value)
+            if token not in _CANDIDATE_SEVERITY_ENUM:
+                defects.append(
+                    artifact_surface.Defect(
+                        property_violated="completion.candidate_severity_vocabulary",
+                        physical_line=severities[0].physical_line,
+                        observed=token or "(empty)",
+                        expected="/".join(sorted(_CANDIDATE_SEVERITY_ENUM)),
+                        repair_hint=(
+                            f"{prefix} Severity is outside the canonical "
+                            "severity enum"
+                        ),
+                        closure=artifact_surface.DEBT,
+                    )
+                )
+        if not blocking:
+            valid_count += 1
+    return valid_count, defects
+
+
+def _candidate_proposal_structural_issues(
+    path: Path, text: str
+) -> tuple[int, list[str]]:
+    """Back-compatible ``(valid_count, issues)`` view of the typed defects."""
+
+    valid_count, defects = _candidate_proposal_defects(path, text)
+    return valid_count, [d.repair_hint for d in defects]
+
 
 _FINDINGS_BODY_MIN_CHARS = 15
 
 # Ship D (SW03-1): crash-safety / "to be filled" placeholder bodies that an LLM
 # leaves under a `## Findings` heading. Matched substrings are stripped before
 # the substance re-check, so they cannot masquerade as completed analysis.
+# The `[^)\n]*` tails are BOUNDED. Unbounded, `placeholder\b[^)\n]*` consumed
+# the REST OF THE LINE, so a real finding whose prose discussed "a real
+# placeholder bug" was stripped to nothing and the artifact measured as an
+# empty stub. A stub phrase is short by nature; 48 characters is more than any
+# of these needs and far less than a sentence of analysis. `placeholder` on its
+# own carries no tail at all — it is the word itself that marks the stub.
 _FINDINGS_PLACEHOLDER_BODY_RE = re.compile(
-    r"\(?\s*(?:findings?\s+(?:will\s+be\s+)?appended\b[^)\n]*"
-    r"|(?:findings?\s+)?appended\s+below\b[^)\n]*"
-    r"|to\s+be\s+(?:filled|added|appended|determined|populated)\b[^)\n]*"
-    r"|no\s+findings?\s+(?:yet|recorded\s+yet)\b[^)\n]*"
-    r"|placeholder\b[^)\n]*"
-    r"|as\s+they\s+are\s+discovered\b[^)\n]*"
+    r"\(?\s*(?:findings?\s+(?:will\s+be\s+)?appended\b[^)\n]{0,48}"
+    r"|(?:findings?\s+)?appended\s+below\b[^)\n]{0,48}"
+    r"|to\s+be\s+(?:filled|added|appended|determined|populated)\b[^)\n]{0,48}"
+    r"|no\s+findings?\s+(?:yet|recorded\s+yet)\b[^)\n]{0,48}"
+    r"|placeholder\b"
+    r"|as\s+they\s+are\s+discovered\b"
     r"|TBD\b|TODO\b)\s*\)?",
     re.IGNORECASE,
 )
 
 
+#: Headings that OPEN an analysis section. Vocabulary widening here is
+#: recall-safe by construction: it can only make an artifact look MORE
+#: complete, never less. The measured defect rejected `## Results` carrying a
+#: full analysis because the gate matched the literal word "Findings".
+_ANALYSIS_SECTION_WORDS = (
+    "findings", "finding", "results", "result", "analysis", "observations",
+    "observation", "candidates", "issues", "vulnerabilities",
+    "negative result", "no findings",
+)
+#: Headings that attest an explicit zero-result rationale.
+_NEGATIVE_RESULT_WORDS = (
+    "no findings", "no finding", "negative result", "no issues",
+    "no issues found", "no vulnerabilities", "nothing found",
+    "no exploitable issues",
+)
+#: A placeholder stub is SHORT by nature. Above this, a body is real analysis
+#: that merely MENTIONS a placeholder word — the citation-vs-left-blank
+#: distinction the TODO/FIXME check already makes elsewhere in this module.
+_FINDINGS_PLACEHOLDER_MAX_CHARS = 200
+
+
+def _heading_names(line: "artifact_surface.LogicalLine", words) -> bool:
+    label = artifact_surface.normalize_label(line.heading_text or "")
+    return any(w in label for w in words)
+
+
+def _section_body_chars(
+    surf: "artifact_surface.ArtifactSurface",
+    head: "artifact_surface.LogicalLine",
+    body,
+) -> str:
+    parts = [l.text for l in body if l.kind != artifact_surface.BLANK and not l.in_fence]
+    return " ".join(part for part in parts if part).strip()
+
+
 def _findings_section_has_body(text: str) -> bool:
-    """Ship 8.18: True iff a `## Findings` section exists AND has substantive
-    body content (>= _FINDINGS_BODY_MIN_CHARS non-whitespace chars between the
-    heading and the next `## ` heading / EOF). A BARE `## Findings` shell --
-    the heading with nothing under it -- returns False. This closes the hole
-    where an empty `## Findings` heading counted as completed work while
-    preserving the Ship 8.2 widening (a real `## Findings` section with prose
-    still counts, without requiring a `## Finding [` block)."""
-    m = _FINDINGS_SECTION_RE.search(text)
-    if not m:
-        return False
-    nl = text.find("\n", m.end())
-    if nl == -1:
-        return False  # heading is the last line -> no body
-    rest = text[nl + 1:]
-    nxt = re.search(r"^##\s+\S", rest, re.MULTILINE)
-    body = rest[: nxt.start()] if nxt else rest
-    if len("".join(body.split())) < _FINDINGS_BODY_MIN_CHARS:
-        return False
-    # Ship D (SW03-1): reject KNOWN placeholder bodies. The breadth crash-safety
-    # stub writes `## Findings\n\n(findings appended below as they are
-    # discovered)` (>15 chars), which Ship 8.18's length-only check accepted as
-    # real work -> an empty COMPLETE-marked breadth artifact silently passed.
-    # Strip placeholder phrases, then re-test substance: a REAL section that
-    # merely mentions such a phrase alongside real findings still passes.
-    substantive = _FINDINGS_PLACEHOLDER_BODY_RE.sub("", body)
-    return len("".join(substantive.split())) >= _FINDINGS_BODY_MIN_CHARS
+    """True iff an analysis section exists AND carries substantive body content.
+
+    Property: `completion.analysis_section_body`. Purged representation
+    dependencies: the literal word "Findings" at `^#{1,6}`, the `^##` section
+    terminator, and an unbounded placeholder regex whose `[^)\n]*` tail ate the
+    REST OF THE LINE — so a real finding that discussed "a real placeholder bug"
+    was stripped down to nothing and the artifact was called empty.
+    """
+    surf = _surface_cached(text or "")
+    for head, body in surf.sections():
+        if head.in_fence or not _heading_names(head, _ANALYSIS_SECTION_WORDS):
+            continue
+        compact = _section_body_chars(surf, head, body)
+        if len("".join(compact.split())) < _FINDINGS_BODY_MIN_CHARS:
+            continue
+        # A crash-safety stub is short AND is nothing but the stub phrase.
+        # Real analysis that merely quotes "placeholder" / "TBD" is not.
+        if len(compact) <= _FINDINGS_PLACEHOLDER_MAX_CHARS:
+            substantive = _FINDINGS_PLACEHOLDER_BODY_RE.sub("", compact)
+            if len("".join(substantive.split())) < _FINDINGS_BODY_MIN_CHARS:
+                continue
+        return True
+    return False
+
+
+def _artifact_has_negative_rationale(text: str) -> bool:
+    """True iff a heading attests an explicit zero-result rationale."""
+    surf = _surface_cached(text or "")
+    return any(
+        not line.in_fence and _heading_names(line, _NEGATIVE_RESULT_WORDS)
+        for line in surf.headings()
+    )
 
 
 def _artifact_has_findings(text: str) -> bool:
-    """True iff the artifact body shows at least one `## Finding [` /
-    `### Finding [` block OR a `## Findings` section WITH substantive body.
+    """True iff the artifact body carries at least one finding-shaped block.
 
-    Ship 8.2 findings-present signal (block OR section), tightened by Ship 8.18
-    to reject a BARE `## Findings` shell (heading, no body) -- which previously
-    counted as completed work."""
-    return bool(
-        _FINDING_BLOCK_HEADING_RE.search(text)
-        or _findings_section_has_body(text)
-    )
+    Property: `completion.artifact_carries_analysis`. Identity is read by
+    `artifact_surface.candidate_identity`, so `### Finding [DT-1]`,
+    `#### Finding [DT-1]`, `### Issue [DT-1]`, `### [DT-1] title` and
+    `**### Finding [DT-1]**` are ONE thing. The old gate matched the literal
+    word "Finding" followed by "[" at heading depth 2 or 3 and discarded every
+    other spelling of the SAME analysis.
+    """
+    surf = _surface_cached(text or "")
+    for line in surf.headings():
+        if line.in_fence:
+            continue
+        heading = line.heading_text or ""
+        identity = artifact_surface.candidate_identity(heading)
+        if identity is None:
+            continue
+        if identity.form == "BRACKETED":
+            return True
+        if _FINDING_WORD_RE.search(heading):
+            return True
+    return _findings_section_has_body(text)
+
+
+_FINDING_WORD_RE = re.compile(
+    r"(?i)\b(finding|issue|candidate|hypothesis|vulnerability|chain)\b"
+)
 
 
 def _extract_artifact_status(path: Path) -> dict[str, str]:
@@ -12924,16 +14192,7 @@ def _extract_artifact_status(path: Path) -> dict[str, str]:
         text = path.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return {}
-    # Ship 8.18: ignore markers inside fenced code blocks (examples) so a
-    # fenced exemplar cannot poison last-wins status resolution.
-    text = _strip_fenced_code_blocks(text)
-    result: dict[str, str] = {}
-    for m in _PLAMEN_MARKER_RE.finditer(text):
-        key = m.group(1).strip()
-        val = m.group(2).strip()
-        # Last occurrence wins because dict overwrite preserves order.
-        result[key] = val
-    return result
+    return _extract_artifact_status_from_text(text)
 
 
 def is_artifact_complete(path: Path, min_bytes: int) -> bool:
@@ -12953,7 +14212,8 @@ def is_artifact_complete(path: Path, min_bytes: int) -> bool:
     except Exception:
         return False
     markers = _extract_artifact_status(path)
-    return markers.get("STATUS") == "COMPLETE"
+    status = artifact_surface.normalize_enum(markers.get("STATUS", ""))
+    return status in _ARTIFACT_COMPLETE_STATUS_VALUES
 
 
 def is_artifact_legacy_unmarked(path: Path) -> bool:
@@ -12985,87 +14245,119 @@ def is_artifact_legacy_unmarked(path: Path) -> bool:
         text = path.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return False
-    # Ship 8.18: a marker that only appears inside a fenced example does not
-    # make a file "fresh-format" -- strip fences before deciding legacy status.
-    text = _strip_fenced_code_blocks(text)
-    return not bool(_PLAMEN_MARKER_RE.search(text))
+    # A marker that only appears inside a fenced example does not make a file
+    # "fresh-format" (preserved semantics), but a DECORATED or bare marker
+    # (`**PLAMEN_STATUS: COMPLETE**`) does: it is a real marker the old
+    # comment-shape regex simply could not see. A narrative MENTION also counts
+    # as "this file knows about markers" — the same tolerance the old regex
+    # gave an inline-backticked comment.
+    asserted, _fenced, mentioned = _artifact_marker_records(text)
+    return not (asserted or mentioned)
 
 
-def _structural_completeness_ok(
+def structural_completeness_result(
     path: Path,
     *,
     required_headings: tuple[str, ...] | list[str] = (),
     require_findings_count_marker: bool = False,
     placeholder_strings: tuple[str, ...] | list[str] = (),
     require_obligation_receipts_if_shard_exists: Optional[Path] = None,
-) -> tuple[bool, list[str]]:
-    """Run structural completeness checks against `path` and return
-    `(ok, reasons)` where `ok` is True only when every applicable check
-    passes. ANY entry in `reasons` hard-fails the artifact -- there is no
-    such thing as a "soft warning reason" here.
+) -> "artifact_surface.CheckResult":
+    """Typed structural-completeness verdict for one staged artifact.
 
-    Ship 8.2 reduces the contract to its semantic minimum so the gate
-    accepts genuinely-complete work without demanding ceremonial marker
-    schemas that real agents reproduce inconsistently:
+    THE CALL SITE THAT ACTUALLY STOPS THE DISCARDS. A staged validator must
+    branch on ``result.should_discard`` — NOT on ``not result.accepted``.
+    Only these properties may block, and none of them is a line shape:
 
-    - required_headings: each entry must appear as a `## ` heading.
-      Retained for callers that genuinely need a specific heading;
-      breadth/depth now pass `()` and rely on the findings rule below.
-    - FINDINGS RULE (replaces the old literal-`## Findings` requirement
-      AND the FINDINGS_COUNT==0 branch): the artifact must EITHER show
-      findings (`## Findings` section OR >=1 `## Finding [` / `### Finding [`
-      block) OR carry an explicit `## No Findings` / `## Negative Result`
-      rationale. An artifact with neither is empty/incomplete.
-    - placeholder_strings: none of these substrings may remain at COMPLETE
-      time (still rejects TODO:/FILL_ME/<placeholder>).
+    * ``artifact.absent`` / ``artifact.unreadable`` — the file genuinely is
+      not there. (Not a representation test: there are no bytes to normalize.)
+    * ``identity.candidate_producer_scope`` — this candidate ID does not
+      belong to this artifact's registered producer namespace. FAIL_CLOSED
+      because binding a candidate to the wrong artifact silently loses it.
+    * ``completion.no_analysis_present`` — under a TOLERANT reading there is
+      no finding block at any heading depth or spelling, no analysis section
+      with a body, no zero-result rationale and no candidate proposal. That is
+      a genuinely empty shell, not a formatting difference.
+    * ``completion.unresolved_placeholder`` — an explicit LEFT-BLANK marker
+      the caller asked to forbid (unchanged; already citation-aware).
 
-    COMPATIBILITY NO-OPS (Ship 8.2): the following parameters are retained
-    ONLY for signature/test stability and have NO effect on the verdict.
-    They MUST NOT append any reason (reasons hard-fail):
-    - require_findings_count_marker: PLAMEN_FINDINGS_COUNT is now
-      informational metadata; the findings decision uses block detection,
-      not the count. Passing True changes nothing. (Removing the hard
-      requirement eliminates the attempt-1 wasted retry the canonical
-      worker files hit when they omitted the count.)
-    - require_obligation_receipts_if_shard_exists: receipt coverage is
-      owned solely by `_check_opengrep_obligation_coverage` (warning-only,
-      non-blocking). A missing `## Obligation Receipts` section MUST NOT
-      hard-fail the artifact gate. Passing a shard path changes nothing.
-
-    The return shape `(ok, reasons)` lets the caller surface every failure
-    reason in the gate's detail string at once.
+    Everything else — the candidate field envelope, occurrence counts,
+    verdict/severity vocabulary, near-miss headings and required headings — is
+    DEBT. It is reported with a physical line and a repair hint, and the
+    worker's analysis is PUBLISHED.
     """
-    # require_findings_count_marker and require_obligation_receipts_if_shard_exists
-    # are intentionally unused (compatibility no-ops -- see docstring).
     _ = (require_findings_count_marker, require_obligation_receipts_if_shard_exists)
 
-    reasons: list[str] = []
+    def _defect(prop, line, observed, expected, hint):
+        return artifact_surface.Defect(
+            property_violated=prop,
+            physical_line=line,
+            observed=observed,
+            expected=expected,
+            repair_hint=hint,
+            closure=artifact_surface.closure_for_property(prop),
+        )
 
     try:
         if not path.exists():
-            return False, ["file missing"]
+            return artifact_surface.CheckResult(
+                (
+                    artifact_surface.Defect(
+                        property_violated="artifact.absent",
+                        physical_line=0,
+                        observed="no file",
+                        expected="a staged artifact",
+                        repair_hint="file missing",
+                        closure=artifact_surface.FAIL_CLOSED,
+                    ),
+                )
+            )
         text = path.read_text(encoding="utf-8", errors="replace")
     except Exception as exc:  # pragma: no cover - I/O failure path
-        return False, [f"file unreadable: {exc}"]
-
-    for heading in required_headings:
-        pattern = re.compile(
-            r"^##\s+" + re.escape(heading) + r"\b",
-            re.MULTILINE | re.IGNORECASE,
+        return artifact_surface.CheckResult(
+            (
+                artifact_surface.Defect(
+                    property_violated="artifact.unreadable",
+                    physical_line=0,
+                    observed=str(exc),
+                    expected="readable UTF-8 text",
+                    repair_hint=f"file unreadable: {exc}",
+                    closure=artifact_surface.FAIL_CLOSED,
+                ),
+            )
         )
-        if not pattern.search(text):
-            reasons.append(f"missing required heading: ## {heading}")
 
-    # Placeholder check distinguishes an LLM-LEFT-BLANK from a CITATION of the
-    # audited source. Word-markers like TODO/FIXME/XXX/TBD appear legitimately in
-    # real code comments (`// TODO: make configurable`) and in finding prose that
-    # quotes or discusses them — that is good analysis, not an unfilled blank.
-    # (A multi-hour run stalled because a worker correctly cited a Solidity
-    # `// TODO:` source comment as evidence.) So: (1) strip fenced + inline code
-    # spans (source citations) before matching, and (2) for word-markers, only
-    # flag a LEFT-BLANK shape — the marker at the start of a line or as a field
-    # value (`**Field**: TODO`) — never a mid-sentence mention. Unambiguous
-    # markers (FILL_ME / <placeholder> / [LLM TO ENRICH]) stay a plain substring.
+    surf = _surface_cached(text)
+    defects: list[artifact_surface.Defect] = list(surf.defects)
+
+    # Required headings: heading-LEVEL and decoration agnostic. The old gate
+    # anchored `^##\s+<heading>\b` at column zero at EXACTLY level 2, so
+    # `### Findings` and `## **Findings**` "went missing" with identical
+    # content. DEBT: a heading that renders one level off is a rendering
+    # difference, never grounds to throw the analysis away.
+    for heading in required_headings:
+        wanted = artifact_surface.normalize_label(heading)
+        if not wanted:
+            continue
+        if not any(
+            not line.in_fence
+            and wanted in artifact_surface.normalize_label(line.heading_text or "")
+            for line in surf.headings()
+        ):
+            defects.append(
+                _defect(
+                    "completion.required_heading",
+                    0,
+                    "absent",
+                    f"a heading naming {heading!r}",
+                    f"missing required heading: ## {heading}",
+                )
+            )
+
+    # Placeholder check (UNCHANGED semantics, still blocking): this is not a
+    # representation test — it distinguishes an LLM-LEFT-BLANK from a CITATION
+    # of the audited source, and the citation case was already fixed by
+    # stripping code spans. A LEFT-BLANK artifact has no analysis to preserve.
     _prose = re.sub(r"`[^`\n]*`", " ",
                     re.sub(r"```.*?```", " ", text, flags=re.S))
     _word_markers = {"TODO", "FIXME", "XXX", "TBD"}
@@ -13080,14 +14372,76 @@ def _structural_completeness_ok(
         else:
             hit = placeholder in _prose
         if hit:
-            reasons.append(f"unresolved placeholder string present: {placeholder!r}")
+            defects.append(
+                artifact_surface.Defect(
+                    property_violated="completion.unresolved_placeholder",
+                    physical_line=0,
+                    observed=placeholder,
+                    expected="no LEFT-BLANK placeholder at COMPLETE time",
+                    repair_hint=(
+                        f"unresolved placeholder string present: {placeholder!r}"
+                    ),
+                    closure=artifact_surface.FAIL_CLOSED,
+                )
+            )
 
-    # Findings rule: has findings OR an explicit no-findings rationale.
-    if not _artifact_has_findings(text) and not _NO_FINDINGS_HEADING_RE.search(text):
-        reasons.append(
-            "no '## Finding [' / '### Finding [' blocks (and no "
-            "'## Findings' section) and no '## No Findings' / "
-            "'## Negative Result' rationale -- artifact is empty/incomplete"
+    has_findings = _artifact_has_findings(text)
+    has_negative_rationale = _artifact_has_negative_rationale(text)
+    valid_candidates, candidate_defects = _candidate_proposal_defects(path, text)
+    defects.extend(candidate_defects)
+
+    if (
+        not has_findings
+        and not has_negative_rationale
+        and valid_candidates == 0
+        and not any(
+            d.property_violated.startswith("completion.candidate_")
+            for d in candidate_defects
         )
+    ):
+        defects.append(
+            artifact_surface.Defect(
+                property_violated="completion.no_analysis_present",
+                physical_line=0,
+                observed="no finding block, analysis section, rationale or "
+                         "candidate proposal",
+                expected="at least one of them",
+                repair_hint=(
+                    "no '## Finding [' / '### Finding [' blocks, no valid "
+                    "registered '## Candidate [ID]' proposal (and no "
+                    "'## Findings' section), and no '## No Findings' / "
+                    "'## Negative Result' rationale -- artifact is "
+                    "empty/incomplete"
+                ),
+                closure=artifact_surface.FAIL_CLOSED,
+            )
+        )
+    return artifact_surface.CheckResult(tuple(defects))
 
-    return (len(reasons) == 0, reasons)
+
+def _structural_completeness_ok(
+    path: Path,
+    *,
+    required_headings: tuple[str, ...] | list[str] = (),
+    require_findings_count_marker: bool = False,
+    placeholder_strings: tuple[str, ...] | list[str] = (),
+    require_obligation_receipts_if_shard_exists: Optional[Path] = None,
+) -> tuple[bool, list[str]]:
+    """Back-compatible `(ok, reasons)` view of `structural_completeness_result`.
+
+    ``ok`` is now ``not result.should_discard`` — i.e. False ONLY for a
+    FAIL_CLOSED defect. ``reasons`` still carries EVERY defect's repair hint,
+    including the debt ones, so a caller that surfaces them keeps full
+    visibility. A caller that drops ``reasons`` when ``ok`` is True loses the
+    debt (see the reported plamen_validators call-site change).
+    """
+    result = structural_completeness_result(
+        path,
+        required_headings=required_headings,
+        require_findings_count_marker=require_findings_count_marker,
+        placeholder_strings=placeholder_strings,
+        require_obligation_receipts_if_shard_exists=(
+            require_obligation_receipts_if_shard_exists
+        ),
+    )
+    return (not result.should_discard, [d.repair_hint for d in result.defects])

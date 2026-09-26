@@ -155,18 +155,88 @@ def test_missing_or_invalid_receipt_uses_uncertainty_fallback(
     assert "Resume:" not in output
 
 
-def test_normal_degraded_result_without_resume_receipt_is_unchanged(
+def test_exit3_without_checkpoint_never_claims_completion(
     front, tmp_path, capsys,
 ):
     config = tmp_path / "scratch" / "config.json"
+    config.parent.mkdir()
+    config.write_text(json.dumps({
+        "project_root": str(tmp_path), "pipeline": "sc", "mode": "core",
+    }), encoding="utf-8")
     absent = tmp_path / "always-supplied-but-absent.json"
     assert front._render_driver_result(
         3, str(config), str(tmp_path), decision_receipt_path=absent,
     ) == 3
     output = capsys.readouterr().out
-    assert "completed in a degraded state" in output
+    assert "completion could not be established from its checkpoint" in output
+    assert "completed in a degraded state" not in output
     assert f"Resume: plamen resume \"{config}\"" in output
     assert "startup-decision" not in output
+
+
+def _write_exit3_checkpoint(config: Path, *, completed):
+    value = json.loads(config.read_text(encoding="utf-8"))
+    (config.parent / "_v2_checkpoint.json").write_text(json.dumps({
+        "completed": completed,
+        "degraded": [completed[-1]] if completed else [],
+        "rate_limited_at": None,
+        "config": value,
+    }), encoding="utf-8")
+
+
+def test_exit3_partial_checkpoint_is_explicitly_incomplete(
+    front, tmp_path, monkeypatch, capsys,
+):
+    project = tmp_path / "project"
+    config = project / ".scratchpad" / "config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({
+        "project_root": str(project), "pipeline": "sc", "mode": "core",
+    }), encoding="utf-8")
+    _write_exit3_checkpoint(config, completed=["recon"])
+    plamen_types = types.ModuleType("plamen_types")
+    plamen_types.SC_PHASES = [
+        types.SimpleNamespace(name="recon", modes=("core",)),
+        types.SimpleNamespace(name="breadth", modes=("core",)),
+    ]
+    plamen_types.L1_PHASES = []
+    monkeypatch.setitem(sys.modules, "plamen_types", plamen_types)
+
+    assert front._render_driver_result(3, str(config), str(project)) == 3
+    output = capsys.readouterr().out
+    assert "stopped before completing its active phase graph" in output
+    assert "Next incomplete phase: breadth" in output
+    assert "completed in a degraded state" not in output
+    assert "traversed every active phase" not in output
+
+
+def test_exit3_terminal_traversal_preserves_posix_compatibility_debt_wording(
+    front, tmp_path, monkeypatch, capsys,
+):
+    project = tmp_path / "project"
+    config = project / ".scratchpad" / "config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({
+        "project_root": str(project), "pipeline": "sc", "mode": "core",
+    }), encoding="utf-8")
+    _write_exit3_checkpoint(config, completed=["recon", "breadth"])
+    plamen_types = types.ModuleType("plamen_types")
+    plamen_types.SC_PHASES = [
+        types.SimpleNamespace(name="recon", modes=("core",)),
+        types.SimpleNamespace(name="breadth", modes=("core",)),
+    ]
+    plamen_types.L1_PHASES = []
+    monkeypatch.setitem(sys.modules, "plamen_types", plamen_types)
+
+    assert front._render_driver_result(
+        3, str(config), str(project), posix_compat_v2=True,
+    ) == 3
+    output = capsys.readouterr().out
+    assert "traversed every active phase" in output
+    assert "reached terminal delivery checks with declared debt" in output
+    assert "retains reduced-isolation runtime debt" in output
+    assert "not native-isolation completion" in output
+    assert "completed in a degraded state" not in output
 
 
 def test_exit5_without_receipt_destination_uses_uncertainty_fallback(
@@ -245,11 +315,12 @@ def test_resume_passes_external_receipt_path_as_one_argv_with_spaces(
         3, str(config), str(project), {
             "decision_receipt_path": receipt,
             "decision_mac_key": MAC_KEY,
+            "posix_compat_v2": False,
         },
     )]
 
 
-def test_real_resume_v2_ordinary_exit3_with_absent_receipt_is_normal_degraded(
+def test_real_resume_v2_exit3_with_absent_checkpoint_is_not_completion(
     front, tmp_path, monkeypatch, capsys,
 ):
     project = tmp_path / "project"
@@ -276,7 +347,8 @@ def test_real_resume_v2_ordinary_exit3_with_absent_receipt_is_normal_degraded(
 
     assert stopped.value.code == 3
     output = capsys.readouterr().out
-    assert "completed in a degraded state" in output
+    assert "completion could not be established from its checkpoint" in output
+    assert "completed in a degraded state" not in output
     assert "no valid typed startup-decision receipt" not in output
 
 
@@ -668,10 +740,12 @@ def test_receipt_reader_is_rooted_and_bounded_across_all_components(
     assert front._load_resume_startup_decision(
         receipt, receipt_mac_key=MAC_KEY,
     )["exit_status"] == 5
-    absolute = Path(front.os.path.abspath(receipt))
+    _absolute, root, components = front._resume_startup_decision_read_location(
+        receipt
+    )
     assert calls == [(
-        Path(absolute.anchor),
-        tuple(absolute.relative_to(Path(absolute.anchor)).parts),
+        root,
+        components,
         {"maximum": 1024 * 1024},
     )]
 

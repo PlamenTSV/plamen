@@ -14,6 +14,7 @@ import re
 from typing import Any
 
 from plamen_types import normalize_severity
+from portable_path_contract import assert_lexically_bounded_relative_path
 
 
 SCHEMA = "plamen.post_verify_candidate_proposals.v1"
@@ -59,6 +60,22 @@ def _fields(body: str) -> dict[str, str]:
 
 def _clean(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip().replace("|", "/")
+
+
+def _source_verify_name(value: Any) -> str:
+    """Return one bounded scratchpad basename or an empty evidence reference."""
+
+    text = str(value or "").strip().replace("\\", "/")
+    try:
+        assert_lexically_bounded_relative_path(
+            text, label="post-verify source artifact"
+        )
+    except ValueError:
+        return ""
+    path = Path(text)
+    if path.name != text or path.is_absolute() or text in {".", ".."}:
+        return ""
+    return text
 
 
 def _derived_identity(
@@ -166,14 +183,17 @@ def parse_post_verify_candidate_proposals(
             or fields.get("harm")
             or "Potential security impact requires independent verification."
         )
-        source_verify = Path(
+        source_verify = _source_verify_name(
             fields.get("source verify file")
             or fields.get("source artifact")
             or ""
-        ).name
-        source_exists = bool(
-            source_verify and (root / source_verify).is_file()
         )
+        try:
+            source_exists = bool(
+                source_verify and (root / source_verify).is_file()
+            )
+        except OSError:
+            source_exists = False
         primary_artifact = source_verify if source_exists else SOURCE
         origin = _clean(
             fields.get("origin assessment") or "NEW_FROM_VERIFY"

@@ -276,6 +276,12 @@ def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
         + "\n"
     )
     target = Path(path)
+    if target.is_file() and not target.is_symlink():
+        try:
+            if target.read_text(encoding="utf-8", errors="strict") == content:
+                return
+        except (OSError, UnicodeError):
+            pass
     temporary = target.with_name(
         f".{target.name}.{os.getpid()}.{time.time_ns()}.tmp"
     )

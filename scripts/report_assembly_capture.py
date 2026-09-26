@@ -36,6 +36,8 @@ import unicodedata
 from typing import Any, Iterator, Mapping
 from uuid import UUID
 
+from portable_path_contract import assert_lexically_bounded_relative_path
+
 if os.name == "nt":
     from ctypes import wintypes
 
@@ -403,6 +405,15 @@ def _canonical_path(value: object) -> str:
         _fail("PATH_INVALID", repr(value))
     if len(value) > _MAX_PATH_CHARS:
         _fail("PATH_SIZE_LIMIT", value[:80])
+    try:
+        assert_lexically_bounded_relative_path(
+            value,
+            label="report assembly path",
+            max_path_bytes=_MAX_PATH_CHARS,
+            max_component_bytes=_MAX_PATH_COMPONENT_CHARS,
+        )
+    except ValueError:
+        _fail("PATH_SIZE_LIMIT", value[:80])
     if value != value.strip():
         _fail("PATH_INVALID", repr(value))
     if "\\" in value or re.match(r"^[A-Za-z]:", value) or value.startswith("/"):
@@ -437,6 +448,15 @@ def _canonical_pattern(value: object) -> str:
     if not isinstance(value, str) or not value:
         _fail("NAMESPACE_PATTERN_INVALID", repr(value))
     if len(value) > _MAX_PATTERN_CHARS:
+        _fail("NAMESPACE_PATTERN_SIZE_LIMIT", value[:80])
+    try:
+        assert_lexically_bounded_relative_path(
+            value,
+            label="report assembly namespace pattern",
+            max_path_bytes=_MAX_PATTERN_CHARS,
+            max_component_bytes=_MAX_PATH_COMPONENT_CHARS,
+        )
+    except ValueError:
         _fail("NAMESPACE_PATTERN_SIZE_LIMIT", value[:80])
     if value != value.strip():
         _fail("NAMESPACE_PATTERN_INVALID", repr(value))

@@ -86,6 +86,11 @@ def _sha_bytes(value: bytes) -> str:
 
 def _atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if path.is_file() and path.read_bytes() == data:
+            return
+    except OSError:
+        pass
     temporary = path.with_name(
         f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     )

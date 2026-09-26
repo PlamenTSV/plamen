@@ -16,9 +16,9 @@ Before ANY verdict:
 2. **Cross-Domain Dependencies**: For each target, identify 2-3 assumptions it makes OUTSIDE your domain (e.g., oracle freshness, token transfer side effects, external call return values). Ask: "If this assumption broke, would my target become exploitable?" Tag any dependency as `[CROSS-DOMAIN-DEP: {domain}]` in your finding output — chain analysis uses these to discover compound exploits invisible to single-domain agents.
 3. **Chain Check**: Search the exact driver-bound `findings_inventory.md`
    input for findings that CREATE the missing precondition
-4. **Evidence Quality**: Tag all evidence [PROD-ONCHAIN], [CODE], [MOCK], etc. - [MOCK]/[EXT-UNV] cannot support REFUTED
-5. **Confidence Gate**: Uncertain? → CONTESTED, not REFUTED. Only REFUTED if defense proven with production evidence
-6. **Enabler Search**: Before REFUTED, ask "Does ANY other finding enable this?"
+4. **Evidence Quality**: Tag evidence by origin. Mock or unverified-external evidence alone cannot establish a production defense.
+5. **Uncertainty**: Preserve unresolved candidates when evidence is incomplete. Propose a negative disposition only when production evidence proves the defense.
+6. **Enabler Search**: Before proposing a negative disposition, check whether another finding enables the missing precondition.
 
 Apply only the rule and skill files enumerated by the driver's content-bound
 methodology descriptors. Do not discover or open a legacy home-directory path.
@@ -127,9 +127,10 @@ function where the code currently lives and why that path is not always
 taken (e.g., "eviction only runs on block finalization, but entries are
 inserted on block proposal — unfinalized forks retain entries forever").
 
-**Verdict gate**: A cache target is CONFIRMED vulnerable if ≥1 leg is
-MISSING on a path the adversary can drive. Two+ MISSING legs upgrades to
-HIGH by default on consensus-reachable paths.
+**Evidence gate**: A missing cache bound is an attack candidate only when an
+adversary can drive the path and the unbounded state has a concrete resource or
+liveness consequence under real limits. Multiple missing legs increase search
+priority; severity still follows the driver's impact × likelihood matrix.
 
 **Near-miss — not the same bug class**: if the target is a compact numeric
 index/handle assigned to a named entity with OTHER structures caching data
@@ -141,49 +142,6 @@ eviction. If the driver assigned the content-bound
 "Interned/Compacted Identity Coherence" checklist; otherwise retain this as an
 explicit cross-domain follow-up instead of discovering an unbound skill file.
 
-## Output Format
+## Evidence to record
 
-Write to `{scratchpad}/depth_state_trace_findings.md`:
-
-```markdown
-## DEPTH ANALYSIS: State Trace
-
-### Target 1: [Variable/Function from breadth pass]
-**Source Finding(s)**: [Breadth finding IDs that triggered this analysis]
-**Breadth Claim**: [What the breadth agent suspected]
-
-#### State Graph
-```
-[variable]
-  ├─ READ BY: functionA (line X), functionB (line Y)
-  └─ WRITTEN BY: functionC (line Z), functionD (line W)
-```
-
-#### Enforcement Points
-| Function | Line | Check Present? | Correct Operator? | All Paths? |
-|----------|------|----------------|-------------------|------------|
-
-#### Analysis
-[Your detailed trace with specific reasoning]
-
-#### Verdict
-- [ ] CONFIRMED: [Breadth finding was correct because...]
-- [ ] REFINED: [Breadth finding was partially correct, actual issue is...]
-- [ ] REFUTED: [Breadth finding was incorrect because mechanism X prevents it]
-- [ ] CONTESTED: [Evidence is mixed or incomplete - escalate to verifier]
-
-### Target 2: ...
-
-## FINDING INDEX
-| ID | Severity | Location | Title | Source |
-```
-
-## Finding ID Format
-Use `[DS-N]` where N starts from 1.
-Each finding MUST include `Source: [breadth finding IDs]` showing what triggered the analysis.
-
-## Return Protocol
-Return ONLY: `DONE: {N} depth findings for state trace (X confirmed, Y refined, Z refuted, W contested)`
-MAX 1 line.
-
-Contested findings go to Step 7 verifier with FLAG: "requires external research"
+Use the driver-assigned output contract for IDs, outcomes, path, markers, and completion. For each target, cite its triggering source finding, a state graph of every relevant reader and writer, each enforcement point and operator, the path that reaches it, and concrete source lines. Preserve unresolved cross-function assumptions for independent verification.

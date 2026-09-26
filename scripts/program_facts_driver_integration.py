@@ -28,6 +28,10 @@ from artifact_ledger import (
     validate_work_unit_inputs,
 )
 from audit_snapshot import build_audit_snapshot
+from evm_analysis_workspace_authority import (
+    WORKSPACE_RECEIPT_PATH,
+    load_evm_analysis_workspace_authority,
+)
 from phase_io_contracts import (
     LaunchSpec,
     PhaseIOContract,
@@ -63,9 +67,12 @@ from program_facts_source_manifest import (
     replay_program_facts_source_manifest,
 )
 from program_facts_types import (
+    PROGRAM_FACTS_CONSUMER_ACTIVATION,
+    ProgramFactsTypeError,
     canonical_file_bytes,
     canonical_json_bytes,
     strict_json_loads,
+    validate_portable_path,
 )
 import rooted_path_io
 
@@ -76,6 +83,9 @@ PROGRAM_FACTS_CHECKPOINT_CAPTURE_PATH = (
 _CHECKPOINT_CAPTURE_UNIT = "program_facts_checkpoint_capture"
 _METHODOLOGY_CAPTURE_UNIT = "program_facts_methodology_capture"
 _BAKE_UNIT = "program_facts_bake"
+PROGRAM_FACTS_V2_AUTHORITY_CAPTURE_PATH = (
+    "_program_facts_inputs/program_facts_v2_authority_capture.v1.json"
+)
 _LAUNCH_TIMEOUT_SECONDS = 30
 _UUID4_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
@@ -90,9 +100,11 @@ _SNAPSHOT_PRIVATE_CONFIG_KEYS = frozenset(
         "_resolved_build_context_files",
         "_resolved_build_context_roots",
         "_resolved_build_root",
+        "_resolved_build_root_authority",
         "_resolved_build_source_files",
         "_resolved_compiled_dependency_roots",
         "_snapshot_build_input_limitations",
+        "_snapshot_input_preparation",
     }
 )
 
@@ -117,7 +129,7 @@ class ProgramFactsDriverOutcome:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "reason_codes", tuple(self.reason_codes))
-        if self.consumer_activation:
+        if self.consumer_activation is not PROGRAM_FACTS_CONSUMER_ACTIVATION:
             _fail("Program Facts Stage-2 cannot activate consumers")
 
 
@@ -450,24 +462,146 @@ def _portable_platform() -> PlatformIdentity:
     return PlatformIdentity(os_name, architecture)
 
 
-def _unavailable_build_variant() -> tuple[dict[str, Any], ToolchainIdentity]:
-    compiler_digest = hashlib.sha256(
-        b"PLAMEN_PROGRAM_FACTS_EVM_COMPILER_UNAVAILABLE_V1"
-    ).hexdigest()
+def _workspace_root_identity(
+    workspace: Mapping[str, Any],
+    build_root: Mapping[str, Any],
+) -> str:
+    """Derive a path-free ID from the committed workspace root authority."""
+
+    relation = workspace.get("root_relation")
+    receipt_sha256 = workspace.get("receipt_sha256")
+    descriptor_sha256 = build_root.get("descriptor_sha256")
+    relation_sha256 = (
+        relation.get("relation_sha256")
+        if isinstance(relation, Mapping)
+        else None
+    )
+    if any(
+        not isinstance(value, str)
+        or re.fullmatch(r"[0-9a-f]{64}", value) is None
+        for value in (receipt_sha256, descriptor_sha256, relation_sha256)
+    ):
+        _fail("Program Facts workspace root authority is malformed")
+    binding = {
+        "build_root_descriptor_sha256": descriptor_sha256,
+        "root_relation_sha256": relation_sha256,
+        "schema": "plamen.program_facts_workspace_root_identity.v1",
+        "workspace_receipt_sha256": receipt_sha256,
+    }
+    return "PFW-" + hashlib.sha256(canonical_json_bytes(binding)).hexdigest()
+
+
+def _workspace_manifest_digests(
+    manifests: object,
+) -> list[dict[str, str]]:
+    """Project rooted workspace manifests into portable Program Facts rows."""
+
+    if not isinstance(manifests, list):
+        _fail("Program Facts workspace manifest denominator is malformed")
+    projected: list[dict[str, str]] = []
+    rooted_aliases: set[str] = set()
+    portable_paths: set[str] = set()
+    for row in manifests:
+        if not isinstance(row, Mapping) or set(row) != {
+            "rooted_alias", "sha256", "size",
+        }:
+            _fail("Program Facts workspace manifest row is malformed")
+        rooted_alias = row.get("rooted_alias")
+        digest = row.get("sha256")
+        size = row.get("size")
+        if (
+            not isinstance(rooted_alias, str)
+            or rooted_alias in rooted_aliases
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or type(size) is not int
+            or size < 0
+        ):
+            _fail("Program Facts workspace manifest identity is malformed")
+        namespace, separator, portable_path = rooted_alias.partition(":")
+        if separator != ":" or namespace not in {"build", "project"}:
+            _fail("Program Facts workspace manifest root is malformed")
+        try:
+            validate_portable_path(portable_path)
+        except ProgramFactsTypeError as exc:
+            _fail("Program Facts workspace manifest path is malformed", exc)
+        if portable_path in portable_paths:
+            _fail("Program Facts workspace manifest path is duplicate")
+        rooted_aliases.add(rooted_alias)
+        portable_paths.add(portable_path)
+        projected.append({"path": portable_path, "sha256": digest})
+    return sorted(projected, key=lambda row: row["path"])
+
+
+def _workspace_string_set(build: Mapping[str, Any], field: str) -> list[str]:
+    """Require the workspace list to already satisfy the portable set ABI."""
+
+    value = build.get(field)
+    if (
+        not isinstance(value, list)
+        or any(not isinstance(item, str) for item in value)
+        or value != sorted(value)
+        or len(value) != len(set(value))
+    ):
+        _fail(f"Program Facts workspace {field} denominator is malformed")
+    return list(value)
+
+
+def _workspace_build_variant(
+    workspace: Mapping[str, Any],
+) -> tuple[dict[str, Any], ToolchainIdentity | None]:
+    """Project the shared workspace identity into the legacy emit-only ABI."""
+
+    build = workspace.get("build_variant")
+    build_root = workspace.get("build_root")
+    dependency = workspace.get("dependency_closure")
+    solc = workspace.get("solc_identity")
+    tools = workspace.get("tools")
+    if (
+        not isinstance(build, Mapping)
+        or not isinstance(build_root, Mapping)
+        or not isinstance(dependency, Mapping)
+        or not isinstance(solc, Mapping)
+        or not isinstance(tools, list)
+    ):
+        _fail("Program Facts workspace build authority is malformed")
+    compiler_digest = solc.get("tool_row_sha256")
+    dependency_digest = dependency.get("closure_sha256")
+    build_system = build.get("build_system")
+    profile = build.get("profile")
+    generated_source_policy = build.get("generated_source_policy")
+    if (
+        not isinstance(compiler_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", compiler_digest) is None
+    ):
+        _fail("Program Facts workspace solc identity is malformed")
+    if (
+        not isinstance(dependency_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", dependency_digest) is None
+    ):
+        _fail("Program Facts workspace dependency closure is malformed")
+    if not isinstance(build_system, str) or not build_system:
+        _fail("Program Facts workspace build system is malformed")
+    if not isinstance(profile, str):
+        _fail("Program Facts workspace build profile is malformed")
+    if generated_source_policy not in {"BOUND_INCLUDED", "BOUND_EXCLUDED"}:
+        _fail("Program Facts workspace generated-source policy is malformed")
     semantic: dict[str, Any] = {
         "ecosystem": "evm",
-        "build_system": "unresolved",
-        "build_root_id": "root-0",
-        "manifest_digests": [],
-        "dependency_closure_digest": hashlib.sha256(b"").hexdigest(),
+        "build_system": build_system,
+        "build_root_id": _workspace_root_identity(workspace, build_root),
+        "manifest_digests": _workspace_manifest_digests(
+            build.get("manifests")
+        ),
+        "dependency_closure_digest": dependency_digest,
         "compiler_identity_digest": compiler_digest,
-        "profile": "",
-        "features": [],
-        "tags": [],
-        "remappings": [],
-        "defines": [],
-        "target_triples": [],
-        "generated_source_policy": "BOUND_EXCLUDED",
+        "profile": profile,
+        "features": _workspace_string_set(build, "features"),
+        "tags": _workspace_string_set(build, "tags"),
+        "remappings": _workspace_string_set(build, "remappings"),
+        "defines": _workspace_string_set(build, "defines"),
+        "target_triples": _workspace_string_set(build, "target_triples"),
+        "generated_source_policy": generated_source_policy,
     }
     digest = hashlib.sha256(canonical_json_bytes(semantic)).hexdigest()
     variant = {
@@ -475,11 +609,28 @@ def _unavailable_build_variant() -> tuple[dict[str, Any], ToolchainIdentity]:
         **semantic,
         "variant_digest": digest,
     }
-    return variant, ToolchainIdentity(
-        "solc",
-        "0.0.0",
-        compiler_digest,
-    )
+    solc_rows = [
+        row for row in tools
+        if isinstance(row, Mapping) and row.get("tool_id") == "solc"
+    ]
+    if len(solc_rows) != 1:
+        _fail("Program Facts workspace solc denominator is malformed")
+    solc_row = solc_rows[0]
+    admission_state = solc_row.get("admission_state")
+    signed = solc_row.get("signed_runtime_authority")
+    if admission_state == "UNADMITTED":
+        if signed is not None:
+            _fail(
+                "Program Facts unadmitted workspace solc carries signed "
+                "runtime authority"
+            )
+        return variant, None
+    if admission_state != "ADMITTED" or not isinstance(signed, Mapping):
+        _fail("Program Facts workspace solc admission authority is malformed")
+    version = signed.get("version")
+    if not isinstance(version, str) or not version:
+        _fail("Program Facts admitted workspace solc version is malformed")
+    return variant, ToolchainIdentity("solc", version, compiler_digest)
 
 
 def _capabilities(
@@ -696,7 +847,12 @@ def ensure_program_facts_stage2_emit_only(
         fault_injector=fault_injector,
     )
 
-    variant, compiler = _unavailable_build_variant()
+    workspace = load_evm_analysis_workspace_authority(
+        root,
+        expected_run_id=run_id,
+        expected_snapshot_sha256=str(audit_snapshot["snapshot_digest"]),
+    )
+    variant, compiler = _workspace_build_variant(workspace)
     context = ProviderContext(
         audit_run_id=run_id,
         methodology_authority_digest=(
@@ -712,13 +868,18 @@ def ensure_program_facts_stage2_emit_only(
         languages=("solidity",),
         build_variant_ids=(str(variant["build_variant_id"]),),
         capability_requests=_capabilities(registry),
-        toolchains=(compiler,),
+        # An unadmitted compiler is an absent observation, not a fabricated
+        # version.  The unavailable compositor will preserve this as typed,
+        # zero-fact provider debt.  Admitted observations remain subject to
+        # ToolchainIdentity's strict dotted-numeric and digest validation.
+        toolchains=(() if compiler is None else (compiler,)),
         platform=_portable_platform(),
         environment=(),
-        working_directory_root_id="root-0",
+        working_directory_root_id=str(variant["build_root_id"]),
     )
     bake_inputs = (
         PROGRAM_FACTS_CHECKPOINT_CAPTURE_PATH,
+        WORKSPACE_RECEIPT_PATH,
         *PROGRAM_FACTS_METHODOLOGY_INPUT_PATHS,
     )
     bake_contract, bake_launch = _resolve(
@@ -825,12 +986,35 @@ def ensure_program_facts_stage2_emit_only(
         valid=True,
         reused=bake_was_committed,
         consumer_activation=False,
+        reason_codes=(
+            ("WORKSPACE_TOOL_UNADMITTED",)
+            if compiler is None
+            else ()
+        ),
+    )
+
+
+def ensure_program_facts_v2_workspace_bound(**kwargs: Any) -> ProgramFactsDriverOutcome:
+    """Delegate v2 publication to the closure-light production bridge."""
+
+    from program_facts_v2_driver_integration import (
+        ensure_program_facts_v2_workspace_bound as publish_v2,
+    )
+
+    outcome = publish_v2(**kwargs)
+    return ProgramFactsDriverOutcome(
+        state=outcome.state,
+        valid=outcome.valid,
+        reused=outcome.reused,
+        consumer_activation=outcome.consumer_activation,
     )
 
 
 __all__ = [
     "PROGRAM_FACTS_CHECKPOINT_CAPTURE_PATH",
+    "PROGRAM_FACTS_V2_AUTHORITY_CAPTURE_PATH",
     "ProgramFactsDriverIntegrationError",
     "ProgramFactsDriverOutcome",
     "ensure_program_facts_stage2_emit_only",
+    "ensure_program_facts_v2_workspace_bound",
 ]

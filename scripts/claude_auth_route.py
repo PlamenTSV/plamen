@@ -98,12 +98,10 @@ _ENDPOINT_MODES = {
 }
 _CUSTOM_ENDPOINT_ROUTES = {"AUTH_TOKEN", "API_KEY", "API_KEY_HELPER"}
 
-# Exact stream-json ``system/init.apiKeySource`` vocabulary pinned for the
-# reviewed legacy CLI protocol from the recorded protocol evidence.  A CLI
-# update is intentionally a code/config change, not a permissive semver range;
-# the controlled official-CLI checkpoint still has to confirm this table
-# before cutover.
-_API_KEY_SOURCE_BY_VERSION_ROUTE: dict[
+# Exact historical stream-json ``system/init.apiKeySource`` vocabulary.  This
+# table is compatibility evidence only; current releases require the opaque
+# install-generation CLI behavior/conformance authority.
+_LEGACY_API_KEY_SOURCE_BY_VERSION_ROUTE: dict[
     str, dict[str, tuple[str, ...]]
 ] = {
     "2.1.220": {
@@ -1368,7 +1366,7 @@ def expected_init_api_key_sources(
         raise ClaudeAuthRouteError(
             "Claude version or auth route is malformed"
         )
-    route_map = _API_KEY_SOURCE_BY_VERSION_ROUTE.get(claude_code_version)
+    route_map = _LEGACY_API_KEY_SOURCE_BY_VERSION_ROUTE.get(claude_code_version)
     if route_map is None or desired_route not in route_map:
         raise ClaudeAuthRouteError(
             "Claude auth/init protocol version is unsupported"

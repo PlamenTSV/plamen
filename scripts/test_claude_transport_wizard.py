@@ -47,32 +47,56 @@ def test_sc_thorough_defaults_to_headless_only_with_exact_capability(monkeypatch
     assert config["claude_exec_mode"] == "headless"
 
 
-def test_sc_thorough_unsupported_host_fails_closed_with_visible_reason(monkeypatch):
+def test_compat_claude_auth_rejection_precedes_destination_writes(
+    tmp_path, monkeypatch, capsys,
+):
+    front = _load_front()
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(front, "_posix_v2_compat_install_active", lambda: True)
+
+    def no_write(*_args, **_kwargs):
+        pytest.fail("transport rejection must not create a scratchpad")
+
+    monkeypatch.setattr(
+        front, "_check_local_claude_login_before_launch",
+        lambda: (_ for _ in ()).throw(RuntimeError("Claude login unavailable")),
+    )
+    monkeypatch.setattr(front.os, "makedirs", no_write)
+    with pytest.raises(SystemExit) as stopped:
+        front.launch_v2("sc", "core", str(project), "evm", cli_backend="claude")
+    assert stopped.value.code == 1
+    rendered = capsys.readouterr().out
+    assert "Claude login unavailable" in rendered
+    assert list(project.iterdir()) == []
+
+
+def test_sc_thorough_selection_does_not_use_stale_host_probe(monkeypatch):
     front = _load_front()
     monkeypatch.setattr(
         front,
         "_claude_headless_transport_capability",
-        lambda: _cap(False, "NATIVE_SANDBOX_PROCESS_AUTHORITY_NOT_CONFIGURED"),
+        lambda: pytest.fail("backend selection must not use the legacy host probe"),
     )
-    with pytest.raises(RuntimeError) as stopped:
-        front._resolve_new_claude_transport("sc", "thorough", "claude")
-    message = str(stopped.value)
-    assert "NATIVE_SANDBOX_PROCESS_AUTHORITY_NOT_CONFIGURED" in message
-    assert "choose Codex explicitly" in message
+    assert front._resolve_new_claude_transport(
+        "sc", "thorough", "claude"
+    ) == ("claude", "headless", "")
 
 
-def test_explicit_headless_fails_closed_without_capability(monkeypatch):
+def test_explicit_headless_is_platform_neutral_at_selection(monkeypatch):
     front = _load_front()
     monkeypatch.setattr(
         front,
         "_claude_headless_transport_capability",
-        lambda: _cap(False, "DELEGATED_CGROUP_V2_PROVIDER_NOT_CONFIGURED"),
+        lambda: pytest.fail("backend selection must not use the legacy host probe"),
     )
-    with pytest.raises(RuntimeError, match="DELEGATED_CGROUP_V2"):
-        front._launch_v2_config_value(
-            "sc", "thorough", ".", "evm",
-            cli_backend="claude", claude_exec_mode="headless",
-        )
+    config = front._launch_v2_config_value(
+        "sc", "thorough", ".", "evm",
+        cli_backend="claude", claude_exec_mode="headless",
+    )
+    assert (config["cli_backend"], config["claude_exec_mode"]) == (
+        "claude", "headless",
+    )
 
 
 def test_every_new_config_has_literal_mode_and_alias_is_canonical(monkeypatch):
@@ -183,7 +207,7 @@ def test_launch_rejects_invalid_bound_authority_before_project_write(
             claude_exec_mode="headless", _transport_resolution=object(),
         )
     assert stopped.value.code == 1
-    assert "Refusing unsafe audit launch" in capsys.readouterr().out
+    assert "Cannot start audit" in capsys.readouterr().out
     assert not (project / ".scratchpad").exists()
 
 
@@ -248,6 +272,45 @@ def test_public_codex_plan_resolves_once_without_provider_or_project_write(
     assert plan["claude_exec_mode"] == "headless"
     assert plan["provider_invocations"] == 0
     assert not (project / ".scratchpad").exists()
+
+
+@pytest.mark.parametrize("compatibility", (True, False))
+@pytest.mark.parametrize("dirty_destination", (True, False))
+def test_codex_plan_reports_compatibility_assurance_without_side_effects(
+    tmp_path, monkeypatch, compatibility, dirty_destination,
+):
+    front = _load_front()
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "A.sol").write_text("contract A {}\n", encoding="utf-8")
+    if dirty_destination:
+        (project / ".scratchpad").mkdir()
+        (project / ".scratchpad" / "existing.md").write_text("retained\n")
+    before = {p.relative_to(project): p.read_bytes()
+              for p in project.rglob("*") if p.is_file()}
+    monkeypatch.setattr(front, "_detect_cli_backends", lambda: ["codex"])
+    monkeypatch.setattr(front, "_posix_v2_compat_install_active", lambda: compatibility)
+
+    def no_external_effect(*_args, **_kwargs):
+        pytest.fail("planning must not launch providers or write audit state")
+
+    monkeypatch.setattr(front, "launch_v2", no_external_effect)
+    monkeypatch.setattr(front.subprocess, "run", no_external_effect)
+    monkeypatch.setattr(front.os, "makedirs", no_external_effect)
+    plan = front._public_plan("core", [str(project), "--codex"])
+
+    assert plan["backend"] == "codex"
+    assert plan["provider_invocations"] == 0
+    assert plan["launchable"] is (not dirty_destination)
+    assert bool(plan["runtime_notice"]) is compatibility
+    if compatibility:
+        assert "supports local audits" in plan["runtime_notice"]
+        assert "does not provide native containment" in plan["runtime_notice"]
+        assert plan["runtime_notice"] in front._public_help_text("test")
+    assert any("destination is not clean" in issue
+               for issue in plan["issues"]) is dirty_destination
+    assert {p.relative_to(project): p.read_bytes()
+            for p in project.rglob("*") if p.is_file()} == before
 
 
 @pytest.mark.parametrize(
@@ -365,44 +428,138 @@ def test_interactive_wizard_passes_its_single_resolution_to_launch(
     assert captured["kwargs"]["claude_exec_mode"] == exec_mode
 
 
-@pytest.mark.parametrize(
-    "available,selection,expected_default,expected_choices",
-    ((True, "headless", "headless", {"headless"}),
-     (False, "__back__", "__back__", set())),
-)
-def test_wizard_choice_is_capability_gated_and_defaults_safely(
-    monkeypatch, available, selection, expected_default, expected_choices
+def test_wizard_resolves_claude_without_host_probe_or_transport_question(
+    monkeypatch,
 ):
     front = _load_front()
-    captured = {}
+
+    def no_prompt(**kwargs):
+        pytest.fail("transport is an implementation detail, not a wizard choice")
+
+    monkeypatch.setattr(
+        front, "_claude_headless_transport_capability",
+        lambda: pytest.fail("legacy host probe must not decide backend selection"),
+    )
+    monkeypatch.setattr(front, "_drain_stdin", lambda: None)
+    monkeypatch.setattr(front.inquirer, "select", no_prompt)
+    selected, warning = front.select_claude_transport("sc", "thorough")
+    backend, transport, bound_warning = front._replay_new_transport_resolution(
+        selected, pipeline="sc", mode="thorough",
+    )
+    assert (backend, transport, bound_warning) == ("claude", "headless", "")
+    assert warning == ""
+
+
+@pytest.mark.parametrize(
+    "host_platform,compatibility,pipeline,mode",
+    (
+        ("win32", False, "sc", "thorough"),
+        ("darwin", False, "sc", "core"),
+        ("linux", False, "l1", "light"),
+        ("darwin", True, "sc", "core"),
+        ("linux", True, "l1", "light"),
+    ),
+)
+def test_claude_transport_platform_matrix_is_native_driver_bound(
+    monkeypatch, host_platform, compatibility, pipeline, mode,
+):
+    front = _load_front()
+    probe_calls = []
+
+    def capability():
+        probe_calls.append(True)
+        return _cap(True)
+
+    monkeypatch.setattr(front.sys, "platform", host_platform)
+    monkeypatch.setattr(
+        front, "_posix_v2_compat_install_active", lambda: compatibility,
+    )
+    monkeypatch.setattr(front, "_claude_headless_transport_capability", capability)
+    monkeypatch.setattr(front, "_check_local_claude_login_before_launch", lambda: None)
+    monkeypatch.setattr(
+        front.inquirer, "select",
+        lambda **_kwargs: pytest.fail("transport implementation must not be prompted"),
+    )
+
+    selected, warning = front.select_claude_transport(pipeline, mode)
+    assert probe_calls == []
+    backend, transport, replay_warning = front._replay_new_transport_resolution(
+        selected, pipeline=pipeline, mode=mode,
+    )
+    assert (backend, transport) == ("claude", "headless")
+    assert warning == ""
+    assert replay_warning == ""
+
+
+def test_stale_host_probe_cannot_disable_sole_claude_selection(monkeypatch):
+    front = _load_front()
+    monkeypatch.setattr(front, "_posix_v2_compat_install_active", lambda: False)
+    monkeypatch.setattr(
+        front, "_claude_headless_transport_capability",
+        lambda: pytest.fail("legacy host probe must not run"),
+    )
+    selected, warning = front.select_claude_transport("sc", "thorough")
+    assert front._replay_new_transport_resolution(
+        selected, pipeline="sc", mode="thorough",
+    ) == ("claude", "headless", "")
+    assert warning == ""
+
+
+def test_multi_backend_wizard_accepts_claude_before_target(monkeypatch):
+    front = _load_front()
+
+    class ReachedTarget(Exception):
+        pass
+
+    class TTYBuffer:
+        def isatty(self):
+            return True
+
+        def write(self, value):
+            return len(value)
+
+        def flush(self):
+            return None
 
     class Prompt:
         def execute(self):
-            return selection
+            return "claude"
 
-    def fake_select(**kwargs):
-        captured.update(kwargs)
+    prompts = []
+
+    def choose_backend(**kwargs):
+        prompts.append(kwargs)
+        assert kwargs["message"] == "AI runtime?"
         return Prompt()
 
-    monkeypatch.setattr(front, "_claude_headless_transport_capability", lambda: _cap(
-        available, "UNSUPPORTED_TEST_HOST" if not available else ""
-    ))
-    monkeypatch.setattr(front, "_drain_stdin", lambda: None)
-    monkeypatch.setattr(front.inquirer, "select", fake_select)
-    selected, warning = front.select_claude_transport("sc", "thorough")
-    if selection == front._BACK:
-        assert selected == selection
-    else:
-        backend, transport, bound_warning = front._replay_new_transport_resolution(
-            selected, pipeline="sc", mode="thorough",
-        )
-        assert (backend, transport, bound_warning) == ("claude", selection, "")
-    assert captured["default"] == expected_default
-    values = {
-        item.get("value") for item in captured["choices"] if isinstance(item, dict)
-    }
-    assert values - {front._BACK} == expected_choices
-    assert warning == ""
+    monkeypatch.setattr(front.sys, "argv", ["plamen.py"])
+    monkeypatch.setattr(front.sys, "stdin", TTYBuffer())
+    monkeypatch.setattr(front.sys, "stdout", TTYBuffer())
+    monkeypatch.setattr(front, "_posix_v2_compat_install_active", lambda: False)
+    monkeypatch.setattr(front, "_enforce_public_claude_projection_preflight", lambda: None)
+    monkeypatch.setattr(front, "show_banner", lambda: None)
+    monkeypatch.setattr(front, "_check_claude_md_version", lambda: None)
+    monkeypatch.setattr(front, "_show_installed_audit_runtime", lambda: None)
+    monkeypatch.setattr(front, "_find_existing_audit", lambda: None)
+    monkeypatch.setattr(front, "show_hint_panel", lambda: None)
+    monkeypatch.setattr(front, "_quick_check_required", lambda: True)
+    monkeypatch.setattr(front, "select_pipeline", lambda: "sc")
+    monkeypatch.setattr(front, "select_audit_mode", lambda _pipeline: "thorough")
+    monkeypatch.setattr(front, "_audit_cli_backends", lambda: ["claude", "codex"])
+    monkeypatch.setattr(front, "_skip_backend_prompt", lambda: False)
+    monkeypatch.setattr(front, "_claude_headless_transport_capability", lambda: pytest.fail("legacy host probe must not run"))
+    monkeypatch.setattr(front.inquirer, "select", choose_backend)
+    monkeypatch.setattr(front, "select_target", lambda: (_ for _ in ()).throw(ReachedTarget))
+
+    with pytest.raises(ReachedTarget):
+        front.main()
+    assert len(prompts) == 1
+    choices = [choice for choice in prompts[0]["choices"] if isinstance(choice, dict)]
+    assert [choice["value"] for choice in choices] == [
+        "claude", "codex", front._BACK,
+    ]
+    assert any(choice["name"] == "← Go back" for choice in choices)
+    assert all("compare" not in str(choice).casefold() for choice in choices)
 
 
 def test_summary_shows_only_contained_headless_transport(capsys):

@@ -1,0 +1,1270 @@
+from __future__ import annotations
+
+import ast
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import types
+
+import pytest
+
+import evm_analysis_workspace_authority as W
+from js_lock_authority import JSLockAuthorityError, select_js_lock_authority
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _digest(value: object) -> str:
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")).hexdigest()
+
+
+def test_node_modules_dependency_closure_excludes_only_bin_launchers(
+    tmp_path: Path,
+) -> None:
+    modules = tmp_path / "node_modules"
+    package = modules / "pkg"
+    launcher_dir = modules / ".bin"
+    package.mkdir(parents=True)
+    launcher_dir.mkdir()
+    source = package / "Dependency.sol"
+    source.write_text("library Dependency {}\n", encoding="utf-8")
+    try:
+        os.symlink("../pkg/Dependency.sol", launcher_dir / "dependency")
+        nested_launcher_dir = package / "node_modules" / ".bin"
+        nested_launcher_dir.mkdir(parents=True)
+        os.symlink(
+            "../../../pkg/Dependency.sol",
+            nested_launcher_dir / "nested-dependency",
+        )
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    root = W._directory_record(modules, rooted_alias="dependency:0")
+    exclude_bins = W._dependency_root_uses_node_modules_bin_policy(modules)
+    closure = W._dependency_content_closure(
+        modules,
+        rooted_alias="dependency:0",
+        expected_root=root,
+        exclude_node_modules_bin=exclude_bins,
+    )
+    assert closure["excluded_path_policy"] == (
+        "NODE_MODULES_BIN_DIRECTORIES_V2"
+    )
+    assert closure["file_count"] == 1
+    W._validate_dependency_content_closure_shape(
+        closure,
+        label="dependency:0",
+        expect_node_modules_bin_exclusion=exclude_bins,
+    )
+
+    before = closure["closure_sha256"]
+    source.write_text("library Dependency { uint256 x; }\n", encoding="utf-8")
+    changed = W._dependency_content_closure(
+        modules,
+        rooted_alias="dependency:0",
+        expected_root=root,
+        exclude_node_modules_bin=exclude_bins,
+    )
+    assert changed["closure_sha256"] != before
+
+    os.symlink("Dependency.sol", package / "source-link.sol")
+    with pytest.raises(
+        W.EVMAnalysisWorkspaceAuthorityError,
+        match="link/reparse point",
+    ):
+        W._dependency_content_closure(
+            modules,
+            rooted_alias="dependency:0",
+            expected_root=root,
+            exclude_node_modules_bin=exclude_bins,
+        )
+
+
+def test_scoped_dependency_root_excludes_nested_node_modules_bin_only(
+    tmp_path: Path,
+) -> None:
+    scope = tmp_path / "node_modules" / "@scope"
+    package = scope / "package"
+    nested_launcher_dir = package / "node_modules" / ".bin"
+    nested_launcher_dir.mkdir(parents=True)
+    source = package / "Dependency.sol"
+    source.write_text("library Dependency {}\n", encoding="utf-8")
+    try:
+        os.symlink(
+            "../../../package/Dependency.sol",
+            nested_launcher_dir / "dependency",
+        )
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    root = W._directory_record(scope, rooted_alias="dependency:0")
+    closure = W._dependency_content_closure(
+        scope,
+        rooted_alias="dependency:0",
+        expected_root=root,
+        exclude_node_modules_bin=(
+            W._dependency_root_uses_node_modules_bin_policy(scope)
+        ),
+    )
+    assert closure["file_count"] == 1
+
+    unrelated_bin = scope / ".bin"
+    unrelated_bin.mkdir()
+    os.symlink("../package/Dependency.sol", unrelated_bin / "dependency")
+    with pytest.raises(
+        W.EVMAnalysisWorkspaceAuthorityError,
+        match="link/reparse point",
+    ):
+        W._dependency_content_closure(
+            scope,
+            rooted_alias="dependency:0",
+            expected_root=root,
+            exclude_node_modules_bin=True,
+        )
+
+
+def test_direct_node_modules_binding_replays_js_consumption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, controls,
+) -> None:
+    build = tmp_path / "project"
+    modules = build / "node_modules"
+    package_dir = modules / "a"
+    package_dir.mkdir(parents=True)
+    (build / "foundry.toml").write_text(
+        '[profile.default]\nsrc="src"\nlibs=["node_modules","lib"]\n',
+        encoding="utf-8",
+    )
+    (build / "src").mkdir()
+    (build / "src" / "C.sol").write_text("contract C {}\n", encoding="utf-8")
+    package = (
+        json.dumps(
+            {"name": "fixture", "version": "1.0.0", "dependencies": {"a": "^1"}},
+            sort_keys=True,
+            separators=(",", ":"),
+        ) + "\n"
+    ).encode()
+    integrity = "sha512-" + base64.b64encode(hashlib.sha512(b"a").digest()).decode()
+    yarn = (
+        "# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.\n"
+        "# yarn lockfile v1\n\n"
+        '"a@^1":\n'
+        '  version "1.0.0"\n'
+        '  resolved "https://registry.example.invalid/a.tgz"\n'
+        f"  integrity {integrity}\n"
+    ).encode()
+    (build / "package.json").write_bytes(package)
+    (build / "yarn.lock").write_bytes(yarn)
+    (package_dir / "package.json").write_text(
+        '{"name":"a","version":"1.0.0"}\n', encoding="utf-8"
+    )
+    executable = tmp_path / "tools" / "tool"
+    executable.parent.mkdir()
+    executable.write_bytes(b"tool")
+    authorities = {
+        tool_id: _signed_tool(tool_id, executable) for tool_id in W._TOOL_IDS
+    }
+    preparation = {
+        "schema_version": "plamen.evm_input_preparation.v1",
+        "status": "DEGRADED",
+        "reason": "focused direct dependency binding fixture",
+    }
+    config = {
+        "_resolved_build_root": str(build),
+        "_resolved_build_root_authority": _root_authority(build, build),
+        "_resolved_compiled_dependency_roots": [str(modules)],
+        "_snapshot_input_preparation": {
+            **preparation,
+            "preparation_sha256": _digest(preparation),
+        },
+    }
+    receipt = W.build_evm_analysis_workspace_receipt(
+        config=config,
+        project_root=build,
+        run_id="run-direct-modules",
+        audit_snapshot=_snapshot(authorities),
+        owner_work_unit_key="sc/core/evm/claude/recon/evm_analysis_workspace_capture",
+        implementation_root=ROOT,
+        admitted_tool_authorities=authorities,
+    )
+    assert receipt["analysis_projection"] is None
+    assert receipt["js_consumption"]["state"] == "BOUND"
+    W.replay_evm_analysis_workspace_execution_closure(receipt)
+
+
+def _root_authority(project: Path, build: Path) -> dict[str, object]:
+    return W.capture_evm_build_root_resolver_authority(project, build)
+
+
+def _signed_tool(tool_id: str, executable: Path) -> dict[str, object]:
+    executable_bytes = executable.read_bytes()
+    unsigned = {
+        "schema": "plamen.runtime_tool_identity.v1",
+        "tool_id": tool_id,
+        "identity_kind": "command" if tool_id != "slither" else "python_distribution",
+        "resolved_executable": str(executable),
+        **({
+            "executable_sha256": hashlib.sha256(executable_bytes).hexdigest(),
+            "executable_bytes": len(executable_bytes),
+        } if tool_id != "slither" else {}),
+        **({
+            "module_origin": str(executable),
+            "module_sha256": hashlib.sha256(executable_bytes).hexdigest(),
+        } if tool_id == "slither" else {}),
+        "version": "1.2.3",
+        "deterministic_provider_authority": True,
+        "toolchain_governance_sha256": "a" * 64,
+        "toolchain_version_lock_sha256": "b" * 64,
+        "authority_status": "MATCH",
+        "reason": "",
+    }
+    return {**unsigned, "authority_digest": _digest(unsigned)}
+
+
+def _snapshot(authorities: dict[str, dict[str, object]]) -> dict[str, object]:
+    entries = {}
+    for tool_id, authority in authorities.items():
+        frozen = dict(authority)
+        for name in ("authority_digest", "authority_status", "reason"):
+            frozen.pop(name, None)
+        raw = json.dumps(
+            frozen, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        ).encode("utf-8")
+        entries[f"@runtime/tool/{tool_id}"] = {
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "byte_count": len(raw),
+        }
+    return {
+        "snapshot_digest": "c" * 64,
+        "components": {
+            "source_scope": {
+                "digest": "d" * 64,
+                "path_set_digest": "e" * 64,
+                "file_count": 1,
+                "byte_count": 1,
+            },
+            "toolchain": {"digest": "f" * 64, "runtime_entries": entries},
+        },
+    }
+
+
+@pytest.fixture
+def controls(monkeypatch: pytest.MonkeyPatch):
+    rows = {
+        tool_id: {
+            "tool_id": tool_id,
+            "runtime_authority": {
+                "deterministic_provider_authority": True,
+                "identity_status": "MATCH",
+            },
+        }
+        for tool_id in W._TOOL_IDS
+    }
+    monkeypatch.setattr(W, "_governance_rows", lambda _root: (rows, "a" * 64, "b" * 64))
+    admitted_rule = {"state": "ADMITTED", "binding_sha256": "9" * 64}
+    monkeypatch.setattr(W, "_rule_tree_authority", lambda _root: admitted_rule)
+
+
+def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    build = tmp_path / "foundry"
+    project = build / "src"
+    project.mkdir(parents=True)
+    (build / "foundry.toml").write_text('[profile.default]\nsrc="src"\n')
+    executable = tmp_path / "tools" / "tool"
+    executable.parent.mkdir()
+    executable.write_bytes(b"tool")
+    authorities = {
+        tool_id: _signed_tool(tool_id, executable) for tool_id in W._TOOL_IDS
+    }
+    config = {
+        "_resolved_build_root": str(build),
+        "_resolved_build_root_authority": _root_authority(project, build),
+    }
+    preparation = {
+        "schema_version": "plamen.evm_input_preparation.v1",
+        "status": "DEGRADED",
+        "reason": "focused fixture has no committed native projection",
+    }
+    config["_snapshot_input_preparation"] = {
+        **preparation,
+        "preparation_sha256": _digest(preparation),
+    }
+    receipt = W.build_evm_analysis_workspace_receipt(
+        config=config,
+        project_root=project,
+        run_id="run-14",
+        audit_snapshot=_snapshot(authorities),
+        owner_work_unit_key="sc/core/evm/claude/recon/evm_analysis_workspace_capture",
+        implementation_root=ROOT,
+        admitted_tool_authorities=authorities,
+    )
+    return project, build, config, authorities, receipt
+
+
+def _fake_committed_projection(
+    *,
+    build: Path,
+    source_scope_sha256: str,
+    selection_sha256: str,
+) -> tuple[W.CommittedEVMAnalysisProjection, dict[str, object], bytes]:
+    """Portable fake of the capability that only committed load may issue."""
+
+    build_record = W._directory_record(build, rooted_alias="projection:.")
+    workspace = W._dependency_content_closure(
+        build, rooted_alias="projection:.", expected_root=build_record
+    )
+    source = W._dependency_content_closure(
+        build,
+        rooted_alias="projection-source:.",
+        expected_root=build_record,
+        excluded_top_level=frozenset({"node_modules"}),
+    )
+    modules_root = build / "node_modules"
+    modules_record = W._directory_record(
+        modules_root, rooted_alias="projection:node_modules"
+    )
+    modules = W._dependency_content_closure(
+        modules_root,
+        rooted_alias="projection:node_modules",
+        expected_root=modules_record,
+    )
+    lineage_id = "lineage-fixture"
+    source_snapshot = {
+        "schema": "plamen.audit-source-snapshot-binding.v1",
+        "snapshot_sha256": source_scope_sha256,
+        "source_scope_sha256": source_scope_sha256,
+    }
+    private_projection = {
+        "schema": "plamen.private-source-projection.v1",
+        "lineage_id": lineage_id,
+        "source_snapshot_sha256": source_scope_sha256,
+        "descriptor_sha256": build_record["descriptor_sha256"],
+        "tree_sha256": workspace["closure_sha256"],
+        "read_only": True,
+    }
+    dependencies = {
+        "schema": "plamen.evm-dependency-materialization-native.v1",
+        "lineage_id": lineage_id,
+        "build_system": "hardhat",
+        "provider_receipt_schema": "plamen.js-dependency-materialization-receipt.v2",
+        "provider_receipt_sha256": "6" * 64,
+        "closure_sha256": modules["closure_sha256"],
+        "complete": True,
+    }
+    compiler = {
+        "schema": "plamen.solc-materialization-native.v1",
+        "lineage_id": lineage_id,
+        "provider_receipt_schema": "plamen.managed-evm-python-native-admission.v1",
+        "provider_receipt_sha256": "a" * 64,
+        "version": "0.8.26",
+        "artifact_sha256": "b" * 64,
+        "artifact_bytes": 1,
+        "complete": True,
+    }
+    guest_mount = {
+        "schema": "plamen.guest-read-only-mount.v1",
+        "lineage_id": lineage_id,
+        "mount_id": "project",
+        "guest_path": "/workspace/project",
+        "source_projection_sha256": workspace["closure_sha256"],
+        "read_only": True,
+    }
+    native_request = {
+        "schema": "plamen.native-materialization-request.v1",
+        "lineage_id": lineage_id,
+        "build_system": "hardhat",
+        "source_snapshot": source_snapshot,
+        "private_source_projection": private_projection,
+        "dependencies": dependencies,
+        "compiler": compiler,
+        "guest_mount": guest_mount,
+    }
+    native_request_sha256 = _digest(native_request)
+    lineage = {
+        "schema": "plamen.evm-tool-materialization-lineage.v2",
+        "lineage_id": lineage_id,
+        "build_system": "hardhat",
+        "source_snapshot": source_snapshot,
+        "private_source_projection": private_projection,
+        "dependencies": dependencies,
+        "compiler": compiler,
+        "guest_mount": guest_mount,
+        "native_materialization_terminal": {
+            "schema": "plamen.native-materialization-terminal.v1",
+            "lineage_id": lineage_id,
+            "request_sha256": native_request_sha256,
+            "terminal_sha256": "c" * 64,
+            "complete": True,
+        },
+    }
+    lineage_raw = W._canonical_json(lineage)
+    unsigned: dict[str, object] = {
+        "analysis_workspace_bytes": workspace["byte_count"],
+        "analysis_workspace_closure_sha256": workspace["closure_sha256"],
+        "analysis_workspace_directory_count": workspace["directory_count"],
+        "analysis_workspace_file_count": workspace["file_count"],
+        "component_kind": W.ANALYSIS_PROJECTION_COMPONENT_KIND,
+        "dependency_materialization_receipt_sha256": "6" * 64,
+        "guest_mount_identity_sha256": "7" * 64,
+        "guest_mount_path": "/workspace/project",
+        "host_descriptor_identity_sha256": build_record["descriptor_sha256"],
+        "invocation_sha256": "8" * 64,
+        "js_lock_selection_sha256": selection_sha256,
+        "materialized_node_modules_bytes": modules["byte_count"],
+        "materialized_node_modules_closure_sha256": modules["closure_sha256"],
+        "materialized_node_modules_directory_count": modules["directory_count"],
+        "materialized_node_modules_file_count": modules["file_count"],
+        "materialization_lineage_byte_count": len(lineage_raw),
+        "materialization_lineage_sha256": hashlib.sha256(lineage_raw).hexdigest(),
+        "native_materialization_request_sha256": native_request_sha256,
+        "native_projection_custody_sha256": "9" * 64,
+        "original_source_scope_sha256": source_scope_sha256,
+        "project_read_only": True,
+        "receipt_byte_count": 0,
+        "schema": W.ANALYSIS_PROJECTION_SCHEMA,
+        "source_copy_bytes": source["byte_count"],
+        "source_copy_closure_sha256": source["closure_sha256"],
+        "source_copy_directory_count": source["directory_count"],
+        "source_copy_file_count": source["file_count"],
+        "writable_mounts": ["/workspace/scratch", "/workspace/state"],
+    }
+    while True:
+        receipt = {**unsigned, "receipt_sha256": _digest(unsigned)}
+        size = len(W._canonical_json(receipt))
+        if unsigned["receipt_byte_count"] == size:
+            break
+        unsigned["receipt_byte_count"] = size
+    component_unsigned = {
+        "kind": W.ANALYSIS_PROJECTION_COMPONENT_KIND,
+        "receipt_sha256": receipt["receipt_sha256"],
+        "receipt_byte_count": receipt["receipt_byte_count"],
+        "original_source_scope_sha256": receipt["original_source_scope_sha256"],
+        "source_copy_closure_sha256": receipt["source_copy_closure_sha256"],
+        "js_lock_selection_sha256": receipt["js_lock_selection_sha256"],
+        "dependency_materialization_receipt_sha256": receipt[
+            "dependency_materialization_receipt_sha256"
+        ],
+        "materialized_node_modules_closure_sha256": receipt[
+            "materialized_node_modules_closure_sha256"
+        ],
+        "analysis_workspace_closure_sha256": receipt[
+            "analysis_workspace_closure_sha256"
+        ],
+        "native_projection_custody_sha256": receipt[
+            "native_projection_custody_sha256"
+        ],
+        "materialization_lineage_sha256": receipt["materialization_lineage_sha256"],
+        "materialization_lineage_byte_count": receipt[
+            "materialization_lineage_byte_count"
+        ],
+        "native_materialization_request_sha256": receipt[
+            "native_materialization_request_sha256"
+        ],
+    }
+    component = {**component_unsigned, "digest": _digest(component_unsigned)}
+    authority = object.__new__(W.CommittedEVMAnalysisProjection)
+    authority._receipt = W._frozen_mapping(receipt)
+    authority._component = W._frozen_mapping(component)
+    authority._owner_work_unit_key = (
+        "sc/core/evm/claude/recon/evm_analysis_projection_capture"
+    )
+    W._LIVE_ANALYSIS_PROJECTIONS.add(authority)
+    return authority, component, lineage_raw
+
+
+def test_snapshot_authorized_ancestor_root_is_bound_without_path_widening(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, controls,
+):
+    project, build, _config, _authorities, receipt = _build(tmp_path, monkeypatch)
+    assert receipt["root_relation"]["kind"] == "ANCESTOR"
+    assert receipt["root_relation"]["relative_path"] == "src"
+    assert receipt["build_root"]["absolute_path"] == str(build)
+    assert receipt["build_variant"]["manifests"][0]["rooted_alias"] == "build:foundry.toml"
+    assert all(row["admission_state"] == "UNADMITTED" for row in receipt["tools"])
+
+    sibling = tmp_path / "unrelated"
+    sibling.mkdir()
+    bad = dict(_config)
+    bad["_resolved_build_root"] = str(sibling)
+    with pytest.raises(W.EVMAnalysisWorkspaceAuthorityError, match="unrelated"):
+        W.build_evm_analysis_workspace_receipt(
+            config=bad,
+            project_root=project,
+            run_id="run-14",
+            audit_snapshot=_snapshot(_authorities),
+            owner_work_unit_key="sc/core/evm/claude/recon/evm_analysis_workspace_capture",
+            implementation_root=ROOT,
+            admitted_tool_authorities=_authorities,
+        )
+
+
+def test_manifest_inode_swap_during_descriptor_read_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, controls,
+):
+    build = tmp_path / "foundry"
+    project = build / "src"
+    project.mkdir(parents=True)
+    manifest = build / "foundry.toml"
+    manifest.write_text('[profile.default]\nsrc="src"\n')
+    replacement = build / "replacement"
+    replacement.write_text('[profile.default]\nsrc="contracts"\n')
+    config = {
+        "_resolved_build_root": str(build),
+        "_resolved_build_root_authority": _root_authority(project, build),
+    }
+    real_open = W.os.open
+    swapped = False
+
+    def swapping_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if path == "foundry.toml" and not swapped:
+            swapped = True
+            os.replace(replacement, manifest)
+        return descriptor
+
+    monkeypatch.setattr(W.os, "open", swapping_open)
+    with pytest.raises(
+        W.EVMAnalysisWorkspaceAuthorityError,
+        match="ordinary bounded file|changed during capture",
+    ):
+        W.build_evm_analysis_workspace_receipt(
+            config=config,
+            project_root=project,
+            run_id="run-14",
+            audit_snapshot=_snapshot({}),
+            owner_work_unit_key="sc/core/evm/claude/recon/evm_analysis_workspace_capture",
+            implementation_root=ROOT,
+        )
+
+
+def test_recomputed_outer_hash_cannot_upgrade_snapshot_mismatched_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, controls,
+):
+    _project, _build_root, _config, _authorities, receipt = _build(tmp_path, monkeypatch)
+    forged = json.loads(json.dumps(receipt))
+    row = forged["tools"][0]
+    signed = row["signed_runtime_authority"]
+    signed["resolved_executable"] += "-substituted"
+    unsigned_signed = dict(signed)
+    unsigned_signed.pop("authority_digest")
+    signed["authority_digest"] = _digest(unsigned_signed)
+    unsigned_row = dict(row)
+    unsigned_row.pop("tool_row_sha256")
+    row["tool_row_sha256"] = _digest(unsigned_row)
+    unsigned_receipt = dict(forged)
+    unsigned_receipt.pop("receipt_sha256")
+    forged["receipt_sha256"] = _digest(unsigned_receipt)
+    with pytest.raises(W.EVMAnalysisWorkspaceAuthorityError, match="snapshot binding"):
+        W.validate_evm_analysis_workspace_receipt(forged)
+
+
+def test_production_load_rejects_uncommitted_self_consistent_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, controls,
+):
+    _project, _build_root, _config, _authorities, receipt = _build(tmp_path, monkeypatch)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    path = scratch / W.WORKSPACE_RECEIPT_PATH
+    path.write_bytes(W._canonical_file(receipt))
+    assert W.decode_evm_analysis_workspace_receipt_test_only(path) == receipt
+    with pytest.raises(Exception, match="ledger|PhaseIO|lineage"):
+        W.load_evm_analysis_workspace_authority(scratch)
+
+
+def test_recon_has_no_ambient_or_bare_forge_execution_spine():
+    source = (ROOT / "scripts" / "recon_prepass.py").read_text(encoding="utf-8")
+    assert 'shutil.which("forge")' not in source
+    assert "_bootstrap_evm_foundry_env" not in source
+    tree = ast.parse(source)
+    bare = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
+            first = node.elts[0]
+            if isinstance(first, ast.Constant) and first.value == "forge":
+                bare.append(node.lineno)
+    assert bare == []
+    assert "root = _workspace_build_root_path(workspace_authority)" in source
+    assert "cmd = [resolved_forge, \"build\"]" in source
+    assert "require_custodied_workspace_tool_for_execution" in source
+
+
+def test_admitted_path_is_not_execution_authority_without_native_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, controls,
+):
+    _project, _build_root, _config, _authorities, receipt = _build(
+        tmp_path, monkeypatch
+    )
+    assert next(row for row in receipt["tools"] if row["tool_id"] == "forge")[
+        "admission_state"
+    ] == "UNADMITTED"
+    with pytest.raises(
+        W.EVMAnalysisWorkspaceAuthorityError,
+        match="not admitted",
+    ):
+        W.require_custodied_workspace_tool_for_execution(receipt, "forge")
+    monkeypatch.setattr(
+        W, "require_admitted_workspace_tool",
+        lambda _receipt, _tool: {"admission_state": "ADMITTED"},
+    )
+    with pytest.raises(
+        W.EVMAnalysisWorkspaceAuthorityError,
+        match="native immutable executable custody is unavailable",
+    ):
+        W.require_custodied_workspace_tool_for_execution(receipt, "forge")
+    with pytest.raises(
+        W.EVMAnalysisWorkspaceAuthorityError,
+        match="direct path-return execution is forbidden",
+    ):
+        W.require_custodied_workspace_tool_for_execution(
+            receipt, "forge", native_custody=object()
+        )
+
+
+def test_forged_lock_consistency_and_redigest_cannot_admit_workspace_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, controls,
+):
+    project, build, config, authorities, _receipt = _build(tmp_path, monkeypatch)
+    original_package = (
+        json.dumps(
+            {"name": "fixture", "version": "1.0.0", "dependencies": {"a": "^1"}},
+            sort_keys=True,
+            separators=(",", ":"),
+        ) + "\n"
+    ).encode()
+    lockfile = (
+        json.dumps(
+            {
+                "name": "fixture",
+                "version": "1.0.0",
+                "lockfileVersion": 3,
+                "requires": True,
+                "packages": {
+                    "": {
+                        "name": "fixture",
+                        "version": "1.0.0",
+                        "dependencies": {"a": "^1"},
+                    }
+                },
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ) + "\n"
+    ).encode()
+    selected = select_js_lock_authority(
+        original_package, {"package-lock.json": lockfile}
+    )
+    forged = selected.binding_dict()
+
+    mutated_package = (
+        json.dumps(
+            {
+                "name": "fixture",
+                "version": "1.0.0",
+                "dependencies": {"missing": "^1"},
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ) + "\n"
+    ).encode()
+    (build / "package.json").write_bytes(mutated_package)
+    (build / "package-lock.json").write_bytes(lockfile)
+
+    # This is the exact old attack: retain caller-asserted candidate.consistent,
+    # update the changed manifest hash, and recompute the object's self-digest.
+    forged["package_json_sha256"] = hashlib.sha256(mutated_package).hexdigest()
+    config["_resolved_js_lock_authority"] = {
+        **forged,
+        "selection_sha256": _digest(forged),
+    }
+    with pytest.raises(JSLockAuthorityError) as central_rejection:
+        select_js_lock_authority(
+            mutated_package, {"package-lock.json": lockfile}
+        )
+    assert central_rejection.value.code == "NO_MANIFEST_CONSISTENT_LOCK"
+
+    receipt = W.build_evm_analysis_workspace_receipt(
+        config=config,
+        project_root=project,
+        run_id="run-14",
+        audit_snapshot=_snapshot(authorities),
+        owner_work_unit_key="sc/core/evm/claude/recon/evm_analysis_workspace_capture",
+        implementation_root=ROOT,
+        admitted_tool_authorities=authorities,
+    )
+    assert receipt["js_lock_authority"]["state"] == "TYPED_DEBT"
+    assert all(row["admission_state"] == "UNADMITTED" for row in receipt["tools"])
+    assert all(
+        "MANIFEST_CONSISTENT_JS_LOCK_UNAVAILABLE" in row["reason_codes"]
+        for row in receipt["tools"]
+    )
+
+
+def test_disjoint_dodo_projection_binds_yarn_node_modules_and_guest_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, controls,
+):
+    original = tmp_path / "original" / "src"
+    original.mkdir(parents=True)
+    (original / "C.sol").write_text("contract C {}\n")
+    build = tmp_path / "private-generation" / "project"
+    (build / "src").mkdir(parents=True)
+    (build / "src" / "C.sol").write_text("contract C {}\n")
+    (build / "foundry.toml").write_text(
+        '[profile.default]\nsrc="src"\nlibs=["node_modules","lib"]\n'
+    )
+    package = (
+        json.dumps(
+            {"name": "fixture", "version": "1.0.0", "dependencies": {"a": "^1"}},
+            sort_keys=True,
+            separators=(",", ":"),
+        ) + "\n"
+    ).encode()
+    integrity = "sha512-" + base64.b64encode(hashlib.sha512(b"a").digest()).decode()
+    yarn = (
+        "# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.\n"
+        "# yarn lockfile v1\n\n"
+        '"a@^1":\n'
+        '  version "1.0.0"\n'
+        '  resolved "https://registry.example.invalid/a.tgz"\n'
+        f"  integrity {integrity}\n"
+    ).encode()
+    (build / "package.json").write_bytes(package)
+    (build / "yarn.lock").write_bytes(yarn)
+    module = build / "node_modules" / "a"
+    module.mkdir(parents=True)
+    (module / "package.json").write_text('{"name":"a","version":"1.0.0"}\n')
+    selection = select_js_lock_authority(package, {"yarn.lock": yarn})
+    authority, component, _lineage_raw = _fake_committed_projection(
+        build=build,
+        source_scope_sha256="d" * 64,
+        selection_sha256=selection.selection_sha256,
+    )
+    executable = tmp_path / "tools" / "tool"
+    executable.parent.mkdir()
+    executable.write_bytes(b"tool")
+    authorities = {
+        tool_id: _signed_tool(tool_id, executable) for tool_id in W._TOOL_IDS
+    }
+    snapshot = _snapshot(authorities)
+    snapshot["components"]["evm_analysis_projection"] = component
+    preparation = {
+        "schema_version": "plamen.evm_input_preparation.v1",
+        "status": "PREPARED",
+        "reason": "native projection committed after snapshot binding",
+    }
+    config = {
+        "_resolved_build_root": str(build),
+        "_committed_evm_analysis_projection": authority,
+        "_snapshot_input_preparation": {
+            **preparation,
+            "preparation_sha256": _digest(preparation),
+        },
+    }
+    receipt = W.build_evm_analysis_workspace_receipt(
+        config=config,
+        project_root=original,
+        run_id="run-15",
+        audit_snapshot=snapshot,
+        owner_work_unit_key="sc/core/evm/claude/recon/evm_analysis_workspace_capture",
+        implementation_root=ROOT,
+        admitted_tool_authorities=authorities,
+    )
+    assert receipt["root_relation"]["kind"] == "DISJOINT_PRIVATE_PROJECTION"
+    assert receipt["analysis_projection"]["state"] == (
+        "COMMITTED_READ_ONLY_GUEST_PROJECTION"
+    )
+    assert receipt["js_lock_authority"]["selection"]["family"] == "yarn"
+    assert receipt["js_consumption"]["state"] == "BOUND"
+    assert receipt["input_materialization"]["state"] == "SNAPSHOT_BOUND"
+    assert all(row["admission_state"] == "ADMITTED" for row in receipt["tools"])
+    assert receipt["analysis_projection"]["native_receipt"]["guest_mount_path"] == (
+        "/workspace/project"
+    )
+    W.replay_evm_analysis_workspace_execution_closure(receipt)
+
+    (module / "package.json").write_text('{"name":"a","version":"9.9.9"}\n')
+    with pytest.raises(
+        W.EVMAnalysisWorkspaceAuthorityError,
+        match="content|projection|changed",
+    ):
+        W.replay_evm_analysis_workspace_execution_closure(receipt)
+
+
+def test_declared_yarn_v2_allows_consistent_npm_candidate() -> None:
+    package = (
+        json.dumps(
+            {
+                "dependencies": {"a": "^1"},
+                "name": "fixture",
+                "packageManager": "yarn@1.22.22",
+                "version": "1.0.0",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode()
+    integrity = "sha512-" + base64.b64encode(hashlib.sha512(b"a").digest()).decode()
+    yarn = (
+        "# yarn lockfile v1\n\n"
+        '"a@^1":\n'
+        '  version "1.0.0"\n'
+        '  resolved "https://registry.yarnpkg.com/a/-/a-1.0.0.tgz"\n'
+        f"  integrity {integrity}\n"
+    ).encode()
+    package_lock = (
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "name": "fixture",
+                "packages": {
+                    "": {
+                        "dependencies": {"a": "^1"},
+                        "name": "fixture",
+                        "version": "1.0.0",
+                    },
+                    "node_modules/a": {
+                        "integrity": integrity,
+                        "resolved": "https://registry.npmjs.org/a/-/a-1.0.0.tgz",
+                        "version": "1.0.0",
+                    },
+                },
+                "requires": True,
+                "version": "1.0.0",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode()
+    selected = select_js_lock_authority(
+        package, {"package-lock.json": package_lock, "yarn.lock": yarn}
+    )
+    raw = {**selected.binding_dict(), "selection_sha256": selected.selection_sha256}
+    manifests = [
+        {
+            "rooted_alias": "build:package.json",
+            "sha256": hashlib.sha256(package).hexdigest(),
+            "size": len(package),
+        },
+        {
+            "rooted_alias": "build:package-lock.json",
+            "sha256": hashlib.sha256(package_lock).hexdigest(),
+            "size": len(package_lock),
+        },
+        {
+            "rooted_alias": "build:yarn.lock",
+            "sha256": hashlib.sha256(yarn).hexdigest(),
+            "size": len(yarn),
+        },
+    ]
+    rebound = W._js_lock_selection_binding(raw, manifests)
+    assert rebound["state"] == "SELECTED"
+    assert rebound["selection"]["selection_basis"] == "DECLARED_PACKAGE_MANAGER_LOCK"
+    assert [row["consistent"] for row in rebound["selection"]["candidates"]] == [
+        True,
+        True,
+    ]
+    legacy = dict(selected.binding_dict())
+    legacy["schema"] = "plamen.js-lock-selection.v1"
+    legacy["selection_sha256"] = _digest(legacy)
+    with pytest.raises(
+        W.EVMAnalysisWorkspaceAuthorityError,
+        match="lock-selection authority is malformed",
+    ):
+        W._js_lock_selection_binding(legacy, manifests)
+
+
+def test_projection_stage_adoption_recovers_publish_before_commit_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    project = tmp_path / "original"
+    project.mkdir()
+    build = tmp_path / "native-private" / "project"
+    (build / "node_modules" / "a").mkdir(parents=True)
+    (build / "src").mkdir()
+    (build / "src" / "C.sol").write_text("contract C {}\n")
+    (build / "package.json").write_text(
+        '{"name":"fixture","version":"1.0.0","dependencies":{}}\n'
+    )
+    lock = (
+        '{"name":"fixture","version":"1.0.0","lockfileVersion":3,'
+        '"requires":true,"packages":{"":{"name":"fixture",'
+        '"version":"1.0.0","dependencies":{}}}}\n'
+    )
+    (build / "package-lock.json").write_text(lock)
+    (build / "node_modules" / "a" / "package.json").write_text(
+        '{"name":"a","version":"1.0.0"}\n'
+    )
+    selection = select_js_lock_authority(
+        (build / "package.json").read_bytes(),
+        {"package-lock.json": (build / "package-lock.json").read_bytes()},
+    )
+    opaque, component, lineage_raw = _fake_committed_projection(
+        build=build,
+        source_scope_sha256="d" * 64,
+        selection_sha256=selection.selection_sha256,
+    )
+    staged = tmp_path / "native-stage" / "projection.json"
+    staged.parent.mkdir()
+    staged.write_bytes(W._canonical_json(W._plain_json_shape(opaque.receipt)))
+    lineage_staged = staged.parent / "lineage.json"
+    lineage_staged.write_bytes(lineage_raw)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    snapshot = _snapshot({})
+    snapshot["components"]["evm_analysis_projection"] = component
+    config = {
+        "pipeline": "sc",
+        "mode": "core",
+        "language": "evm",
+        "cli_backend": "claude",
+        W.ANALYSIS_PROJECTION_STAGING_RECEIPT_CONFIG: str(staged),
+        W.MATERIALIZATION_LINEAGE_STAGING_CONFIG: str(lineage_staged),
+    }
+    with pytest.raises(
+        W.EVMAnalysisWorkspaceAuthorityError,
+        match="authenticated native EVM projection authority is unavailable",
+    ):
+        W.ensure_committed_evm_analysis_projection(
+            config=config,
+            scratchpad=scratch,
+            project_root=project,
+            run_id="run-16",
+            audit_snapshot=snapshot,
+        )
+    assert not (scratch / W.ANALYSIS_PROJECTION_RECEIPT_PATH).exists()
+    monkeypatch.setattr(
+        W,
+        "_authenticated_native_projection_receipt_bytes",
+        lambda _config, _component: staged.read_bytes(),
+    )
+    monkeypatch.setattr(
+        W, "_parse_materialization_lineage",
+        lambda raw: json.loads(raw.decode("ascii")),
+    )
+
+    def crash(point: str) -> None:
+        assert point == "after_publish_before_commit"
+        raise RuntimeError("simulated crash")
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        W.ensure_committed_evm_analysis_projection(
+            config=config,
+            scratchpad=scratch,
+            project_root=project,
+            run_id="run-16",
+            audit_snapshot=snapshot,
+            fault_injector=crash,
+        )
+    assert (scratch / W.ANALYSIS_PROJECTION_RECEIPT_PATH).read_bytes() == (
+        staged.read_bytes()
+    )
+    assert (scratch / W.MATERIALIZATION_LINEAGE_PATH).read_bytes() == lineage_raw
+
+    committed = W.ensure_committed_evm_analysis_projection(
+        config=config,
+        scratchpad=scratch,
+        project_root=project,
+        run_id="run-16",
+        audit_snapshot=snapshot,
+    )
+    assert committed is not None
+    assert list(committed.receipt["writable_mounts"]) == [
+        "/workspace/scratch",
+        "/workspace/state",
+    ]
+    assert config["_committed_evm_analysis_projection"] is committed
+
+
+def test_prepared_without_committed_projection_rejects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, controls,
+):
+    build = tmp_path / "foundry"
+    project = build / "src"
+    project.mkdir(parents=True)
+    (build / "foundry.toml").write_text('[profile.default]\nsrc="src"\n')
+    preparation = {
+        "schema_version": "plamen.evm_input_preparation.v1",
+        "status": "PREPARED",
+        "reason": "self-asserted only",
+    }
+    config = {
+        "_resolved_build_root": str(build),
+        "_resolved_build_root_authority": _root_authority(project, build),
+        "_snapshot_input_preparation": {
+            **preparation,
+            "preparation_sha256": _digest(preparation),
+        },
+    }
+    with pytest.raises(
+        W.EVMAnalysisWorkspaceAuthorityError,
+        match="PREPARED.*committed native analysis projection",
+    ):
+        W.build_evm_analysis_workspace_receipt(
+            config=config,
+            project_root=project,
+            run_id="run-15",
+            audit_snapshot=_snapshot({}),
+            owner_work_unit_key="sc/core/evm/claude/recon/evm_analysis_workspace_capture",
+            implementation_root=ROOT,
+        )
+
+
+@pytest.mark.parametrize("preparation_status", [None, "DEGRADED"])
+def test_missing_or_deferred_materialization_receipt_is_typed_debt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, controls,
+    preparation_status: str | None,
+):
+    project, build, config, authorities, _receipt = _build(tmp_path, monkeypatch)
+    config.pop("_snapshot_input_preparation")
+    if preparation_status is not None:
+        preparation = {
+            "schema_version": "plamen.evm_input_preparation.v1",
+            "status": preparation_status,
+            "reason": "POSIX_V2_COMPAT_PRE_SNAPSHOT_MATERIALIZATION_DEFERRED",
+        }
+        config["_snapshot_input_preparation"] = {
+            **preparation,
+            "preparation_sha256": _digest(preparation),
+        }
+    receipt = W.build_evm_analysis_workspace_receipt(
+        config=config,
+        project_root=project,
+        run_id="run-14",
+        audit_snapshot=_snapshot(authorities),
+        owner_work_unit_key="sc/core/evm/claude/recon/evm_analysis_workspace_capture",
+        implementation_root=ROOT,
+        admitted_tool_authorities=authorities,
+    )
+    assert receipt["input_materialization"]["state"] == "UNREADY"
+    assert all(row["admission_state"] == "UNADMITTED" for row in receipt["tools"])
+    assert all(
+        "SNAPSHOT_BOUND_INPUT_MATERIALIZATION_UNAVAILABLE" in row["reason_codes"]
+        for row in receipt["tools"]
+    )
+
+
+def _session_bound_tool_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, native: bool = False,
+) -> tuple[dict[str, object], object, dict[str, object], object]:
+    project = tmp_path / "project"
+    scratch = project / ".scratchpad"
+    build = tmp_path / "projection"
+    tool_scratch = tmp_path / "tool-scratch"
+    tool_state = tmp_path / "tool-state"
+    for path in (scratch, build, tool_scratch, tool_state):
+        path.mkdir(parents=True)
+    projection = json.dumps(
+        {"schema": "fixture", "tool_id": "forge"},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    authority_unsigned = {
+        "tool_id": "forge",
+        "deterministic_provider_authority": False,
+        "toolchain_governance_sha256": "a" * 64,
+        "toolchain_version_lock_sha256": "b" * 64,
+    }
+    observation = {
+        **authority_unsigned,
+        "authority_digest": _digest(authority_unsigned),
+    }
+    # The snapshot bytes are the signed observation minus its three envelope
+    # fields.  This fixture omits optional status/reason, so only the digest is
+    # removed.
+    snapshot_projection = dict(observation)
+    snapshot_projection.pop("authority_digest")
+    projection = W._canonical_json(snapshot_projection)
+    lineage = b'{"fixture":"lineage"}'
+    lineage_path = scratch / W.MATERIALIZATION_LINEAGE_PATH
+    lineage_path.write_bytes(lineage)
+    receipt: dict[str, object] = {
+        "receipt_sha256": "c" * 64,
+        "run_id": "run-17",
+        "owner": {
+            "work_unit_key": "sc/core/evm/codex/recon/evm_analysis_workspace_capture"
+        },
+        "snapshot": {"snapshot_sha256": "d" * 64},
+        "project_root": {"absolute_path": str(project)},
+        "build_root": {"absolute_path": str(build)},
+        "source_closure": {"snapshot_source_scope_sha256": "e" * 64},
+        "input_materialization": {"state": "SNAPSHOT_BOUND"},
+        "analysis_projection": {
+            "snapshot_component": {
+                "materialization_lineage_sha256": hashlib.sha256(lineage).hexdigest(),
+                "materialization_lineage_byte_count": len(lineage),
+            }
+        },
+        "rule_tree_authority": {
+            "state": "ADMITTED", "binding_sha256": "f" * 64,
+        },
+        "toolchain_controls": {
+            "governance_sha256": "a" * 64,
+            "version_lock_sha256": "b" * 64,
+        },
+        "tools": [{
+            "tool_id": "forge",
+            "snapshot_runtime_identity": {
+                "sha256": hashlib.sha256(projection).hexdigest(),
+                "byte_count": len(projection),
+            },
+            "rule_tree_authority_sha256": None,
+        }],
+    }
+
+    class Session:
+        pass
+
+    session = Session()
+    session.binding = {
+        "run_id": "run-17",
+        "backend": "codex",
+        "project_root": str(project),
+        "scratchpad": str(scratch),
+    }
+    controls = types.SimpleNamespace(
+        governance_sha256="a" * 64,
+        lock_sha256="b" * 64,
+    )
+    policy = types.SimpleNamespace(
+        tool_id="forge",
+        authority_tier="SNAPSHOT_BOUND_LOCAL",
+        execution_authority=True,
+        authentic_content_authority=False,
+        can_certify_clean=False,
+    )
+    compat = types.SimpleNamespace(
+        require_posix_v2_compat_session=lambda value: (
+            value if value is session else (_ for _ in ()).throw(ValueError("foreign"))
+        )
+    )
+    captured: dict[str, object] = {}
+
+    def build_plan(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(kind="native-plan")
+
+    local_tools = types.SimpleNamespace(
+        validate_snapshot_bound_local_tool_projection=(
+            lambda raw, tool_id, current: {
+                "resolved_executable": str(tmp_path / "forge")
+            }
+        ),
+        build_snapshot_bound_tool_execution_plan=build_plan,
+    )
+    control_module = types.SimpleNamespace(
+        TOOLCHAIN_GOVERNANCE_FILENAME="toolchain_governance.v1.json",
+        TOOLCHAIN_VERSION_LOCK_FILENAME="toolchain_version_lock.v1.json",
+        load_toolchain_controls=lambda *_args: controls,
+        snapshot_bound_local_policies=lambda current: (policy,),
+    )
+    monkeypatch.setattr(
+        W, "_session_bound_tool_authority_modules",
+        lambda: (compat, local_tools, control_module),
+    )
+    monkeypatch.setattr(
+        W, "replay_evm_analysis_workspace_execution_closure",
+        lambda value: value,
+    )
+    if native:
+        monkeypatch.setattr(
+            W,
+            "_session_binding",
+            lambda value, *, native: (
+                (value, dict(value.binding))
+                if native and value is session
+                else (_ for _ in ()).throw(ValueError("foreign"))
+            ),
+        )
+    issued = W.issue_session_bound_evm_tool_authority(
+        receipt,
+        **(
+            {"native_runtime_authority": session}
+            if native else {"posix_session_authority": session}
+        ),
+        scratchpad=scratch,
+        observed_tool_authorities={"forge": observation},
+        implementation_root=ROOT,
+    )
+    roots = types.SimpleNamespace(
+        scratch=scratch,
+        tool_scratch=tool_scratch,
+        tool_state=tool_state,
+    )
+    return receipt, issued, captured, roots
+
+
+def test_native_runtime_bundle_is_the_session_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt, issued, _captured, _roots = _session_bound_tool_fixture(
+        tmp_path, monkeypatch, native=True
+    )
+    assert issued._native_session is True
+    assert W._require_session_bound_evm_tool_authority(issued, receipt)[0] is issued
+
+
+def test_session_bound_local_tool_authority_is_opaque_and_audit_exact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt, issued, _captured, _roots = _session_bound_tool_fixture(
+        tmp_path, monkeypatch
+    )
+    assert issued.tool_ids == ("forge",)
+    with pytest.raises(TypeError):
+        W.SessionBoundEVMToolAuthority()
+    with pytest.raises(TypeError):
+        issued.__reduce__()
+    with pytest.raises(TypeError):
+        issued._run_id = "run-18"
+    object.__setattr__(issued, "_run_id", "run-18")
+    with pytest.raises(
+        W.EVMAnalysisWorkspaceAuthorityError, match="another audit"
+    ):
+        W._require_session_bound_evm_tool_authority(issued, receipt)
+    object.__setattr__(issued, "_run_id", "run-17")
+    foreign = dict(receipt)
+    foreign["run_id"] = "run-18"
+    with pytest.raises(
+        W.EVMAnalysisWorkspaceAuthorityError, match="another audit"
+    ):
+        W._require_session_bound_evm_tool_authority(issued, foreign)
+    with pytest.raises(
+        W.EVMAnalysisWorkspaceAuthorityError, match="forged"
+    ):
+        W._require_session_bound_evm_tool_authority(object(), receipt)
+
+
+def test_session_bound_workspace_plan_delegates_only_to_native_planner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt, issued, captured, roots = _session_bound_tool_fixture(
+        tmp_path, monkeypatch
+    )
+    native_runtime = object()
+    plan = W.build_session_bound_evm_tool_execution_plan(
+        receipt,
+        "forge",
+        session_tool_authority=issued,
+        native_runtime_authority=native_runtime,
+        argv=["forge", "build"],
+        environment={"LANG": "C"},
+        cwd="/workspace/project",
+        tool_scratch_root=roots.tool_scratch,
+        tool_state_root=roots.tool_state,
+        implementation_root=ROOT,
+    )
+    assert plan.kind == "native-plan"
+    assert captured["native_runtime_authority"] is native_runtime
+    assert captured["run_id"] == "run-17"
+    assert captured["audit_snapshot_sha256"] == "d" * 64
+    assert captured["tool_id"] == "forge"
+    assert captured["project_root"] == Path(receipt["build_root"]["absolute_path"])
+    assert captured["materialization_lineage_entry"]["sha256"] == hashlib.sha256(
+        (roots.scratch / W.MATERIALIZATION_LINEAGE_PATH).read_bytes()
+    ).hexdigest()

@@ -1,6 +1,7 @@
 """Fixture-first P1/P2 tests for authoritative report-source capture."""
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -301,12 +302,26 @@ def test_committed_source_load_and_extraction_return_frozen_exact_inputs(
         },
         namespace_roles={},
     )
+    preexecution_authority = RCA.build_report_capture_preexecution_authority(
+        scratchpad=scratch,
+        project_root=project,
+        run_id=RUN_ID,
+        contract=prepared.contract,
+        launch=prepared.launch,
+        expected_output_records={
+            "scratchpad:report_assembly_source_capture.json": {
+                "sha256": hashlib.sha256(prepared.capture_bytes).hexdigest(),
+                "size": len(prepared.capture_bytes),
+            },
+        },
+    )
     record_work_unit_inputs(
         scratch,
         project,
         prepared.contract,
         prepared.launch,
         run_id=RUN_ID,
+        preexecution_authority=preexecution_authority,
     )
     (scratch / "report_assembly_source_capture.json").write_bytes(
         prepared.capture_bytes

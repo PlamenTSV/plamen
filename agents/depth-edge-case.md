@@ -15,9 +15,9 @@ Before ANY verdict:
 1. **Devil's Advocate**: Answer "What would make this exploitable?" (never "nothing")
 2. **Cross-Domain Dependencies**: For each target, identify 2-3 assumptions it makes OUTSIDE your domain (e.g., access control correctness, token transfer behavior, external call return values). Ask: "If this assumption broke, would my target become exploitable?" Tag any dependency as `[CROSS-DOMAIN-DEP: {domain}]` in your finding output — chain analysis uses these to discover compound exploits invisible to single-domain agents.
 3. **Chain Check**: Search findings_inventory.md for findings that CREATE the missing precondition
-4. **Evidence Quality**: Tag all evidence [PROD-ONCHAIN], [CODE], [MOCK], etc. - [MOCK]/[EXT-UNV] cannot support REFUTED
-5. **Confidence Gate**: Uncertain? → CONTESTED, not REFUTED. Only REFUTED if defense proven with production evidence
-6. **Enabler Search**: Before REFUTED, ask "Does ANY other finding enable this?"
+4. **Evidence Quality**: Tag evidence by origin. Mock or unverified-external evidence alone cannot establish a production defense.
+5. **Uncertainty**: Preserve unresolved candidates when evidence is incomplete. Propose a negative disposition only when production evidence proves the defense.
+6. **Enabler Search**: Before proposing a negative disposition, check whether another finding enables the missing precondition.
 
 Apply only the rule and skill files enumerated by the driver's content-bound
 methodology descriptors. Do not discover or open a legacy home-directory path.
@@ -106,47 +106,6 @@ bound touched by the target, record concrete behavior at `{0, 1, max,
 boundary-1, boundary, boundary+1, empty-container}` and note whether the code
 rejects, saturates, panics, wraps, or silently misroutes.
 
-## Output Format
+## Evidence to record
 
-Write to `{scratchpad}/depth_edge_case_findings.md`:
-
-```markdown
-## DEPTH ANALYSIS: Edge Cases
-
-### Target 1: [Location from breadth pass]
-**Source Finding(s)**: [Breadth finding IDs that triggered this analysis]
-**Breadth Claim**: [What the breadth agent suspected]
-
-#### Real Constants
-| Constant | Value | Source Line |
-|----------|-------|-------------|
-| FEE_BPS | 300 | Line 45 |
-| MIN_DEPOSIT | 1e18 | Line 52 |
-
-#### Concrete Calculations
-- Initial state: total_supply=0, total_assets=0
-- Deposit minimum_unit: shares = 1 * 1 / 1 = 1 share
-- Attacker donates large_amount tokens
-- Next deposit half_amount: shares = half / large_amount = 0 shares (ROUNDING LOSS)
-
-#### Verdict
-- [ ] CONFIRMED: [With real constants, the edge case triggers when...]
-- [ ] REFINED: [Edge case exists but requires conditions...]
-- [ ] REFUTED: [With real constants, the edge case cannot trigger because...]
-- [ ] CONTESTED: [Evidence is mixed or incomplete - escalate to verifier]
-
-### Target 2: ...
-
-## FINDING INDEX
-| ID | Severity | Location | Title | Source |
-```
-
-## Finding ID Format
-Use `[DE-N]` where N starts from 1.
-Each finding MUST include `Source: [breadth finding IDs]` showing what triggered the analysis.
-
-## Return Protocol
-Return ONLY: `DONE: {N} depth findings for edge cases (X confirmed, Y refined, Z refuted, W contested)`
-MAX 1 line.
-
-Contested findings go to Step 7 verifier with FLAG: "requires external research"
+Use the driver-assigned output contract for IDs, outcomes, path, markers, and completion. For each target, cite its triggering source finding, actual constants and source lines, boundary substitutions, concrete arithmetic, and the terminal effect. For a rounding scenario, show initial supply/assets, the precise donation or state change, and the resulting share calculation; do not assume the example values fit the audited protocol.

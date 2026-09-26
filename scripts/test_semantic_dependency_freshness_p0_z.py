@@ -353,6 +353,78 @@ def test_stored_receipt_drift_detection_is_exact_and_side_effect_free(tmp_path: 
     assert (sp / "_artifact_state.json").read_bytes() == before
 
 
+def test_changed_input_does_not_invalidate_consumers_of_unchanged_coinput(
+    tmp_path: Path,
+):
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    for name in ("changed.md", "stable.md", "mixed.md", "sibling.md", "tail.md"):
+        (sp / name).write_text(f"{name}\n", encoding="utf-8")
+    mixed = _contract(
+        "mixed", "worker", output="mixed.md",
+        immutable=("scratchpad:changed.md", "scratchpad:stable.md"),
+    )
+    sibling = _contract(
+        "sibling", "worker", output="sibling.md",
+        immutable=("scratchpad:stable.md",),
+    )
+    tail = _contract(
+        "tail", "worker", output="tail.md",
+        immutable=("scratchpad:mixed.md",),
+    )
+    for contract in (mixed, sibling, tail):
+        _record(sp, tmp_path, contract)
+    (sp / "changed.md").write_text("changed generation\n", encoding="utf-8")
+    before = (sp / "_artifact_state.json").read_bytes()
+
+    drift = detect_semantic_input_drift(sp, tmp_path, run_id="run-1")
+
+    assert drift["changed_input_identities"] == ["scratchpad:changed.md"]
+    assert drift["stale_work_unit_keys"] == [mixed.key]
+    plan = semantic_dependency_invalidation_plan(
+        read_artifact_ledger(sp), drift["changed_input_identities"], run_id="run-1",
+    )
+    assert set(plan["invalidated_work_unit_keys"]) == {mixed.key, tail.key}
+    assert (sp / "_artifact_state.json").read_bytes() == before
+    apply_semantic_invalidation(sp, plan, run_id="run-1")
+    ledger = read_artifact_ledger(sp)
+    assert ledger["work_units"][sibling.key]["semantic_status"] == "ACTIVE"
+    assert ledger["work_units"][mixed.key]["semantic_status"] == "STALE_INPUT"
+    assert ledger["work_units"][tail.key]["semantic_status"] == "STALE_INPUT"
+
+    repeated = detect_semantic_input_drift(sp, tmp_path, run_id="run-1")
+    assert "scratchpad:stable.md" not in repeated["changed_input_identities"]
+    repeated_plan = semantic_dependency_invalidation_plan(
+        ledger, repeated["changed_input_identities"], run_id="run-1",
+    )
+    assert sibling.key not in repeated_plan["invalidated_work_unit_keys"]
+
+
+def test_corrupt_input_receipt_still_invalidates_complete_denominator(
+    tmp_path: Path,
+):
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    identities = ("scratchpad:first.md", "scratchpad:second.md")
+    for name in ("first.md", "second.md", "out.md"):
+        (sp / name).write_text(f"{name}\n", encoding="utf-8")
+    contract = _contract(
+        "derive", "corrupt-receipt", output="out.md", immutable=identities,
+    )
+    _record(sp, tmp_path, contract)
+    ledger_path = sp / "_artifact_state.json"
+    ledger = read_artifact_ledger(sp)
+    ledger["work_units"][contract.key]["input_set_digest"] = "0" * 64
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    before = ledger_path.read_bytes()
+
+    drift = detect_semantic_input_drift(sp, tmp_path, run_id="run-1")
+
+    assert drift["changed_input_identities"] == list(identities)
+    assert drift["rows"][0]["reasons"] == ["RECEIPT_DIGEST_MISMATCH"]
+    assert ledger_path.read_bytes() == before
+
+
 def test_resume_drift_scan_reuses_one_validation_epoch_for_shared_input(
     tmp_path: Path,
     monkeypatch,
@@ -392,7 +464,9 @@ def test_resume_drift_scan_reuses_one_validation_epoch_for_shared_input(
 
     assert drift["changed_input_identities"] == []
     assert drift["stale_work_unit_keys"] == []
-    assert calls == 1
+    # Eight consumers share one initial snapshot and one terminal epoch
+    # recheck; neither hashing nor producer replay scales with consumers.
+    assert calls == 2
 
 
 def test_stored_receipt_drift_rejects_cross_run_and_bound_missing_input(tmp_path: Path):
@@ -420,6 +494,10 @@ def test_mutation_event_invalidates_exact_consumers_and_preserves_siblings(tmp_p
     sp.mkdir()
     for name in ("inventory.md", "queue.md", "stable.md", "sibling.md"):
         (sp / name).write_text(name + "\n", encoding="utf-8")
+    inventory = _contract(
+        "inventory", "canonical-routing", output="inventory.md",
+    )
+    _record(sp, tmp_path, inventory)
     queue = _contract(
         "queue", "routing", output="queue.md",
         immutable=("scratchpad:inventory.md",),
@@ -565,6 +643,10 @@ def test_armed_mutation_recovers_crash_between_write_and_invalidation(tmp_path: 
     sp.mkdir()
     (sp / "inventory.md").write_text("before\n", encoding="utf-8")
     (sp / "queue.md").write_text("queue\n", encoding="utf-8")
+    inventory = _contract(
+        "inventory", "canonical-crash", output="inventory.md",
+    )
+    _record(sp, tmp_path, inventory)
     queue = _contract(
         "queue", "crash", output="queue.md",
         immutable=("scratchpad:inventory.md",),
@@ -596,6 +678,10 @@ def test_no_change_mutation_is_terminal_without_invalidating_consumer(tmp_path: 
     sp.mkdir()
     (sp / "inventory.md").write_text("same\n", encoding="utf-8")
     (sp / "queue.md").write_text("queue\n", encoding="utf-8")
+    inventory = _contract(
+        "inventory", "canonical-no-change", output="inventory.md",
+    )
+    _record(sp, tmp_path, inventory)
     queue = _contract(
         "queue", "no-change", output="queue.md",
         immutable=("scratchpad:inventory.md",),

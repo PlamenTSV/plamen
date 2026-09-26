@@ -24,6 +24,7 @@ from artifact_ledger import (
     validate_work_unit_inputs,
 )
 from bounded_artifact_io import read_bounded_regular_bytes
+from portable_path_contract import assert_lexically_bounded_relative_path
 from phase_io_contracts import (
     ArtifactSpec,
     LaunchSpec,
@@ -31,11 +32,13 @@ from phase_io_contracts import (
     canonical_work_unit_key,
 )
 from preverify_chain_pair_projection import (
+    IDENTITY_UNIVERSE_LOGICAL,
     PAIR_DERIVATION_ALGORITHM,
     PAIR_DERIVATION_CONFORMANCE_SHA256,
     RECEIPT_SCHEMA as PAIR_RECEIPT_SCHEMA,
     SCHEMA as PAIR_SCHEMA,
     derive_preverify_chain_pair_relation,
+    derive_preverify_chain_source_identity_universe,
     validate_preverify_chain_pair_derivation_conformance,
 )
 
@@ -58,6 +61,7 @@ DELTA_SOURCE_PREIMAGE_LEAVES = {
     "pair_receipt": "p.json",
     "enabler_results": "e.bin",
     "auto_map_receipt": "a.json",
+    "source_identity_universe": "i.json",
 }
 DELTA_ROOT = "_preverify_chain_candidate_delta"
 MAX_BYTES = 64 * 1024 * 1024
@@ -291,6 +295,12 @@ def _candidate_block(
 
 def _safe_relative(value: object, *, label: str) -> str:
     text = str(value or "")
+    try:
+        assert_lexically_bounded_relative_path(text, label=label)
+    except ValueError as exc:
+        raise ChainCandidateDeltaError(
+            f"{label} is not a canonical relative POSIX path"
+        ) from exc
     path = PurePosixPath(text)
     if (
         not text
@@ -430,6 +440,11 @@ def _validated_pair_projection(
             "preverify chain-pair required path denominator is invalid"
         )
 
+    identity_universe = receipt_identity_universe = None
+    identity_snapshot_relative = projection.get(
+        "identity_universe_snapshot_path"
+    )
+
     raw_sources: dict[str, bytes] = {}
     authorities: dict[str, dict[str, Any]] = {}
     for logical, relative in {
@@ -475,6 +490,58 @@ def _validated_pair_projection(
         raise ChainCandidateDeltaError(
             "preverify chain-pair receipt identity/digest is invalid"
         )
+    receipt_identity_universe = receipt.get("source_identity_universe")
+    if not isinstance(receipt_identity_universe, Mapping):
+        raise ChainCandidateDeltaError(
+            "preverify chain-pair identity universe declaration is malformed"
+        )
+    if receipt_identity_universe.get("status") == "EXACT_CURRENT_RUN":
+        expected_snapshot = prefix + "source_identity_universe.json"
+        if (
+            identity_snapshot_relative != expected_snapshot
+            or receipt.get("identity_universe_snapshot_path")
+            != expected_snapshot
+            or expected_snapshot not in required
+        ):
+            raise ChainCandidateDeltaError(
+                "preverify chain-pair identity snapshot path is invalid"
+            )
+        identity_raw, identity_authority = _exact_authority(
+            root,
+            project,
+            expected_snapshot,
+            run_id=dimensions["run_id"],
+        )
+        raw_sources["source_identity_universe"] = identity_raw
+        authorities["source_identity_universe"] = identity_authority
+        identity_universe = derive_preverify_chain_source_identity_universe(
+            identity_raw
+        )
+        if (
+            receipt_identity_universe.get("identity")
+            != "scratchpad:" + IDENTITY_UNIVERSE_LOGICAL
+            or receipt_identity_universe.get("sha256") != _sha(identity_raw)
+            or receipt_identity_universe.get("size") != len(identity_raw)
+            or receipt_identity_universe.get("accepted_identity_count")
+            != len(identity_universe)
+        ):
+            raise ChainCandidateDeltaError(
+                "preverify chain-pair identity snapshot does not match its "
+                "declaration"
+            )
+    elif receipt_identity_universe.get("status") == "LEGACY_CONTEXT_FREE_GRAMMAR":
+        if (
+            identity_snapshot_relative is not None
+            or receipt.get("identity_universe_snapshot_path") is not None
+        ):
+            raise ChainCandidateDeltaError(
+                "legacy chain-pair relation unexpectedly declares an identity "
+                "snapshot"
+            )
+    else:
+        raise ChainCandidateDeltaError(
+            "preverify chain-pair identity universe status is invalid"
+        )
     validate_preverify_chain_pair_derivation_conformance()
     source_bindings = receipt.get("sources")
     if (
@@ -487,9 +554,16 @@ def _validated_pair_projection(
         raise ChainCandidateDeltaError(
             "preverify chain-pair receipt does not bind projected pair bytes"
         )
+    if identity_universe is not None and source_bindings.get(
+        IDENTITY_UNIVERSE_LOGICAL
+    ) != _binding(raw_sources["source_identity_universe"]):
+        raise ChainCandidateDeltaError(
+            "preverify chain-pair receipt does not bind its identity snapshot"
+        )
     expected_relation = derive_preverify_chain_pair_relation(
         raw_sources["hypotheses.md"],
         raw_sources["finding_mapping.md"],
+        allowed_source_ids=identity_universe,
     )
     if receipt.get("relation_validation") != expected_relation:
         raise ChainCandidateDeltaError(
@@ -1166,6 +1240,13 @@ def prepare_preverify_chain_candidate_delta(
         "pair_receipt": "pair_receipt",
         "enabler_results": "enabler_results.md",
     }
+    if "source_identity_universe" in pair_sources:
+        source_preimage_raw["source_identity_universe"] = pair_sources[
+            "source_identity_universe"
+        ]
+        source_preimage_authority_keys["source_identity_universe"] = (
+            "source_identity_universe"
+        )
     if isinstance(lineage.get("_auto_map_receipt_raw"), bytes):
         source_preimage_raw["auto_map_receipt"] = bytes(
             lineage["_auto_map_receipt_raw"]

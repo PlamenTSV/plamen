@@ -551,6 +551,11 @@ def test_runtime_module_bound_applies_after_governed_candidate_filter(
         (scripts / f"test_fixture_{ordinal:04d}.py").write_text(
             "# excluded test fixture\n", encoding="utf-8", newline="\n"
         )
+    (scripts / "TEST_ONLY_uppercase_fixture.py").write_text(
+        "# excluded case-insensitive test fixture\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     for ordinal in range(219):
         (scripts / f"runtime_{ordinal:04d}.py").write_text(
             "VALUE = 1\n", encoding="utf-8", newline="\n"
@@ -558,9 +563,12 @@ def test_runtime_module_bound_applies_after_governed_candidate_filter(
     index = TOOLCHAIN._RuntimePathIndex(tmp_path)
     modules = TOOLCHAIN._runtime_module_map(tmp_path, path_index=index)
     index.verify_unchanged()
-    assert len(list(scripts.glob("*.py"))) == 1_038
+    assert len(list(scripts.glob("*.py"))) == 1_039
     assert len({path for path in modules.values()}) == 219
-    assert all(not Path(path).name.startswith("test_") for path in modules.values())
+    assert all(
+        not Path(path).name.casefold().startswith("test_")
+        for path in modules.values()
+    )
 
 
 def test_runtime_module_bound_still_rejects_too_many_governed_candidates(
@@ -580,6 +588,69 @@ def test_runtime_module_bound_still_rejects_too_many_governed_candidates(
             tmp_path,
             path_index=TOOLCHAIN._RuntimePathIndex(tmp_path),
         )
+
+
+def test_runtime_path_index_ignores_interpreter_bytecode_cache_churn(
+    tmp_path: Path,
+) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "runtime.py").write_text(
+        "VALUE = 1\n", encoding="utf-8", newline="\n"
+    )
+    index = TOOLCHAIN._RuntimePathIndex(tmp_path)
+    modules = TOOLCHAIN._runtime_module_map(
+        tmp_path, path_index=index,
+    )
+    assert set(modules.values()) == {"scripts/runtime.py"}
+
+    cache = scripts / "__pycache__"
+    cache.mkdir()
+    (cache / "runtime.cpython-314.pyc").write_bytes(b"mutable-bytecode")
+
+    index.verify_unchanged()
+
+
+def test_runtime_path_index_still_rejects_governed_roster_churn(
+    tmp_path: Path,
+) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "runtime.py").write_text(
+        "VALUE = 1\n", encoding="utf-8", newline="\n"
+    )
+    index = TOOLCHAIN._RuntimePathIndex(tmp_path)
+    TOOLCHAIN._runtime_module_map(tmp_path, path_index=index)
+
+    (scripts / "late.py").write_text(
+        "VALUE = 2\n", encoding="utf-8", newline="\n"
+    )
+
+    with pytest.raises(
+        TOOLCHAIN.ToolchainControlError,
+        match="runtime path index changed during derivation",
+    ):
+        index.verify_unchanged()
+
+
+def test_runtime_closure_rejects_direct_uppercase_test_entrypoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    relative = "scripts/TEST_ONLY_runtime.py"
+    (tmp_path / relative).write_text(
+        "VALUE = 1\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    monkeypatch.setattr(TOOLCHAIN, "_RUNTIME_ENTRYPOINTS", (relative,))
+    with pytest.raises(
+        TOOLCHAIN.ToolchainControlError,
+        match="test/private module entered runtime closure",
+    ):
+        TOOLCHAIN.derive_runtime_dependency_closure(tmp_path)
 
 
 def test_runtime_closure_resolves_literal_dynamic_import_calls(

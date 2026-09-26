@@ -7,10 +7,60 @@ from pathlib import Path
 
 import pytest
 
+import claude_headless_profile as H
 import claude_stream_json_evidence as C
+import posix_backend_launch_policy as P
 
 
 SESSION = "11111111-2222-4333-8444-555555555555"
+
+
+def _generation(version: str = "2.1.270") -> object:
+    values = {name: (f"{index:x}" * 64)[:64] for index, name in enumerate((
+        "executable", "closure", "publisher", "provenance", "latest",
+        "conformance", "producer", "policy", "validator", "registry",
+        "upstream", "signature", "manifest", "coordinator",
+    ), start=1)}
+    return P.TEST_ONLY_issue_backend_install_generation(
+        backend="claude", resolved_version=version,
+        executable_sha256=values["executable"], executable_size=1,
+        runtime_closure_sha256=values["closure"], publisher="Anthropic",
+        publisher_identity_sha256=values["publisher"],
+        provenance="ANTHROPIC_INSTALLER_RECEIPT",
+        provenance_receipt_sha256=values["provenance"],
+        latest_resolution_receipt_sha256=values["latest"],
+        cli_behavior_contract_sha256=P.backend_cli_behavior_contract_sha256("claude"),
+        cli_conformance_sha256=values["conformance"],
+        install_generation_id=f"claude-{version}",
+        producer_receipt_sha256=values["producer"],
+        acquisition_policy_sha256=values["policy"],
+        acquisition_validator_sha256=values["validator"],
+        registry_latest_observation_sha256=values["registry"],
+        upstream_integrity_sha256=values["upstream"],
+        signature_provenance_sha256=values["signature"],
+        installed_manifest_sha256=values["manifest"],
+        coordinator_receipt_sha256=values["coordinator"],
+    )
+
+
+def test_dynamic_stream_generation_authority_is_exact_and_test_only_separated() -> None:
+    init = _init()
+    init["claude_code_version"] = "2.1.270"
+    raw = _stream(init, _assistant(), _result())
+    authority = _generation()
+    with pytest.raises(C.ClaudeStreamJsonEvidenceError) as caught:
+        C.validate_claude_stream_json(
+            raw, install_generation_authority=authority
+        )
+    assert caught.value.code == "INSTALL_GENERATION_AUTHORITY"
+    assert C.TEST_ONLY_validate_claude_stream_json(
+        raw, install_generation_authority=authority
+    )["claude_code_version"] == "2.1.270"
+    with pytest.raises(C.ClaudeStreamJsonEvidenceError) as caught:
+        C.TEST_ONLY_validate_claude_stream_json(
+            raw, install_generation_authority=_generation("2.1.271")
+        )
+    assert caught.value.code == "INSTALL_GENERATION_MISMATCH"
 
 
 def _init(*, session_id: str = SESSION) -> dict[str, object]:
@@ -131,7 +181,7 @@ def _restricted_r42_init() -> dict[str, object]:
     init.update(
         {
             "claude_code_version": "2.1.252",
-            "permissionMode": "default",
+            "permissionMode": "dontAsk",
             "apiKeySource": "none",
             "tools": ["Read", "Glob", "Grep", "Write", "Edit"],
             "agents": [
@@ -157,7 +207,7 @@ def _restricted_r42_expected() -> dict[str, object]:
         "claude_code_version": "2.1.252",
         "cwd": "C:\\audit",
         "accepted_models": ["claude-opus-5"],
-        "permission_mode": "default",
+        "permission_mode": "dontAsk",
         "allowed_tools": ["Edit", "Glob", "Grep", "Read", "Write"],
         "allowed_tool_prefixes": [],
         "required_tools": ["Read", "Write"],
@@ -304,7 +354,7 @@ def test_sanitized_r42_restricted_init_matches_pinned_native_denominator() -> No
 @pytest.mark.parametrize(
     ("field", "mutator"),
     (
-        ("permissionMode", lambda value: "dontAsk"),
+        ("permissionMode", lambda value: "default"),
         ("claude_code_version", lambda value: "2.1.251"),
         ("agents", lambda value: [*value, "rogue-agent"]),
         ("tools", lambda value: [*value, "Agent"]),
@@ -320,32 +370,117 @@ def test_r42_restricted_init_rejects_native_surface_drift(
     init[field] = mutator(init[field])
     _assert_rejected(
         _stream(init, _assistant(), _result()),
-        "INIT_APPLICABILITY_MISMATCH",
+        (
+            "INSTALL_GENERATION_MISMATCH"
+            if field == "claude_code_version"
+            else "INIT_APPLICABILITY_MISMATCH"
+        ),
         expected_session_id=SESSION,
         expected_init_contract=_restricted_r42_expected(),
     )
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
+    ("field", "value", "code"),
     (
-        ("required_capabilities", []),
-        ("claude_code_version", "2.1.251"),
-        ("permission_mode", "dontAsk"),
+        (
+            "claude_code_version",
+            "2.1.251",
+            "INSTALL_GENERATION_AUTHORITY",
+        ),
+        ("permission_mode", "default", "INIT_APPLICABILITY_MISMATCH"),
     ),
 )
-def test_r42_default_contract_rejects_missing_restricted_authority(
+def test_r42_posix_contract_rejects_missing_restricted_authority(
     field: str,
     value: object,
+    code: str,
 ) -> None:
     expected = _restricted_r42_expected()
     expected[field] = value
     _assert_rejected(
         _stream(_restricted_r42_init(), _assistant(), _result()),
-        "CONFIG_INVALID",
+        code,
         expected_session_id=SESSION,
         expected_init_contract=expected,
     )
+
+
+def test_real_profile_compilers_admit_both_filesystem_permission_modes() -> None:
+    common = {
+        "claude_code_version": "2.1.252",
+        "cwd": "C:\\audit",
+        "accepted_models": ("claude-opus-5",),
+        "builtin_tools": ("Edit", "Glob", "Grep", "Read", "Write"),
+        "required_tools": ("Read", "Write"),
+        "forbidden_tools": (
+            "Agent", "Bash", "PowerShell", "Task", "WebFetch", "WebSearch",
+        ),
+    }
+    legacy = H.compile_claude_headless_profile(
+        **common,
+        permission_mode="default",
+        mcp_server_names=(),
+        customization_mode="BOUND_SETTINGS",
+        accepted_api_key_sources=("none",),
+        required_capabilities=(C.RESTRICTED_ANALYSIS_CAPABILITY,),
+        forbidden_capabilities=("remote-agents",),
+        accepted_output_styles=("default",),
+    )
+    native = H.compile_posix_native_claude_headless_profile(**common)
+
+    for profile, mode in ((legacy, "default"), (native, "dontAsk")):
+        expected = profile["expected_init_contract"]
+        assert expected["permission_mode"] == mode
+        init = _restricted_r42_init()
+        init["permissionMode"] = mode
+        summary = C.validate_claude_stream_json(
+            _stream(init, _assistant(), _result()),
+            expected_session_id=SESSION,
+            expected_init_contract=expected,
+        )
+        assert summary["init_applicability"] == "MATCHED"
+
+
+def test_filesystem_permission_modes_cannot_cross_fixed_contracts() -> None:
+    common = {
+        "claude_code_version": "2.1.252",
+        "cwd": "C:\\audit",
+        "accepted_models": ("claude-opus-5",),
+        "builtin_tools": ("Edit", "Glob", "Grep", "Read", "Write"),
+        "required_tools": ("Read", "Write"),
+        "forbidden_tools": (
+            "Agent", "Bash", "PowerShell", "Task", "WebFetch", "WebSearch",
+        ),
+    }
+    contracts = (
+        H.compile_claude_headless_profile(
+            **common,
+            permission_mode="default",
+            mcp_server_names=(),
+            customization_mode="BOUND_SETTINGS",
+            accepted_api_key_sources=("none",),
+            required_capabilities=(C.RESTRICTED_ANALYSIS_CAPABILITY,),
+            forbidden_capabilities=("remote-agents",),
+            accepted_output_styles=("default",),
+        )["expected_init_contract"],
+        H.compile_posix_native_claude_headless_profile(
+            **common
+        )["expected_init_contract"],
+    )
+    for expected in contracts:
+        init = _restricted_r42_init()
+        init["permissionMode"] = (
+            "dontAsk"
+            if expected["permission_mode"] == "default"
+            else "default"
+        )
+        _assert_rejected(
+            _stream(init, _assistant(), _result()),
+            "INIT_APPLICABILITY_MISMATCH",
+            expected_session_id=SESSION,
+            expected_init_contract=expected,
+        )
 
 
 @pytest.mark.parametrize("surface", ("root", "subagent", "model_usage"))
@@ -440,7 +575,11 @@ def test_expected_init_contract_rejects_provider_application_drift(
     expected[field] = value
     _assert_rejected(
         _valid_stream(),
-        "INIT_APPLICABILITY_MISMATCH",
+        (
+            "INSTALL_GENERATION_AUTHORITY"
+            if field == "claude_code_version"
+            else "INIT_APPLICABILITY_MISMATCH"
+        ),
         expected_session_id=SESSION,
         expected_init_contract=expected,
     )
@@ -523,6 +662,119 @@ def test_real_2_1_252_null_stop_root_text_shape_is_terminal() -> None:
     )
 
 
+@pytest.mark.parametrize("include_origin", [True, False])
+def test_capability_bound_latest_null_stop_requires_explicit_opt_in(
+    include_origin: bool,
+) -> None:
+    init = _init()
+    init.update({
+        "claude_code_version": "2.1.270",
+        "model": "claude-sonnet-5",
+        "permissionMode": "dontAsk",
+        "apiKeySource": "none",
+        "tools": ["Edit", "Glob", "Grep", "Read", "Write"],
+        "agents": ["claude", "Explore", "general-purpose", "Plan", "statusline-setup"],
+        "capabilities": [
+            "interrupt_receipt_v1", "interrupt_cancel_queued_v1",
+            "msg_lifecycle_v1",
+        ],
+    })
+    result = _result(result_text="completed")
+    result["terminal_reason"] = "completed"
+    if not include_origin:
+        result.pop("origin")
+    raw = _stream(init, _assistant(stop_reason=None, text="completed"), result)
+
+    _assert_rejected(raw, "INSTALL_GENERATION_MISMATCH")
+    summary = C.TEST_ONLY_validate_claude_stream_json(
+        raw,
+        install_generation_authority=_generation(),
+        expected_session_id=SESSION,
+        allow_capability_bound_text_null_stop_terminal=True,
+    )
+    assert summary["terminal_basis"] == (
+        "FINAL_ROOT_ASSISTANT_TEXT_NULL_STOP_AND_RESULT_SUCCESS_"
+        "CAPABILITY_BOUND"
+    )
+
+
+def test_permission_denials_are_retained_not_rejected() -> None:
+    """A denial is a coverage fact, not a contradiction of success.
+
+    Replaces the removed `permission_denial -> RESULT_PERMISSION_DENIED` pins.
+    DODO run31 breadth worker B2 was refused four `Glob` shapes, routed around
+    them, and produced a valid 95KB analysis carrying 11 findings -- which the
+    old behaviour discarded outright. Publication now stays gated on the worker
+    producing its exact expected output and passing the staged validator, while
+    the denials travel with the record as bound, hashed coverage evidence.
+    """
+    init = _init()
+    assistant = _assistant(text="done")
+    result = _result(result_text="done")
+    result["permission_denials"] = [
+        {"tool_name": "Glob", "tool_use_id": "toolu-1", "tool_input": {}},
+        {"tool_name": "Grep", "tool_use_id": "toolu-2", "tool_input": {}},
+    ]
+
+    evidence = C.TEST_ONLY_validate_claude_stream_json(
+        _stream(init, assistant, result),
+        install_generation_authority=_generation(),
+        expected_session_id=SESSION,
+    )
+
+    summary = dict(evidence)
+    # Retained ...
+    assert summary["permission_denial_count"] == 2
+    # ... and VISIBLE: a silent retention would be provenance laundering.
+    assert len(summary["permission_denial_digest"]) == 64
+    assert list(summary["permission_denial_tools"]) == ["Glob", "Grep"]
+
+
+def test_clean_result_reports_no_denial_debt() -> None:
+    """A clean worker must not be slandered with coverage debt."""
+    evidence = C.TEST_ONLY_validate_claude_stream_json(
+        _stream(_init(), _assistant(text="done"), _result(result_text="done")),
+        install_generation_authority=_generation(),
+        expected_session_id=SESSION,
+    )
+    summary = dict(evidence)
+    assert summary["permission_denial_count"] == 0
+    assert summary["permission_denial_digest"] == ""
+    assert list(summary["permission_denial_tools"]) == []
+
+
+@pytest.mark.parametrize(
+    ("mutation", "code"),
+    [
+        ("terminal_absent", "ROOT_END_TURN_REQUIRED"),
+        ("foreign_origin", "RESULT_ORIGIN_REJECTED"),
+        ("blank_text", "ROOT_END_TURN_REQUIRED"),
+    ],
+)
+def test_capability_bound_null_stop_remains_exact(
+    mutation: str, code: str,
+) -> None:
+    init = _init()
+    init["claude_code_version"] = "2.1.270"
+    assistant = _assistant(stop_reason=None, text=("   " if mutation == "blank_text" else "done"))
+    result = _result(result_text="done")
+    result["terminal_reason"] = "completed"
+    if mutation == "terminal_absent":
+        result.pop("terminal_reason")
+    elif mutation == "foreign_origin":
+        result["origin"] = {"kind": "peer", "from": "another-agent"}
+    elif mutation == "permission_denial":
+        result["permission_denials"] = [{"tool_name": "Write"}]
+    with pytest.raises(C.ClaudeStreamJsonEvidenceError) as caught:
+        C.TEST_ONLY_validate_claude_stream_json(
+            _stream(init, assistant, result),
+            install_generation_authority=_generation(),
+            expected_session_id=SESSION,
+            allow_capability_bound_text_null_stop_terminal=True,
+        )
+    assert caught.value.code == code
+
+
 @pytest.mark.parametrize("status", ["allowed", "allowed_warning"])
 def test_allowed_rate_limit_telemetry_preserves_terminal_candidate(
     status: str,
@@ -575,7 +827,6 @@ def test_allowed_rate_limit_telemetry_preserves_terminal_candidate(
         ("wrong_model", "MODEL_DENOMINATOR_MISMATCH"),
         ("non_success", "RESULT_SUBTYPE_REJECTED"),
         ("error_result", "RESULT_IS_ERROR"),
-        ("permission_denial", "RESULT_PERMISSION_DENIED"),
     ],
 )
 def test_2_1_252_null_stop_terminal_shape_mutations_fail_closed(
@@ -658,6 +909,7 @@ def test_2_1_252_null_stop_terminal_shape_mutations_fail_closed(
         # Isolate the parser's version-pinned terminal rule from the separate
         # expected-init version equality gate.
         kwargs = {"expected_session_id": SESSION}
+        code = "INSTALL_GENERATION_MISMATCH"
     _assert_rejected(_stream(*events), code, **kwargs)
 
 
@@ -936,11 +1188,6 @@ def test_event_uuids_are_unique_across_the_entire_stream() -> None:
             "deferred_tool_use",
             {"id": "toolu-1", "name": "Read", "input": {}},
             "RESULT_CONTRADICTION",
-        ),
-        (
-            "permission_denials",
-            [{"tool_name": "Read", "tool_use_id": "toolu-1", "tool_input": {}}],
-            "RESULT_PERMISSION_DENIED",
         ),
     ],
 )
@@ -1285,3 +1532,58 @@ def test_ceiling_configuration_is_bounded(
             max_stream_bytes=stream_bytes,  # type: ignore[arg-type]
         )
     assert caught.value.code == "CONFIG_INVALID"
+
+
+def _refusal_row(*, session_id: str = SESSION, **overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "type": "system",
+        "subtype": "model_refusal_no_fallback",
+        "uuid": "refusal-uuid",
+        "session_id": session_id,
+        "original_model": "claude-opus-5",
+        "request_id": "req_test",
+        "api_refusal_category": "reasoning_extraction",
+        "api_refusal_explanation": "blocked",
+        "refused_user_message_uuid": "user-uuid",
+        "content": "",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_provider_refusal_row_is_typed_not_a_grammar_violation() -> None:
+    """DODO run45 chunk_c attempt 2: four `model_refusal_no_fallback` rows then
+    `result.stop_reason == "refusal"` were reported as EVENT_TYPE_UNSUPPORTED.
+    The typed terminal refusal must win."""
+    result = _result()
+    result["stop_reason"] = "refusal"
+    raw = _stream(_init(), _refusal_row(), _refusal_row(uuid="refusal-2"), result)
+    _assert_rejected(raw, "RESULT_CYBER_REFUSAL")
+
+
+def test_provider_refusal_row_requires_its_typed_fields() -> None:
+    result = _result()
+    result["stop_reason"] = "refusal"
+    _assert_rejected(
+        _stream(_init(), _refusal_row(api_refusal_category=""), result),
+        "EVENT_FIELD_INVALID",
+    )
+    _assert_rejected(
+        _stream(_init(), _refusal_row(original_model=None), result),
+        "EVENT_FIELD_INVALID",
+    )
+
+
+def test_refusal_row_then_assistant_error_envelope_is_a_typed_provider_refusal() -> None:
+    """Real CLI order (run45 chunk_b attempt 1): `system/model_refusal_no_fallback`
+    at line 50, then the assistant error envelope at line 51."""
+    errored = _assistant(stop_reason="refusal", text="")
+    errored["error"] = "invalid_request"
+    raw = _stream(_init(), _refusal_row(), errored)
+    _assert_rejected(raw, "PROVIDER_REFUSAL")
+
+
+def test_assistant_error_without_a_refusal_row_stays_assistant_error() -> None:
+    errored = _assistant(text="")
+    errored["error"] = "invalid_request"
+    _assert_rejected(_stream(_init(), errored), "ASSISTANT_ERROR")

@@ -63,9 +63,11 @@ Plamen v3 is complete only when all of the following are true:
   is completion-valid for this goal but cannot defer any listed
   `does_not_defer` obligation or any implementation, runtime, backend, resume,
   portability, privacy-boundary, or handoff requirement that remains active.
-- The five canonical normative sources and two redirect-only compatibility
+- The six canonical normative sources and two redirect-only compatibility
   documents are internally consistent, package-reachable, link-clean, and
-  independently reviewed.
+  independently reviewed. The sixth owner is the Program Facts runtime
+  specification added by the canonical v2 ownership migration; it is additive
+  and does not displace any of the five inherited v1 owners.
 - Method content, provider facts, scheduler behavior, premise/disposition
   authority, and report authority each have one declared normative owner.
 

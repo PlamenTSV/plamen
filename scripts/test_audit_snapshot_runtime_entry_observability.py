@@ -37,7 +37,10 @@ def _sealed_snapshot(toolchain: dict[str, Any]) -> dict[str, Any]:
                 "language": "evm",
                 "pipeline": "sc",
                 "git_head": "UNAVAILABLE",
-                "coverage_limitations": [],
+                "coverage_limitations": [
+                    "EVM_ANALYSIS_PROJECTION_UNAVAILABLE: synthetic "
+                    "runtime-entry observability fixture"
+                ],
             },
             "audit_config": {"digest": "3" * 64, "field_count": 1},
             "methodology": {

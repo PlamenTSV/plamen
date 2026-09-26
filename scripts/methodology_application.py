@@ -33,6 +33,10 @@ TRACE_JSON_BEGIN = "<!-- PLAMEN_STEP_TRACE_JSON_BEGIN -->"
 TRACE_JSON_END = "<!-- PLAMEN_STEP_TRACE_JSON_END -->"
 TRACE_COLUMNS = ("skill", "step", "executed", "evidence", "result")
 ASSURANCE = "PRODUCER_ATTESTATION_ONLY"
+REPAIR_POSITIVE_EVIDENCE_REQUIREMENT = (
+    "Executed=yes/partial requires at least one resolvable PROJECT_ROOT "
+    "source:Lline; scratchpad/artifact citations are context only, never proof."
+)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_RE = re.compile(r"(?i)(?:^|\b)(?:explicitly\s+)?safe\s*[:\-\u2013\u2014]")
 _GENERIC_RESULT_RE = re.compile(
@@ -84,12 +88,18 @@ def _json_digest(value: Any) -> str:
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    content = (
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    )
+    if path.is_file() and not path.is_symlink():
+        try:
+            if path.read_text(encoding="utf-8", errors="strict") == content:
+                return
+        except (OSError, UnicodeError):
+            pass
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    tmp.write_text(
-        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    tmp.write_text(content, encoding="utf-8")
     os.replace(tmp, path)
 
 
@@ -199,13 +209,16 @@ def _trace_rows(text: str) -> list[dict[str, str]]:
 
     Markdown tables are intentionally ignored. Pipes, newlines, and escaping in
     evidence/result fields cannot change row boundaries in this representation.
+    The sentinel-delimited JSON is the authority; a cosmetic Markdown heading
+    is neither required nor trusted.
     """
     if text.count(TRACE_JSON_BEGIN) != 1 or text.count(TRACE_JSON_END) != 1:
         return []
-    before, remainder = text.split(TRACE_JSON_BEGIN, 1)
-    payload_text, _after = remainder.split(TRACE_JSON_END, 1)
-    if before.count(TRACE_HEADING) != 1:
+    begin = text.find(TRACE_JSON_BEGIN)
+    end = text.find(TRACE_JSON_END)
+    if begin < 0 or end < begin + len(TRACE_JSON_BEGIN):
         return []
+    payload_text = text[begin + len(TRACE_JSON_BEGIN) : end]
     try:
         payload = json.loads(payload_text.strip())
     except (json.JSONDecodeError, TypeError):
@@ -227,6 +240,63 @@ def _trace_rows(text: str) -> list[dict[str, str]]:
             return []
         rows.append({key: raw[key] for key in TRACE_COLUMNS})
     return rows
+
+
+def staged_repair_source_evidence_issues(
+    raw: bytes,
+    *,
+    project_root: Path,
+    scratchpad: Path,
+) -> list[str]:
+    """Reject positive repair attestations without a real project locus.
+
+    ``no`` and ``unknown`` rows remain explicit debt and therefore need not
+    manufacture a citation.  ``yes`` and ``partial`` rows claim that source
+    work occurred, so their evidence must resolve to an existing in-root
+    source line; scratchpad/artifact citations cannot authorize publication.
+    """
+
+    if type(raw) is not bytes:
+        return ["repair source-evidence output is not bytes"]
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeError:
+        return ["repair source-evidence output is not strict UTF-8"]
+    rows = _trace_rows(text)
+    if not rows:
+        return ["repair source-evidence gate has no authoritative trace rows"]
+    resolver = MethodologyCitationResolver(
+        Path(project_root), scratchpad=Path(scratchpad)
+    )
+    issues: list[str] = []
+    positive = False
+    for row in rows:
+        executed = str(row.get("executed") or "").strip().casefold()
+        if executed not in {"yes", "partial"}:
+            continue
+        positive = True
+        if not resolver.has_resolvable_citation(str(row.get("evidence") or "")):
+            issues.append(
+                "repair step trace "
+                f"{row.get('skill') or '<unknown>'}/{row.get('step') or '<unknown>'} "
+                + REPAIR_POSITIVE_EVIDENCE_REQUIREMENT
+            )
+    if not positive and re.search(r"(?im)^#{2,3}\s+Finding\s+\[", text):
+        issues.append(
+            "repair finding cannot be published when every assigned step "
+            "remains Executed=no/unknown debt"
+        )
+    return list(dict.fromkeys(issues))
+
+
+def repair_source_evidence_prompt_contract() -> str:
+    """Return the exact producer wording paired with the staged gate."""
+
+    return (
+        REPAIR_POSITIVE_EVIDENCE_REQUIREMENT
+        + " Use Executed=no/unknown when real source evidence is unavailable; "
+        "that preserves visible methodology debt and must not be rewritten as success."
+    )
 
 
 def _output_dispatch_metadata(text: str) -> tuple[dict[str, str], str | None]:

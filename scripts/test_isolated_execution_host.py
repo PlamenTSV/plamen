@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import importlib.util
 import json
 import os
@@ -20,7 +21,37 @@ from windows_low_integrity_lease import LEASE_DIRECTORY_ENV, LEASE_TEST_OVERRIDE
 
 
 def _python(code: str) -> tuple[str, ...]:
-    return (sys.executable, "-I", "-S", "-c", code)
+    return (str(Path(sys.executable).resolve()), "-I", "-S", "-c", code)
+
+
+def _completed_payload(
+    request: dict[str, Any],
+    *,
+    stdout: str = "",
+    stderr: str = "",
+) -> dict[str, Any]:
+    stdout_bytes = stdout.encode("utf-8")
+    stderr_bytes = stderr.encode("utf-8")
+    return {
+        "args": list(request["payload"]["command"]),
+        "returncode": 0,
+        "stdout": stdout,
+        "stderr": stderr,
+        "duration_s": 0.1,
+        "process_tree_terminated": True,
+        "containment_capability": {"platform": "WINDOWS"},
+        "stdout_observed_bytes": len(stdout_bytes),
+        "stderr_observed_bytes": len(stderr_bytes),
+        "stdout_retained_bytes": len(stdout_bytes),
+        "stderr_retained_bytes": len(stderr_bytes),
+        "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+        "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
+        "stdout_truncated": False,
+        "stderr_truncated": False,
+        "executable_binding_sha256": H._sha(
+            request["payload"]["executable_guard"]
+        ),
+    }
 
 
 def _wait_for_file(path: Path, *, timeout: float = 5.0) -> None:
@@ -89,15 +120,7 @@ def test_forged_completion_receipts_are_rejected() -> None:
         request=request,
         executor_pid=7171,
         completion_authority=True,
-        payload={
-            "args": list(request["payload"]["command"]),
-            "returncode": 0,
-            "stdout": "ok\n",
-            "stderr": "",
-            "duration_s": 0.1,
-            "process_tree_terminated": True,
-            "containment_capability": {"platform": "WINDOWS"},
-        },
+        payload=_completed_payload(request, stdout="ok\n"),
     )
     H._validate_terminal_receipt(
         valid,
@@ -229,15 +252,7 @@ def test_bare_executable_request_dually_binds_signed_path_and_receipt(
         request=request,
         executor_pid=7171,
         completion_authority=True,
-        payload={
-            "args": list(request["payload"]["command"]),
-            "returncode": 0,
-            "stdout": "",
-            "stderr": "",
-            "duration_s": 0.1,
-            "process_tree_terminated": True,
-            "containment_capability": {"platform": "WINDOWS"},
-        },
+        payload=_completed_payload(request),
     )
     H._validate_terminal_receipt(
         valid,
@@ -772,10 +787,14 @@ def test_owned_runner_isolated_adapter_is_lazy_and_registered() -> None:
         "RUN_OWNED_PROCESS_V1",
         "RUN_WER_PROVIDER_V1",
     )
-    assert H._executor_argv(H.HANDLER_RUN_WER_PROVIDER)[1:3] == (
-        "-I",
-        "-S",
-    )
+    if os.name == "nt":
+        assert H._executor_argv(H.HANDLER_RUN_WER_PROVIDER)[1:3] == (
+            "-I",
+            "-S",
+        )
+    else:
+        with pytest.raises(RuntimeError, match="requires Windows CPython"):
+            H._executor_argv(H.HANDLER_RUN_WER_PROVIDER)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows environment semantics")

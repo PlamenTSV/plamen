@@ -15,7 +15,7 @@ VERSION = "2.1.252"
 
 
 def test_locked_cli_capability_row_matches_probed_2_1_252_surface() -> None:
-    row = E._REVIEWED_COMPATIBILITY_ROWS[VERSION]
+    row = E._LEGACY_REVIEWED_COMPATIBILITY_ROWS[VERSION]
     assert row["compatibility_id"] == "claude-code-2.1.252"
     assert set(row["supported_capabilities"]) >= {
         "-p",
@@ -36,6 +36,7 @@ def test_locked_cli_capability_row_matches_probed_2_1_252_surface() -> None:
         "init-security-v2",
     }
     assert E._REVIEWED_TYPED_PROFILE_CAPABILITIES_BY_VERSION[VERSION] == {
+        "--allowedTools",
         "--restricted",
         "--settings",
     }
@@ -80,7 +81,7 @@ def test_2_1_252_functional_controls_and_oauth_init_are_exact() -> None:
 
 
 def test_2_1_252_state_projection_tracks_observed_migration_delta() -> None:
-    assert A._CLAUDE_STATE_VERSION == VERSION
+    assert A.LEGACY_CLAUDE_STATE_VERSION == VERSION
     assert A._CLAUDE_STATE_MIGRATION_VERSION == 13
     assert {
         "hasResetAutoModeOptInForDefaultOffer",

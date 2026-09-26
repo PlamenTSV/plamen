@@ -48,9 +48,9 @@ For every queue row, write one row to `attention_repair_summary.md`:
 |---------|------|--------|---------|----------|-------|
 
 **Receipt contract**:
-- Copy the queue's `QUEUE_BINDING_SHA256` line verbatim near the top of
-  `attention_repair_summary.md`. A summary without the exact binding is stale
-  and will be rejected.
+- Do not copy or reconstruct queue/shard hashes. The driver binds the exact
+  queue, shard input, output route, and application receipt out of band. Your
+  authority is the semantic row verdict and its evidence.
 - The `Queue #` cell MUST equal the queue row number.
 - The `Kind` cell MUST equal the queue row kind.
 - The `Target` cell MUST copy the queue row `Target` value exactly, including

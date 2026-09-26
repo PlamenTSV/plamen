@@ -282,6 +282,72 @@ def test_bare_local_source_id_remains_residual_delivery_debt(
     ]
 
 
+def test_exact_hash_bound_reemit_accounts_for_prior_parser_debt(
+    tmp_path: Path,
+) -> None:
+    """Representation debt cannot override an exact canonical delivery."""
+
+    source_hash = "sha256:" + ("a" * 64)
+    source_file = "analysis_rescan_1.md"
+    action_id = "RS1-1"
+    inventory = (
+        "# Finding Inventory\n\n"
+        "### Finding [INV-001]: recovered candidate\n"
+        "**Severity**: Medium\n"
+        "**Location**: UNKNOWN\n"
+        f"**Source IDs**: {source_file}:{action_id}\n"
+        f"**Source Actions**: {source_file}:{action_id}@{source_hash}\n"
+        "**Verdict**: NEEDS_VERIFICATION\n"
+        "**Root Cause**: preserved parser-debt candidate\n"
+        "**Description**: the exact source block is retained for verification\n"
+        "**Impact**: material impact remains unresolved\n"
+    )
+    (tmp_path / "findings_inventory.md").write_text(
+        inventory, encoding="utf-8"
+    )
+    detail = (
+        f"{source_file}:{action_id}: source action parsed without "
+        "substantive content; retained as delivery debt"
+    )
+    scan = {
+        "artifacts": [{
+            "producer_key": "rescan_and_per_contract",
+            "artifact": source_file,
+            "sha256": source_hash,
+            "source_action_count": 1,
+        }],
+        "actions": [{
+            "producer_key": "rescan_and_per_contract",
+            "source_file": source_file,
+            "source_artifact_hash": source_hash,
+            "action_id": action_id,
+            "local_id_valid": True,
+            "action_kind": "UNKNOWN",
+            "target_id": "",
+            "title": "recovered candidate",
+            "source_identity": "",
+            "evidence_scope": "NONE",
+            "proof_scope": "ANALYTICAL_CANDIDATE",
+            "effective_evidence_scope": "UNSPECIFIED",
+            "effective_proof_scope": "ANALYTICAL",
+            "effective_harm_scope": "UNPROVEN",
+            "content_bearing": False,
+            "disposition": "RESIDUAL_DEBT",
+            "reason": "malformed or content-less finding heading",
+        }],
+        "residual_debt": [detail],
+    }
+
+    payload = V._build_registered_finding_delivery_receipt_payload(
+        tmp_path, scan, inventory
+    )
+
+    assert payload["status"] == "CLEAN"
+    assert payload["accounted_action_count"] == 1
+    assert payload["residual_debt"] == []
+    assert payload["actions"][0]["disposition"] == "PROMOTED_FINDING"
+
+
 def test_inventory_mutation_makes_both_receipts_stale_not_clean(
     tmp_path: Path,
 ) -> None:

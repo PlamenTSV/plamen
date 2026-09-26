@@ -34,7 +34,9 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
 import plamen_driver as D  # noqa: E402
+import plamen_parsers as P  # noqa: E402
 from plamen_types import Checkpoint, GateFailure, Phase, PhaseCommit  # noqa: E402
+from queue_work_items import build_queue_work_plan  # noqa: E402
 
 
 PIPELINE_BACKEND_CASES = (
@@ -148,6 +150,112 @@ def test_verification_helper_validates_then_delegates_without_second_state_machi
     assert "checkpoint.save(" not in source
 
 
+def test_verification_run_guard_precedes_repair_validation_and_shared_commit():
+    source = inspect.getsource(_require_transaction_helper())
+
+    guard_at = source.index("checkpoint_run_id = getattr(checkpoint, \"run_id\", None)")
+    repair_at = source.index("ensure_shadow_severity_for_shard(")
+    validate_at = source.index("_validate_verification_precommit(")
+    commit_at = source.index("_commit_phase_from_disk_debt(")
+    assert guard_at < repair_at < validate_at < commit_at
+
+
+def test_dynamic_verifier_authority_debt_arms_retry_not_consumable_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """Routing unit check; genuine validator/recovery evidence is integration-only."""
+    config = _config(tmp_path, "sc", "codex")
+    scratchpad = Path(config["scratchpad"])
+    phase = _phase("sc")
+    _seed_phase_artifact(scratchpad, phase)
+    (scratchpad / D._DYNAMIC_VERIFIER_ROSTER_NAME).write_text("{}\n")
+    checkpoint = Checkpoint(run_id=config["_run_id"])
+    issue = "source_decisions.unit: output commit authority receipt missing"
+    monkeypatch.setattr(D, "_dynamic_verifier_phase_issues", lambda *a: [])
+    monkeypatch.setattr(D, "_validate_verification_precommit", lambda *a: [issue])
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("non-consumable authority reached completion projection")
+
+    monkeypatch.setattr(D, "_commit_phase_from_disk_debt", forbidden)
+    commit = _call_transaction(_require_transaction_helper(), phase, checkpoint, scratchpad, config)
+    assert commit.state == "INCOMPLETE_WITH_DEBT"
+    assert phase.name not in checkpoint.completed
+    assert D._incomplete_retry_arm_path(scratchpad, phase.name).is_file()
+    assert any(failure.message == issue for failure in commit.unresolved_failures)
+
+
+@pytest.mark.parametrize(
+    "configured_run_id",
+    (pytest.param(None, id="missing"), pytest.param(7, id="non-string"),
+     pytest.param("", id="blank"), pytest.param(" foreign ", id="noncanonical"),
+     pytest.param(str(uuid.uuid4()), id="foreign")),
+)
+def test_foreign_or_invalid_config_run_retains_artifacts_as_incomplete_debt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured_run_id: object,
+):
+    helper = _require_transaction_helper()
+    config = _config(tmp_path, "sc", "claude")
+    scratchpad = Path(config["scratchpad"])
+    phase = _phase("sc", kind="mechanical")
+    _seed_phase_artifact(scratchpad, phase)
+    artifact = scratchpad / phase.expected_artifacts[0]
+    artifact_before = artifact.read_bytes()
+    checkpoint_run_id = str(uuid.uuid4())
+    checkpoint = Checkpoint(run_id=checkpoint_run_id)
+    if configured_run_id is None:
+        config.pop("_run_id")
+    else:
+        config["_run_id"] = configured_run_id
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("foreign run reached repair/precommit/shared commit")
+
+    monkeypatch.setattr(D, "_validate_verification_precommit", forbidden)
+    monkeypatch.setattr(D, "_commit_phase_from_disk_debt", forbidden)
+
+    commit = _call_transaction(helper, phase, checkpoint, scratchpad, config)
+
+    assert commit.state == "INCOMPLETE_WITH_DEBT"
+    assert commit.run_id == checkpoint_run_id
+    assert phase.name not in checkpoint.completed
+    assert phase.name in checkpoint.degraded
+    assert artifact.read_bytes() == artifact_before
+    assert config.get("_run_id") == configured_run_id
+    assert any(
+        "run authority is absent or disagrees" in failure.message
+        for failure in commit.unresolved_failures
+    )
+    loaded = Checkpoint.load(scratchpad)
+    assert loaded.phase_commits[phase.name].state == "INCOMPLETE_WITH_DEBT"
+    assert phase.name not in loaded.completed
+
+
+def test_absent_checkpoint_run_retains_artifacts_and_debt_without_fabrication(
+    tmp_path: Path,
+):
+    config = _config(tmp_path, "l1", "codex")
+    scratchpad = Path(config["scratchpad"])
+    phase = _phase("l1", kind="mechanical")
+    _seed_phase_artifact(scratchpad, phase)
+    artifact = scratchpad / phase.expected_artifacts[0]
+    artifact_before = artifact.read_bytes()
+    checkpoint = Checkpoint(run_id=None)
+
+    with pytest.raises(RuntimeError, match="run authority is absent"):
+        _call_transaction(
+            _require_transaction_helper(), phase, checkpoint, scratchpad, config
+        )
+
+    assert checkpoint.run_id is None
+    assert checkpoint.phase_commits == {}
+    assert checkpoint.completed == []
+    assert artifact.read_bytes() == artifact_before
+    assert (scratchpad / f"{phase.name}.degraded").is_file()
+
+
 def test_precommit_denominator_includes_ledger_work_plan_and_receipts():
     validator = _require_precommit_validator()
     source = inspect.getsource(validator)
@@ -181,6 +289,33 @@ def test_mechanical_precommit_accepts_explicit_zero_denominator_manifest(
         "| TOOLCHAIN_UNAVAILABLE | 0 |\n| SKIPPED | 0 |\n",
         encoding="utf-8",
     )
+    P._write_queue_work_item_records_manifest(
+        scratchpad / "verification_queue.md", ()
+    )
+    plan = build_queue_work_plan((), {}, planner_version="test.plan.v1")
+    (scratchpad / "verification_queue.work_plan.json").write_text(
+        plan.to_json() + "\n", encoding="utf-8"
+    )
+    (scratchpad / "mechanical_verify_manifest.json").write_text(
+        json.dumps(
+            {"generated_at": "2026-01-01T00:00:00", "counts": {}, "results": []},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (scratchpad / "verdict_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "plamen.verdict_manifest.v1",
+                "mechanical_source": "mechanical_verify_manifest.json",
+                "generated_at": "2026-01-01T00:00:00",
+                "row_count": 0,
+                "verdicts": [],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     assert D._validate_verification_precommit(
         phase, scratchpad, config, [phase]
@@ -207,32 +342,24 @@ def test_mechanical_precommit_retains_nonzero_unavailable_work_as_debt(
     assert any("did not establish execution coverage" in issue for issue in issues)
 
 
-@pytest.mark.parametrize(
-    "start_marker,end_marker,typed_call",
-    (
-        (
-            'if config["pipeline"] == "l1" and phase.name == "verify_queue":',
-            "# v2.4.1: SC verify queue",
-            "_record_typed_verify_queue_routing_artifacts(",
-        ),
-        (
-            'if config.get("pipeline") != "l1" and phase.name == "sc_verify_queue":',
-            "# v2.4.1",
-            "_record_typed_verify_queue_routing_artifacts(",
-        ),
-    ),
-)
+@pytest.mark.parametrize("phase_name", ("verify_queue", "sc_verify_queue"))
 def test_l1_and_sc_queue_branches_commit_only_after_typed_routing_validation(
-    start_marker: str,
-    end_marker: str,
-    typed_call: str,
+    phase_name: str,
 ):
-    branch = _main_branch(start_marker, end_marker)
-    typed_at = branch.index(typed_call)
-    commit_at = branch.find("_commit_verification_transaction(", typed_at)
-
-    assert commit_at >= 0
-    assert typed_at < commit_at
+    # Both ecosystems now enter one live publication boundary. The old
+    # separate branch/comment markers described the retired queue path.
+    source = inspect.getsource(D.main)
+    call_at = source.index("_live_queue_boundary = _run_live_verify_queue_phase_boundary(")
+    guard_at = source.rfind("if phase.name in {", 0, call_at)
+    assert guard_at >= 0 and f'"{phase_name}"' in source[guard_at:call_at]
+    branch = inspect.getsource(D._run_live_verify_queue_phase_boundary)
+    typed_at = branch.index("_arm_typed_verify_queue_routing_artifacts(")
+    publish_at = branch.index("cutover_result = run_live_verify_queue_driver_cutover(")
+    admitted_at = branch.index('if cutover_result.get("safe_to_consume") is not True:')
+    commit_at = branch.find("_commit_verification_transaction(", admitted_at)
+    assert typed_at < publish_at < admitted_at < commit_at
+    assert "return incomplete(" in branch[admitted_at:commit_at]
+    assert 'config["_live_verify_queue_cutover_result"] = cutover_result' in branch[admitted_at:commit_at]
     assert "checkpoint.mark_completed(" not in branch
     assert "checkpoint.clear_degraded_sentinel(" not in branch
 
@@ -243,7 +370,7 @@ def test_mechanical_success_disabled_unavailable_and_failure_share_typed_commit(
         "# v2.3.11: report_assemble is Python-native",
     )
 
-    assert "run_phase5b_mechanical_verify(" in branch
+    assert "_run_mechanical_verification(scratchpad, config)" in branch
     assert "_commit_verification_transaction(" in branch
     assert branch.count("_commit_verification_transaction(") >= 2, (
         "disabled and executed/error terminal paths must both type their commit"
@@ -322,9 +449,7 @@ def test_empty_queue_fast_path_materializes_before_typed_commit():
 
 def test_post_execution_verify_success_uses_verification_precommit_after_artifact_recording():
     source = inspect.getsource(D.main)
-    start = source.index(
-        "for _model_io_issue in _record_typed_model_phase_artifacts("
-    )
+    start = source.index("_generic_model_io_issues = (")
     end = source.index("# SC report_index: build body-writer manifests", start)
     completion = source[start:end]
 

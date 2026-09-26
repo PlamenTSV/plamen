@@ -150,6 +150,26 @@ artifact or gate.
    (d) **Fix comparison test**: Write a 1-line fix for each. If fixes modify DIFFERENT functions → separate hypotheses.
 7. **Severity inheritance**: When grouping findings of different severities, the hypothesis inherits the HIGHEST severity from its constituent findings.
 
+### Typed Pair Contract (MANDATORY)
+
+`hypotheses.md` and `finding_mapping.md` are one semantic pair, not two
+independent summaries:
+
+- In `hypotheses.md`, use a table with the exact identity columns
+  `Hypothesis ID` and `Constituent Findings`. Keep the `Hypothesis ID` cell to
+  the bare stable ID; put the title in a separate `Title` column.
+- In `finding_mapping.md`, use the exact columns `Finding ID`,
+  `Hypothesis ID`, and `Mapping Status`.
+- The set of `(Hypothesis ID, Finding ID)` edges MUST be identical in both
+  files. Do not add provenance aliases or scanner labels to only one file.
+- Each hypothesis has at most five constituent IDs. If including an alias or
+  additional candidate would exceed five, split the hypothesis or leave that
+  alias out of both relation tables when its promoted canonical finding is
+  already represented.
+- Before returning, compare the two tables row-for-row as sets and correct any
+  missing or extra edge. Narrative prose may differ; relation identities may
+  not.
+
 **Confidence-aware grouping**: Group LOW_CONFIDENCE findings with CONFIDENT findings of the same root cause where possible. Flag CONTESTED findings for verification priority.
 
 ---

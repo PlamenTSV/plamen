@@ -35,6 +35,11 @@ def _m():
     return importlib.import_module("plamen_mechanical")
 
 
+def _d():
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    return importlib.import_module("plamen_driver")
+
+
 # ---------------------------------------------------------------------------
 # Receipt regex
 # ---------------------------------------------------------------------------
@@ -228,6 +233,26 @@ def test_function_summary_parser_extracts_rows(tmp_path):
     assert "transferFrom" in deposit["external_calls"]
 
 
+def test_function_summary_flat_schema_derives_contract_and_ignores_unknown_polarity(
+    tmp_path,
+):
+    v = _v()
+    (tmp_path / "function_summary.md").write_text(
+        "# Function Summary\n\n"
+        "| Function | Location | State Writes | External Calls |\n"
+        "|---|---|---|---|\n"
+        "| `writeState` | contracts/Vault.sol:L10 | balances | NONE |\n"
+        "| `callToken` | contracts/Router.sol:L20 | (UNKNOWN) | IERC20.transfer |\n"
+        "| `unknownRow` | contracts/Ignored.sol:L30 | UNAVAILABLE: no facts | (none) |\n",
+        encoding="utf-8",
+    )
+    rows = v._parse_function_summary_rows(tmp_path)
+    assert [row["contract"] for row in rows] == ["Vault", "Router", "Ignored"]
+    state, external = v._function_summary_obligation_sets(tmp_path)
+    assert state == {"Vault.writeState"}
+    assert external == {"Router.callToken"}
+
+
 def test_function_summary_gate_vacuous_when_missing(tmp_path):
     v = _v()
     assert v._check_function_summary_obligation(tmp_path, "thorough") == []
@@ -276,6 +301,78 @@ def test_function_summary_gate_ignores_view_only_rows(tmp_path):
     # viewFn intentionally has no receipt — gate must still pass
     issues = v._check_function_summary_obligation(tmp_path, "thorough")
     assert issues == []
+
+
+def test_function_summary_gate_rejects_wildcard_and_wrong_role_receipts(tmp_path):
+    v = _v()
+    (tmp_path / "function_summary.md").write_text(
+        "# Function Summary\n\n"
+        "| Function | Location | State Writes | External Calls |\n"
+        "|---|---|---|---|\n"
+        "| `setOwner` | contracts/Vault.sol:L10 | owner | NONE |\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "depth_token_flow_findings.md").write_text(
+        "[OBLIG:function_summary.md:Vault.setOwner] STATUS:DISMISSED KEY:x -> false_positive\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "depth_state_trace_findings.md").write_text(
+        "[OBLIG:function_summary.md:Vault.*] STATUS:CARRIED KEY:x -> chain\n",
+        encoding="utf-8",
+    )
+    issues = v._check_function_summary_obligation(tmp_path, "thorough")
+    assert any("Vault.setOwner" in issue for issue in issues)
+
+
+def test_state_and_token_depth_prompts_bind_exact_function_summary_obligations(
+    tmp_path,
+):
+    d = _d()
+    scratchpad = tmp_path / ".scratchpad"
+    scratchpad.mkdir()
+    (tmp_path / "src").mkdir()
+    (scratchpad / "function_summary.md").write_text(
+        "# Function Summary\n\n"
+        "| Function | File | State Writes | External Calls |\n"
+        "|---|---|---|---|\n"
+        "| `writeState` | contracts/Vault.sol | balances | UNKNOWN |\n"
+        "| `callToken` | contracts/Router.sol | (UNAVAILABLE) | IERC20.transfer |\n"
+        "| `unknownRow` | contracts/Ignored.sol | UNKNOWN | (NONE) |\n",
+        encoding="utf-8",
+    )
+    config = {
+        "pipeline": "sc",
+        "mode": "light",
+        "language": "evm",
+        "cli_backend": "claude",
+        "project_root": str(tmp_path),
+        "scratchpad": str(scratchpad),
+    }
+    prompts = {}
+    for role in ("state_trace", "token_flow"):
+        output = f"depth_{role}_findings.md"
+        prompts[role] = d._build_depth_worker_prompt(
+            job={
+                "agent_id": f"depth-{role.replace('_', '-')}",
+                "role": role,
+                "output": output,
+                "category": "standard",
+                "focus": role,
+            },
+            scratchpad=scratchpad,
+            project_root=str(tmp_path),
+            config=config,
+            attempt=1,
+        )
+
+    assert "`Vault.writeState`" in prompts["state_trace"]
+    assert "`Router.callToken`" not in prompts["state_trace"]
+    assert "`Router.callToken`" in prompts["token_flow"]
+    assert "`Vault.writeState`" not in prompts["token_flow"]
+    for prompt in prompts.values():
+        assert "[OBLIG:function_summary.md:<exact-row-id>]" in prompt
+        assert "Contract wildcards" in prompt
+        assert "Ignored.unknownRow" not in prompt
 
 
 # ---------------------------------------------------------------------------

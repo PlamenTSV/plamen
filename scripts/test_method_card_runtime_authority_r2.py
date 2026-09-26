@@ -161,7 +161,10 @@ def _audit_snapshot(root: Path, *, source_label: str = "source-a") -> dict:
             "language": "evm",
             "pipeline": "sc",
             "git_head": "1" * 40,
-            "coverage_limitations": [],
+            "coverage_limitations": [
+                "EVM_ANALYSIS_PROJECTION_UNAVAILABLE: fixture has no native "
+                "workspace materialization authority"
+            ],
         },
         "audit_config": {
             "digest": _sha("config"),

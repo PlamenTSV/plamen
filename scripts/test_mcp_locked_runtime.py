@@ -45,15 +45,12 @@ def test_checked_in_mcp_lock_is_complete_exact_and_integrity_bound() -> None:
     lock = json.loads(
         (ROOT / "mcp-packages" / "package-lock.json").read_text(encoding="utf-8")
     )
-    assert package["dependencies"]["@anthropic-ai/claude-code"] == "2.1.252"
-    assert package["dependencies"]["@openai/codex"] == "0.152.0"
-    assert lock["packages"]["node_modules/@anthropic-ai/claude-code"]["integrity"] == (
-        "sha512-ftoO0eLOZyEDrA3KDd7QZH5qdvToiTcoip3YdGGx8wzH4R9YUwHO+5V"
-        "G01JDRn8u7MrRcXkf7FvbMYezEt0VyQ=="
-    )
-    assert lock["packages"]["node_modules/@openai/codex"]["integrity"] == (
-        "sha512-Vx0tg/J5SbxYYGJazTtL/XySK9Dlqc5KW1MZM71NMwVci/4F1ap+FfSKPFTl"
-        "rICEtOTuq3KNcWSdv9oMGdPuRw=="
+    assert "@anthropic-ai/claude-code" not in package["dependencies"]
+    assert "@openai/codex" not in package["dependencies"]
+    assert not any(
+        key.startswith("node_modules/@anthropic-ai/claude-code")
+        or key.startswith("node_modules/@openai/codex")
+        for key in lock["packages"]
     )
 
 
@@ -488,13 +485,13 @@ def test_claude_merge_migrates_existing_npx_and_preserves_keys(
     monkeypatch.setattr(INSTALLER, "_mcp_public_command_path", lambda: Path("C:/Plamen/plamen.cmd"))
     INSTALLER._merge_mcp_json(lambda _message: None)
     helius = json.loads(target.read_text(encoding="utf-8"))["mcpServers"]["helius"]
-    assert helius["command"] == "C:\\Plamen\\plamen.cmd"
+    assert helius["command"] == str(Path("C:/Plamen/plamen.cmd"))
     assert helius["args"][0:5] == ["mcp-launch", "--backend", "claude", "--server", "helius"]
     assert helius["env"] == {"HELIUS_API_KEY": "secret"}
     slither = json.loads(target.read_text(encoding="utf-8"))["mcpServers"][
         "slither-analyzer"
     ]
-    assert slither["command"] == "C:\\Plamen\\plamen.cmd"
+    assert slither["command"] == str(Path("C:/Plamen/plamen.cmd"))
     assert slither["args"][0:5] == ["mcp-launch", "--backend", "claude", "--server", "slither-analyzer"]
     assert "cwd" not in slither
     assert slither["env"] == {"KEEP": "yes"}
@@ -632,8 +629,8 @@ def test_receipt_includes_both_mcp_config_authorities() -> None:
     assert {"mcp.json.example", "codex-adapter/config.toml.example"}.issubset(
         INSTALLER._CODEX_INSTALL_MCP_FILES
     )
-    assert INSTALLER._CODEX_INSTALL_SOURCE_COUNT == 823
-    assert INSTALLER._CODEX_INSTALL_RUNTIME_COUNT == 792
+    assert INSTALLER._CODEX_INSTALL_SOURCE_COUNT == 1180
+    assert INSTALLER._CODEX_INSTALL_RUNTIME_COUNT == 1149
     assert "scripts/plamen_mcp_runtime.py" in INSTALLER._CODEX_INSTALL_MCP_FILES
 
 

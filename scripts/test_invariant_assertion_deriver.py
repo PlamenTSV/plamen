@@ -7,7 +7,7 @@ inventory->verify path. Generic: names no protocol; symbols resolve at the locus
 Covers: one-candidate-per-block for all six shapes, correct Falsify Class, chain
 metadata present, `Source IDs: INVARIANT` stamping, budget isolation from the
 co-ref pool, idempotency (receipt honored), degrade (missing graph /
-un-executable), and fail-closed commitment-debt validation (`.ci_gap` sentinel).
+un-executable), and fail-closed, side-effect-free commitment-debt validation.
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def _eg():
@@ -26,6 +27,11 @@ def _eg():
 def _V():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     return importlib.import_module("plamen_validators")
+
+
+def _D():
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    return importlib.import_module("plamen_driver")
 
 
 def _proj(tmp_path: Path):
@@ -42,6 +48,66 @@ def _proj(tmp_path: Path):
         encoding="utf-8",
     )
     return root, sp
+
+
+def _seed_coupled_outputs(sp: Path) -> None:
+    D = _D()
+    records = sp / "finding_records.json"
+    if not records.exists():
+        records.write_bytes(
+            D.derive_preverify_finding_records_bytes(
+                (sp / "findings_inventory.md").read_bytes()
+            )
+        )
+    ledger = sp / "_id_ledger.json"
+    if not ledger.exists():
+        ledger.write_text(
+            json.dumps(
+                {"schema_version": "plamen.id_ledger.v1", "allocations": []},
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+
+def _run_driver_recovery(
+    sp: Path, monkeypatch, *, after_capture=None
+) -> tuple[list[str], list[object]]:
+    """Run late-CI recovery through the driver's typed coupled transaction."""
+    D = _D()
+    _seed_coupled_outputs(sp)
+    contracts: list[object] = []
+
+    def arm(**kwargs):
+        contracts.append(kwargs["contract"])
+        return True, []
+
+    def commit(**kwargs):
+        contract = kwargs["contract"]
+        if after_capture is not None and ".source_capture." in contract.work_unit_id:
+            after_capture()
+        return []
+
+    monkeypatch.setattr(
+        D, "semantic_input_prebind_producer_authority_issues", lambda *_a, **_k: []
+    )
+    monkeypatch.setattr(D, "_arm_deterministic_driver_work_unit", arm)
+    monkeypatch.setattr(D, "_commit_deterministic_driver_work_unit", commit)
+    issues = D._run_late_ci_recovery_transaction(
+        phase=SimpleNamespace(name="skeptic"),
+        config={
+            "project_root": str(sp.parent),
+            "pipeline": "sc",
+            "mode": "thorough",
+            "language": "evm",
+            "cli_backend": "codex",
+            "_run_id": "12345678-1234-4567-8abc-1234567890ab",
+        },
+        scratchpad=sp,
+    )
+    return issues, contracts
 
 
 _SIX_SHAPES = [
@@ -235,9 +301,9 @@ def test_degrade_empty_stub_block_skipped(tmp_path: Path):
     assert out == []
 
 
-# ── soft validator: NO-GAP clears without [CI-n] → warning + .ci_gap, passed True ──
+# ── pure validator: NO-GAP without [CI-n] returns explicit typed debt ──
 
-def test_validator_ci_gap_is_explicit_debt_and_writes_sentinel(tmp_path: Path):
+def test_validator_ci_gap_is_explicit_debt_without_writing_sentinel(tmp_path: Path):
     V = _V()
     _root, sp = _proj(tmp_path)
     # skeptic artifact with a NO-GAP clear but NO committed-invariant block
@@ -248,12 +314,14 @@ def test_validator_ci_gap_is_explicit_debt_and_writes_sentinel(tmp_path: Path):
         "| F-1 | Direction | up | NO-GAP | src/Vault.sol:L10 |\n",
         encoding="utf-8",
     )
-    issues = V._validate_invariant_commitment(sp, "thorough")
+    before = {path.name: path.read_bytes() for path in sp.iterdir()}
+    issues = V._validate_invariant_commitment(sp, "thorough", recover=False)
     assert issues == [
         "committed-invariant coverage gap: "
         "1 value-bearing clear(s), 0 harvestable CI blocks"
     ]
-    assert (sp / "invariant_commitment.ci_gap").exists()
+    assert {path.name: path.read_bytes() for path in sp.iterdir()} == before
+    assert not (sp / "invariant_commitment.ci_gap").exists()
 
 
 def test_soft_validator_no_sentinel_when_ci_present(tmp_path: Path):
@@ -267,7 +335,7 @@ def test_soft_validator_no_sentinel_when_ci_present(tmp_path: Path):
         + _ci_block(1, "CONSERVATION", "conservation"),
         encoding="utf-8",
     )
-    issues = V._validate_invariant_commitment(sp, "thorough")
+    issues = V._validate_invariant_commitment(sp, "thorough", recover=False)
     assert issues == []
     assert not (sp / "invariant_commitment.ci_gap").exists()
 
@@ -277,14 +345,14 @@ def test_soft_validator_noop_off_thorough(tmp_path: Path):
     _root, sp = _proj(tmp_path)
     (sp / "exploration_skeptic_findings.md").write_text(
         "NO-GAP everywhere\n" * 5, encoding="utf-8")
-    assert V._validate_invariant_commitment(sp, "core") == []
+    assert V._validate_invariant_commitment(sp, "core", recover=False) == []
     assert not (sp / "invariant_commitment.ci_gap").exists()
 
 
 def test_soft_validator_noop_missing_artifact(tmp_path: Path):
     V = _V()
     _root, sp = _proj(tmp_path)
-    assert V._validate_invariant_commitment(sp, "thorough") == []
+    assert V._validate_invariant_commitment(sp, "thorough", recover=False) == []
     assert not (sp / "invariant_commitment.ci_gap").exists()
 
 
@@ -380,48 +448,82 @@ def test_late_verify_ci_is_never_current_run_verified(tmp_path: Path):
     assert "**Verdict**: VERIFIED" not in inventory
 
 
-def test_validator_persists_and_replays_late_verify_ci_authority(
-    tmp_path: Path,
+def test_driver_persists_coupled_late_verify_ci_and_validator_replays_purely(
+    tmp_path: Path, monkeypatch,
 ) -> None:
     V = _V()
     _root, sp = _proj(tmp_path)
     _write_verify(sp, _ci_block(3, "FRESHNESS", "property"))
-    assert V._validate_invariant_commitment(sp, "thorough") == []
-    payload = json.loads(
-        (sp / "_late_committed_invariant_authority.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert payload["authority"] == "HUMAN_REVIEW_NEXT_RUN"
-    assert payload["status"] == "NEEDS_VERIFICATION"
-    assert len(payload["records"]) == 1
-    assert V._validate_invariant_commitment(
-        sp, "thorough", recover=False
-    ) == []
+    before = {path.name: path.read_bytes() for path in sp.iterdir()}
+    assert V._validate_invariant_commitment(sp, "thorough", recover=False) == [
+        "late committed-invariant EMISSION/CANDIDATE_PERSISTENCE_UNPROVEN: "
+        "canonical inventory omits a verifier CI candidate"
+    ]
+    assert {path.name: path.read_bytes() for path in sp.iterdir()} == before
+
+    issues, contracts = _run_driver_recovery(sp, monkeypatch)
+    assert issues == []
+    inventory = (sp / "findings_inventory.md").read_text(encoding="utf-8")
+    records = json.loads((sp / "finding_records.json").read_text(encoding="utf-8"))
+    ledger = json.loads((sp / "_id_ledger.json").read_text(encoding="utf-8"))
+    assert "INVARIANT:verify_H-3.md:CI-3" in inventory
+    assert "**Verdict**: NEEDS_VERIFICATION" in inventory
+    assert [row["inventory_id"] for row in records["records"]] == ["INV-001"]
+    assert [row["id"] for row in ledger["allocations"]] == ["INV-001"]
+    assert not (sp / "_late_committed_invariant_authority.json").exists()
+    successor = contracts[-1]
+    assert {row.path for row in successor.outputs} == {
+        "findings_inventory.md",
+        "finding_records.json",
+        "_id_ledger.json",
+    }
+    replay_prestate = {
+        path.relative_to(sp).as_posix(): path.read_bytes()
+        for path in sp.rglob("*")
+        if path.is_file()
+    }
+    assert V._validate_invariant_commitment(sp, "thorough", recover=False) == []
+    assert {
+        path.relative_to(sp).as_posix(): path.read_bytes()
+        for path in sp.rglob("*")
+        if path.is_file()
+    } == replay_prestate
 
 
-def test_validator_surfaces_typed_late_ci_recovery_failure(
+def test_validator_never_recovers_and_driver_fails_closed_on_frozen_input_tamper(
     tmp_path: Path, monkeypatch,
 ) -> None:
     V = _V()
     eg = _eg()
-    late = importlib.import_module("late_committed_invariant_authority")
     _root, sp = _proj(tmp_path)
     _write_verify(sp, _ci_block(4, "FRESHNESS", "property"))
+    _seed_coupled_outputs(sp)
 
-    def fail(_scratchpad: Path) -> int:
-        raise late.LateCommittedInvariantError(
-            stage="EMISSION",
-            code="INJECTED_FAILURE",
-            detail="candidate bytes unavailable",
-        )
+    def forbidden(_scratchpad: Path) -> int:
+        raise AssertionError("validator invoked legacy recovery")
 
-    monkeypatch.setattr(eg, "recover_invariant_assertion_candidates", fail)
-    issues = V._validate_invariant_commitment(sp, "thorough")
-    assert issues == [
-        "late committed-invariant EMISSION/INJECTED_FAILURE: "
-        "candidate bytes unavailable"
+    monkeypatch.setattr(eg, "recover_invariant_assertion_candidates", forbidden)
+    before_validation = {path.name: path.read_bytes() for path in sp.iterdir()}
+    assert V._validate_invariant_commitment(sp, "thorough", recover=False) == [
+        "late committed-invariant EMISSION/CANDIDATE_PERSISTENCE_UNPROVEN: "
+        "canonical inventory omits a verifier CI candidate"
     ]
+    assert {path.name: path.read_bytes() for path in sp.iterdir()} == before_validation
+
+    canonical = ("findings_inventory.md", "finding_records.json", "_id_ledger.json")
+    before_recovery = {name: (sp / name).read_bytes() for name in canonical}
+
+    def tamper_source() -> None:
+        with (sp / "verify_H-3.md").open("a", encoding="utf-8") as handle:
+            handle.write("\npost-capture tamper\n")
+
+    issues, contracts = _run_driver_recovery(
+        sp, monkeypatch, after_capture=tamper_source
+    )
+    assert issues == ["late-CI frozen input changed before successor: verify_H-3.md"]
+    assert len(contracts) == 1
+    assert ".source_capture." in contracts[0].work_unit_id
+    assert {name: (sp / name).read_bytes() for name in canonical} == before_recovery
 
 
 def test_depth_and_verify_both_scanned(tmp_path: Path):

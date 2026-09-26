@@ -22,7 +22,10 @@ import sys
 import tempfile
 from typing import Any, Callable, Collection, Iterable, Mapping, Sequence
 
+import rooted_path_io as rooted_io
+
 from severity_decision_ledger import (
+    build_severity_decision_ledger,
     LAUNCH_RECEIPT_SCHEMA,
     bind_severity_adjudication,
     compile_severity_adjudication_prompt_contract,
@@ -48,6 +51,9 @@ MANIFEST_NAME = "severity_adjudication_work_manifest.json"
 WORK_PLAN_NAME = "severity_adjudication_work_plan.json"
 RECONCILIATION_NAME = "severity_adjudication_work_reconciliation.json"
 SOURCE_LEDGER_NAME = "severity_decision_ledger.shadow.json"
+SOURCE_LEDGER_SNAPSHOT_NAME = (
+    "_severity_adjudication_inputs/source_ledger.initial.json"
+)
 
 MANIFEST_SCHEMA = "plamen.severity_adjudication_work_manifest.v1"
 WORK_PLAN_SCHEMA = "plamen.severity_adjudication_work_plan.v4"
@@ -59,7 +65,10 @@ WORKER_RUN_SCHEMA = "plamen.severity_adjudication_worker_run.v2"
 
 DEFAULT_MAX_ITEMS = 4
 DEFAULT_MAX_WEIGHT = 8
-DEFAULT_MAX_CONTEXT_BYTES = 65_536
+# Fixed ceiling for the complete worker packet (context plus prompt).  The
+# governed methodology is embedded byte-for-byte; it must never be truncated
+# or granted an automatic overflow expansion when this bound is exceeded.
+DEFAULT_MAX_CONTEXT_BYTES = 128 * 1024
 
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,95}$")
@@ -179,12 +188,17 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def _owned_child(root: Path, raw_name: Any, field: str) -> Path:
-    """Resolve one exact scratchpad basename without ever escaping ``root``."""
-
+def _owned_basename(raw_name: Any, field: str) -> str:
     name = _require_text(raw_name, field)
     if not _OWNED_BASENAME_RE.fullmatch(name) or Path(name).name != name:
         raise AdjudicationWorkError(f"{field} must be a canonical owned basename")
+    return name
+
+
+def _owned_child(root: Path, raw_name: Any, field: str) -> Path:
+    """Resolve one exact scratchpad basename without ever escaping ``root``."""
+
+    name = _owned_basename(raw_name, field)
     path = root / name
     try:
         if path.resolve(strict=False).parent != root.resolve(strict=False):
@@ -377,6 +391,72 @@ def _load_source_ledger(
             )
         decisions[candidate_id] = dict(row)
     return ledger, decisions
+
+
+def _load_source_ledger_snapshot(
+    scratchpad: Path,
+    *,
+    run_id: str,
+    source_ledger_path: str,
+    expected_source_ledger_digest: str,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Read one exact immutable source snapshot without consulting sidecars."""
+
+    if source_ledger_path != SOURCE_LEDGER_SNAPSHOT_NAME:
+        raise AdjudicationWorkError(
+            "severity source snapshot path is not the registered path"
+        )
+    digest = _require_hex64(
+        expected_source_ledger_digest, "expected_source_ledger_digest"
+    )
+    try:
+        path = rooted_io.safe_descendant(
+            scratchpad,
+            source_ledger_path,
+            allow_missing=False,
+            label="severity source snapshot",
+        )
+        raw = rooted_io.read_bytes(
+            path,
+            label="severity source snapshot",
+            require_single_link=True,
+            max_bytes=32 * 1024 * 1024,
+        )
+    except (OSError, rooted_io.RootedPathIOError) as exc:
+        raise AdjudicationWorkError(
+            f"severity source snapshot is unavailable: {exc}"
+        ) from exc
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise AdjudicationWorkError("severity source snapshot digest mismatch")
+    ledger = _strict_json_bytes(raw)
+    if not isinstance(ledger, dict):
+        raise AdjudicationWorkError(
+            "severity source snapshot must contain one JSON object"
+        )
+    rows = ledger.get("decisions")
+    if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
+        raise AdjudicationWorkError("severity source snapshot decision list is malformed")
+    identities = [str(row.get("candidate_id") or "") for row in rows]
+    if (
+        any(not _SAFE_ID_RE.fullmatch(value) for value in identities)
+        or len({value.casefold() for value in identities}) != len(identities)
+    ):
+        raise AdjudicationWorkError(
+            "severity source snapshot candidate denominator is invalid"
+        )
+    try:
+        rebuilt = build_severity_decision_ledger(run_id, rows)
+    except Exception as exc:
+        raise AdjudicationWorkError(
+            f"severity source snapshot semantics are invalid: {exc}"
+        ) from exc
+    if rebuilt != ledger:
+        raise AdjudicationWorkError(
+            "severity source snapshot is not the canonical same-run ledger"
+        )
+    return ledger, {
+        str(row["candidate_id"]): dict(row) for row in ledger["decisions"]
+    }
 
 
 def _load_current_work_source_state(
@@ -598,7 +678,7 @@ def _work_item_from_decision(
     return item
 
 
-def build_adjudication_manifest(
+def _build_adjudication_manifest_payload(
     scratchpad: Path,
     *,
     run_id: str,
@@ -606,16 +686,35 @@ def build_adjudication_manifest(
     audit_config_digest: str,
     methodology_entries: list[dict[str, Any]],
     methodology_digest: str,
+    source_ledger_path: str | None = None,
+    expected_source_ledger_digest: str | None = None,
 ) -> dict[str, Any]:
-    """Build the immutable exact denominator from the typed source ledger."""
-
+    """Derive the immutable exact denominator without publishing it."""
     root = Path(scratchpad)
     run = _require_text(run_id, "run_id")
     audit = _require_hex64(audit_snapshot_digest, "audit_snapshot_digest")
     config = _require_hex64(audit_config_digest, "audit_config_digest")
     method_digest = _require_hex64(methodology_digest, "methodology_digest")
-    ledger, decisions = _load_source_ledger(root, run_id=run)
-    skeptic_receipt_digest, skeptic_challenges = _skeptic_challenge_state(root)
+    snapshot_mode = source_ledger_path is not None
+    if snapshot_mode != (expected_source_ledger_digest is not None):
+        raise AdjudicationWorkError(
+            "severity source snapshot path/digest must be supplied together"
+        )
+    if snapshot_mode:
+        ledger, decisions = _load_source_ledger_snapshot(
+            root,
+            run_id=run,
+            source_ledger_path=str(source_ledger_path),
+            expected_source_ledger_digest=str(expected_source_ledger_digest),
+        )
+        if rooted_io.lexists(root / "skeptic_challenges.json"):
+            raise AdjudicationWorkError(
+                "snapshot planning requires an explicit captured skeptic denominator"
+            )
+        skeptic_receipt_digest, skeptic_challenges = None, {}
+    else:
+        ledger, decisions = _load_source_ledger(root, run_id=run)
+        skeptic_receipt_digest, skeptic_challenges = _skeptic_challenge_state(root)
     decision_by_key = {known.casefold(): known for known in decisions}
     challenge_by_key = {
         candidate_id.casefold(): row
@@ -661,7 +760,9 @@ def build_adjudication_manifest(
         "audit_config_digest": config,
         "methodology_entries": methodology_entries,
         "methodology_digest": method_digest,
-        "source_ledger_file": SOURCE_LEDGER_NAME,
+        "source_ledger_file": (
+            str(source_ledger_path) if snapshot_mode else SOURCE_LEDGER_NAME
+        ),
         "source_ledger_digest": ledger["ledger_digest"],
         "source_decision_digests": {
             str(row["candidate_id"]): str(row["decision_digest"])
@@ -673,7 +774,37 @@ def build_adjudication_manifest(
         "denominator_ids": [row["candidate_id"] for row in work_items],
         "work_items": work_items,
     }
-    manifest = _signed(unsigned, digest_field="manifest_digest")
+    if snapshot_mode:
+        unsigned["source_ledger_snapshot_sha256"] = str(
+            expected_source_ledger_digest
+        )
+    return _signed(unsigned, digest_field="manifest_digest")
+
+
+def build_adjudication_manifest(
+    scratchpad: Path,
+    *,
+    run_id: str,
+    audit_snapshot_digest: str,
+    audit_config_digest: str,
+    methodology_entries: list[dict[str, Any]],
+    methodology_digest: str,
+    source_ledger_path: str | None = None,
+    expected_source_ledger_digest: str | None = None,
+) -> dict[str, Any]:
+    """Build and publish the immutable exact denominator."""
+
+    root = Path(scratchpad)
+    manifest = _build_adjudication_manifest_payload(
+        root,
+        run_id=run_id,
+        audit_snapshot_digest=audit_snapshot_digest,
+        audit_config_digest=audit_config_digest,
+        methodology_entries=methodology_entries,
+        methodology_digest=methodology_digest,
+        source_ledger_path=source_ledger_path,
+        expected_source_ledger_digest=expected_source_ledger_digest,
+    )
     _atomic_json(root / MANIFEST_NAME, manifest)
     return manifest
 
@@ -686,7 +817,7 @@ def _context_payload(
     items: list[Mapping[str, Any]],
 ) -> dict[str, Any]:
     adjudication_contract = compile_severity_adjudication_prompt_contract()
-    return {
+    payload = {
         "schema_version": CONTEXT_SCHEMA,
         "run_id": manifest["run_id"],
         "shard_id": shard_id,
@@ -705,6 +836,12 @@ def _context_payload(
         "item_count": len(items),
         "items": list(items),
     }
+    if "source_ledger_snapshot_sha256" in manifest:
+        payload["source_ledger_file"] = manifest["source_ledger_file"]
+        payload["source_ledger_snapshot_sha256"] = manifest[
+            "source_ledger_snapshot_sha256"
+        ]
+    return payload
 
 
 def _context_size(
@@ -730,9 +867,17 @@ def _prompt_text(
     context_digest: str,
     launch_intent_name: str,
 ) -> str:
+    compat_transport = plan.get("transport") == "posix-v2-compat"
     outputs = "\n".join(
         f"- `{candidate}` -> "
-        f"`{shard['staging_output_scope']}/{shard['staged_outputs'][candidate]}`"
+        + (
+            f"`{shard['expected_outputs'][candidate]}`"
+            if compat_transport
+            else (
+                f"`{shard['staging_output_scope']}/"
+                f"{shard['staged_outputs'][candidate]}`"
+            )
+        )
         for candidate in shard["candidate_ids"]
     )
     return f"""# Independent Severity Adjudication Work
@@ -774,6 +919,8 @@ def _shard_spec(
     manifest: Mapping[str, Any],
     index: int,
     items: list[Mapping[str, Any]],
+    *,
+    transport: str,
 ) -> dict[str, Any]:
     """Build one shard and account for its complete worker input."""
 
@@ -815,6 +962,7 @@ def _shard_spec(
             plan={
                 "plan_digest": "0" * 64,
                 "manifest_digest": manifest["manifest_digest"],
+                "transport": transport,
             },
             shard=provisional,
             context_digest="0" * 64,
@@ -835,6 +983,7 @@ def _shard_spec(
 def _partition_manifest(
     manifest: Mapping[str, Any],
     *,
+    transport: str,
     max_items: int,
     max_weight: int,
     max_bytes: int,
@@ -876,7 +1025,7 @@ def _partition_manifest(
         prospective = current + [item]
         prospective_weight = sum(int(row["weight"]) for row in prospective)
         prospective_size = _shard_spec(
-            manifest, len(grouped) + 1, prospective
+            manifest, len(grouped) + 1, prospective, transport=transport
         )["worker_input_size_bytes"]
         fits = (
             len(prospective) <= max_items
@@ -890,7 +1039,7 @@ def _partition_manifest(
             grouped.append(current)
             current = []
         item_size = _shard_spec(
-            manifest, len(grouped) + 1, [item]
+            manifest, len(grouped) + 1, [item], transport=transport
         )["worker_input_size_bytes"]
         if (
             int(item["weight"]) > max_weight
@@ -915,7 +1064,9 @@ def _partition_manifest(
 
     shards: list[dict[str, Any]] = []
     for index, items in enumerate(grouped, start=1):
-        shards.append(_shard_spec(manifest, index, items))
+        shards.append(_shard_spec(
+            manifest, index, items, transport=transport
+        ))
     debt.sort(key=lambda row: row["candidate_id"])
     return shards, debt
 
@@ -1016,29 +1167,33 @@ def _tool_policy_payload(
     return _signed(unsigned, digest_field="tool_policy_digest")
 
 
-def _write_shard_artifacts(
-    root: Path,
+def _derive_shard_artifact_bytes(
     *,
     manifest: Mapping[str, Any],
     plan: Mapping[str, Any],
-) -> None:
+) -> dict[str, bytes]:
+    outputs: dict[str, bytes] = {}
     items = {row["candidate_id"]: row for row in manifest["work_items"]}
     for shard in plan["shards"]:
-        context_path = _owned_child(
-            root, shard.get("context_file"), "shard context_file"
+        context_name = _owned_basename(
+            shard.get("context_file"), "shard context_file"
         )
-        prompt_path = _owned_child(
-            root, shard.get("prompt_file"), "shard prompt_file"
+        prompt_name = _owned_basename(
+            shard.get("prompt_file"), "shard prompt_file"
         )
-        intent_path = _owned_child(
-            root, shard.get("launch_intent_file"),
+        intent_name = _owned_basename(
+            shard.get("launch_intent_file"),
             "shard launch_intent_file",
         )
-        tool_policy_path = _owned_child(
-            root,
+        tool_policy_name = _owned_basename(
             shard.get("tool_policy_file"),
             "shard tool_policy_file",
         )
+        for name in (context_name, prompt_name, intent_name, tool_policy_name):
+            if name in outputs:
+                raise AdjudicationWorkError(
+                    "derived adjudication artifact filenames must be unique"
+                )
         selected = [items[candidate_id] for candidate_id in shard["candidate_ids"]]
         context = _context_payload(
             manifest=manifest,
@@ -1050,7 +1205,7 @@ def _write_shard_artifacts(
         if len(context_bytes) != shard["context_payload_size_bytes"]:
             raise AdjudicationWorkError("planned adjudication context size drifted")
         context_digest = hashlib.sha256(context_bytes).hexdigest()
-        _write_derived_exact_or_missing(context_path, context_bytes)
+        outputs[context_name] = context_bytes
 
         launch_name = shard["launch_intent_file"]
         prompt = _prompt_text(
@@ -1067,12 +1222,11 @@ def _write_shard_artifacts(
             or shard["context_size_bytes"] != shard["worker_input_size_bytes"]
         ):
             raise AdjudicationWorkError("planned worker-input size drifted")
-        prompt_digest = hashlib.sha256(prompt_bytes).hexdigest()
-        _write_derived_exact_or_missing(prompt_path, prompt_bytes)
+        outputs[prompt_name] = prompt_bytes
 
         tool_policy = _tool_policy_payload(plan=plan, shard=shard)
         tool_policy_bytes = _canonical_json_bytes(tool_policy)
-        _write_derived_exact_or_missing(tool_policy_path, tool_policy_bytes)
+        outputs[tool_policy_name] = tool_policy_bytes
 
         intent = _launch_intent_payload(
             plan=plan,
@@ -1082,13 +1236,25 @@ def _write_shard_artifacts(
             prompt_bytes=prompt_bytes,
             tool_policy_bytes=tool_policy_bytes,
         )
+        outputs[intent_name] = _canonical_json_bytes(intent)
+    return outputs
+
+
+def _write_shard_artifacts(
+    root: Path,
+    *,
+    manifest: Mapping[str, Any],
+    plan: Mapping[str, Any],
+) -> None:
+    outputs = _derive_shard_artifact_bytes(manifest=manifest, plan=plan)
+    for name, content in outputs.items():
         _write_derived_exact_or_missing(
-            intent_path, _canonical_json_bytes(intent)
+            _owned_child(root, name, "derived adjudication artifact"),
+            content,
         )
 
 
-def _new_work_plan(
-    root: Path,
+def _build_work_plan_payload(
     *,
     manifest: Mapping[str, Any],
     backend: str,
@@ -1107,6 +1273,7 @@ def _new_work_plan(
 ) -> dict[str, Any]:
     shards, debt = _partition_manifest(
         manifest,
+        transport=transport,
         max_items=max_items,
         max_weight=max_weight,
         max_bytes=max_bytes,
@@ -1172,10 +1339,225 @@ def _new_work_plan(
         "launch_count": len(shards),
         "zero_row_no_launch": not manifest["denominator_ids"],
     }
-    plan = _signed(unsigned, digest_field="plan_digest")
+    if "source_ledger_snapshot_sha256" in manifest:
+        unsigned["source_ledger_file"] = manifest["source_ledger_file"]
+        unsigned["source_ledger_snapshot_sha256"] = manifest[
+            "source_ledger_snapshot_sha256"
+        ]
+    return _signed(unsigned, digest_field="plan_digest")
+
+
+def _new_work_plan(
+    root: Path,
+    *,
+    manifest: Mapping[str, Any],
+    backend: str,
+    transport: str,
+    effective_model: str,
+    working_directory: str,
+    source_root: str,
+    tool_policy: list[str],
+    environment_allowlist_digest: str,
+    adjudicator_identity: str,
+    invocation_prefix: str,
+    timeout_seconds: int,
+    max_items: int,
+    max_weight: int,
+    max_bytes: int,
+) -> dict[str, Any]:
+    plan = _build_work_plan_payload(
+        manifest=manifest,
+        backend=backend,
+        transport=transport,
+        effective_model=effective_model,
+        working_directory=working_directory,
+        source_root=source_root,
+        tool_policy=tool_policy,
+        environment_allowlist_digest=environment_allowlist_digest,
+        adjudicator_identity=adjudicator_identity,
+        invocation_prefix=invocation_prefix,
+        timeout_seconds=timeout_seconds,
+        max_items=max_items,
+        max_weight=max_weight,
+        max_bytes=max_bytes,
+    )
     _atomic_json(root / WORK_PLAN_NAME, plan)
     _write_shard_artifacts(root, manifest=manifest, plan=plan)
     return plan
+
+
+def _normalize_adjudication_work_args(
+    *,
+    root: Path,
+    run_id: str,
+    audit_snapshot_digest: str,
+    audit_config_digest: str,
+    methodology_files: Mapping[str, Path] | Iterable[tuple[str, Path]],
+    backend: str,
+    transport: str,
+    effective_model: str,
+    working_directory: str | Path,
+    source_root: str | Path | None,
+    tool_policy: Iterable[str],
+    environment_allowlist_digest: str,
+    adjudicator_identity: str,
+    invocation_prefix: str,
+    timeout_seconds_per_worker: int,
+    max_items_per_worker: int,
+    max_weight_per_worker: int,
+    max_context_bytes_per_worker: int,
+    source_ledger_path: str | None,
+    expected_source_ledger_digest: str | None,
+) -> dict[str, Any]:
+    normalized = {
+        "run_id": _require_text(run_id, "run_id"),
+        "audit_snapshot_digest": _require_hex64(
+            audit_snapshot_digest, "audit_snapshot_digest"
+        ),
+        "audit_config_digest": _require_hex64(
+            audit_config_digest, "audit_config_digest"
+        ),
+        "backend": _require_text(backend, "backend"),
+        "transport": _require_text(transport, "transport"),
+        "effective_model": _require_text(effective_model, "effective_model"),
+        "working_directory": _require_working_directory(working_directory),
+        "source_root": _require_working_directory(
+            Path(source_root) if source_root is not None else root.parent
+        ),
+        "tool_policy": _require_text_list(tool_policy, "tool_policy"),
+        "environment_allowlist_digest": _require_hex64(
+            environment_allowlist_digest, "environment_allowlist_digest"
+        ),
+        "adjudicator_identity": _require_text(
+            adjudicator_identity, "adjudicator identity"
+        ),
+        "invocation_prefix": _require_text(invocation_prefix, "invocation prefix"),
+        "timeout_seconds_per_worker": _require_int(
+            timeout_seconds_per_worker,
+            "timeout_seconds_per_worker",
+            minimum=1,
+        ),
+        "max_items_per_worker": _require_int(
+            max_items_per_worker,
+            "max_items_per_worker",
+            minimum=1,
+            maximum=4,
+        ),
+        "max_weight_per_worker": _require_int(
+            max_weight_per_worker,
+            "max_weight_per_worker",
+        ),
+        "max_context_bytes_per_worker": _require_int(
+            max_context_bytes_per_worker,
+            "max_context_bytes_per_worker",
+        ),
+    }
+    methodology_entries, methodology_digest = _methodology_binding(methodology_files)
+    normalized["methodology_entries"] = methodology_entries
+    normalized["methodology_digest"] = methodology_digest
+    if (source_ledger_path is None) != (expected_source_ledger_digest is None):
+        raise AdjudicationWorkError(
+            "severity source snapshot path/digest must be supplied together"
+        )
+    normalized["source_ledger_path"] = source_ledger_path
+    normalized["expected_source_ledger_digest"] = expected_source_ledger_digest
+    return normalized
+
+
+def _derive_adjudication_work_from_normalized(
+    root: Path,
+    normalized: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, bytes]]:
+    manifest = _build_adjudication_manifest_payload(
+        root,
+        run_id=normalized["run_id"],
+        audit_snapshot_digest=normalized["audit_snapshot_digest"],
+        audit_config_digest=normalized["audit_config_digest"],
+        methodology_entries=list(normalized["methodology_entries"]),
+        methodology_digest=normalized["methodology_digest"],
+        source_ledger_path=normalized["source_ledger_path"],
+        expected_source_ledger_digest=normalized[
+            "expected_source_ledger_digest"
+        ],
+    )
+    plan = _build_work_plan_payload(
+        manifest=manifest,
+        backend=normalized["backend"],
+        transport=normalized["transport"],
+        effective_model=normalized["effective_model"],
+        working_directory=normalized["working_directory"],
+        source_root=normalized["source_root"],
+        tool_policy=list(normalized["tool_policy"]),
+        environment_allowlist_digest=normalized["environment_allowlist_digest"],
+        adjudicator_identity=normalized["adjudicator_identity"],
+        invocation_prefix=normalized["invocation_prefix"],
+        timeout_seconds=normalized["timeout_seconds_per_worker"],
+        max_items=normalized["max_items_per_worker"],
+        max_weight=normalized["max_weight_per_worker"],
+        max_bytes=normalized["max_context_bytes_per_worker"],
+    )
+    outputs = {
+        MANIFEST_NAME: _canonical_json_bytes(manifest),
+        WORK_PLAN_NAME: _canonical_json_bytes(plan),
+    }
+    shard_outputs = _derive_shard_artifact_bytes(manifest=manifest, plan=plan)
+    if outputs.keys() & shard_outputs.keys():
+        raise AdjudicationWorkError(
+            "derived shard artifact collides with a work transaction artifact"
+        )
+    outputs.update(shard_outputs)
+    return manifest, plan, outputs
+
+
+def derive_adjudication_work(
+    scratchpad: Path,
+    *,
+    run_id: str,
+    audit_snapshot_digest: str,
+    audit_config_digest: str,
+    methodology_files: Mapping[str, Path] | Iterable[tuple[str, Path]],
+    backend: str,
+    transport: str,
+    effective_model: str,
+    working_directory: str | Path,
+    source_root: str | Path | None = None,
+    tool_policy: Iterable[str],
+    environment_allowlist_digest: str,
+    adjudicator_identity: str,
+    invocation_prefix: str,
+    timeout_seconds_per_worker: int = 30,
+    max_items_per_worker: int = DEFAULT_MAX_ITEMS,
+    max_weight_per_worker: int = DEFAULT_MAX_WEIGHT,
+    max_context_bytes_per_worker: int = DEFAULT_MAX_CONTEXT_BYTES,
+    source_ledger_path: str | None = None,
+    expected_source_ledger_digest: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, bytes]]:
+    """Derive the complete canonical work transaction without filesystem writes."""
+
+    root = Path(scratchpad)
+    normalized = _normalize_adjudication_work_args(
+        root=root,
+        run_id=run_id,
+        audit_snapshot_digest=audit_snapshot_digest,
+        audit_config_digest=audit_config_digest,
+        methodology_files=methodology_files,
+        backend=backend,
+        transport=transport,
+        effective_model=effective_model,
+        working_directory=working_directory,
+        source_root=source_root,
+        tool_policy=tool_policy,
+        environment_allowlist_digest=environment_allowlist_digest,
+        adjudicator_identity=adjudicator_identity,
+        invocation_prefix=invocation_prefix,
+        timeout_seconds_per_worker=timeout_seconds_per_worker,
+        max_items_per_worker=max_items_per_worker,
+        max_weight_per_worker=max_weight_per_worker,
+        max_context_bytes_per_worker=max_context_bytes_per_worker,
+        source_ledger_path=source_ledger_path,
+        expected_source_ledger_digest=expected_source_ledger_digest,
+    )
+    return _derive_adjudication_work_from_normalized(root, normalized)
 
 
 def prepare_adjudication_work(
@@ -1198,47 +1580,53 @@ def prepare_adjudication_work(
     max_items_per_worker: int = DEFAULT_MAX_ITEMS,
     max_weight_per_worker: int = DEFAULT_MAX_WEIGHT,
     max_context_bytes_per_worker: int = DEFAULT_MAX_CONTEXT_BYTES,
+    source_ledger_path: str | None = None,
+    expected_source_ledger_digest: str | None = None,
 ) -> dict[str, Any]:
     """Create or resume an immutable, bounded adjudication work transaction."""
 
     root = Path(scratchpad)
     root.mkdir(parents=True, exist_ok=True)
-    run = _require_text(run_id, "run_id")
-    audit = _require_hex64(audit_snapshot_digest, "audit_snapshot_digest")
-    config = _require_hex64(audit_config_digest, "audit_config_digest")
-    backend_name = _require_text(backend, "backend")
-    transport_name = _require_text(transport, "transport")
-    model_name = _require_text(effective_model, "effective_model")
-    workdir = _require_working_directory(working_directory)
-    source = _require_working_directory(
-        Path(source_root) if source_root is not None else root.parent
+    normalized = _normalize_adjudication_work_args(
+        root=root,
+        run_id=run_id,
+        audit_snapshot_digest=audit_snapshot_digest,
+        audit_config_digest=audit_config_digest,
+        methodology_files=methodology_files,
+        backend=backend,
+        transport=transport,
+        effective_model=effective_model,
+        working_directory=working_directory,
+        source_root=source_root,
+        tool_policy=tool_policy,
+        environment_allowlist_digest=environment_allowlist_digest,
+        adjudicator_identity=adjudicator_identity,
+        invocation_prefix=invocation_prefix,
+        timeout_seconds_per_worker=timeout_seconds_per_worker,
+        max_items_per_worker=max_items_per_worker,
+        max_weight_per_worker=max_weight_per_worker,
+        max_context_bytes_per_worker=max_context_bytes_per_worker,
+        source_ledger_path=source_ledger_path,
+        expected_source_ledger_digest=expected_source_ledger_digest,
     )
-    tools = _require_text_list(tool_policy, "tool_policy")
-    environment_digest = _require_hex64(
-        environment_allowlist_digest, "environment_allowlist_digest"
-    )
-    adjudicator = _require_text(adjudicator_identity, "adjudicator identity")
-    prefix = _require_text(invocation_prefix, "invocation prefix")
-    worker_timeout = _require_int(
-        timeout_seconds_per_worker,
-        "timeout_seconds_per_worker",
-        minimum=1,
-    )
-    max_items = _require_int(
-        max_items_per_worker,
-        "max_items_per_worker",
-        minimum=1,
-        maximum=4,
-    )
-    max_weight = _require_int(
-        max_weight_per_worker,
-        "max_weight_per_worker",
-    )
-    max_bytes = _require_int(
-        max_context_bytes_per_worker,
-        "max_context_bytes_per_worker",
-    )
-    methodology_entries, methodology_digest = _methodology_binding(methodology_files)
+    run = normalized["run_id"]
+    audit = normalized["audit_snapshot_digest"]
+    config = normalized["audit_config_digest"]
+    methodology_entries = normalized["methodology_entries"]
+    methodology_digest = normalized["methodology_digest"]
+    backend_name = normalized["backend"]
+    transport_name = normalized["transport"]
+    model_name = normalized["effective_model"]
+    workdir = normalized["working_directory"]
+    source = normalized["source_root"]
+    tools = normalized["tool_policy"]
+    environment_digest = normalized["environment_allowlist_digest"]
+    adjudicator = normalized["adjudicator_identity"]
+    prefix = normalized["invocation_prefix"]
+    worker_timeout = normalized["timeout_seconds_per_worker"]
+    max_items = normalized["max_items_per_worker"]
+    max_weight = normalized["max_weight_per_worker"]
+    max_bytes = normalized["max_context_bytes_per_worker"]
 
     plan_path = root / WORK_PLAN_NAME
     if plan_path.exists():
@@ -1263,6 +1651,18 @@ def prepare_adjudication_work(
             "max_weight_per_worker": max_weight,
             "max_context_bytes_per_worker": max_bytes,
         }
+        if source_ledger_path is not None:
+            expected["source_ledger_file"] = source_ledger_path
+            expected["source_ledger_snapshot_sha256"] = (
+                expected_source_ledger_digest
+            )
+        elif (
+            "source_ledger_file" in plan
+            or "source_ledger_snapshot_sha256" in plan
+        ):
+            raise AdjudicationWorkError(
+                "legacy resume contains snapshot-only source bindings"
+            )
         mismatched = [key for key, value in expected.items() if plan.get(key) != value]
         if mismatched:
             raise AdjudicationWorkError(
@@ -1292,6 +1692,8 @@ def prepare_adjudication_work(
         audit_config_digest=config,
         methodology_entries=methodology_entries,
         methodology_digest=methodology_digest,
+        source_ledger_path=source_ledger_path,
+        expected_source_ledger_digest=expected_source_ledger_digest,
     )
     plan = _new_work_plan(
         root,
@@ -1359,13 +1761,22 @@ def _validate_prepared_work(root: Path) -> None:
         "work plan timeout_seconds_per_worker",
         minimum=1,
     )
-    for key in (
+    shared_manifest_keys = [
         "run_id",
         "audit_snapshot_digest",
         "audit_config_digest",
         "methodology_digest",
         "source_ledger_digest",
-    ):
+    ]
+    if "source_ledger_snapshot_sha256" in manifest:
+        shared_manifest_keys.extend((
+            "source_ledger_file", "source_ledger_snapshot_sha256",
+        ))
+    elif "source_ledger_file" in plan or "source_ledger_snapshot_sha256" in plan:
+        raise AdjudicationWorkError(
+            "legacy work plan contains snapshot-only source fields"
+        )
+    for key in shared_manifest_keys:
         if plan.get(key) != manifest.get(key):
             raise AdjudicationWorkError(f"work plan/manifest {key} mismatch")
     methodology_entries = manifest.get("methodology_entries")
@@ -1406,7 +1817,27 @@ def _validate_prepared_work(root: Path) -> None:
     if len(denominator) != len({str(item).casefold() for item in denominator}):
         raise AdjudicationWorkError("work denominator contains duplicate identities")
     raw_manifest_items = manifest.get("work_items") or []
-    skeptic_receipt_digest, skeptic_challenges = _skeptic_challenge_state(root)
+    snapshot_sha256 = manifest.get("source_ledger_snapshot_sha256")
+    snapshot_ledger: dict[str, Any] | None = None
+    snapshot_decisions: dict[str, dict[str, Any]] | None = None
+    if snapshot_sha256 is not None:
+        snapshot_ledger, snapshot_decisions = _load_source_ledger_snapshot(
+            root,
+            run_id=_require_text(manifest.get("run_id"), "work manifest run_id"),
+            source_ledger_path=str(manifest.get("source_ledger_file") or ""),
+            expected_source_ledger_digest=_require_hex64(
+                snapshot_sha256, "source_ledger_snapshot_sha256"
+            ),
+        )
+        if rooted_io.lexists(root / "skeptic_challenges.json"):
+            raise AdjudicationWorkError(
+                "snapshot planning skeptic denominator changed"
+            )
+        skeptic_receipt_digest, skeptic_challenges = None, {}
+    else:
+        if manifest.get("source_ledger_file") != SOURCE_LEDGER_NAME:
+            raise AdjudicationWorkError("legacy severity source path differs")
+        skeptic_receipt_digest, skeptic_challenges = _skeptic_challenge_state(root)
     if (
         manifest.get("skeptic_challenge_receipt_digest")
         != skeptic_receipt_digest
@@ -1446,6 +1877,7 @@ def _validate_prepared_work(root: Path) -> None:
             )
     expected_shards, expected_debt = _partition_manifest(
         manifest,
+        transport=_require_text(plan.get("transport"), "work plan transport"),
         max_items=_require_int(
             plan.get("max_items_per_worker"),
             "work plan max_items_per_worker",
@@ -1491,11 +1923,28 @@ def _validate_prepared_work(root: Path) -> None:
         for candidate_id in baseline_ids
     ):
         raise AdjudicationWorkError("work manifest source baseline is invalid")
-    _current_ledger, current_decisions = _load_current_work_source_state(
-        root,
-        run_id=str(plan["run_id"]),
-        manifest_items=manifest_items,
-    )
+    if snapshot_ledger is not None and snapshot_decisions is not None:
+        if manifest.get("source_ledger_digest") != snapshot_ledger.get(
+            "ledger_digest"
+        ):
+            raise AdjudicationWorkError(
+                "work manifest source snapshot ledger digest mismatch"
+            )
+        exact_snapshot_digests = {
+            candidate_id: str(decision.get("decision_digest") or "")
+            for candidate_id, decision in snapshot_decisions.items()
+        }
+        if dict(baseline_digests) != exact_snapshot_digests:
+            raise AdjudicationWorkError(
+                "work manifest source snapshot decision denominator mismatch"
+            )
+        current_decisions = snapshot_decisions
+    else:
+        _current_ledger, current_decisions = _load_current_work_source_state(
+            root,
+            run_id=str(plan["run_id"]),
+            manifest_items=manifest_items,
+        )
     if {
         candidate_id.casefold() for candidate_id in current_decisions
     } != {candidate_id.casefold() for candidate_id in baseline_ids}:
@@ -2617,6 +3066,20 @@ def validate_completed_worker_run_for_candidate(
         root, _worker_run_name(shard), "worker-run receipt filename"
     )
     receipt = _read_json(receipt_path)
+    from severity_compat_authority import (
+        COMPAT_WORKER_RUN_SCHEMA,
+        validate_severity_compat_worker_run,
+    )
+
+    if receipt.get("schema_version") == COMPAT_WORKER_RUN_SCHEMA:
+        try:
+            return validate_severity_compat_worker_run(
+                root, candidate, receipt
+            )
+        except Exception as exc:
+            raise AdjudicationWorkError(
+                f"{candidate} compatibility worker-run authority is invalid: {exc}"
+            ) from exc
     expected_fields = {
         "schema_version", "run_id", "shard_id", "plan_digest",
         "manifest_digest", "intent_file", "intent_digest",
@@ -2840,8 +3303,8 @@ def _validate_pending_receipt(
         )
 
 
-def reconcile_adjudication_work(scratchpad: Path) -> dict[str, Any]:
-    """Classify every denominator row after worker/binder progress.
+def build_adjudication_work_reconciliation(scratchpad: Path) -> dict[str, Any]:
+    """Derive the current denominator reconciliation without publishing it.
 
     ``OUTPUT_READY`` is the only state that authorizes the caller to invoke the
     existing binder.  Every crash window, malformed output, source drift, cap
@@ -3033,26 +3496,85 @@ def reconcile_adjudication_work(scratchpad: Path) -> dict[str, Any]:
         "all_terminal": not pending and not bind_ready,
         "all_resolved": len(completed) == len(plan["denominator_ids"]),
     }
-    result = _signed(unsigned, digest_field="reconciliation_digest")
+    return _signed(unsigned, digest_field="reconciliation_digest")
+
+
+def reconcile_adjudication_work(scratchpad: Path) -> dict[str, Any]:
+    """Derive and publish the current exact reconciliation."""
+
+    root = Path(scratchpad)
+    result = build_adjudication_work_reconciliation(root)
     _atomic_json(root / RECONCILIATION_NAME, result)
     return result
+
+
+def _validated_reconciliation_replay(scratchpad: Path) -> dict[str, Any]:
+    """Return the exact persisted object after a fresh semantic replay."""
+
+    root = Path(scratchpad)
+    persisted = _read_json(root / RECONCILIATION_NAME)
+    _verify_signed(
+        persisted,
+        digest_field="reconciliation_digest",
+        label="adjudication reconciliation",
+    )
+    recomputed = build_adjudication_work_reconciliation(root)
+    if persisted != recomputed:
+        raise AdjudicationWorkError("adjudication reconciliation replay mismatch")
+    return persisted
 
 
 def validate_reconciliation(scratchpad: Path) -> list[str]:
     """Validate the persisted reconciliation against a fresh exact replay."""
 
-    root = Path(scratchpad)
-    path = root / RECONCILIATION_NAME
     try:
-        persisted = _read_json(path)
-        _verify_signed(
-            persisted,
-            digest_field="reconciliation_digest",
-            label="adjudication reconciliation",
+        _validated_reconciliation_replay(Path(scratchpad))
+    except Exception as exc:
+        return [f"{type(exc).__name__}: {exc}"]
+    return []
+
+
+def validate_terminal_reconciliation(scratchpad: Path) -> list[str]:
+    """Require exact replay plus a closed terminal decision denominator."""
+
+    try:
+        value = _validated_reconciliation_replay(Path(scratchpad))
+        states = value.get("states")
+        denominator = value.get("denominator_ids")
+        completed = value.get("completed_ids")
+        debt = value.get("debt_ids")
+        if not isinstance(states, dict) or not isinstance(denominator, list):
+            raise AdjudicationWorkError(
+                "severity reconciliation has no exact terminal denominator"
+            )
+        unresolved = sorted(
+            candidate
+            for candidate, state in states.items()
+            if state == "COMPLETED_UNRESOLVED"
         )
-        recomputed = reconcile_adjudication_work(root)
-        if persisted != recomputed:
-            raise AdjudicationWorkError("adjudication reconciliation replay mismatch")
+        expected_completed = sorted(
+            candidate
+            for candidate, state in states.items()
+            if state == "COMPLETED"
+        )
+        if (
+            set(states) != set(denominator)
+            or value.get("all_terminal") is not True
+            or value.get("pending_ids") != []
+            or value.get("bind_ready_ids") != []
+            or any(
+                state not in {"COMPLETED", "COMPLETED_UNRESOLVED"}
+                for state in states.values()
+            )
+            or sorted(debt or []) != unresolved
+            or sorted(completed or []) != expected_completed
+            or value.get("all_resolved") is not (
+                len(expected_completed) == len(denominator)
+            )
+        ):
+            raise AdjudicationWorkError(
+                "severity reconciliation has no exact terminal denominator"
+            )
     except Exception as exc:
         return [f"{type(exc).__name__}: {exc}"]
     return []
@@ -3064,6 +3586,8 @@ __all__ = [
     "WORK_PLAN_NAME",
     "RECONCILIATION_NAME",
     "build_adjudication_manifest",
+    "build_adjudication_work_reconciliation",
+    "derive_adjudication_work",
     "execute_adjudication_worker",
     "prepare_adjudication_work",
     "reconcile_adjudication_work",
@@ -3071,4 +3595,5 @@ __all__ = [
     "validate_completed_worker_run_for_candidate",
     "validate_prepared_work",
     "validate_reconciliation",
+    "validate_terminal_reconciliation",
 ]

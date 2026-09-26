@@ -187,7 +187,12 @@ def test_restricted_web_profile_mutations_reject(mutation):
 def test_restricted_web_observed_init_mutations_reject(field, value):
     events = _valid_events()
     events[0][field] = value
-    with pytest.raises(S.ClaudeStreamJsonEvidenceError, match="INIT_APPLICABILITY_MISMATCH"):
+    expected = (
+        "INSTALL_GENERATION_MISMATCH"
+        if field == "claude_code_version"
+        else "INIT_APPLICABILITY_MISMATCH"
+    )
+    with pytest.raises(S.ClaudeStreamJsonEvidenceError, match=expected):
         S.validate_claude_stream_json(
             _stream(*events),
             expected_session_id=SESSION,

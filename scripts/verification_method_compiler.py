@@ -27,8 +27,11 @@ _SOURCE_PATH_RE = re.compile(
     r"\.(?:sol|rs|move|go|daml)(?::\d+(?:-\d+)?)?"
 )
 _GRAPH_ARTIFACTS = (
-    "caller_map.md", "function_list.md", "state_variables.md", "setter_list.md",
-    "xref_map.md", "type_hierarchy.md", "subsystem_map.md",
+    "caller_map.md", "callee_map.md", "callees_map.md",
+    "function_list.md", "state_variables.md", "setter_list.md",
+    "state_access_map.md", "storage_access_map.md", "xref_map.md",
+    "type_hierarchy.md", "subsystem_map.md", "authority_graph.json",
+    "reference_graph.json", "typed_cpg.json", "typed_cpg_manifest.json",
     "dependency_obligations.json",
 )
 _GRAPH_GLOBS = ("call_graph*.md", "scip/call_graph*.md", "scip/xref*.md")
@@ -531,6 +534,7 @@ def _render_compiled_prompt(
     scratchpad_path: str,
     modules: Sequence[Mapping[str, Any]],
     operators: Mapping[str, Mapping[str, Any]],
+    debt_codes: Sequence[str],
     rows: Sequence[Mapping[str, Any]],
     output_contract: Mapping[str, Any],
 ) -> str:
@@ -563,6 +567,32 @@ def _render_compiled_prompt(
         }
         for row in rows
     ]
+    proposal_bindings = [
+        {
+            "output_file": (
+                f"verify_{row['work_item_id']}.operator_application.json"
+            ),
+            "schema_version": OPERATOR_PROPOSAL_SCHEMA,
+            "work_item_id": row["work_item_id"],
+            "method_dispatch_id": dispatch_id,
+            "selected_module_hashes": row["module_hashes"],
+            "context_packet_digest": row["context_packet_digest"],
+            "mechanically_bound_context_state": row["context_state"],
+            "allowed_context_expansions": row[
+                "context_expansion_candidates"
+            ],
+            "operators_in_exact_order": [
+                {
+                    "operator_id": operator_id,
+                    "valid_not_applicable_predicates": operators[
+                        operator_id
+                    ]["valid_not_applicable_predicates"],
+                }
+                for operator_id in row["operator_ids"]
+            ],
+        }
+        for row in rows
+    ]
     fields = "\n".join(
         f"- {field}:" for field in output_contract["verifier_markdown_fields"]
     )
@@ -590,10 +620,15 @@ REFUTED, FALSE_POSITIVE, SAFE, or equivalent negative disposition.
 
 {chr(10).join(operator_lines)}
 
-For context closure, start with the bound packet. You may use one bounded
-expansion selected from that packet. If the harm premise remains open, record
-CONTEXT_UNRESOLVED, retain the candidate as CONTESTED, and emit evidence debt.
-Missing context is never evidence of safety.
+For context closure, start with the bound packet. You may use one bounded expansion
+selected from that packet. Keep packet-context status distinct from
+external proof uncertainty: a mechanically RESOLVED packet can still leave a
+gateway guarantee or destination decoder unproven. In that case retain the
+candidate as CONTESTED, emit dependency/proof debt in the operators and
+Markdown, and use RESOLVED for `context_status`. If you conservatively mark
+context itself CONTEXT_UNRESOLVED, the candidate remains non-terminal even
+when no local expansion could settle an external premise. Missing context is
+never evidence of safety.
 
 ## Assigned rows and module binding
 
@@ -609,6 +644,27 @@ Read only the assigned manifest, exact queue locations/primary artifacts, the
 bound context packet, one selected expansion if needed, and the execution
 protocol. Do not bulk-read unrelated verifier outputs or the scratchpad.
 
+## Transactional PoC handoff
+
+This verifier transaction authors evidence; the later mechanical driver owns
+toolchain execution in a disposable workspace.  Lack of shell/build authority
+inside this transaction is therefore NOT `NO_BUILD_ENVIRONMENT`,
+`PHASEIO_EXECUTION_NOT_AUTHORIZED`, or any other valid PoC blocker.
+
+For every row whose PoC is required, you MUST:
+
+1. write `Attempted: YES`, a concrete ecosystem-correct `Test File`, exact
+   `Test Function`, and `Command`;
+2. put the complete executable source in exactly one `### Mechanical PoC
+   Source` fenced section; and
+3. record the pre-driver result honestly as `Compiled: NO`, `Result:
+   NOT_EXECUTED`, and `Output: DRIVER_MECHANICAL_EXECUTION_PENDING` unless this
+   exact transaction was explicitly granted an authenticated executor result.
+
+The driver extracts and runs those bytes later, then supplies the authoritative
+execution/evidence result.  Do not omit source merely because this model turn
+cannot itself invoke the toolchain, and do not fabricate a compile/pass result.
+
 ## Required output per row
 
 Write verify_<ID>.md, verify_<ID>.severity_proposal.json, and
@@ -620,11 +676,67 @@ The Markdown must contain:
 It also contains the PoC Attempt and Execution Result ledgers. Rules Applied:
 lists operator IDs but is not a substitute for the typed application proposal.
 
-The operator proposal uses schema {OPERATOR_PROPOSAL_SCHEMA}. It binds this
-method_dispatch_id, exact selected module hashes, context packet digest, and
-every selected operator exactly once as APPLIED, NOT_APPLICABLE, or BLOCKED.
-APPLIED has source/detail evidence. NOT_APPLICABLE has a registry predicate.
-BLOCKED has a debt code and evidence. At most one context expansion is allowed.
+The operator proposal uses schema {OPERATOR_PROPOSAL_SCHEMA}. Use these exact
+top-level field names; aliases such as `candidate_id`, `module_bindings`,
+`applications`, or `operator_applications` do not satisfy the contract:
+
+```json
+{{
+  "schema_version": "{OPERATOR_PROPOSAL_SCHEMA}",
+  "work_item_id": "COPY_FROM_THE_BOUND_RECORD_BELOW",
+  "method_dispatch_id": "{dispatch_id}",
+  "selected_module_hashes": {{"COPY_THE_EXACT_BOUND_OBJECT": "UNCHANGED"}},
+  "context_packet_digest": "COPY_FROM_THE_BOUND_RECORD_BELOW",
+  "context_status": "RESOLVED_OR_EXPANDED_RESOLVED_OR_CONTEXT_UNRESOLVED",
+  "context_expansion": [],
+  "operators": [
+    {{
+      "operator_id": "COPY_EACH_ID_IN_THE_EXACT_BOUND_ORDER",
+      "status": "APPLIED_OR_NOT_APPLICABLE_OR_BLOCKED",
+      "evidence": [],
+      "predicate": null,
+      "debt_code": null,
+      "blocker_evidence": []
+    }}
+  ],
+  "new_observations": []
+}}
+```
+
+The placeholder tokens above describe the layout; replace them with the exact
+values in the per-row binding records below. Do not copy a placeholder token.
+
+```json
+{_canonical_json(proposal_bindings)}
+```
+
+For every operator, emit all six exact fields shown above. Choose exactly one
+valid state:
+
+- `APPLIED`: `evidence` is non-empty and every record has non-empty `source`
+  and `detail`; `predicate` and `debt_code` are null; `blocker_evidence` is [].
+- `NOT_APPLICABLE`: `evidence` and `blocker_evidence` are []; `debt_code` is
+  null; `predicate` is one of that operator's bound predicates. An empty bound
+  predicate list means NOT_APPLICABLE is forbidden for that operator.
+- `BLOCKED`: `evidence` is []; `predicate` is null; `debt_code` is exactly one
+  of {_canonical_json(list(debt_codes))}; `blocker_evidence` contains at least
+  one concrete, non-empty string.
+
+If ANY operator is BLOCKED, or `context_status` is CONTEXT_UNRESOLVED, use a
+non-terminal `CONTESTED` verdict. Never emit `REFUTED`, `FALSE_POSITIVE`,
+`SAFE`, or `DISMISSED` while that debt remains: unresolved method or context
+cannot prove a negative. This is a cross-field rule checked before publication.
+
+The `operators` array contains every bound operator exactly once and in the
+exact order shown. `selected_module_hashes` is copied byte-for-value from the
+bound record. If `mechanically_bound_context_state` is CONTEXT_UNRESOLVED,
+`context_status` must remain CONTEXT_UNRESOLVED. Otherwise use RESOLVED for a
+bound local packet, even if an external harm premise remains unproven; record
+that uncertainty through a BLOCKED operator and a CONTESTED verdict. If you
+actually consumed exactly one allowed local expansion, name it in
+`context_expansion`; EXPANDED_RESOLVED requires exactly one such value. At
+most one expansion is allowed. A conservative CONTEXT_UNRESOLVED downgrade
+never authorizes a terminal-negative verdict.
 
 New observations are proposal-only objects with title, mechanism, location,
 and evidence. They have no severity or verdict authority. The driver validates
@@ -730,6 +842,7 @@ def compile_verification_method_dispatch(
         scratchpad_path=str(scratchpad_path),
         modules=selected_modules,
         operators=operators,
+        debt_codes=registry["debt_codes"],
         rows=dispatch_rows,
         output_contract=registry["output_contract"],
     )
@@ -803,10 +916,48 @@ def _context_tokens(
     return tuple(sorted(tokens, key=lambda item: (-len(item), item)))
 
 
-def _reference_graph_paths(scratchpad: Path) -> tuple[list[Path], bool]:
+def _reference_graph_paths(
+    scratchpad: Path,
+    *,
+    exact_artifacts: Sequence[str] | None = None,
+) -> tuple[list[Path], bool]:
     """Enumerate a deterministic bounded lexical graph denominator."""
 
     root = Path(scratchpad)
+    if exact_artifacts is not None:
+        normalized: list[str] = []
+        folded: set[str] = set()
+        for raw in exact_artifacts:
+            if not isinstance(raw, str):
+                raise VerificationMethodError(
+                    "exact graph artifact denominator must contain strings"
+                )
+            value = raw.strip().replace("\\", "/")
+            relative = PurePosixPath(value)
+            if (
+                not value
+                or relative.is_absolute()
+                or any(part in {"", ".", ".."} for part in relative.parts)
+            ):
+                raise VerificationMethodError(
+                    "exact graph artifact denominator contains an unsafe path"
+                )
+            key = value.casefold()
+            if key in folded:
+                raise VerificationMethodError(
+                    "exact graph artifact denominator contains an alias"
+                )
+            folded.add(key)
+            normalized.append(value)
+        if len(normalized) > MAX_REFERENCE_GRAPH_ARTIFACTS:
+            raise VerificationMethodError(
+                "exact graph artifact denominator exceeds the bounded limit"
+            )
+        return (
+            [root.joinpath(*PurePosixPath(value).parts) for value in sorted(normalized)],
+            False,
+        )
+
     selected: list[tuple[str, Path]] = []
     seen: set[str] = set()
     overflow = False
@@ -842,6 +993,27 @@ def _reference_graph_paths(scratchpad: Path) -> tuple[list[Path], bool]:
     return [path for _key, path in selected], overflow
 
 
+def verification_reference_graph_artifacts(
+    scratchpad: Path,
+) -> tuple[str, ...]:
+    """Return the exact graph denominator used by context-packet compilation.
+
+    The live queue transaction copies this set into its isolated T7 workspace.
+    Keeping enumeration here prevents the producer and verifier from carrying
+    subtly different hard-coded graph lists.  Cardinality overflow is rejected
+    before T7 rather than publishing a packet which cannot be replayed from an
+    exact captured denominator.
+    """
+
+    root = Path(scratchpad)
+    paths, overflow = _reference_graph_paths(root)
+    if overflow:
+        raise VerificationMethodError(
+            "reference graph artifact denominator exceeds the bounded limit"
+        )
+    return tuple(path.relative_to(root).as_posix() for path in paths)
+
+
 def _extract_expansion_candidates(text: str, *, limit: int) -> list[str]:
     values: list[str] = []
     for match in _SOURCE_PATH_RE.finditer(text):
@@ -861,6 +1033,7 @@ def build_verification_context_packets(
     project_root: Path,
     fanout_limit: int = 8,
     max_excerpt_chars: int = 240,
+    reference_graph_artifacts: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     if isinstance(fanout_limit, bool) or fanout_limit < 1 or fanout_limit > 64:
         raise VerificationMethodError("fanout_limit must be in [1,64]")
@@ -870,7 +1043,10 @@ def build_verification_context_packets(
     project = Path(project_root)
     graph_records = []
     graph_bindings: list[dict[str, Any]] = []
-    graph_paths, graph_overflow = _reference_graph_paths(scratch)
+    graph_paths, graph_overflow = _reference_graph_paths(
+        scratch,
+        exact_artifacts=reference_graph_artifacts,
+    )
     graph_total = 0
     if graph_overflow:
         graph_bindings.append({
@@ -887,6 +1063,9 @@ def build_verification_context_packets(
             "sha256": None,
             "size_bytes": None,
         }
+        if not path.exists() and not path.is_symlink():
+            graph_bindings.append(binding)
+            continue
         if _is_reparse_or_symlink(path):
             graph_bindings.append({**binding, "status": "REPARSE_POINT"})
             continue
@@ -1146,14 +1325,11 @@ def validate_operator_application_proposal(
         raise VerificationMethodError(
             "operator proposal cannot upgrade mechanically unresolved context"
         )
-    if (
-        context_status == "CONTEXT_UNRESOLVED"
-        and row["context_state"] == "RESOLVED"
-        and not expansion
-    ):
-        raise VerificationMethodError(
-            "resolved packet requires bounded expansion before CONTEXT_UNRESOLVED"
-        )
+    # A model may conservatively downgrade a mechanically resolved packet to
+    # unresolved without naming an in-scope expansion. The missing premise
+    # may be an external dependency that no local file can close. This cannot
+    # create false proof: terminal-negative verdicts remain forbidden below.
+    # Preserve the exact authored proposal and its debt.
     operator_rows = proposal.get("operators")
     if not isinstance(operator_rows, list):
         raise VerificationMethodError("operators must be a list")
@@ -1578,6 +1754,7 @@ __all__ = [
     "compile_verification_method_dispatch", "dispatch_receipt_payload",
     "write_or_validate_method_dispatch",
     "build_verification_context_packets",
+    "verification_reference_graph_artifacts",
     "write_or_validate_context_packets",
     "validate_operator_application_proposal",
     "bind_operator_application_receipt", "load_bound_operator_receipt",

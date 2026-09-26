@@ -2,28 +2,28 @@
   "owners": [
     {
       "legacy_normalization_or_null": {
-        "content_sha256_lf_nfc": "c6a6a1f83e70d70b925a539b71a75273bf8d2fd1d638cdab0c26580e96f28f70",
+        "content_sha256_lf_nfc": "2b39ae1763f4b5e98bad21650dc26c0102a975d1edaa496ad9743490a750a90b",
         "format": "markdown"
       },
-      "normalized_owner_sha256": "c6a6a1f83e70d70b925a539b71a75273bf8d2fd1d638cdab0c26580e96f28f70",
+      "normalized_owner_sha256": "2b39ae1763f4b5e98bad21650dc26c0102a975d1edaa496ad9743490a750a90b",
       "normative_document": {
         "path": "benchmarks/application-coverage-evaluation-plan.md",
-        "sha256": "c6a6a1f83e70d70b925a539b71a75273bf8d2fd1d638cdab0c26580e96f28f70",
-        "size_bytes": 19384
+        "sha256": "2b39ae1763f4b5e98bad21650dc26c0102a975d1edaa496ad9743490a750a90b",
+        "size_bytes": 19514
       },
       "owner_key": "evaluation",
       "status": "INHERITED_V1"
     },
     {
       "legacy_normalization_or_null": {
-        "content_sha256_lf_nfc": "2db7f1c77bf1776b7ebc00633e146e13a57ebbabf0675b05a151459a0ccb4342",
+        "content_sha256_lf_nfc": "fdfeb8387860c1f79fcddb19242b8b2d3dea1b9fff16f07fd24fbda3fc2cfd18",
         "format": "markdown"
       },
-      "normalized_owner_sha256": "2db7f1c77bf1776b7ebc00633e146e13a57ebbabf0675b05a151459a0ccb4342",
+      "normalized_owner_sha256": "fdfeb8387860c1f79fcddb19242b8b2d3dea1b9fff16f07fd24fbda3fc2cfd18",
       "normative_document": {
         "path": "architecture/ecosystem-graph-provider-contract.md",
-        "sha256": "2db7f1c77bf1776b7ebc00633e146e13a57ebbabf0675b05a151459a0ccb4342",
-        "size_bytes": 16638
+        "sha256": "fdfeb8387860c1f79fcddb19242b8b2d3dea1b9fff16f07fd24fbda3fc2cfd18",
+        "size_bytes": 16636
       },
       "owner_key": "graph",
       "status": "INHERITED_V1"
@@ -44,39 +44,39 @@
     },
     {
       "legacy_normalization_or_null": null,
-      "normalized_owner_sha256": "2f2025cf636ca80df560d7568760f6ebfc114a2c344a895940ea76566c953c79",
+      "normalized_owner_sha256": "da5f9bd77e1e0229d56f55d56fc18a1735b6948cfb28f135f01046df60c599be",
       "normative_document": {
         "path": "architecture/program-facts-runtime-cutover-spec.md",
-        "sha256": "2f2025cf636ca80df560d7568760f6ebfc114a2c344a895940ea76566c953c79",
-        "size_bytes": 238989
+        "sha256": "da5f9bd77e1e0229d56f55d56fc18a1735b6948cfb28f135f01046df60c599be",
+        "size_bytes": 239489
       },
       "owner_key": "program_facts_runtime",
       "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
     },
     {
       "legacy_normalization_or_null": {
-        "content_sha256_lf_nfc": "2778af4391ec5a7f725d908c446bb3d9ebaf105fe13f08a3a46f37cadd0f35b4",
+        "content_sha256_lf_nfc": "eac1f57dffac664df2a462ca174f80ae35fb303a58fec4a644a3223dfad21d2e",
         "format": "markdown"
       },
-      "normalized_owner_sha256": "2778af4391ec5a7f725d908c446bb3d9ebaf105fe13f08a3a46f37cadd0f35b4",
+      "normalized_owner_sha256": "eac1f57dffac664df2a462ca174f80ae35fb303a58fec4a644a3223dfad21d2e",
       "normative_document": {
         "path": "architecture/method-application-rfc.md",
-        "sha256": "2778af4391ec5a7f725d908c446bb3d9ebaf105fe13f08a3a46f37cadd0f35b4",
-        "size_bytes": 37080
+        "sha256": "eac1f57dffac664df2a462ca174f80ae35fb303a58fec4a644a3223dfad21d2e",
+        "size_bytes": 37076
       },
       "owner_key": "rfc",
       "status": "INHERITED_V1"
     },
     {
       "legacy_normalization_or_null": {
-        "content_sha256_lf_nfc": "e94344e0dd9f0ba7b6a5bcc0d742998e0eca5632986ca278a9bde4ab86803110",
+        "content_sha256_lf_nfc": "79739c3a326e8edbd633aa7d850e3ad5b4d83bfa57f347273f90d6da6c49605c",
         "format": "markdown"
       },
-      "normalized_owner_sha256": "e94344e0dd9f0ba7b6a5bcc0d742998e0eca5632986ca278a9bde4ab86803110",
+      "normalized_owner_sha256": "79739c3a326e8edbd633aa7d850e3ad5b4d83bfa57f347273f90d6da6c49605c",
       "normative_document": {
         "path": "architecture/work-unit-scheduler.md",
-        "sha256": "e94344e0dd9f0ba7b6a5bcc0d742998e0eca5632986ca278a9bde4ab86803110",
-        "size_bytes": 16081
+        "sha256": "79739c3a326e8edbd633aa7d850e3ad5b4d83bfa57f347273f90d6da6c49605c",
+        "size_bytes": 16079
       },
       "owner_key": "scheduler",
       "status": "INHERITED_V1"
@@ -84,7 +84,7 @@
   ],
   "predecessor": {
     "path": "architecture/canonical-requirement-ownership.v1.json",
-    "sha256": "04f7af72fbe840872ec2c00cfac7f28bb4823a98206e01c083df60f89350ca85",
+    "sha256": "edf6c09889ebe9c3ebc6f744f9590c909855b07bfb5705b5bcc8de9a37ccd61c",
     "size_bytes": 18770
   },
   "redirects": [
@@ -94,8 +94,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -105,8 +105,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -116,8 +116,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -127,8 +127,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -138,8 +138,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -149,8 +149,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -160,8 +160,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -171,8 +171,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -182,8 +182,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -193,8 +193,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -204,8 +204,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -215,8 +215,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -226,8 +226,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -237,8 +237,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -248,8 +248,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -259,8 +259,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -270,8 +270,8 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     },
@@ -281,13 +281,13 @@
       "reason": "public-v3-shadow-contract-successor",
       "successor_document": {
         "path": "architecture/ecosystem-graph-provider-contract.v2.md",
-        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
-        "size_bytes": 19126
+        "sha256": "91924c60b17d5792545901f0867122a4fcfc0638dcee2a526871ffdfc5fda6d3",
+        "size_bytes": 19124
       },
       "successor_owner_key": "graph"
     }
   ],
-  "registry_body_sha256": "d238dfbe8d5ab54f7a0060a0e142d3f8d1049057ed66de3ec943ccb472c39d5e",
+  "registry_body_sha256": "bbc03492130e5e80ebbc01eddf7907cef907114b0eeeb44310e6276e1750d496",
   "requirements": [
     {
       "anchor": {

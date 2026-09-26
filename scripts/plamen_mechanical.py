@@ -36,7 +36,11 @@ from artifact_ledger import (
     validate_work_unit_inputs,
     write_artifact_ledger,
 )
-from phase_io_contracts import LaunchSpec, resolve_phase_io_contract
+from phase_io_contracts import (
+    LaunchSpec,
+    canonical_work_unit_key,
+    resolve_phase_io_contract,
+)
 
 from coverage_shortfalls import (
     coverage_shortfalls_projection,
@@ -45,7 +49,11 @@ from coverage_shortfalls import (
     unknown_shortfall,
 )
 from finding_producer_registry import (
+    EXPLORATION_CLEAR_ARTIFACT,
+    EXPLORATION_CLEAR_OBLIGATION_ARTIFACT,
+    MARKDOWN_FINDING_ARTIFACT,
     ProducerResolutionError,
+    TypedProducerActionError,
     classify_producer_id as _classify_producer_id,
     producer_for_artifact as _registered_producer_for_artifact,
     producer_numeric_id_pattern as _registered_numeric_id_pattern,
@@ -66,6 +74,11 @@ from report_evidence_authority import (
     materialize_report_evidence_runtime as _materialize_report_evidence_runtime,
     project_report_evidence_markdown as _project_report_evidence_markdown,
     validate_report_evidence_bundle as _validate_report_evidence_bundle,
+    validate_typed_report_evidence_shard as _validate_typed_report_evidence_shard,
+)
+from report_heading_presentation import (
+    index_status_map as _shared_index_status_map,
+    public_heading_title as _public_heading_title,
 )
 from report_mutation_transaction import (
     ReportMutationTransactionError as _ReportMutationTransactionError,
@@ -117,17 +130,28 @@ from plamen_parsers import (
 from plamen_validators import *  # noqa: F403,F401
 from plamen_validators import (  # explicit private helpers used by SC index repair
     _collect_judge_unresolved_ids,
+    _constraint_variables_structure_issues,
+    _modifier_application_map_structure_issues,
     _expected_report_index_severities,
+    _inventory_structural_source_action_referents,
     _inventory_structural_source_referents,
     _promote_injectable_rows,
     _reconcile_skill_manifest_sources,
     _report_index_adjustment_reason_present,
     _verifier_output_has_completion_authority,
     _verification_runtime_debt_coverage,
+    registered_finding_delivery_projection,
 )
 
 __all__ = [
     "CanonicalMergeAuthorityError",
+    "_canonical_merge_dimensions",
+    "_canonical_merge_input_names",
+    "_canonical_merge_output_names",
+    "_canonical_merge_stable_digest",
+    "_committed_canonical_retry_generation",
+    "_deferred_chain_notes_projection",
+    "_producer_artifact_paths_for_identity",
     "_ATTENTION_REPAIR_MAX_ITEMS",
     "_records_from_inventory_text",
     "enforce_material_harm_floor",
@@ -181,6 +205,8 @@ __all__ = [
     "_repair_promotion_dropouts",
     "_repair_report_body_from_assignments",
     "_repair_report_body_from_manifest",
+    "ReportBodyEvidenceProjection",
+    "derive_report_body_evidence_projection",
     "_repair_sc_report_index_from_prior",
     "_tag_report_index_unresolved_sections",
     "_shard_name_for_severity",
@@ -208,6 +234,7 @@ __all__ = [
     "ensure_inventory_shard_plan",
     "ensure_rescan_manifest",
     "estimate_rate_limit_wait_seconds",
+    "estimate_rate_limit_wait_details",
     "hibernation_disabled",
     "maybe_hibernate_on_rate_limit",
     "maybe_resume_hibernation",
@@ -225,6 +252,8 @@ _RECON_CANONICAL_OUTPUTS = (
     "design_context.md",
     "attack_surface.md",
     "state_variables.md",
+    "constraint_variables.md",
+    "modifiers.md",
     "function_list.md",
     "contract_inventory.md",
     "template_recommendations.md",
@@ -232,6 +261,7 @@ _RECON_CANONICAL_OUTPUTS = (
     "setter_list.md",
     "emit_list.md",
     "build_status.md",
+    "meta_buffer.md",
 )
 
 _L1_RECON_CANONICAL_OUTPUTS = (
@@ -242,6 +272,7 @@ _L1_RECON_CANONICAL_OUTPUTS = (
     "trust_boundaries.md",
     "template_recommendations.md",
     "scope_leftover.md",
+    "meta_buffer.md",
 )
 
 _PREPASS_MARKER = "<!-- plamen-prepass v1: mechanical pre-pass output; safe to overwrite while marker is present -->"
@@ -473,6 +504,26 @@ def _render_l1_recon_worker_shards(
                 "\n"
                 "No leftover row is fabricated by the merge. Coverage gates may "
                 "append mechanically enumerated uncited files for human review.",
+            ),
+        ],
+    )
+    _write(
+        "meta_buffer.md",
+        "L1 Recon Meta-Buffer",
+        [
+            (
+                "Threat, Fork, and External-Assumption Evidence",
+                threat,
+            ),
+            (
+                "Pattern and Dependency Routing Evidence",
+                templates,
+            ),
+            (
+                "Unresolved Evidence Policy",
+                "This canonical meta-buffer contains only authenticated L1 "
+                "worker-shard evidence. Missing external facts remain explicit "
+                "recon debt until a later evidence-producing phase resolves them.",
             ),
         ],
     )
@@ -713,6 +764,22 @@ def _render_recon_worker_shards(scratchpad: Path, config: dict) -> list[str]:
         ),
     )
     _write(
+        "constraint_variables.md",
+        _existing_or_fallback(
+            "constraint_variables.md",
+            "Constraint Variables",
+            inventory,
+        ),
+    )
+    _write(
+        "modifiers.md",
+        _existing_or_fallback(
+            "modifiers.md",
+            "Modifier and Guard Application Map",
+            inventory,
+        ),
+    )
+    _write(
         "setter_list.md",
         _existing_or_fallback(
             "setter_list.md",
@@ -780,7 +847,8 @@ def _render_recon_worker_shards(scratchpad: Path, config: dict) -> list[str]:
         "",
         "Breadth and depth agents should read `design_context.md`, "
         "`attack_surface.md`, `contract_inventory.md`, `function_list.md`, "
-        "`state_variables.md`, `detected_patterns.md`, and "
+        "`state_variables.md`, `constraint_variables.md`, `modifiers.md`, "
+        "`detected_patterns.md`, and "
         "`template_recommendations.md` before deriving analysis scope.",
         "",
         _section("Build/Static Worker Summary", build)[:5000],
@@ -1895,6 +1963,27 @@ def _merge_recon_worker_shards(
         )
 
     if recovered_records is not None:
+        if pipeline == "sc":
+            constraint_issues = _constraint_variables_structure_issues(
+                (scratchpad / "constraint_variables.md").read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            )
+            if constraint_issues:
+                raise CanonicalMergeAuthorityError(
+                    "canonical merge recovery constraint projection is invalid: "
+                    + "; ".join(constraint_issues)
+                )
+            modifier_issues = _modifier_application_map_structure_issues(
+                (scratchpad / "modifiers.md").read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            )
+            if modifier_issues:
+                raise CanonicalMergeAuthorityError(
+                    "canonical merge recovery modifier projection is invalid: "
+                    + "; ".join(modifier_issues)
+                )
         try:
             committed = record_work_unit_artifacts(
                 scratchpad,
@@ -1955,6 +2044,27 @@ def _merge_recon_worker_shards(
             raise CanonicalMergeAuthorityError(
                 "canonical renderer output denominator/order drift"
             )
+        if pipeline == "sc":
+            constraint_issues = _constraint_variables_structure_issues(
+                (stage / "constraint_variables.md").read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            )
+            if constraint_issues:
+                raise CanonicalMergeAuthorityError(
+                    "canonical constraint projection is invalid: "
+                    + "; ".join(constraint_issues)
+                )
+            modifier_issues = _modifier_application_map_structure_issues(
+                (stage / "modifiers.md").read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            )
+            if modifier_issues:
+                raise CanonicalMergeAuthorityError(
+                    "canonical modifier projection is invalid: "
+                    + "; ".join(modifier_issues)
+                )
         # These additive, deterministic transforms are part of the canonical
         # renderer, not validation side effects.  Running them against the
         # private stage before hashing/publication keeps the artifact ledger,
@@ -2053,6 +2163,42 @@ def _merge_recon_worker_shards(
 
 
 def _synthesize_components_audited(scratchpad: Path) -> str:
+    """Compatibility filesystem adapter for the pure component formatter."""
+
+    def read(name: str) -> str:
+        path = scratchpad / name
+        if not path.exists():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return ""
+
+    sources = {
+        "file_coverage_ledger": read("file_coverage_ledger.md"),
+        "subsystem_map": "",
+        "findings_inventory": "",
+        "contract_inventory": "",
+    }
+    result = _synthesize_components_audited_from_text(**sources)
+    if result:
+        return result
+    sources["subsystem_map"] = read("subsystem_map.md")
+    result = _synthesize_components_audited_from_text(**sources)
+    if result:
+        sources["findings_inventory"] = read("findings_inventory.md")
+        return _synthesize_components_audited_from_text(**sources)
+    sources["contract_inventory"] = read("contract_inventory.md")
+    return _synthesize_components_audited_from_text(**sources)
+
+
+def _synthesize_components_audited_from_text(
+    *,
+    file_coverage_ledger: str,
+    subsystem_map: str,
+    findings_inventory: str,
+    contract_inventory: str,
+) -> str:
     """Build a conservative Components Audited table from mechanical ledgers.
 
     Report quality should not depend on an LLM Index Agent remembering to emit
@@ -2060,13 +2206,13 @@ def _synthesize_components_audited(scratchpad: Path) -> str:
     carries per-file status; fall back to headings from `subsystem_map.md`, then
     to file entries in `contract_inventory.md` for small SC projects.
     """
-    ledger = scratchpad / "file_coverage_ledger.md"
+    if any(type(value) is not str for value in (
+        file_coverage_ledger, subsystem_map, findings_inventory, contract_inventory,
+    )):
+        raise TypeError("component projection requires explicit source strings")
     rows: dict[str, dict[str, int]] = {}
-    if ledger.exists():
-        try:
-            text = _llm_norm(ledger.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
-            text = ""
+    if file_coverage_ledger:
+        text = _llm_norm(file_coverage_ledger)
         for line in text.splitlines():
             s = line.strip()
             if not s.startswith("|") or _is_separator_row(s):
@@ -2113,12 +2259,8 @@ def _synthesize_components_audited(scratchpad: Path) -> str:
                 )
             return "\n".join(lines)
 
-    subsystem = scratchpad / "subsystem_map.md"
-    if subsystem.exists():
-        try:
-            text = _llm_norm(subsystem.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
-            text = ""
+    if subsystem_map:
+        text = _llm_norm(subsystem_map)
         headings = []
         for m in re.finditer(r"(?m)^#{2,4}\s+(.+)$", text):
             h = m.group(1).strip()
@@ -2130,12 +2272,8 @@ def _synthesize_components_audited(scratchpad: Path) -> str:
             # had only Component + Source columns and no count — producing
             # the all-zero Covered column observed in a prior report.
             covered_per_component: dict[str, int] = {h: 0 for h in headings}
-            inv = scratchpad / "findings_inventory.md"
-            if inv.exists():
-                try:
-                    inv_text = _llm_norm(inv.read_text(encoding="utf-8", errors="replace"))
-                except Exception:
-                    inv_text = ""
+            if findings_inventory:
+                inv_text = _llm_norm(findings_inventory)
                 # FIX #7: prose subsystem headings (e.g. "Rate Limiting
                 # (mempool)") never matched path tokens (e.g.
                 # "mempool/rate_limiting.rs"), yielding the all-zero Covered
@@ -2183,12 +2321,8 @@ def _synthesize_components_audited(scratchpad: Path) -> str:
                 )
             return "\n".join(lines)
 
-    inventory = scratchpad / "contract_inventory.md"
-    if inventory.exists():
-        try:
-            text = _llm_norm(inventory.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
-            text = ""
+    if contract_inventory:
+        text = _llm_norm(contract_inventory)
         cut = re.search(r"(?im)^##\s+Out[- ]of[- ]Scope\b", text)
         scoped_text = text[: cut.start()] if cut else text
         paths: list[str] = []
@@ -2394,7 +2528,11 @@ def _inventory_location_map(scratchpad: Path) -> dict[str, str]:
     return out
 
 
-def _records_from_inventory_text(text: str) -> list[dict[str, object]]:
+def _records_from_inventory_text(
+    text: str,
+    *,
+    structural_text: str | None = None,
+) -> list[dict[str, object]]:
     """Return structured finding records from `findings_inventory.md`.
 
     This is the immutable identity ledger for downstream phases. Markdown stays
@@ -2403,7 +2541,7 @@ def _records_from_inventory_text(text: str) -> list[dict[str, object]]:
     """
     records: list[dict[str, object]] = []
     seen: set[str] = set()
-    for block in _inventory_blocks(text):
+    for block in _inventory_blocks(text, structural_text=structural_text):
         fid = _normalize_finding_id(block.get("id", "")) or block.get("id", "")
         if not fid or fid in seen:
             continue
@@ -2455,7 +2593,7 @@ def _records_from_inventory_text(text: str) -> list[dict[str, object]]:
             try:
                 producer = _registered_producer_for_artifact(
                     Path(primary_artifact).name,
-                    consumer="pre_dedup_promotion",
+                    consumer="canonical_identity",
                 )
             except ProducerResolutionError as exc:
                 scope_debt.append(str(exc))
@@ -2528,6 +2666,20 @@ def _write_finding_records_from_inventory(scratchpad: Path) -> int:
             )
             + "\n"
         ).encode("utf-8")
+        # Derived projections are content-addressed.  Re-publishing identical
+        # bytes must be a no-op: an atomic replace would manufacture a new
+        # inode/mtime even though neither the semantic input nor output
+        # changed, which in turn can invalidate downstream artifact receipts.
+        try:
+            if (
+                target.is_file()
+                and read_bounded_regular_bytes(target, len(encoded)) == encoded
+            ):
+                return len(records)
+        except Exception:
+            # A malformed, oversized, or otherwise unreadable prior
+            # projection is replaced by the freshly derived bounded value.
+            pass
         with tempfile.NamedTemporaryFile(
             mode="wb",
             dir=scratchpad,
@@ -2670,9 +2822,20 @@ def _canonical_identity_records_from_artifact(path: Path) -> list[dict[str, Any]
         )
     except ProducerResolutionError:
         producer = None
-    if producer is not None and getattr(
-        producer, "artifact_format", "MARKDOWN_FINDINGS"
-    ) != "MARKDOWN_FINDINGS":
+    artifact_format = (
+        producer.artifact_format
+        if producer is not None
+        else MARKDOWN_FINDING_ARTIFACT
+    )
+    if artifact_format == EXPLORATION_CLEAR_OBLIGATION_ARTIFACT:
+        # This queue is authenticated enumeration debt, not a finding
+        # producer. Validate it exactly so malformed queues fail closed, then
+        # deliberately project no canonical finding aliases.
+        _read_registered_enumeration_obligations(
+            path, consumer="canonical_identity"
+        )
+        return []
+    if artifact_format == EXPLORATION_CLEAR_ARTIFACT:
         try:
             actions = _read_registered_typed_actions(
                 path, consumer="canonical_identity"
@@ -2733,6 +2896,11 @@ def _canonical_identity_records_from_artifact(path: Path) -> list[dict[str, Any]
                 "requires_independent_consumer": True,
             })
         return typed_records
+    if artifact_format != MARKDOWN_FINDING_ARTIFACT:
+        raise TypedProducerActionError(
+            f"registered producer {producer.key} has unsupported canonical "
+            f"identity format {artifact_format}"
+        )
     try:
         text = _llm_norm(path.read_text(encoding="utf-8", errors="replace"))
     except Exception:
@@ -2895,10 +3063,29 @@ def _load_finding_record_maps(
     else:
         path = scratchpad / "finding_records.json"
         inv = scratchpad / "findings_inventory.md"
-        if inv.exists() and (
-            not path.exists() or path.stat().st_mtime < inv.stat().st_mtime
-        ):
-            _write_finding_records_from_inventory(scratchpad)
+        if inv.exists():
+            refresh = not path.exists()
+            if not refresh:
+                try:
+                    inventory_raw = read_bounded_regular_bytes(
+                        inv, 64 * 1024 * 1024
+                    )
+                    projected_raw = read_bounded_regular_bytes(
+                        path, 64 * 1024 * 1024
+                    )
+                    projected = json.loads(projected_raw.decode("utf-8"))
+                    refresh = (
+                        not isinstance(projected, dict)
+                        or projected.get("schema_version")
+                        != "plamen.finding_records.v2"
+                        or projected.get("source") != "findings_inventory.md"
+                        or projected.get("source_sha256")
+                        != hashlib.sha256(inventory_raw).hexdigest()
+                    )
+                except Exception:
+                    refresh = True
+            if refresh:
+                _write_finding_records_from_inventory(scratchpad)
         if not path.exists():
             return {}, {}
         try:
@@ -3360,7 +3547,10 @@ def _repair_report_body_from_assignments(body: str, scratchpad: Path) -> str:
     return body.rstrip() + "\n\n---\n\n" + insertion
 
 
-def _synth_report_section_from_manifest_row(scratchpad: Path, row: dict[str, object]) -> str:
+def _synth_report_section_from_manifest_inputs(
+    row: Mapping[str, object],
+    verifier_artifacts: Mapping[str, bytes],
+) -> str:
     report_id = str(row.get("report_id", "") or "").strip().upper()
     title = _sanitize_client_title(str(row.get("title", "") or "Verified finding"))
     severity = normalize_severity(str(row.get("severity", "") or report_id[:1]))
@@ -3374,13 +3564,12 @@ def _synth_report_section_from_manifest_row(scratchpad: Path, row: dict[str, obj
     rec_parts: list[str] = []
     verdicts: list[str] = []
     for vf in verify_files:
-        p = scratchpad / vf
-        if not p.exists():
-            continue
-        try:
-            txt = _llm_norm(p.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
-            txt = ""
+        raw = verifier_artifacts.get(vf)
+        txt = (
+            _llm_norm(raw.decode("utf-8", errors="replace"))
+            if type(raw) is bytes
+            else ""
+        )
         if not txt:
             continue
         verdict = _verifier_status_from_text(txt)
@@ -3452,6 +3641,183 @@ def _synth_report_section_from_manifest_row(scratchpad: Path, row: dict[str, obj
         rec,
         "",
     ]).replace("\n\n\n", "\n\n").strip()
+
+
+def _synth_report_section_from_manifest_row(
+    scratchpad: Path, row: dict[str, object]
+) -> str:
+    verifier_artifacts: dict[str, bytes] = {}
+    for value in row.get("verify_files", []) or []:
+        name = str(value)
+        if not name.strip() or name in verifier_artifacts:
+            continue
+        path = scratchpad / name
+        if not path.exists():
+            continue
+        try:
+            verifier_artifacts[name] = path.read_bytes()
+        except Exception:
+            continue
+    return _synth_report_section_from_manifest_inputs(
+        row, verifier_artifacts
+    )
+
+
+@dataclass(frozen=True)
+class ReportBodyEvidenceProjection:
+    """Pure deterministic MODEL-body successor postimage."""
+
+    output_bytes: bytes
+    repair_count: int
+    repaired_report_ids: tuple[str, ...]
+    consumed_verify_files: tuple[str, ...]
+    evidence_projection_applied: bool
+
+
+def derive_report_body_evidence_projection(
+    *,
+    phase_name: str,
+    model_body: bytes,
+    body_manifest_bytes: bytes,
+    typed_manifest: Mapping[str, Any],
+    verifier_artifacts: Mapping[str, bytes],
+    evidence_bundle: Mapping[str, Any],
+) -> ReportBodyEvidenceProjection:
+    """Derive one typed report-body repair without filesystem authority."""
+
+    if (
+        not isinstance(phase_name, str)
+        or type(model_body) is not bytes
+        or type(body_manifest_bytes) is not bytes
+        or not isinstance(typed_manifest, Mapping)
+        or not isinstance(verifier_artifacts, Mapping)
+        or not isinstance(evidence_bundle, Mapping)
+    ):
+        raise TypeError("report body evidence projection inputs are malformed")
+    match = re.fullmatch(
+        r"report_body_writer_(critical_high|medium|low_info)(?:_[a-z])?",
+        phase_name,
+    )
+    if match is None:
+        raise ValueError("report body evidence projection phase is invalid")
+    shard_key = phase_name.replace("report_body_writer_", "report_", 1)
+    try:
+        body_manifest = json.loads(
+            body_manifest_bytes.decode("utf-8", errors="strict")
+        )
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("report body manifest bytes are invalid") from exc
+    if (
+        not isinstance(body_manifest, dict)
+        or body_manifest.get("shard") != shard_key
+    ):
+        raise ValueError("report body manifest shard differs from phase")
+    findings = body_manifest.get("findings")
+    if not isinstance(findings, list) or any(
+        not isinstance(row, Mapping) for row in findings
+    ):
+        raise ValueError("report body manifest findings are malformed")
+
+    canonical_bundle, _records = _validate_typed_report_evidence_shard(
+        evidence_bundle, typed_manifest, shard_key
+    )
+    expected_source = {
+        "artifact": f"body_manifests/{shard_key}.json",
+        "sha256": hashlib.sha256(body_manifest_bytes).hexdigest(),
+    }
+    if typed_manifest.get("source_manifest") != expected_source:
+        raise _ReportEvidenceError(
+            "typed report source manifest differs from exact input bytes"
+        )
+    typed_rows = typed_manifest.get("findings")
+    source_rows = [
+        {
+            key: value for key, value in row.items()
+            if key not in {
+                "report_evidence_record_digest", "report_evidence"
+            }
+        }
+        for row in typed_rows
+    ]
+    if source_rows != findings:
+        raise _ReportEvidenceError(
+            "typed report rows differ from exact source manifest"
+        )
+
+    declared: list[str] = []
+    for row in findings:
+        verify_files = row.get("verify_files") or []
+        if not isinstance(verify_files, list) or any(
+            not isinstance(value, str) or not value.strip()
+            for value in verify_files
+        ):
+            raise ValueError("report body verify-file denominator is malformed")
+        declared.extend(verify_files)
+    consumed = tuple(dict.fromkeys(declared))
+    if len(consumed) != len({name.casefold() for name in consumed}):
+        raise ValueError("report body verify-file denominator aliases")
+    if (
+        set(verifier_artifacts) != set(consumed)
+        or any(type(name) is not str for name in verifier_artifacts)
+        or any(type(raw) is not bytes for raw in verifier_artifacts.values())
+    ):
+        raise ValueError("report body verifier artifact denominator differs")
+
+    try:
+        decoded_body = model_body.decode("utf-8", errors="strict")
+    except UnicodeError as exc:
+        raise ValueError("report body MODEL bytes are not UTF-8") from exc
+    # Match Path.read_text(newline=None): semantic repair operates on
+    # normalized text, while a true no-op still returns the exact raw MODEL
+    # bytes below.
+    body = decoded_body.replace("\r\n", "\n").replace("\r", "\n")
+    repaired = 0
+    repaired_ids: list[str] = []
+    for row in findings:
+        report_id = str(row.get("report_id", "") or "").upper()
+        if not report_id or row.get("report_blocked"):
+            continue
+        section = _section_for_report_id(body, report_id)
+        location = str(row.get("location", "") or "").strip()
+        needs_location_repair = bool(
+            location
+            and section
+            and not _location_present_in_body(location, section)
+        )
+        if (
+            "[REPORT-BLOCKED" not in section.upper()
+            and not needs_location_repair
+        ):
+            continue
+        body = _replace_report_section(
+            body,
+            report_id,
+            _synth_report_section_from_manifest_inputs(
+                row, verifier_artifacts
+            ),
+        )
+        repaired += 1
+        repaired_ids.append(report_id)
+
+    projected = _project_report_evidence_markdown(
+        body, canonical_bundle
+    )
+    evidence_applied = projected != body
+    if evidence_applied:
+        body = projected
+        repaired += 1
+    output = (
+        (body.rstrip() + "\n").encode("utf-8")
+        if repaired
+        else model_body
+    )
+    return ReportBodyEvidenceProjection(
+        output_bytes=output,
+        repair_count=repaired,
+        repaired_report_ids=tuple(repaired_ids),
+        consumed_verify_files=consumed,
+        evidence_projection_applied=evidence_applied,
+    )
 
 
 def _replace_report_section(body: str, report_id: str, replacement: str) -> str:
@@ -3834,7 +4200,14 @@ def _finalize_report_tier_section(section: str, id_to_title: dict) -> str:
                 or title_clean.lower() in {"verification", "untitled", "finding", "verified finding"}
                 or len(title_clean) < 8):
             title_clean = id_to_title.get(rid) or title_clean or "Verified finding"
-        out.append(f"{level} [{rid}] {title_clean}{status}".rstrip())
+        # The same exact privacy/status projection is checked at delivery.
+        tag = status.strip().strip("[]")
+        if tag == "VERIFICATION NOT EXECUTED":
+            # Preserve the legacy noncanonical display token; it cannot gain
+            # authenticated canonical-heading authority at final delivery.
+            out.append(f"{level} [{rid}] {title_clean}{status}".rstrip())
+        else:
+            out.append(f"{level} [{rid}] {_public_heading_title(title_clean, tag)}".rstrip())
     return _sanitize_client_body("\n".join(out))
 
 
@@ -3913,6 +4286,9 @@ def _security_obligation_appendix_projection(scratchpad: Path) -> str:
         return ""
     try:
         import security_obligation_lifecycle as lifecycle
+        from security_obligation_phaseio_authority import (
+            load_committed_lifecycle_run_context,
+        )
         from artifact_ledger import read_artifact_ledger
 
         ledger = read_artifact_ledger(scratchpad)
@@ -3953,8 +4329,13 @@ def _security_obligation_appendix_projection(scratchpad: Path) -> str:
         }
         recorded = json.loads(raw.decode("utf-8", errors="strict"))
         lifecycle._validate_payload(recorded)
+        run_context = load_committed_lifecycle_run_context(
+            scratchpad, project_root=scratchpad.parent
+        )
         rebuilt = lifecycle.build_security_obligation_lifecycle(
-            scratchpad, expected_input_sha256=expected
+            scratchpad, expected_input_sha256=expected,
+            expected_run_id=str(unit.get("run_id") or ""),
+            run_context_authority=run_context,
         )
         if recorded != rebuilt or recorded.get("run_id") != unit.get("run_id"):
             raise ValueError("lifecycle JSON is stale for current exact inputs")
@@ -4436,34 +4817,7 @@ def _index_status_map(idx_text: str) -> dict[str, str]:
     which historically disagreed with the index (index CONFIRMED vs body
     UNVERIFIED). Returns {} when no Verification column is present.
     """
-    out: dict[str, str] = {}
-    try:
-        section = _extract_h2_section(idx_text, "Master Finding Index")
-    except Exception:
-        section = ""
-    if not section:
-        return out
-    id_re = re.compile(r"^[\*\[`_]*([CHMLI]-\d+)\b")
-    vcol: int | None = None
-    for line in section.splitlines():
-        s = line.strip()
-        if not s.startswith("|"):
-            continue
-        cells = [c.strip() for c in s.strip("|").split("|")]
-        if vcol is None:
-            low = [c.lower() for c in cells]
-            if any("verification" in c for c in low):
-                vcol = next(i for i, c in enumerate(low) if "verification" in c)
-            continue
-        m = id_re.match(cells[0]) if cells else None
-        if not m or vcol >= len(cells):
-            continue
-        raw = cells[vcol].upper()
-        for tok in _BODY_STATUS_TOKENS:
-            if tok in raw:
-                out[m.group(1)] = tok
-                break
-    return out
+    return _shared_index_status_map(idx_text)
 
 
 def _stamp_body_header_status(tier_text: str, status_map: dict[str, str]) -> str:
@@ -6667,8 +7021,23 @@ def apply_material_harm_floor(scratchpad: Path, project_root: str) -> dict:
 # driver owner wires the call sites (mirrors enumeration_gate.py's contract).
 
 _PROMO_MAX_FILES = 60           # bound files scanned per run (recall-safe cap)
-_PROMO_MAX_PER_FILE = 12        # bound candidates harvested per feeder file
-_PROMO_MAX_PER_RUN = 30         # global bound on emitted candidates per run
+# These are denial-of-service bounds, not recall budgets. The former 12/30
+# limits truncated legitimate thorough-mode discriminator output (one real
+# DODO artifact contained 53 independently reopened candidates) before the
+# verification queue could see it. Keep a finite denominator while admitting
+# the complete ordinary registered-producer artifact.
+_PROMO_MAX_PER_FILE = 64
+_PROMO_MAX_PER_RUN = 512
+# These terminal states are derived by the exact registered-delivery
+# projection.  Every other content-bearing, valid registered action is an
+# uncapped Gate-P obligation.  The heuristic caps above apply only to records
+# outside that exact registry denominator.
+_PROMO_REGISTERED_TERMINAL_DISPOSITIONS = frozenset({
+    "PROMOTED_FINDING",
+    "PROMOTED_AMENDMENT",
+    "HUMAN_REVIEW",
+    "INDEPENDENT_ENUMERATION_DISPOSED",
+})
 # Historical location-proximity helpers retain this window only for diagnostic
 # duplicate nomination. Neither proximity nor equal location/shape suppresses
 # a subject; only the full cryptographic subject establishes exact identity.
@@ -6877,7 +7246,9 @@ def _promo_bind_subject_identity(
         source_artifact_sha256=source_artifact_sha256,
         record_sha256=record_sha256,
         location=location,
-        shape=str(cand.get("shape", "") or ""),
+        shape=str(
+            cand.get("subject_shape") or cand.get("shape", "") or ""
+        ),
     )
     cand.update({
         "producer_key": producer_identity,
@@ -7086,16 +7457,14 @@ def _promo_shape_ok(text: str) -> tuple[bool, str]:
 
 _PROMO_HEADING_RE = re.compile(r"^\s*#{2,4}\s+(.*)$")
 
-# Broad, generic bracketed-ID token — deliberately independent of the strict
-# internal-ID catalog (`_ID_DEPTH_ALTS` et al. in plamen_parsers.py). That
-# catalog is missing several real internal prefixes report-template.md itself
-# names as internal (bare `DE-`, `DS-`, `DT-`), so a heading like
-# ``## Finding [DE-11]: ...`` silently produces ZERO blocks from
-# `_inventory_blocks()` — exactly the "coverage exists but the mechanism
-# cannot detect its own non-fulfillment" pipeline-loss class Gate P exists to
-# catch. Gate P's harvest is CONTENT-shaped, not ID-pattern-shaped, so its own
-# block splitter must not depend on that catalog being complete.
-_PROMO_BLOCK_ID_RE = re.compile(r"\[([A-Za-z]{1,10}\d*-\d+)\]")
+# Broad lexical bracketed-ID token, independent of the producer's semantic
+# namespace. The registered-action scanner decides authority. Gate P must
+# still carry descriptive DA IDs such as DA2-REFUND-REENTRANCY through this
+# presentation parser so the exact action is not emitted a second time as an
+# anonymous heuristic orphan.
+_PROMO_BLOCK_ID_RE = re.compile(
+    r"\[([A-Za-z][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)+)\]"
+)
 
 
 def _promo_split_heading_blocks(text: str) -> list[dict]:
@@ -7478,6 +7847,110 @@ def _write_promotion_orphans_md(
         log.warning(f"[promotion-gate] write promotion_orphans.md failed: {exc!r}")
 
 
+def _promo_registered_candidate(
+    action: Mapping[str, Any],
+    *,
+    harvested: Sequence[dict],
+    source_artifact_sha256: str,
+) -> dict:
+    """Adapt one exact registered action to the Gate-P candidate contract.
+
+    A rich Markdown/typed harvest may supply presentation fields, but it is
+    selected only *after* the registry has established the action identity.
+    When no heuristic shape recognizes the action, a canonical projection of
+    the exact action row becomes a shape-debt candidate instead of disappearing.
+    """
+
+    action_id = str(action.get("action_id") or "").strip().upper()
+    projection = {
+        key: value
+        for key, value in dict(action).items()
+        if key not in {"action_digest", "disposition"}
+    }
+    record_bytes = json.dumps(
+        projection,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    matching = [
+        dict(candidate)
+        for candidate in harvested
+        if str(candidate.get("orig_id") or "").strip().upper() == action_id
+    ]
+    shape_rank = {
+        "typed_generator_action": 0,
+        "finding_block": 1,
+        "finding_shape_debt": 2,
+        "table_row": 3,
+        "excluded_stub": 4,
+    }
+    matching.sort(key=lambda candidate: (
+        shape_rank.get(str(candidate.get("shape") or ""), 99),
+        str(candidate.get("shape") or ""),
+        str(candidate.get("title") or ""),
+    ))
+    if matching:
+        candidate = matching[0]
+    else:
+        title = str(action.get("title") or action_id or "Registered action")
+        source_identity = str(action.get("source_identity") or "")
+        reason = str(action.get("reason") or "")
+        descriptive = "\n".join(
+            value for value in (title, source_identity, reason) if value
+        )
+        location_match = _PROMO_LOCATION_RE.search(descriptive)
+        candidate = {
+            "source_file": str(action.get("source_file") or ""),
+            "shape": "registered_action_projection",
+            "orig_id": action_id,
+            "title": title,
+            "location": (
+                location_match.group(0).strip() if location_match else "UNKNOWN"
+            ),
+            "text": descriptive,
+            "desc": descriptive,
+            "shape_debt": True,
+            "requires_independent_consumer": True,
+        }
+
+    candidate.update({
+        "source_file": str(action.get("source_file") or ""),
+        # The subject is bound to the canonical registered action row, never
+        # to whichever optional Markdown presentation happened to parse.  This
+        # prevents an old heuristic subject without Source Actions from
+        # suppressing the exact delivery repair.
+        "subject_shape": "registered_action_projection",
+        "_record_bytes": record_bytes,
+        "orig_id": action_id,
+        "registered_exact_action": True,
+        "action_kind": str(action.get("action_kind") or ""),
+        "target_id": str(action.get("target_id") or ""),
+        "source_identity": str(action.get("source_identity") or ""),
+        "evidence_scope": str(action.get("evidence_scope") or ""),
+        "proof_scope": str(action.get("proof_scope") or ""),
+        "effective_evidence_scope": str(
+            action.get("effective_evidence_scope") or "UNSPECIFIED"
+        ),
+        "effective_proof_scope": str(
+            action.get("effective_proof_scope") or "ANALYTICAL"
+        ),
+        "effective_harm_scope": str(
+            action.get("effective_harm_scope") or "UNPROVEN"
+        ),
+        "registered_source_disposition": str(
+            action.get("disposition") or "PENDING"
+        ),
+    })
+    _promo_bind_subject_identity(
+        candidate,
+        source_artifact_sha256=source_artifact_sha256,
+        producer_key=str(action.get("producer_key") or ""),
+    )
+    return candidate
+
+
 def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
     """Gate P harvest + reconcile (content-shaped, NOT ID-pattern).
 
@@ -7518,7 +7991,53 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
         except Exception:
             pass
         return []
+
     cap_rows: list[dict] = []
+    # Registered producer delivery is an exact set, not a heuristic candidate
+    # sample.  Reuse the queue validator's current projection here so the
+    # producer and consumer cannot disagree about their denominator.  The
+    # projection already distinguishes exact deliveries, independent review,
+    # and residual actions against the current inventory bytes.
+    registered_actions_by_file: dict[str, list[dict[str, Any]]] = {}
+    registered_artifact_names: set[str] = set()
+    try:
+        registered_projection = (
+            registered_finding_delivery_projection(scratchpad)
+            if (scratchpad / "findings_inventory.md").is_file()
+            else {"artifacts": [], "actions": []}
+        )
+        for artifact in registered_projection.get("artifacts") or ():
+            if isinstance(artifact, Mapping):
+                name = str(artifact.get("artifact") or "")
+                if name:
+                    registered_artifact_names.add(name)
+        for raw_action in registered_projection.get("actions") or ():
+            if not isinstance(raw_action, Mapping):
+                continue
+            action = dict(raw_action)
+            source_file = str(action.get("source_file") or "")
+            if not source_file:
+                continue
+            registered_artifact_names.add(source_file)
+            registered_actions_by_file.setdefault(source_file, []).append(
+                action
+            )
+        for rows in registered_actions_by_file.values():
+            rows.sort(key=lambda row: (
+                str(row.get("action_id") or ""),
+                str(row.get("action_digest") or ""),
+            ))
+    except Exception as exc:
+        cap_rows.append(unknown_shortfall(
+            producer="promotion_gate",
+            scope="registered-action-denominator",
+            kind="PROVIDER_FAILED",
+            detail=(
+                "exact registered-action delivery projection could not be "
+                f"derived ({type(exc).__name__}); heuristic recovery remains "
+                "advisory and cannot certify registered delivery"
+            ),
+        ))
     try:
         # The seed proves phase readiness, not record identity.  Its local IDs
         # are deliberately never used as suppression authority.
@@ -7590,30 +8109,58 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
                 ),
             ))
             continue
+    for name in sorted(registered_artifact_names):
+        path = scratchpad / name
+        if (
+            path.name not in _PROMO_EXCLUDE_NAMES
+            and path not in seen_paths
+            and path.is_file()
+        ):
+            seen_paths.add(path)
+            files.append(path)
     # Glob declaration order and filesystem enumeration order are not part of
-    # the result. Canonicalize before bounded caps and candidate numbering.
+    # the result. Registered artifacts are admitted as the complete exact set;
+    # only advisory files outside the registry are subject to the file cap.
     all_files = sorted(
         seen_paths,
         key=lambda item: (item.name.casefold(), item.name),
     )
-    files = all_files[:_PROMO_MAX_FILES]
-    if len(all_files) > _PROMO_MAX_FILES:
+    registered_files: list[Path] = []
+    advisory_files: list[Path] = []
+    for path in all_files:
+        try:
+            registered = _registered_producer_for_artifact(
+                path.name, consumer="late_harvest"
+            )
+        except ProducerResolutionError:
+            registered = None
+        if registered is not None or path.name in registered_artifact_names:
+            registered_files.append(path)
+        else:
+            advisory_files.append(path)
+    retained_advisory_files = advisory_files[:_PROMO_MAX_FILES]
+    files = [*registered_files, *retained_advisory_files]
+    if len(advisory_files) > _PROMO_MAX_FILES:
         cap_rows.append(shortfall(
             producer="promotion_gate",
-            scope="feeder-files",
+            scope="unregistered-advisory-feeder-files",
             cap="PROMO_MAX_FILES",
             limit=_PROMO_MAX_FILES,
-            observed=len(all_files),
-            retained=len(files),
+            observed=len(advisory_files),
+            retained=len(retained_advisory_files),
             exact=True,
-            samples=[p.name for p in all_files[_PROMO_MAX_FILES:]],
-            detail="promotion-gate feeder artifacts were not scanned",
+            samples=[p.name for p in advisory_files[_PROMO_MAX_FILES:]],
+            detail=(
+                "unregistered advisory promotion feeders were not scanned; "
+                "registered producer artifacts remain complete and uncapped"
+            ),
         ))
 
     orphans: list[dict] = []
     already_tracked = 0
     seen_subjects: set[str] = set()  # exact-subject dedup across harvesters
     run_cap_seen = False
+    advisory_orphan_count = 0
     for p in files:
         try:
             registered = _registered_producer_for_artifact(
@@ -7700,16 +8247,64 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
                 detail="one or more promotion feeder harvesters failed",
                 samples=[p.name],
             ))
-        for cand in harvested:
+        exact_rows = registered_actions_by_file.get(p.name, [])
+        exact_action_ids = {
+            str(row.get("action_id") or "").strip().upper()
+            for row in exact_rows
+            if str(row.get("action_id") or "").strip()
+        }
+        # Exact, valid, content-bearing residual actions are emitted before
+        # any heuristic lane and are never charged against advisory caps.
+        for action in exact_rows:
+            disposition = str(action.get("disposition") or "PENDING")
+            if disposition in _PROMO_REGISTERED_TERMINAL_DISPOSITIONS:
+                already_tracked += 1
+                continue
+            if not action.get("local_id_valid") or not action.get(
+                "content_bearing"
+            ):
+                # Identity/content parser debt cannot be repaired by minting a
+                # finding. It remains explicit in the shared exact projection.
+                continue
+            candidate = _promo_registered_candidate(
+                action,
+                harvested=harvested,
+                source_artifact_sha256=source_artifact_sha256,
+            )
+            subject = candidate["subject_sha256"]
+            if subject in seen_subjects:
+                already_tracked += 1
+                continue
+            seen_subjects.add(subject)
+            try:
+                disp, reason = _promo_disposition(candidate)
+            except Exception:
+                disp, reason = (
+                    "BODY",
+                    "exact registered action retained after routing error",
+                )
+            candidate["disposition"] = disp
+            candidate["reason"] = reason
+            orphans.append(candidate)
+
+        # Heuristic recovery remains useful for malformed/legacy records that
+        # are outside the exact action set. It is intentionally bounded and
+        # can never crowd registered actions out of the delivery denominator.
+        heuristic_harvested: list[dict] = []
+        for candidate in harvested:
+            candidate_id = str(candidate.get("orig_id") or "").strip().upper()
+            if candidate_id and candidate_id in exact_action_ids:
+                continue
             _promo_bind_subject_identity(
-                cand,
+                candidate,
                 source_artifact_sha256=source_artifact_sha256,
                 producer_key=producer_key,
             )
-        harvested.sort(key=lambda cand: cand["subject_sha256"])
+            heuristic_harvested.append(candidate)
+        heuristic_harvested.sort(key=lambda cand: cand["subject_sha256"])
 
         per_file = 0
-        for cand_idx, cand in enumerate(harvested):
+        for cand_idx, cand in enumerate(heuristic_harvested):
             subject = cand["subject_sha256"]
             if subject in delivered_subjects:
                 already_tracked += 1
@@ -7734,19 +8329,22 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
                             "additional eligible orphans may exist"),
                 ))
                 break
-            if len(orphans) >= _PROMO_MAX_PER_RUN:
+            if advisory_orphan_count >= _PROMO_MAX_PER_RUN:
                 if not run_cap_seen:
                     cap_rows.append(shortfall(
                         producer="promotion_gate",
-                        scope="orphan-harvest",
+                        scope="unregistered-advisory-orphan-harvest",
                         cap="PROMO_MAX_PER_RUN",
                         limit=_PROMO_MAX_PER_RUN,
-                        observed=len(orphans) + 1,
-                        retained=len(orphans),
+                        observed=advisory_orphan_count + 1,
+                        retained=advisory_orphan_count,
                         exact=False,
                         samples=[cand.get("orig_id") or cand.get("title") or ""],
-                        detail=("eligible promotion orphans exceeded the global budget; "
-                                "additional eligible orphans may exist"),
+                        detail=(
+                            "eligible advisory promotion orphans exceeded the "
+                            "global budget; registered producer actions remain "
+                            "complete and uncapped"
+                        ),
                     ))
                     run_cap_seen = True
                 break
@@ -7759,8 +8357,7 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
             cand["reason"] = reason
             orphans.append(cand)
             per_file += 1
-        if run_cap_seen:
-            break
+            advisory_orphan_count += 1
 
     try:
         replace_producer_shortfalls(scratchpad, "promotion_gate", cap_rows)
@@ -7897,6 +8494,52 @@ def _append_inventory_blocks(inv_text: str, header: str, lines: list[str]) -> st
     return text if text.endswith("\n") else text + "\n"
 
 
+def _promotion_source_action_line(candidate: Mapping[str, Any]) -> str:
+    """Return one exact registered producer referent or an empty string.
+
+    Gate P previously retained a promoted block's content and source-artifact
+    hash but replaced its producer-local identity with the generic PROMOGAP
+    label.  The delivery reconciler therefore could not prove that the
+    registered action reached inventory even though the full finding was
+    visibly present.  Bind all three identity components in the canonical
+    ``Source Actions`` grammar; malformed or unregistered candidates remain
+    unreferenced and fail closed at the existing delivery boundary.
+    """
+
+    artifact = str(candidate.get("source_file") or "")
+    action_id = str(candidate.get("orig_id") or "").strip().upper()
+    source_hash = str(
+        candidate.get("source_artifact_sha256") or ""
+    ).strip().lower().removeprefix("sha256:")
+    if (
+        re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}",
+            artifact,
+            re.ASCII,
+        )
+        is None
+        or re.fullmatch(r"[0-9a-f]{64}", source_hash, re.ASCII) is None
+    ):
+        return ""
+    try:
+        producer = _registered_producer_for_artifact(
+            artifact,
+            consumer="canonical_identity",
+        )
+    except ProducerResolutionError:
+        producer = None
+    if producer is None or re.fullmatch(
+        _registered_producer_read_id_pattern(producer),
+        action_id,
+        re.IGNORECASE | re.ASCII,
+    ) is None:
+        return ""
+    return (
+        f"**Source Actions**: {artifact}:{action_id}"
+        f"@sha256:{source_hash}"
+    )
+
+
 def route_promotion_orphans(scratchpad: Path, orphans: "list[dict] | None" = None) -> dict:
     """Gate P routing: disposition-router for harvested promotion orphans.
 
@@ -7930,15 +8573,20 @@ def route_promotion_orphans(scratchpad: Path, orphans: "list[dict] | None" = Non
         "appendix_a": 0,
         "emitted_to_inventory": 0,
     }
+    receipt_path = scratchpad / "promotion_gate_receipt.md"
     if not orphans:
         try:
+            _promo_atomic_write_text(
+                receipt_path,
+                "# Promotion Gate Receipt\n\n"
+                "**Schema**: plamen.gate_p.receipt.v2\n",
+            )
             _write_promotion_routing_md(scratchpad, [], [], [])
             _write_promotion_appendix_staging(scratchpad, [], [])
         except Exception:
             pass
         return result
 
-    receipt_path = scratchpad / "promotion_gate_receipt.md"
     seen: set[str] = set()
     if receipt_path.exists():
         try:
@@ -8034,14 +8682,17 @@ def route_promotion_orphans(scratchpad: Path, orphans: "list[dict] | None" = Non
                     except Exception:
                         sev = "Medium"
                     loc = cand.get("location") or "UNKNOWN"
-                    if cand.get("shape") == "typed_generator_action":
+                    if (
+                        cand.get("shape") == "typed_generator_action"
+                        or cand.get("registered_exact_action")
+                    ):
                         source_lines = [
                             f"**Source IDs**: [{cand.get('orig_id', '')}]",
                             f"**Primary Artifact**: {cand.get('source_file', '')}",
                             f"**Source Identity**: {cand.get('source_identity', '')}",
-                            "**Proof Scope**: UNVERIFIED_GENERATOR_OUTPUT",
-                            "**Effective Proof Scope**: ANALYTICAL",
-                            "**Effective Harm Scope**: UNPROVEN",
+                            f"**Proof Scope**: {cand.get('proof_scope') or 'ANALYTICAL_CANDIDATE'}",
+                            f"**Effective Proof Scope**: {cand.get('effective_proof_scope') or 'ANALYTICAL'}",
+                            f"**Effective Harm Scope**: {cand.get('effective_harm_scope') or 'UNPROVEN'}",
                         ]
                     else:
                         source_lines = [
@@ -8050,6 +8701,9 @@ def route_promotion_orphans(scratchpad: Path, orphans: "list[dict] | None" = Non
                             "promotion-completeness gap — mechanically harvested, "
                             "verifier to confirm or refute)"
                         ]
+                    source_action_line = _promotion_source_action_line(cand)
+                    if source_action_line:
+                        source_lines.append(source_action_line)
                     if cand.get("negative_proposal"):
                         source_lines.extend([
                             "**Negative Proposal**: REFUTATION_PROPOSAL "
@@ -9089,7 +9743,19 @@ def ensure_inventory_shard_plan(scratchpad: Path, target_per_shard: int = 70,
     if not weighted:
         num_shards = 1
     else:
-        num_shards = max(1, min(max_shards, math.ceil(total / max(target_per_shard, 1))))
+        # A shard is active only when at least one immutable source file can
+        # be assigned to it.  Signal density may request more shards than
+        # there are source files; publishing those empty shards as active
+        # later makes their DRIVER placeholders look like missing MODEL
+        # producers at the canonical aggregate boundary.
+        num_shards = max(
+            1,
+            min(
+                max_shards,
+                len(weighted),
+                math.ceil(total / max(target_per_shard, 1)),
+            ),
+        )
 
     shard_names = [f"inventory_chunk_{c}" for c in ("a", "b", "c")[:num_shards]]
     shard_entries = {name: [] for name in ("inventory_chunk_a", "inventory_chunk_b", "inventory_chunk_c")}
@@ -9278,20 +9944,21 @@ def _allocate_inventory_ledger_id(
     """Register an INV id, allocating a fresh one if a stale retry collided."""
     candidate = preferred_id
     for _ in range(1000):
-        try:
-            result = id_ledger_register(
-                scratchpad,
-                finding_id=candidate,
-                owner_phase=owner_phase,
-                owner_attempt=1,
-                owning_artifact=owning_artifact,
-                title=title,
+        result = id_ledger_register(
+            scratchpad,
+            finding_id=candidate,
+            owner_phase=owner_phase,
+            owner_attempt=1,
+            owning_artifact=owning_artifact,
+            title=title,
+        )
+        status = str(result.get("status") or "")
+        if status in {"REGISTERED", "REUSED"}:
+            return candidate
+        if status != "COLLISION":
+            raise RuntimeError(
+                f"inventory ID ledger registration returned {status or 'no status'}"
             )
-        except Exception as e:
-            log.debug(f"[{owner_phase}] ledger register skipped for {candidate}: {e}")
-            return candidate
-        if result.get("status") != "COLLISION":
-            return candidate
         try:
             nums = [
                 int(m.group(1))
@@ -9304,7 +9971,7 @@ def _allocate_inventory_ledger_id(
             m = re.search(r"(\d+)$", candidate)
             n = int(m.group(1)) + 1 if m else 1
             candidate = f"INV-{n:03d}"
-    return candidate
+    raise RuntimeError("inventory ID ledger allocation collision budget exhausted")
 
 
 def _write_mechanical_inventory_from_chunks(scratchpad: Path) -> tuple[int, int]:
@@ -9403,6 +10070,16 @@ def _render_inventory_from_merged_entries(
             if local and local not in source_ids:
                 source_ids.append(local)
         source_text = ", ".join(source_ids) if source_ids else "SOURCE_UNVERIFIED"
+        source_actions = []
+        for raw_action in item.get("source_actions", []) or []:
+            # Only an exact bound triple can carry source-generation identity.
+            # Syntax-only (artifact, local-ID) pairs stay unauthenticated.
+            if not isinstance(raw_action, (tuple, list)) or len(raw_action) != 3:
+                continue
+            artifact, action_id, source_hash = map(str, raw_action)
+            token = f"{artifact}:{action_id}@{source_hash}"
+            if token not in source_actions:
+                source_actions.append(token)
         root = _strip_md(str(item.get("root_cause", ""))) or title
         desc = _strip_md(str(item.get("description", ""))) or root
         impact = _strip_md(str(item.get("impact", ""))) or "Impact requires verifier confirmation."
@@ -9421,29 +10098,15 @@ def _render_inventory_from_merged_entries(
             owning_artifact="findings_inventory.md",
             title=title,
         )
-        # v2.0.6 (P2.2): register the INV allocation in the ID ledger.
-        # Inventory consolidation is mechanical / driver-owned, so true
-        # collisions cannot happen here — but the registration makes
-        # the IDs visible to the consumer backstop gate (P2.5) and to
-        # downstream phases that allocate from the same namespace.
-        try:
-            from plamen_parsers import id_ledger_register
-            id_ledger_register(
-                scratchpad,
-                finding_id=inv_id,
-                owner_phase="inventory",
-                owner_attempt=1,
-                owning_artifact="findings_inventory.md",
-                title=title,
-            )
-        except Exception as e:
-            log.debug(f"[inventory] ledger register skipped for {inv_id}: {e}")
+        # `_allocate_inventory_ledger_id` returns only after REGISTERED/REUSED;
+        # an apparent ID whose ledger write failed is never rendered.
         lines.extend([
             f"### Finding [{inv_id}]: {title}",
             f"**Severity**: {sev}",
             f"**Location**: {loc}",
             f"**Preferred Tag**: {tag}",
             f"**Source IDs**: {source_text}",
+            *([f"**Source Actions**: {', '.join(source_actions)}"] if source_actions else []),
             f"**Verdict**: {verdict}",
             f"**Root Cause**: {root}",
             f"**Description**: {desc}",
@@ -9502,6 +10165,7 @@ def ensure_findings_inventory_floor(scratchpad: Path) -> tuple[int, int]:
 
     entries: list[dict[str, object]] = []
     n_sources = 0
+    selected_source_names: list[str] = []
 
     # (1) Structured inventory chunks — richest source, parse first.
     for p in sorted(scratchpad.glob("findings_inventory_chunk_*.md")):
@@ -9533,6 +10197,7 @@ def ensure_findings_inventory_floor(scratchpad: Path) -> tuple[int, int]:
     for pattern in feeder_globs:
         for p in sorted(scratchpad.glob(pattern)):
             n_sources += 1
+            selected_source_names.append(p.name)
             for blk in _parse_depth_finding_blocks(p):
                 # The recall floor is not an identity-resolution boundary.
                 # Parser debt/quarantine and content-less methodology rows stay
@@ -9567,6 +10232,7 @@ def ensure_findings_inventory_floor(scratchpad: Path) -> tuple[int, int]:
                     "impact": blk.get("impact", ""),
                     "local_id": src_id,
                     "source_ids": [src_id] if src_id else [],
+                    "source_actions": [(p.name, src_id)] if src_id else [],
                     **{
                         f: blk.get(f, "")
                         for f in _OPTIONAL_FINDING_METADATA_FIELDS
@@ -9574,6 +10240,11 @@ def ensure_findings_inventory_floor(scratchpad: Path) -> tuple[int, int]:
                     },
                 })
 
+    # Bind only against the explicitly selected feeder generation. In the
+    # live late-floor path these are isolated captured bytes, not rediscovery
+    # from a mutable project. Unknown/ambiguous claims remain visible debt.
+    from inventory_source_action_authority import bind_exact_source_actions
+    source_action_issues = bind_exact_source_actions(scratchpad, selected_source_names, entries)
     merged = _merge_inventory_entries(entries)
     if not merged:
         # Genuinely empty audit (no findings anywhere) OR no source artifacts.
@@ -9621,6 +10292,8 @@ def ensure_findings_inventory_floor(scratchpad: Path) -> tuple[int, int]:
         f"Parsed source findings: {len(entries)}",
         f"Reconstructed inventory findings: {n_rendered}",
         "",
+        *(["## Source-action binding debt", "", *[f"- {issue}" for issue in source_action_issues], ""]
+          if source_action_issues else []),
     ]
     (scratchpad / "inventory_floor_receipt.md").write_text(
         "\n".join(receipt), encoding="utf-8"
@@ -9637,9 +10310,13 @@ _NICHE_IDENTITY_DEBT_EXACT_BLOCK_MAX_BYTES = 64 * 1024
 _NICHE_IDENTITY_DEBT_SEMANTIC_FIELD_MAX_BYTES = 16 * 1024
 _NICHE_IDENTITY_DEBT_SIDECAR_MAX_BYTES = 8 * 1024 * 1024
 _NICHE_SOURCE_NAME_RE = re.compile(
+    r"(?!(?:niche_interface_parity_findings|"
+    r"niche_permissionless_setters_findings)\.md$)"
     r"niche_[A-Za-z0-9_.-]+_findings\.md"
 )
 _NICHE_CURRENT_INPUT_NAME_RE = re.compile(
+    r"(?!(?:niche_interface_parity_findings|"
+    r"niche_permissionless_setters_findings)\.md$)"
     r"(?:niche_[A-Za-z0-9_.-]+_findings\.md|findings_inventory\.md)"
 )
 _WINDOWS_REPARSE_POINT = 0x400
@@ -9729,7 +10406,7 @@ def _parse_niche_findings(
     *,
     _retained_capture: Any = None,
 ) -> list[dict[str, Any]]:
-    """Parse all niche_*_findings.md files into structured finding entries.
+    """Parse depth-owned niche files into structured finding entries.
 
     Each niche agent writes findings in the standard finding-output-format.md
     template (## Finding [NSC-N]: Title + **Severity** / **Location** / etc).
@@ -9761,6 +10438,7 @@ def _parse_niche_findings(
             general_actions = _parsers._parse_depth_finding_blocks(
                 niche_path,
                 _captured_bytes=raw_source,
+                consumer="canonical_identity",
             )
         except _FindingArtifactLimitError:
             raise
@@ -9770,8 +10448,17 @@ def _parse_niche_findings(
             ) from exc
         registered_producer = _registered_producer_for_artifact(
             niche_path.name,
-            consumer="pre_dedup_promotion",
+            consumer="canonical_identity",
         )
+        # IFACE/PSET are recon-owned, manifest-bound inputs to the canonical
+        # inventory transaction. The specialized depth niche publisher must
+        # not acquire a second write path for those actions. Unknown artifacts
+        # still enter the typed debt denominator below.
+        if (
+            registered_producer is not None
+            and registered_producer.owner_phase != "depth"
+        ):
+            continue
         source_sha256 = hashlib.sha256(raw_source).hexdigest()
         for general_action in general_actions:
             source_byte_start = int(
@@ -11512,13 +12199,13 @@ _INVENTORY_FINDING_HEADING_CONTENT_RE = re.compile(
 
 def _operational_inventory_finding_blocks(
     text: str,
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str, str]]:
     """Return real CommonMark inventory headings and their same-level blocks."""
 
     source = str(text or "")
     operational = operational_markdown_view(source)
     headings = mapped_headings(source)
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str]] = []
     for index, heading in enumerate(headings):
         match = _INVENTORY_FINDING_HEADING_CONTENT_RE.match(
             str(heading["content"]).strip()
@@ -11532,6 +12219,7 @@ def _operational_inventory_finding_blocks(
                 break
         out.append((
             match.group(1).upper(),
+            source[int(heading["start"]):end],
             operational[int(heading["start"]):end],
         ))
     return out
@@ -11561,6 +12249,7 @@ def _operational_inventory_finding_records(
         exact = source[start:end].rstrip() + "\n"
         out.append({
             "inventory_id": match.group(1).upper(),
+            "raw_block": source[start:end],
             "operational_block": operational[start:end],
             "inventory_block_sha256": hashlib.sha256(
                 exact.encode("utf-8", errors="strict")
@@ -11570,19 +12259,28 @@ def _operational_inventory_finding_records(
 
 
 def _operational_inventory_field(
-    block: str,
+    operational_block: str,
     labels: tuple[str, ...],
+    *,
+    raw_block: str | None = None,
 ) -> str:
     """Read one real, line-level bold field from an operational block."""
 
+    if raw_block is not None and len(raw_block) != len(operational_block):
+        return ""
     for label in labels:
         match = re.search(
             rf"(?im)^\s*(?:[-*]\s*)?\*\*{re.escape(label)}\*\*"
-            rf"\s*:\s*([^\r\n]+?)\s*$",
-            block,
+            rf"\s*:(?P<value>[^\r\n]*)$",
+            operational_block,
         )
         if match is not None:
-            return match.group(1).strip().strip("`")
+            value = (
+                raw_block[match.start("value"):match.end("value")]
+                if raw_block is not None
+                else match.group("value")
+            )
+            return value.strip().strip("`")
     return ""
 
 
@@ -11627,7 +12325,9 @@ def _validated_niche_delivery_records(
     occurrences: dict[str, list[dict[str, str]]] = {}
     for row in blocks:
         identity = _operational_inventory_field(
-            row["operational_block"], ("Source Action Identity",)
+            row["operational_block"],
+            ("Source Action Identity",),
+            raw_block=row["raw_block"],
         ).strip().upper()
         if re.fullmatch(r"NACT-[0-9A-F]{24}", identity):
             occurrences.setdefault(identity, []).append(row)
@@ -11646,25 +12346,32 @@ def _validated_niche_delivery_records(
             continue
         row = candidates[0]
         block = row["operational_block"]
+        raw_block = row["raw_block"]
         artifact = Path(_operational_inventory_field(
-            block, ("Primary Artifact", "Source Artifact")
+            block,
+            ("Primary Artifact", "Source Artifact"),
+            raw_block=raw_block,
         )).name
         source_ids = _operational_inventory_field(
-            block, ("Source IDs", "Source ID")
+            block,
+            ("Source IDs", "Source ID"),
+            raw_block=raw_block,
         )
         local_ids = {
             token.upper()
             for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]*-[0-9]+", source_ids)
         }
         source_hash = _operational_inventory_field(
-            block, ("Source Artifact Hash",)
+            block, ("Source Artifact Hash",), raw_block=raw_block
         ).lower()
         if source_hash.startswith("sha256:"):
             source_hash = source_hash[7:]
-        range_text = _operational_inventory_field(block, ("Source Byte Range",))
+        range_text = _operational_inventory_field(
+            block, ("Source Byte Range",), raw_block=raw_block
+        )
         range_match = re.fullmatch(r"([0-9]+)-([0-9]+)", range_text)
         block_hash = _operational_inventory_field(
-            block, ("Source Block SHA256",)
+            block, ("Source Block SHA256",), raw_block=raw_block
         ).lower()
         expected_local = str(
             action.get("normalized_local_id") or action.get("source_id") or ""
@@ -11713,17 +12420,19 @@ def _inventory_niche_action_bindings(text: str) -> list[dict[str, str]]:
     """Recover exact niche action keys from structurally typed inventory rows."""
 
     bindings: list[dict[str, str]] = []
-    for inventory_id, block in _operational_inventory_finding_blocks(text):
+    for inventory_id, raw_block, block in _operational_inventory_finding_blocks(text):
         artifact = Path(
             _operational_inventory_field(
-                block, ("Primary Artifact", "Source Artifact")
+                block,
+                ("Primary Artifact", "Source Artifact"),
+                raw_block=raw_block,
             )
         ).name
         action_identity = _operational_inventory_field(
-            block, ("Source Action Identity",)
+            block, ("Source Action Identity",), raw_block=raw_block
         ).strip().upper()
         source_ids = _operational_inventory_field(
-            block, ("Source IDs", "Source ID")
+            block, ("Source IDs", "Source ID"), raw_block=raw_block
         )
         if (
             not artifact.startswith("niche_")
@@ -11732,7 +12441,7 @@ def _inventory_niche_action_bindings(text: str) -> list[dict[str, str]]:
             continue
         producer = _registered_producer_for_artifact(
             artifact,
-            consumer="pre_dedup_promotion",
+            consumer="canonical_identity",
         )
         source_pattern = (
             _registered_producer_read_id_pattern(producer)
@@ -12035,6 +12744,7 @@ def promote_niche_to_inventory(
     ecosystem: str = "evm",
     backend: str = "claude",
     _retained_capture: Any = None,
+    _driver_committed_inventory_ids: Optional[Iterable[str]] = None,
 ) -> tuple[int, int]:
     """Promote niche agent findings into findings_inventory.md as INV-* entries.
 
@@ -12071,6 +12781,52 @@ def promote_niche_to_inventory(
         run_id=current_run,
         dimensions=dimensions,
     )
+    driver_successor_adoption = _driver_committed_inventory_ids is not None
+    driver_committed_inventory_ids = {
+        str(value).strip().upper()
+        for value in (_driver_committed_inventory_ids or ())
+        if re.fullmatch(r"INV-[0-9]+", str(value).strip(), re.IGNORECASE)
+    }
+    if driver_successor_adoption:
+        expected_owner = canonical_work_unit_key(
+            dimensions["pipeline"],
+            dimensions["mode"],
+            dimensions["ecosystem"],
+            dimensions["backend"],
+            "inventory",
+            "additive_depth_finalize",
+        )
+        try:
+            inventory_raw = read_bounded_regular_bytes(
+                root / "findings_inventory.md",
+                _NICHE_FINDING_ARTIFACT_MAX_BYTES,
+                require_single_link=True,
+            )
+            ledger = read_artifact_ledger(root)
+            binding = ledger.get("artifact_bindings", {}).get(
+                "scratchpad:findings_inventory.md"
+            )
+            unit = ledger.get("work_units", {}).get(expected_owner)
+        except (ArtifactLedgerError, OSError, ValueError) as exc:
+            raise RuntimeError(
+                "NICHE_DRIVER_SUCCESSOR_AUTHORITY_UNAVAILABLE"
+            ) from exc
+        if not (
+            isinstance(binding, Mapping)
+            and binding.get("owner_key") == expected_owner
+            and binding.get("writer") == "DRIVER"
+            and binding.get("run_id") == current_run
+            and binding.get("status") == "ACTIVE"
+            and binding.get("sha256")
+            == hashlib.sha256(inventory_raw).hexdigest()
+            and binding.get("size") == len(inventory_raw)
+            and isinstance(unit, Mapping)
+            and unit.get("semantic_status") == "ACTIVE"
+            and unit.get("execution_state") == "OUTPUT_COMMITTED"
+        ):
+            raise RuntimeError(
+                "NICHE_DRIVER_SUCCESSOR_AUTHORITY_MISMATCH"
+            )
     if _retained_capture is None:
         try:
             # Reject a stale/cross-run chain before mutating inventory or any
@@ -12098,6 +12854,11 @@ def promote_niche_to_inventory(
                     ecosystem=dimensions["ecosystem"],
                     backend=dimensions["backend"],
                     _retained_capture=retained,
+                    _driver_committed_inventory_ids=(
+                        driver_committed_inventory_ids
+                        if driver_successor_adoption
+                        else None
+                    ),
                 )
         except (
             BoundedNamespaceCaptureError,
@@ -12255,6 +13016,17 @@ def promote_niche_to_inventory(
             else ()
         ),
     )
+    if driver_successor_adoption:
+        # The canonical blocks were published by the already-committed
+        # inventory/additive_depth_finalize successor.  Adopt only exact
+        # action-bound rows named by that immutable successor; Markdown shape
+        # alone still cannot create delivery authority.
+        prior_delivery_records = _validated_niche_delivery_records(
+            inv_text,
+            parsed_all,
+            authority_records=prior_delivery_records,
+            newly_written_inventory_ids=driver_committed_inventory_ids,
+        )
     structural_referents = _inventory_niche_action_referents(
         prior_delivery_records
     )
@@ -12285,6 +13057,11 @@ def promote_niche_to_inventory(
         entry for entry in parsed
         if entry["source_action_identity"] not in already_promoted
     ]
+    if driver_successor_adoption:
+        # The committed successor is the complete publication denominator.
+        # Any clean action it did not deliver remains explicit lifecycle debt;
+        # this reconciliation pass has no second inventory write authority.
+        new_entries = []
     if not new_entries:
         # Rebuild the human-readable projection from the authenticated typed
         # delivery records. The receipt itself never enters this decision.
@@ -12523,7 +13300,7 @@ def promote_niche_to_inventory(
 # letter + running number), or BLIND-1. NOTE: the niche regex requires
 # digits-immediately-after-dash and would MISS the letter+digit suffix form.
 _BLIND_SPOT_HEADING_RE = re.compile(
-    r"^#{2,4}\s*Finding\s*\[\s*(?P<id>BLIND-[A-Z]?\d+)\s*\]\s*:\s*(?P<title>.+?)\s*$",
+    r"^#{2,4}\s*Finding\s*\[\s*(?P<id>BLIND-(?:[A-Z]-?)?\d+)\s*\]\s*:\s*(?P<title>.+?)\s*$",
     re.MULTILINE,
 )
 _BLIND_SPOT_REQUIRED_FIELDS = (
@@ -12542,9 +13319,11 @@ def _parse_blind_spot_findings(scratchpad: Path) -> list[dict[str, str]]:
     entries: list[dict[str, str]] = []
     for p in sorted(scratchpad.glob("blind_spot_*_findings.md")):
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
+            raw = p.read_bytes()
+            text = raw.decode("utf-8", errors="replace")
         except Exception:
             continue
+        source_artifact_hash = "sha256:" + hashlib.sha256(raw).hexdigest()
         matches = list(_BLIND_SPOT_HEADING_RE.finditer(text))
         for i, m in enumerate(matches):
             start = m.start()
@@ -12571,6 +13350,7 @@ def _parse_blind_spot_findings(scratchpad: Path) -> list[dict[str, str]]:
                 re.IGNORECASE | re.DOTALL)
             entries.append({
                 "source_file": p.name,
+                "source_artifact_hash": source_artifact_hash,
                 "source_id": fid,
                 "title": title,
                 "severity": (sev_match.group(1).strip() if sev_match else "Medium"),
@@ -12584,6 +13364,75 @@ def _parse_blind_spot_findings(scratchpad: Path) -> list[dict[str, str]]:
     return entries
 
 
+def _bind_blind_spot_inventory_provenance(
+    inventory_text: str,
+    entries: list[dict[str, str]],
+) -> tuple[str, int]:
+    """Bind an unambiguous inventory Source ID to its exact producer bytes.
+
+    Older blind-spot recovery rows carried a bare ``Source IDs`` mention but
+    omitted ``Primary Artifact``.  That was enough to suppress a second
+    promotion, but deliberately cannot satisfy registered delivery because
+    local IDs may collide across producer artifacts.  Add the missing binding
+    only when all referenced BLIND actions in a finding block resolve to one
+    exact current source artifact; ambiguous or conflicting rows remain
+    unmodified and are recovered as separate exact actions below.
+    """
+
+    by_id: dict[str, list[dict[str, str]]] = {}
+    for entry in entries:
+        by_id.setdefault(entry["source_id"].upper(), []).append(entry)
+    headings = list(FINDING_BLOCK_HEADING_RE.finditer(inventory_text or ""))
+    replacements: list[tuple[int, int, str]] = []
+    for index, heading in enumerate(headings):
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(inventory_text)
+        block = inventory_text[heading.start():end]
+        if re.search(
+            r"(?im)^\s*(?:\*\*)?(?:Primary Artifact|Source Artifact|Artifact)(?:\*\*)?\s*:",
+            block,
+        ):
+            continue
+        source_matches = list(re.finditer(
+            r"(?im)^\s*(?:\*\*)?Source\s+IDs?(?:\*\*)?\s*:\s*(.+?)\s*$",
+            block,
+        ))
+        if not source_matches:
+            continue
+        # Only a leading Source-ID token asserts structural ownership.  Free
+        # prose in the same field can mention another finding (Run18's
+        # INVARIANT rows said ``... @ BLIND-A-1``); treating that mention as a
+        # blind producer referent would silently suppress the real action.
+        source_ids = {
+            match.group(1).upper()
+            for source_match in source_matches
+            if (
+                match := re.match(
+                    r"\s*[`\[]?(BLIND-(?:[A-Z]-?)?\d+)\b",
+                    source_match.group(1),
+                    re.IGNORECASE,
+                )
+            )
+        }
+        candidates = [
+            candidate
+            for source_id in sorted(source_ids)
+            for candidate in by_id.get(source_id, [])
+        ]
+        artifacts = {candidate["source_file"] for candidate in candidates}
+        hashes = {candidate["source_artifact_hash"] for candidate in candidates}
+        if not candidates or len(artifacts) != 1 or len(hashes) != 1:
+            continue
+        insertion = (
+            f"\n**Primary Artifact**: {next(iter(artifacts))}"
+            f"\n**Source Artifact Hash**: {next(iter(hashes))}"
+        )
+        offset = heading.start() + source_matches[0].end()
+        replacements.append((offset, offset, insertion))
+    for start, end, replacement in reversed(replacements):
+        inventory_text = inventory_text[:start] + replacement + inventory_text[end:]
+    return inventory_text, len(replacements)
+
+
 def promote_blind_spot_to_inventory(scratchpad: Path) -> tuple[int, int]:
     """Recover LEAKED blind-spot scanner findings into findings_inventory.md.
 
@@ -12593,10 +13442,11 @@ def promote_blind_spot_to_inventory(scratchpad: Path) -> tuple[int, int]:
     siblings were promoted (e.g. BLIND-B3 scored 0.47, siblings B1/B2 promoted,
     B3 vanished) — so it never reached verify/report. This is a recall leak.
 
-    This promotes ONLY the leaked ones: any BLIND-* id that is ABSENT from
-    findings_inventory.md is appended as an INV-* entry (present ones are left
-    untouched — no duplication). Idempotent via a receipt. Recall-safe:
-    append-only, never drops, never overwrites a present finding.
+    This promotes ONLY leaked exact source actions.  A bare BLIND-* mention is
+    rebound to its unique producer artifact when possible; otherwise it cannot
+    suppress an exact promotion.  Idempotency is derived from structural
+    ``Primary Artifact`` + ``Source IDs`` inventory provenance, not from the
+    mutable receipt.
 
     Call site: post-depth, alongside `promote_niche_to_inventory`.
     Returns (parsed_count, recovered_count).
@@ -12614,28 +13464,28 @@ def promote_blind_spot_to_inventory(scratchpad: Path) -> tuple[int, int]:
         return 0, 0
 
     receipt_path = scratchpad / "blind_spot_promotion_receipt.md"
-    structural_sources = set(_inventory_structural_source_referents(inv_text))
-    already_promoted: set[str] = set()
-    if receipt_path.exists():
-        try:
-            for line in receipt_path.read_text(encoding="utf-8", errors="replace").splitlines():
-                mm = re.search(r"\b(BLIND-[A-Z]?\d+)\s*->\s*INV-\d+", line)
-                if mm and mm.group(1).upper() in structural_sources:
-                    already_promoted.add(mm.group(1))
-        except Exception:
-            pass
+    inv_text, rebound = _bind_blind_spot_inventory_provenance(inv_text, parsed)
+    structural_actions = _inventory_structural_source_action_referents(inv_text)
+    already_promoted = {
+        entry["source_id"].upper()
+        for entry in parsed
+        if (entry["source_file"], entry["source_id"].upper())
+        in structural_actions
+    }
 
-    def _already_in_inventory(bid: str) -> bool:
-        return bid.upper() in structural_sources
-
-    # LEAKED = a parsed BLIND id that is NOT already accounted in the inventory
-    # (as a Source ID / heading) AND not already recovered on a prior attempt.
+    # LEAKED = a parsed BLIND action that has no exact artifact+ID inventory
+    # referent after safe provenance repair.
     missing = [
         e for e in parsed
-        if not _already_in_inventory(e["source_id"])
-        and e["source_id"] not in already_promoted
+        if (e["source_file"], e["source_id"].upper()) not in structural_actions
     ]
     if not missing:
+        if rebound:
+            inventory_path.write_text(inv_text, encoding="utf-8")
+            try:
+                _write_finding_records_from_inventory(scratchpad)
+            except Exception:
+                pass
         return len(parsed), 0
 
     max_inv = 0
@@ -12670,6 +13520,8 @@ def promote_blind_spot_to_inventory(scratchpad: Path) -> tuple[int, int]:
             f"**Source IDs**: {entry['source_id']} "
             f"(blind-spot-recovered; LEAKED from {entry['source_file']} — "
             "scored but dropped by the inventory merge)",
+            f"**Primary Artifact**: {entry['source_file']}",
+            f"**Source Artifact Hash**: {entry['source_artifact_hash']}",
             "**Verdict**: NEEDS_VERIFICATION",
             f"**Root Cause**: {title}",
             f"**Description**: {entry['description'] or title}",
@@ -13425,6 +14277,19 @@ def _build_attention_repair_items(
         scratchpad,
         cov.get("spec_support_indexed", set()) if isinstance(cov, dict) else set(),
     )
+    indexed_authority_debt = list(cov.get("indexed_authority_debt", []))
+    for debt_index, issue in enumerate(indexed_authority_debt, 1):
+        add(
+            "source-path-authority-debt",
+            f"recon-production-source-path-authority-{debt_index}",
+            (
+                "The DRIVER-bound recon production source-path roster is "
+                f"unavailable or invalid: {issue}. Retain this as explicit "
+                "coverage debt; SCIP/narrative aliases cannot close it."
+            ),
+            "recon_prepass_publication_receipt.json",
+            str(issue),
+        )
     uncited = list(cov.get("uncited", []))
     if uncited:
         ranked = sorted(
@@ -13492,13 +14357,18 @@ def _build_attention_repair_items(
                     "exact scope citation coverage did not touch this "
                     "authorized file"
                     if exact_scope_authority
-                    else "strict SCIP citation coverage did not touch this "
-                    "security-relevant file"
+                    else "validated production source citation coverage did "
+                    "not touch this security-relevant file"
                 ),
                 (
                     Path(scope_file).name
                     if exact_scope_authority and scope_file
-                    else "scip/repo_map.md"
+                    else (
+                        "recon_prepass_publication_receipt.json"
+                        if cov.get("indexed_authority_source")
+                        == "recon-source-path-authority"
+                        else "scip/repo_map.md"
+                    )
                 ),
             )
 
@@ -13526,19 +14396,30 @@ def _build_attention_repair_items(
         if exact_scope_authority
         and row.get("kind") == "uncited-security-file"
     ]
+    authority_debt_items = [
+        row for row in items
+        if row.get("kind") == "source-path-authority-debt"
+    ]
     optional_items = [
         row for row in items
         if row.get("kind") != "security-obligation"
         and row not in exact_scope_items
+        and row not in authority_debt_items
     ]
     optional_budget = max(
         0,
         _ATTENTION_REPAIR_MAX_ITEMS
         - len(security_items)
-        - len(exact_scope_items),
+        - len(exact_scope_items)
+        - len(authority_debt_items),
     )
     retained_optional = optional_items[:optional_budget]
-    retained_items = security_items + exact_scope_items + retained_optional
+    retained_items = (
+        security_items
+        + exact_scope_items
+        + authority_debt_items
+        + retained_optional
+    )
     if len(retained_optional) < len(optional_items):
         cap_rows.append(shortfall(
             producer=producer,
@@ -13589,9 +14470,12 @@ def _write_attention_repair_queue(scratchpad: Path, items: list[dict[str, str]])
         "MANDATORY RECEIPT CONTRACT: attention_repair_summary.md must contain",
         "one table row per queue row. The Queue #, Kind, and Target cells must",
         "copy this queue exactly. For path targets, copy the full relative path",
-        "instead of a basename or folder summary. The Evidence cell must cite",
-        "the same target path again with file:line evidence, or mark the row",
+        "instead of a basename or folder summary. The Evidence cell must copy",
+        "the same portable target verbatim as target:Lline; aliases do not",
+        "count as receipts. Mark the row",
         "NEEDS_HUMAN if the source file is unavailable.",
+        "A source-path-authority-debt row must remain NEEDS_HUMAN; model prose",
+        "cannot recreate or close missing DRIVER denominator authority.",
         "",
         "| # | Kind | Target | Reason | Source | Evidence hint |",
         "|---|------|--------|--------|--------|---------------|",
@@ -15517,6 +16401,7 @@ def _write_mechanical_report_index(
     *,
     prepare_body: bool = True,
     materialize_facets: bool = True,
+    emit_report_records: bool = True,
 ) -> int:
     """Build a recall-safe report index from verifier artifacts.
 
@@ -15817,18 +16702,19 @@ def _write_mechanical_report_index(
         )
     lines.append("")
     (scratchpad / "report_index.md").write_text("\n".join(lines), encoding="utf-8")
-    (scratchpad / "report_records.json").write_text(
-        json.dumps(
-            {
-                "active": active,
-                "excluded": [],
-                "negative_disposition_proposals": excluded,
-                "consolidation_map": consolidation_map,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    if emit_report_records:
+        (scratchpad / "report_records.json").write_text(
+            json.dumps(
+                {
+                    "active": active,
+                    "excluded": [],
+                    "negative_disposition_proposals": excluded,
+                    "consolidation_map": consolidation_map,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
     coverage_lines = [
         "# Report Coverage",
         "",
@@ -17224,7 +18110,26 @@ def _write_mechanical_report_tier(scratchpad: Path, phase_name: str) -> int:
 
 
 def estimate_rate_limit_wait_seconds(stdio_log: Path) -> Optional[int]:
-    """Best-effort parse of a provider-advised retry/reset window."""
+    """Best-effort parse of a provider-advised retry/reset window (seconds)."""
+    details = estimate_rate_limit_wait_details(stdio_log)
+    return None if details is None else details[0]
+
+
+def estimate_rate_limit_wait_details(
+    stdio_log: Path,
+) -> Optional[tuple[int, str]]:
+    """Parse a provider-advised retry/reset window with its evidence kind.
+
+    Returns ``(seconds, kind)`` where ``kind`` is one of:
+
+    - ``"provider_reset_timestamp"``: an authoritative Unix ``resetsAt`` from a
+      framed provider control-plane record (Claude ``quotaLimits`` or the
+      Claude Code ``rate_limit_event`` row).  This is a bounded window the
+      caller may wait out unattended (DODO run47 was paused for an operator
+      resume on a 5-hour window that carried its exact reset time).
+    - ``"relative"``: a retry-after style delta.
+    - ``"wall_clock"``: a natural-language absolute time resolved locally.
+    """
     if not stdio_log.exists():
         return None
     try:
@@ -17335,11 +18240,45 @@ def estimate_rate_limit_wait_seconds(stdio_log: Path) -> Optional[int]:
             record_type == "error"
             and record_index in codex_framed_error_indices
         )
-        if claude_framed or codex_framed:
+        # Claude Code >= 2.1.27x emits the limit as its own framed row:
+        #   {"type":"rate_limit_event","rate_limit_info":{"status":"rejected",
+        #    "resetsAt":1789893000,"rateLimitType":"five_hour",...},
+        #    "uuid":"...","session_id":"..."}
+        # and the assistant error row that follows carries NO quotaLimits, so
+        # the quotaLimits framing above never matched and the whole window was
+        # treated as unparsable (DODO run47, 2026-09-20 10:44).
+        rate_limit_info = envelope.get("rate_limit_info")
+        claude_event_framed = (
+            record_type == "rate_limit_event"
+            and isinstance(rate_limit_info, dict)
+            and str(rate_limit_info.get("status", "")).strip().lower() == "rejected"
+            and bool(envelope.get("uuid"))
+            and bool(envelope.get("session_id") or envelope.get("sessionId"))
+        )
+        if claude_framed or codex_framed or claude_event_framed:
             relative_lines.append((raw_line, True))
             absolute_lines.append(raw_line)
             absolute_envelopes.append(envelope)
 
+    # The Codex CLI does not emit stream-json here: an exhausted usage cap
+    # arrives as one plain stderr line, e.g.
+    #   ERROR: You've hit your usage limit. Visit
+    #   https://chatgpt.com/codex/settings/usage to purchase more credits or
+    #   try again at Sep 21st, 2026 12:15 AM.
+    # Every depth log from the capped DODO run contained this line and ZERO
+    # typed records, so the framed-only admission below left `absolute_lines`
+    # empty, this function returned None, and the caller's far-future-reset
+    # resume guard could never fire -- a five-day cap was spin-waited as 300s.
+    # Admit the plain-text form for ABSOLUTE reset parsing only, anchored on
+    # the provider's own control-plane URL plus the existing rate-limit
+    # predicate.  It is deliberately NOT added to `relative_lines`: an
+    # unframed relative delta stays subject to the raw ceiling above.
+    # Asymmetry note: a false positive only pauses the run for an explicit
+    # operator resume, while the false negative destroys the run outright.
+    codex_control_plane_rx = re.compile(
+        r"(?i)https?://(?:[a-z0-9.-]+\.)?(?:chatgpt|openai)\.com/"
+        r"[^\s]*\b(?:settings/usage|usage|billing|credits)\b"
+    )
     for raw_line in raw_records:
         if re.search(
             r"(?i)^\s*(?:HTTP(?:\s+status)?|API(?:\s+error)?|Error)"
@@ -17348,6 +18287,10 @@ def estimate_rate_limit_wait_seconds(stdio_log: Path) -> Optional[int]:
             raw_line,
         ):
             relative_lines.append((raw_line, False))
+        elif _message_is_rate_limit(raw_line) and codex_control_plane_rx.search(
+            raw_line
+        ):
+            absolute_lines.append(raw_line)
 
     if not relative_lines and not absolute_lines:
         return None
@@ -17405,7 +18348,7 @@ def estimate_rate_limit_wait_seconds(stdio_log: Path) -> Optional[int]:
                         and candidate > _RAW_RELATIVE_WAIT_CEILING_S
                     ):
                         continue
-                    return candidate
+                    return candidate, "relative"
                 except Exception:
                     pass
 
@@ -17421,6 +18364,10 @@ def estimate_rate_limit_wait_seconds(stdio_log: Path) -> Optional[int]:
         quota = envelope.get("quotaLimits")
         if not isinstance(quota, dict):
             quota = envelope.get("quota_limits")
+        if not isinstance(quota, dict) and (
+            str(envelope.get("type", "")).strip().lower() == "rate_limit_event"
+        ):
+            quota = envelope.get("rate_limit_info")
         if not isinstance(quota, dict):
             continue
         reset_raw = quota.get("resetsAt", quota.get("resets_at"))
@@ -17433,7 +18380,7 @@ def estimate_rate_limit_wait_seconds(stdio_log: Path) -> Optional[int]:
             target_utc = datetime.fromtimestamp(reset_epoch, timezone.utc)
             delta = int((target_utc - now_utc).total_seconds())
             if delta > 0:
-                return delta
+                return delta, "provider_reset_timestamp"
         except Exception:
             continue
 
@@ -17472,7 +18419,7 @@ def estimate_rate_limit_wait_seconds(stdio_log: Path) -> Optional[int]:
                     mon, day, hour, minute, year=year
                 )
                 if delta is not None:
-                    return delta
+                    return delta, "wall_clock"
         except Exception:
             pass
 
@@ -17501,7 +18448,7 @@ def estimate_rate_limit_wait_seconds(stdio_log: Path) -> Optional[int]:
                     hour += 12
                 delta = _local_wall_clock_delta(mon, day, hour, minute)
                 if delta is not None:
-                    return delta
+                    return delta, "wall_clock"
         except Exception:
             pass
 
@@ -17531,11 +18478,12 @@ def estimate_rate_limit_wait_seconds(stdio_log: Path) -> Optional[int]:
             ))
             if today_epoch <= time.time():
                 tomorrow = datetime.fromtimestamp(time.time()) + timedelta(days=1)
-                return _local_wall_clock_delta(
+                tomorrow_delta = _local_wall_clock_delta(
                     tomorrow.month, tomorrow.day, hour, minute,
                     year=tomorrow.year,
                 )
-            return int(today_epoch - time.time())
+                return None if tomorrow_delta is None else (tomorrow_delta, "wall_clock")
+            return int(today_epoch - time.time()), "wall_clock"
         except Exception:
             return None
 

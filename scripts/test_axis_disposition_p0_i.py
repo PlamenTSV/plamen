@@ -192,6 +192,28 @@ def test_all_evm_inputs_receive_one_exact_current_disposition(tmp_path: Path) ->
     }
 
 
+@pytest.mark.parametrize("separator", ("|---|---|---|", ""))
+def test_separator_format_drift_cannot_erase_exact_axis_dispositions(
+    tmp_path: Path,
+    separator: str,
+) -> None:
+    project, scratchpad = _seed_project(tmp_path)
+    _write_matrix(
+        scratchpad,
+        [_gap("settle", "contracts/Unit.sol:L2", "boundary", lang="solidity")],
+    )
+    worklist = _compile(scratchpad)
+    output = _coverage(
+        [("settle", "boundary", "CLEAR", "contracts/Unit.sol:L3 guard")]
+    ).replace("|---|---|---|---|", separator)
+
+    receipt = _reconcile(scratchpad, project, worklist, output)
+
+    assert receipt["status"] == "CLEAN"
+    assert receipt["unresolved_work_item_ids"] == []
+    assert receipt["dispositions"][0]["resolution_kind"] == "IN_SCOPE_SOURCE_LOCUS"
+
+
 def test_non_evm_generic_type_shape_identity_is_stable_and_closes(tmp_path: Path) -> None:
     project, scratchpad = _seed_project(tmp_path, non_evm=True)
     gap = _gap(

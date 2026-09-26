@@ -124,6 +124,12 @@ A PASS on an invariant whose negative case is "UNREACHABLE" is mechanical-eviden
 
 Write a Foundry test file to `{PROJECT_ROOT}/test/invariant/InvariantFuzz.t.sol`:
 
+When an upgradeable proxy is cast to an implementation contract with a
+payable fallback or receive function, use an explicitly payable intermediate
+address: `TargetGateway(payable(address(proxy)))`. This changes no address
+bits or assertion semantics and avoids Solidity's non-payable-address cast
+error. Compile the generated harness before claiming campaign coverage.
+
 ```solidity
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.0;
@@ -174,6 +180,46 @@ contract InvariantFuzz is Test {
     // }
 }
 ```
+
+### Solidity declaration namespace safety (MANDATORY)
+
+The supported forge-std `Test` base already inherits `StdInvariant`. The final
+harness MUST therefore use exactly `contract InvariantFuzz is Test` as shown
+above. Do **not** import `StdInvariant` directly and do **not** declare
+`is Test, StdInvariant`; that duplicate base makes Solidity linearization
+impossible. If a copied forge-std version differs, inspect its `Test.sol` in the
+isolated workspace and choose one non-duplicative inheritance path while
+retaining `targetContract`/`targetSelector` support.
+
+Forge-std bases also bring transitive declarations into the harness's inherited
+namespace. An explicit named import does **not** guarantee that an unqualified
+target type resolves to the target declaration. Before writing the harness:
+
+- Import every target-defined file-scope struct, enum, error, library, or
+  contract whose name is generic with an explicit project-local alias, and use
+  only that alias in the harness. For example:
+  `import {Account as TargetAccount, AccountEncoder as TargetAccountEncoder} from "...";`
+- Never use an unaliased target identifier such as `Account`, `User`, `Vm`,
+  `Context`, `Token`, `Handler`, or `StdStorage` when forge-std or an inherited
+  base declares the same identifier. Prefix aliases with `Target` (or a stable
+  protocol-specific prefix) and prefix helper contracts with `Plamen`.
+- Check all imported identifiers against declarations inherited through the
+  selected forge-std base. Resolve every collision by aliasing the target
+  import; do not change the target source and do not rely on import order.
+- A type mismatch mentioning a forge-std-qualified declaration (for example
+  `StdCheatsSafe.Account`) is a harness namespace failure, not a protocol
+  finding. Correct the alias before classifying or executing the campaign.
+
+This rule is semantic-preserving build hygiene. It must not remove an
+invariant, handler, assertion, negative case, or target call merely to make the
+harness compile.
+
+When building packed `bytes` values, keep every `bytes.concat` argument
+statically byte-typed. In particular, Solidity can infer a conditional between
+hex literals such as `writable ? hex"01" : hex"00"` as `string memory`, which
+`bytes.concat` rejects. Use `bytes1(uint8(writable ? 1 : 0))` or an equivalent
+explicit byte-typed expression. This is a compiler-type repair only; preserve
+the same encoded flag values and all assertions.
 
 ### External-dependency mock tier (setUp deployment escalation)
 

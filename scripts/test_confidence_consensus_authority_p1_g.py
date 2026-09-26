@@ -48,8 +48,7 @@ def _worker_entry(
     entry["dispatch_contract_sha256"] = A.worker_dispatch_contract_sha256(
         "depth", entry
     )
-    stem = Path(output).stem
-    (sp / f"_prompt_depth_worker_{stem}.attempt1.md").write_text(
+    (sp / f"_prompt_depth_worker_{worker}.attempt1.md").write_text(
         prompt_text, encoding="utf-8"
     )
     return entry
@@ -276,16 +275,24 @@ def test_same_worker_restatement_is_correlated_and_does_not_add_consensus(tmp_pa
             },
             {
                 "worker": "depth-state",
-                "output": "depth_state_trace_retry_findings.md",
+                "output": "depth_edge_case_findings.md",
                 "finding_id": "DST-2",
                 "source_ids": "INV-007",
-                "prompt": "same invocation lineage restatement",
+                # A canonical worker has one immutable prompt snapshot per
+                # attempt.  Reusing that exact prompt across two registered
+                # artifacts models a correlated restatement without replacing
+                # the first artifact's prompt authority.
+                "prompt": "same invocation lineage",
             },
         ],
     )
 
     payload = C.build_confidence_consensus_authority(tmp_path)
 
+    assert payload["observation_count"] == 2
+    assert {
+        row["authority_status"] for row in payload["observations"]
+    } == {"CURRENT"}
     assert set(_scores(payload).values()) == {0.0}
     assert all(row["independent_observer_count"] == 1 for row in payload["scores"])
 
@@ -453,7 +460,7 @@ def test_stale_or_unbound_observer_cannot_supply_corroboration(
         ],
     )
     if tamper == "prompt":
-        (tmp_path / "_prompt_depth_worker_depth_edge_case_findings.attempt1.md").write_text(
+        (tmp_path / "_prompt_depth_worker_depth-edge.attempt1.md").write_text(
             "tampered after dispatch", encoding="utf-8"
         )
     elif tamper == "dispatch":
@@ -665,6 +672,60 @@ def test_driver_binds_consensus_inputs_outputs_and_resume_detects_drift(
     )
     assert issues
     assert any("stale" in issue.lower() or "drift" in issue.lower() for issue in issues)
+
+
+def test_final_consensus_seal_replaces_provisional_bytes_after_depth_repair(
+    tmp_path: Path,
+) -> None:
+    run_id = "22345678-1234-4234-8234-123456789abc"
+    project = tmp_path / "project"
+    sp = project / ".scratchpad"
+    sp.mkdir(parents=True)
+    _materialize(
+        sp,
+        [{
+            "worker": "depth-state",
+            "output": "depth_state_trace_findings.md",
+            "finding_id": "DST-1",
+        }],
+    )
+    config = {
+        "pipeline": "sc",
+        "mode": "thorough",
+        "language": "evm",
+        "cli_backend": "claude",
+        "project_root": str(project),
+        "_run_id": run_id,
+    }
+    Checkpoint(run_id=run_id).save(sp)
+    phase = next(item for item in SC_PHASES if item.name == "depth")
+
+    D._synthesize_depth_lifecycle_artifacts(
+        sp,
+        "sc",
+        mode="thorough",
+        config=config,
+        phase=phase,
+    )
+    provisional = (sp / "confidence_consensus_authority.json").read_bytes()
+    dispatch = sp / "skill_dispatch.json"
+    dispatch.write_bytes(dispatch.read_bytes() + b"\n")
+
+    assert D._write_and_record_confidence_consensus_phase_io(
+        scratchpad=sp,
+        config=config,
+        phase=phase,
+    ) == []
+    assert (sp / "confidence_consensus_authority.json").read_bytes() != provisional
+    assert D._validate_confidence_consensus_phase_io(
+        scratchpad=sp,
+        project_root=project,
+        mode="thorough",
+        language="evm",
+        pipeline="sc",
+        backend="claude",
+        timeout_s=phase.base_timeout_s,
+    ) == []
 
 
 def test_methodology_never_directs_model_to_write_driver_confidence_output():

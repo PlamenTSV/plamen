@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import hashlib
 import inspect
 import ipaddress
@@ -20,9 +21,15 @@ from pathlib import Path
 import re
 import sys
 import time
+import traceback
 import unicodedata
 from typing import Any, Iterable, Mapping
 from urllib.parse import SplitResult, urlsplit, urlunsplit
+
+from pty_exec import (
+    CLAUDE_SETTINGS_ENABLED_PLUGINS,
+    settings_enabled_plugins_grant_nothing,
+)
 
 
 POLICY_SCHEMA = "plamen.claude_phase_tool_policy.v1"
@@ -40,7 +47,31 @@ DEFAULT_MAX_WEB_SOURCE_URLS = 100
 DEPENDENCY_SEARCH_BUDGET = 1
 DEPENDENCY_FETCH_BUDGET = 2
 MAX_PROVIDER_SEARCHES_PER_TOOL_CALL = 3
-PINNED_CLAUDE_WEB_HOOK_VERSION = "2.1.252"
+# Historical bounded-web hook grammar.  Current POSIX backend admission is
+# install-generation/conformance bound and does not enter this compatibility
+# lane; a future dynamic web lane must define and authenticate its own hook
+# behavior contract rather than inheriting this release fixture.
+_LEGACY_CLAUDE_WEB_HOOK_VERSION = "2.1.252"
+
+# The reviewed launch modes for the bounded-web lane.
+#
+# This was a single hardcoded "default" and it silently disabled ALL bounded web
+# research: the Claude CLI reports `permission_mode: "dontAsk"` for this lane
+# from 2.1.273, the hook required byte-equality with "default", and every
+# WebSearch died as `PLAMEN_TOOL_POLICY_DENY:ClaudePhaseToolPolicyError` before
+# the evaluator ever ran. No web receipt of ANY kind -- not even a denial -- was
+# written across DODO runs 35, 36 and 37, and `dependency parity: researched=0
+# unresolved=25` was read as worker failure for months.
+#
+# The restricted-FILESYSTEM lane in `claude_stream_json_evidence` already
+# accepted {"default", "dontAsk"}; only the web lane was missed. So this is the
+# completion of an existing reviewed decision, not a new relaxation.
+#
+# The security property is unchanged and still enforced: the worker must run in
+# a REVIEWED mode. `bypassPermissions`, `acceptEdits`, `plan` and `auto` remain
+# rejected, and the authority's own value is validated against this same set so
+# a tampered policy cannot smuggle one in.
+REVIEWED_WEB_PERMISSION_MODES = ("default", "dontAsk")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _READ_TOOLS = frozenset({"Read"})
@@ -269,7 +300,10 @@ def validate_settings_overlay(
         "enabledPlugins", "hooks", "mcpServers", "permissions",
     }:
         raise ClaudePhaseToolPolicyError("settings field denominator mismatch")
-    if settings.get("enabledPlugins") != {} or settings.get("mcpServers") != {}:
+    if (
+        not settings_enabled_plugins_grant_nothing(settings.get("enabledPlugins"))
+        or settings.get("mcpServers") != {}
+    ):
         raise ClaudePhaseToolPolicyError(
             "settings may not grant plugins or MCP servers"
         )
@@ -493,7 +527,10 @@ def _dependency_rows(
         seen.add(obligation_id)
         admitted = {"obligation_id": obligation_id}
         for field, char_cap, byte_cap in (
-            ("dependency", 300, 1_200),
+            # The fetch prompt adds 124 fixed characters plus kind.  Keeping
+            # dependency <=296 and kind <=80 makes the 500-character fetch
+            # prompt bound compositional for every admitted row.
+            ("dependency", 296, 1_184),
             ("kind", 80, 320),
             ("source_location", 600, 2_400),
             ("declaration_evidence", 500, 2_000),
@@ -574,7 +611,7 @@ def build_dependency_research_network_authority(
     authority: dict[str, Any] = {
         "schema_version": WEB_AUTHORITY_SCHEMA,
         "mode": "BOUNDED_RECEIPTS",
-        "provider_version": PINNED_CLAUDE_WEB_HOOK_VERSION,
+        "provider_version": _LEGACY_CLAUDE_WEB_HOOK_VERSION,
         "permission_mode": "default",
         "obligations": rows,
         "max_event_bytes": DEFAULT_MAX_WEB_HOOK_INPUT_BYTES,
@@ -604,8 +641,8 @@ def validate_dependency_research_network_authority(
     if (
         authority.get("schema_version") != WEB_AUTHORITY_SCHEMA
         or authority.get("mode") != "BOUNDED_RECEIPTS"
-        or authority.get("provider_version") != PINNED_CLAUDE_WEB_HOOK_VERSION
-        or authority.get("permission_mode") != "default"
+        or authority.get("provider_version") != _LEGACY_CLAUDE_WEB_HOOK_VERSION
+        or authority.get("permission_mode") not in REVIEWED_WEB_PERMISSION_MODES
         or authority.get("authority_digest")
         != _digest_unsigned(authority, "authority_digest")
     ):
@@ -702,6 +739,16 @@ def _web_query_groups(authority: Mapping[str, Any]) -> list[dict[str, Any]]:
             raise ClaudePhaseToolPolicyError("web authority fetch selector differs")
         result.append(group)
     return result
+
+
+def dependency_research_projection_rows_and_groups(
+    obligations: Iterable[Mapping[str, Any]] | Mapping[str, Any],
+) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    """Expose the canonical cross-provider R-EXT rows and query groups."""
+
+    rows = _dependency_rows(obligations)
+    authority = build_dependency_research_network_authority(obligations)
+    return rows, _web_query_groups(authority)
 
 
 def build_policy_manifest(
@@ -1253,7 +1300,7 @@ def build_settings_overlay(
         ],
     }
     settings = {
-        "enabledPlugins": {},
+        "enabledPlugins": dict(CLAUDE_SETTINGS_ENABLED_PLUGINS),
         "mcpServers": {},
         "permissions": {
             "allow": sorted(set(allow_rules)),
@@ -1446,7 +1493,7 @@ def _validate_web_event_context(
     """Bind web receipts to the exact reviewed Claude launch context."""
 
     authority = _web_authority(policy)
-    if event.get("permission_mode") != authority["permission_mode"]:
+    if event.get("permission_mode") not in REVIEWED_WEB_PERMISSION_MODES:
         raise ClaudePhaseToolPolicyError("web hook permission mode is invalid")
     cwd = event.get("cwd")
     if not isinstance(cwd, str) or not cwd:
@@ -1810,11 +1857,13 @@ def _web_receipt_state_issues(
                 "dependency web redirect successor closure cardinality mismatch: "
                 + redirect["tool_use_digest"]
             )
-    for row in denied:
-        issues.append(
-            "dependency web request was denied: "
-            + row["reason_code"] + " " + row["tool_use_digest"]
-        )
+    # A denial is a receipt, not an artifact defect. DODO run42's R-EXT
+    # artifact (25 rows, 10 RESEARCHED and every one receipt-backed) was
+    # rejected whole because ONE fetch was WEB_FETCH_UNSEARCHED and three
+    # dependents cascaded to WEB_PRIOR_DENIAL. The property that matters --
+    # "no RESEARCHED row cites a target that was denied" -- is enforced by the
+    # per-obligation join on the staged artifact, so denials are not repeated
+    # here as blanket issues.
     for row in closers:
         if (
             row["tool_name"] == "WebSearch"
@@ -1985,11 +2034,18 @@ def _evaluate_web_pre(
     target, proposed_digest = _web_request(event)
     session_digest = _identity_digest(event.get("session_id"), field="session_id")
     receipts = _web_receipts(policy)
-    if any(
-        row["event_kind"] == "PRE_DENY"
+    # Probing guard: a session that keeps proposing requests after being told
+    # no is stopped. Exactly ONE prior denial is tolerated so that the
+    # worker's immediately-following corrected request (run42: the fetch of
+    # the URL the search actually returned, right after a WEB_FETCH_UNSEARCHED
+    # on a guessed path) is judged on its own merits; the second denial still
+    # closes the session.
+    prior_denials = sum(
+        1 for row in receipts
+        if row["event_kind"] == "PRE_DENY"
         and row["session_digest"] == session_digest
-        for row in receipts
-    ):
+    )
+    if prior_denials >= 2:
         return {
             "decision": "DENY", "reason_code": "WEB_PRIOR_DENIAL", "target": target,
         }, []
@@ -2637,31 +2693,50 @@ def _redirect_successor(
     redirect_prefix = (
         "Redirect URL (from the server's Location header — server-supplied, not verified): "
     )
+    # The runtime INDENTS the envelope body; this matched at column 0 and so
+    # rejected every real redirect.  Measured on DODO run41 recon R-EXT, which
+    # hit two (a 301 and a 303): 9 lines, with a uniform four-space indent on
+    # lines 2,3,4,6,7,8 and bare blanks at 1 and 5.
+    #
+    # Derive the indent from the response instead of hardcoding four spaces or
+    # zero -- either would be a guess about a format this module does not own.
+    # Requiring it on EVERY body line keeps the envelope exact: a partially
+    # indented, i.e. spliced, envelope is still malformed, and the rebuilt
+    # `expected_result` below carries the same indent so the byte-for-byte
+    # comparison is unchanged in strength.
+    body_indices = (2, 3, 4, 6, 7, 8)
     if (
         len(lines) != 9
         or lines[0] != header
         or lines[1] != ""
-        or not lines[2].startswith("Original URL: ")
-        or not lines[3].startswith(redirect_prefix)
         or lines[5] != ""
     ):
         raise ClaudePhaseToolPolicyError("WebFetch redirect envelope is malformed")
-    original = _normalize_https_url(lines[2].removeprefix("Original URL: "))
-    successor = _normalize_https_url(lines[3].removeprefix(redirect_prefix))
+    indent = lines[2][: len(lines[2]) - len(lines[2].lstrip(" "))]
+    if any(not lines[index].startswith(indent) for index in body_indices):
+        raise ClaudePhaseToolPolicyError("WebFetch redirect envelope is malformed")
+    body = {index: lines[index][len(indent):] for index in body_indices}
+    if (
+        not body[2].startswith("Original URL: ")
+        or not body[3].startswith(redirect_prefix)
+    ):
+        raise ClaudePhaseToolPolicyError("WebFetch redirect envelope is malformed")
+    original = _normalize_https_url(body[2].removeprefix("Original URL: "))
+    successor = _normalize_https_url(body[3].removeprefix(redirect_prefix))
     code = int(response["code"])
     expected_result = "\n".join((
         header,
         "",
-        f"Original URL: {target}",
-        f"{redirect_prefix}{successor}",
-        f"Status: {code} {response['codeText']}",
+        f"{indent}Original URL: {target}",
+        f"{indent}{redirect_prefix}{successor}",
+        f"{indent}Status: {code} {response['codeText']}",
         "",
         (
-            "To complete your request, I need to fetch content from the redirected URL. "
-            "Please use WebFetch again with these parameters:"
+            f"{indent}To complete your request, I need to fetch content from "
+            "the redirected URL. Please use WebFetch again with these parameters:"
         ),
-        f'- url: "{successor}"',
-        f'- prompt: "{fetch_prompt}"',
+        f'{indent}- url: "{successor}"',
+        f'{indent}- prompt: "{fetch_prompt}"',
     ))
     if (
         result != expected_result
@@ -2690,7 +2765,7 @@ def _web_response_sources(
     redirects: list[str] = []
     if tool == "WebSearch":
         if (
-            authority["provider_version"] != PINNED_CLAUDE_WEB_HOOK_VERSION
+            authority["provider_version"] != _LEGACY_CLAUDE_WEB_HOOK_VERSION
             or set(response) != {"query", "results", "durationSeconds", "searchCount"}
             or response.get("query") != target
         ):
@@ -2704,16 +2779,38 @@ def _web_response_sources(
             or not math.isfinite(float(duration)) or duration < 0
             or isinstance(count, bool) or not isinstance(count, int)
             or not 1 <= count <= MAX_PROVIDER_SEARCHES_PER_TOOL_CALL
-            or len(results) != count + 1
         ):
             raise ClaudePhaseToolPolicyError("WebSearch response is malformed")
-        summary = results[count]
+        # `results` INTERLEAVES one `{tool_use_id, content}` block per provider
+        # search with the assistant's text between them; the final string is
+        # the summary. The previous contract assumed `[block]*count +
+        # [summary]` and indexed positionally (`results[count]`,
+        # `results[:count]`), which is only true when count == 1.
+        #
+        # Measured on DODO run38, the first run where any WebSearch was ever
+        # admitted: `searchCount=3` returned 6 results
+        # `[dict, str, dict, str, dict, str]` and was rejected as malformed,
+        # while the two `searchCount=1` calls returned 2 and passed. Five of
+        # seven searches died that way, every dependent WebFetch was then
+        # denied `WEB_PRIOR_DENIAL`, and dependency parity stayed at
+        # `researched=0` -- the same symptom that had been charged to the
+        # worker for months.
+        #
+        # Interleaving is also not strictly regular (one observed response had
+        # 5 results for count=3, a search with no interstitial text), so
+        # partition by TYPE and assert what actually matters: exactly `count`
+        # result blocks, and at least one non-empty summary string.
+        blocks = [row for row in results if isinstance(row, dict)]
+        summaries = [row for row in results if isinstance(row, str)]
+        if len(blocks) != count or len(blocks) + len(summaries) != len(results):
+            raise ClaudePhaseToolPolicyError("WebSearch response is malformed")
+        summary = summaries[-1] if summaries else None
         if (
             not isinstance(summary, str) or not summary
             or len(summary.encode("utf-8")) > int(authority["max_response_bytes"])
         ):
             raise ClaudePhaseToolPolicyError("WebSearch result shape is unknown")
-        for block in results[:count]:
+        for block in blocks:
             if (
                 not isinstance(block, dict)
                 or set(block) != {"tool_use_id", "content"}
@@ -2731,7 +2828,7 @@ def _web_response_sources(
                 urls.append(_normalize_https_url(row.get("url")))
     elif tool == "WebFetch":
         if (
-            authority["provider_version"] != PINNED_CLAUDE_WEB_HOOK_VERSION
+            authority["provider_version"] != _LEGACY_CLAUDE_WEB_HOOK_VERSION
             or set(response) != {"bytes", "code", "codeText", "durationMs", "result", "url"}
         ):
             raise ClaudePhaseToolPolicyError("WebFetch response shape is unknown")
@@ -2752,6 +2849,12 @@ def _web_response_sources(
         if code < 300:
             urls.append(target)
         else:
+            # `event["tool_input"]["prompt"]` here is what the RUNTIME executed:
+            # the PRE hook rewrote the fetch input before the call, and
+            # `_matching_web_pre` already binds this POST to that effective
+            # request by digest. (A "recover the canonical prompt" step was
+            # briefly added on a misreading of the transcript's tool_use
+            # block — the model's PROPOSED input — and removed after review.)
             redirects.append(_redirect_successor(
                 response, target, str(event["tool_input"]["prompt"]), authority,
             ))
@@ -3035,6 +3138,7 @@ def validate_dependency_source_receipt_coverage(
         successful_obligations = {
             obligation_id for obligation_id, _url in fetched
         }
+        session_fetched_urls = {url for _obligation_id, url in fetched}
         if statuses is not None:
             overlap = failed_obligations & successful_obligations
             if overlap:
@@ -3068,10 +3172,18 @@ def validate_dependency_source_receipt_coverage(
                         "dependency fetch status differs from receipts: "
                         + obligation_id + " expected " + expected_status
                     )
-                if (
-                    expected_status == "RESEARCHED"
-                    and claimed_sources_by_id[obligation_id]
-                    != fetched_sources_by_id[obligation_id]
+                # The property: every source a RESEARCHED row cites was
+                # fetched successfully IN THIS SESSION, and the row's own
+                # obligation has a successful fetch (checked above). Requiring
+                # the cited set to EQUAL the fetches attributed to this exact
+                # obligation is a representation of that property: DODO run45
+                # R-EXT cited, for two rows of one query group, a URL that a
+                # sibling group had fetched successfully (receipt-backed,
+                # content real), and the whole 22-RESEARCHED artifact was
+                # discarded for it.
+                claimed = claimed_sources_by_id[obligation_id]
+                if expected_status == "RESEARCHED" and (
+                    not claimed or not claimed <= session_fetched_urls
                 ):
                     errors.append(
                         "dependency successful WebFetch claim set differs from "
@@ -3249,7 +3361,47 @@ def run_hook(policy_path: Path, raw_event: bytes) -> tuple[int, dict[str, Any]]:
     except Exception as exc:
         # Exit 2 is Claude Code's fail-closed blocking hook signal.  Keep the
         # message content-free: the driver can inspect its own policy files.
+        #
+        # But "content-free to the MODEL" is not the same as "discarded". DODO
+        # run36 lost every WebSearch in its dependency-research wave to 17
+        # identical `PLAMEN_TOOL_POLICY_DENY:ClaudePhaseToolPolicyError` lines,
+        # and that string names neither the failing predicate nor the offending
+        # value -- the exception carried both and the handler threw them away.
+        # Reconstructing it afterwards cost hours and still did not identify
+        # the cause, because replaying the same request later succeeded.
+        # So persist the detail OUT OF BAND, beside the receipts the driver
+        # already owns, and keep the model-visible payload unchanged.
+        _record_hook_exception_detail(policy_path, exc)
         return 2, {"error": f"PLAMEN_TOOL_POLICY_DENY:{type(exc).__name__}"}
+
+
+def _record_hook_exception_detail(policy_path: Path, exc: BaseException) -> None:
+    """Append one diagnostic line for a hook exception; never raise.
+
+    Failure here must never change the hook's decision, so every error is
+    swallowed. The file lives next to the policy's receipts so it inherits the
+    same lifetime and cleanup as the rest of the phase's tool-policy evidence.
+    """
+
+    try:
+        policy = json.loads(Path(policy_path).read_text("utf-8"))
+        target = Path(str(policy["receipt_directory"])) / "_hook_exceptions.log"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        row = {
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "policy_id": str(policy.get("policy_id") or ""),
+            "phase": str(policy.get("phase") or ""),
+            "attempt": policy.get("attempt"),
+            "exception": type(exc).__name__,
+            "detail": str(exc)[:2000],
+            "traceback": "".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            )[-4000:],
+        }
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+    except Exception:
+        return
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -37,6 +37,8 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import re
+
+import artifact_surface
 from itertools import product
 from pathlib import Path
 from typing import Optional
@@ -488,7 +490,11 @@ def normalize_header(text: str) -> str:
     Mirrors plamen_parsers._normalize_manifest_header so callers migrating off
     the legacy parser get identical keys.
     """
-    return re.sub(r"[^a-z0-9]+", "_", (text or "").strip().lower()).strip("_")
+    # Fold presentation codepoints FIRST. Without it `Finding&nbsp;ID` keyed as
+    # `finding_nbsp_id` and the column silently lost its role — the same
+    # representation dependence this normalizer exists to remove.
+    folded = artifact_surface.strip_decoration(text)
+    return re.sub(r"[^a-z0-9]+", "_", (folded or "").strip().lower()).strip("_")
 
 
 def _heading_level(tag: str) -> int:

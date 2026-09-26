@@ -229,8 +229,34 @@ _COMPLETED_PAYLOAD_KEYS = {
     "duration_s",
     "process_tree_terminated",
     "containment_capability",
+    "stdout_observed_bytes",
+    "stderr_observed_bytes",
+    "stdout_retained_bytes",
+    "stderr_retained_bytes",
+    "stdout_sha256",
+    "stderr_sha256",
+    "stdout_truncated",
+    "stderr_truncated",
+    "executable_binding_sha256",
 }
-_TIMEOUT_PAYLOAD_KEYS = {"timeout", "stdout", "stderr"}
+_TIMEOUT_PAYLOAD_KEYS = {
+    "timeout",
+    "args",
+    "stdout",
+    "stderr",
+    "duration_s",
+    "process_tree_terminated",
+    "containment_capability",
+    "stdout_observed_bytes",
+    "stderr_observed_bytes",
+    "stdout_retained_bytes",
+    "stderr_retained_bytes",
+    "stdout_sha256",
+    "stderr_sha256",
+    "stdout_truncated",
+    "stderr_truncated",
+    "executable_binding_sha256",
+}
 _DEBT_PAYLOAD_KEYS = {"reason_code"}
 _WER_CHILD_COMPLETED_PAYLOAD_KEYS = {
     "inner_receipt_relative_path",
@@ -2335,6 +2361,35 @@ def _build_terminal_receipt(
     return {**core, "receipt_sha256": _sha(core)}
 
 
+def _valid_owned_stream_observations(payload: Mapping[str, Any]) -> bool:
+    for prefix in ("stdout", "stderr"):
+        observed = payload.get(f"{prefix}_observed_bytes")
+        retained = payload.get(f"{prefix}_retained_bytes")
+        digest = payload.get(f"{prefix}_sha256")
+        truncated = payload.get(f"{prefix}_truncated")
+        if (
+            isinstance(observed, bool)
+            or not isinstance(observed, int)
+            or observed < 0
+            or isinstance(retained, bool)
+            or not isinstance(retained, int)
+            or retained < 0
+            or retained > observed
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest)
+            or not isinstance(truncated, bool)
+            or truncated is not (observed > retained)
+        ):
+            return False
+    binding = payload.get("executable_binding_sha256")
+    return (
+        isinstance(binding, str)
+        and len(binding) == 64
+        and all(char in "0123456789abcdef" for char in binding)
+    )
+
+
 def _validate_terminal_receipt(
     candidate: Mapping[str, Any],
     *,
@@ -2649,6 +2704,7 @@ def _validate_terminal_receipt(
             or not math.isfinite(float(payload["duration_s"]))
             or payload["duration_s"] < 0
             or not isinstance(payload.get("containment_capability"), Mapping)
+            or not _valid_owned_stream_observations(payload)
         ):
             raise IsolatedExecutionProtocolError(
                 "isolated completed payload is invalid"
@@ -2663,8 +2719,16 @@ def _validate_terminal_receipt(
             or not isinstance(payload.get("timeout"), (int, float))
             or not math.isfinite(float(payload["timeout"]))
             or payload["timeout"] <= 0
+            or payload.get("process_tree_terminated") is not True
+            or payload.get("args") != request["payload"]["command"]
             or not isinstance(payload.get("stdout"), str)
             or not isinstance(payload.get("stderr"), str)
+            or isinstance(payload.get("duration_s"), bool)
+            or not isinstance(payload.get("duration_s"), (int, float))
+            or not math.isfinite(float(payload["duration_s"]))
+            or payload["duration_s"] < 0
+            or not isinstance(payload.get("containment_capability"), Mapping)
+            or not _valid_owned_stream_observations(payload)
         ):
             raise IsolatedExecutionProtocolError(
                 "isolated timeout payload is invalid"
@@ -3768,6 +3832,17 @@ class IsolatedExecutionAttempt:
                 duration_s=float(payload["duration_s"]),
                 process_tree_terminated=True,
                 containment_capability=dict(payload["containment_capability"]),
+                stdout_observed_bytes=payload["stdout_observed_bytes"],
+                stderr_observed_bytes=payload["stderr_observed_bytes"],
+                stdout_retained_bytes=payload["stdout_retained_bytes"],
+                stderr_retained_bytes=payload["stderr_retained_bytes"],
+                stdout_sha256=payload["stdout_sha256"],
+                stderr_sha256=payload["stderr_sha256"],
+                stdout_truncated=payload["stdout_truncated"],
+                stderr_truncated=payload["stderr_truncated"],
+                executable_binding_sha256=payload[
+                    "executable_binding_sha256"
+                ],
             )
             self._result = _AttemptResult(result)
             return result
@@ -3778,6 +3853,24 @@ class IsolatedExecutionAttempt:
                 output=payload["stdout"],
                 stderr=payload["stderr"],
             )
+            timeout_error.args_resolved = tuple(payload["args"])
+            timeout_error.duration_s = float(payload["duration_s"])
+            timeout_error.process_tree_terminated = True
+            timeout_error.containment_capability = dict(
+                payload["containment_capability"]
+            )
+            for field in (
+                "stdout_observed_bytes",
+                "stderr_observed_bytes",
+                "stdout_retained_bytes",
+                "stderr_retained_bytes",
+                "stdout_sha256",
+                "stderr_sha256",
+                "stdout_truncated",
+                "stderr_truncated",
+                "executable_binding_sha256",
+            ):
+                setattr(timeout_error, field, payload[field])
             timeout_error.isolated_receipt = copy.deepcopy(receipt)
             raise timeout_error
         raise IsolatedExecutionHostError(
@@ -4869,6 +4962,29 @@ def _execute_owned_process(
             executable_guard=payload["executable_guard"],
         )
     except subprocess.TimeoutExpired as exc:
+        required_observations = (
+            "args_resolved",
+            "duration_s",
+            "process_tree_terminated",
+            "containment_capability",
+            "stdout_observed_bytes",
+            "stderr_observed_bytes",
+            "stdout_retained_bytes",
+            "stderr_retained_bytes",
+            "stdout_sha256",
+            "stderr_sha256",
+            "stdout_truncated",
+            "stderr_truncated",
+            "executable_binding_sha256",
+        )
+        if any(not hasattr(exc, name) for name in required_observations):
+            return _build_terminal_receipt(
+                receipt_type="DEBT",
+                request=request,
+                executor_pid=os.getpid(),
+                completion_authority=False,
+                payload={"reason_code": "TIMEOUT_OBSERVABILITY_UNAVAILABLE"},
+            )
         return _build_terminal_receipt(
             receipt_type="TIMED_OUT",
             request=request,
@@ -4876,8 +4992,27 @@ def _execute_owned_process(
             completion_authority=False,
             payload={
                 "timeout": float(exc.timeout),
+                "args": list(exc.args_resolved),
                 "stdout": _text(exc.output),
                 "stderr": _text(exc.stderr),
+                "duration_s": float(exc.duration_s),
+                "process_tree_terminated": bool(
+                    exc.process_tree_terminated
+                ),
+                "containment_capability": dict(
+                    exc.containment_capability
+                ),
+                "stdout_observed_bytes": exc.stdout_observed_bytes,
+                "stderr_observed_bytes": exc.stderr_observed_bytes,
+                "stdout_retained_bytes": exc.stdout_retained_bytes,
+                "stderr_retained_bytes": exc.stderr_retained_bytes,
+                "stdout_sha256": exc.stdout_sha256,
+                "stderr_sha256": exc.stderr_sha256,
+                "stdout_truncated": exc.stdout_truncated,
+                "stderr_truncated": exc.stderr_truncated,
+                "executable_binding_sha256": (
+                    exc.executable_binding_sha256
+                ),
             },
         )
     except OwnedProcessRunnerError as exc:
@@ -4933,6 +5068,15 @@ def _execute_owned_process(
             "duration_s": result.duration_s,
             "process_tree_terminated": True,
             "containment_capability": dict(result.containment_capability),
+            "stdout_observed_bytes": result.stdout_observed_bytes,
+            "stderr_observed_bytes": result.stderr_observed_bytes,
+            "stdout_retained_bytes": result.stdout_retained_bytes,
+            "stderr_retained_bytes": result.stderr_retained_bytes,
+            "stdout_sha256": result.stdout_sha256,
+            "stderr_sha256": result.stderr_sha256,
+            "stdout_truncated": result.stdout_truncated,
+            "stderr_truncated": result.stderr_truncated,
+            "executable_binding_sha256": result.executable_binding_sha256,
         },
     )
 

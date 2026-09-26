@@ -16,7 +16,7 @@ plamen setup                                    # if PATH is set on Windows
 cd $HOME\.plamen; python plamen.py setup        # Windows PowerShell (before PATH)
 ```
 
-The setup wizard detects your OS and installed tools, installs only admitted locked recipes, and labels everything else as an external prerequisite. It never executes pipe-to-shell, package-manager, `latest`, or moving-branch installers.
+The setup wizard detects your OS and installed tools, installs only admitted locked safety-tool recipes, and labels everything else as an external prerequisite. It never executes pipe-to-shell, package-manager, or moving-branch installers. The only `latest` selectors are Claude Code and Codex CLI: they resolve once during explicit install/update, then become exact signed generation receipts and are never resolved during an audit.
 
 ---
 
@@ -24,7 +24,7 @@ The setup wizard detects your OS and installed tools, installs only admitted loc
 
 | Tool | Version | Purpose | Install |
 |------|---------|---------|---------|
-| Claude Code and Codex CLI payloads | Claude Code 2.1.252; Codex 0.152.0 | Managed AI runtimes (authenticate the backend you use) | `plamen install` materializes and signs both exact payloads; no global package is required |
+| Claude Code and Codex CLI payloads | Upstream latest at install/update; exact thereafter | Managed AI runtimes (authenticate the backend you use) | `plamen install` validates registry signature, publisher/provenance, payload bytes, native signature and CLI contract, then signs both exact generation receipts; no global package is required |
 | CPython | 3.12 (required) | Reproducible wheel ABI for the private runtime | [python.org](https://python.org) |
 | Managed Node.js/npm | Node.js 24.20.0; npm 11.19.0 | Executes the authenticated backend and MCP closures | Materialized and checksum-verified by `plamen install`; ambient Node/npm/npx are not used |
 | Git | any | Submodules, version control | [git-scm.com](https://git-scm.com) |
@@ -71,7 +71,7 @@ symlinks internally.
 |------|---------|---------|-----------|
 | Foundry (forge, cast, anvil) | Build, test, invariant fuzz, fork testing | Operator-provided reviewed release from [Foundry](https://book.getfoundry.sh/getting-started/installation) | Yes |
 | Slither | Static analysis (MCP) | Private hash-locked Plamen runtime | Recommended |
-| Medusa | Stateful fuzzing (Thorough mode) | `plamen setup` exact v1.5.1 via Go checksum verification | Optional |
+| Medusa | Stateful fuzzing (Thorough mode) | Bundled native v1.5.1; signed image-member receipt at the exact guest path | Optional |
 
 ### EVM Platform Notes
 
@@ -79,7 +79,10 @@ symlinks internally.
 **macOS (Apple Silicon)**: Foundry works natively via Rosetta or arm64.
 **Linux**: Foundry works natively.
 
-Medusa requires an operator-provided Go SDK. Plamen will not bootstrap the SDK, but can install exact Medusa v1.5.1 through Go's module checksum mechanism once Go is present.
+Medusa does not use an ambient Go SDK or `go install`. Plamen's native image
+contains the reviewed v1.5.1 Linux x64 executable at
+`/usr/local/lib/plamen/toolchains/medusa/bin/medusa`; its exact bytes and guest
+path are bound by the signed native image-member receipt.
 
 ---
 
@@ -320,8 +323,9 @@ failures.
 - **Managed backend missing or mismatched.** Re-run `plamen.py install` from a
   complete reviewed source checkout. Do not repair this with `npm install -g`,
   an ambient Node/npm/npx executable, or a mutable package under `~/.plamen/`.
-  `plamen doctor` validates the signed current selection and exact managed
-  Claude 2.1.252/Codex 0.152.0 launchers.
+  `plamen doctor` validates the signed current selection and the exact managed
+  Claude/Codex versions recorded by its immutable acquisition receipts. It
+  performs no registry lookup and does not reinterpret `latest`.
 - **Claude is unauthenticated ("Not logged in").** An
   unauthenticated `claude -p` returns rc=0 with a "Not logged in" message and
   does no work, so an audit appears to start and then produces nothing.

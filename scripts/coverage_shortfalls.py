@@ -217,6 +217,12 @@ def _read_rows(path: Path) -> list[dict]:
 
 def _write_atomic(path: Path, text: str) -> None:
     """Replace one projection with a collision-free temporary file."""
+    if path.is_file() and not path.is_symlink():
+        try:
+            if path.read_text(encoding="utf-8", errors="strict") == text:
+                return
+        except (OSError, UnicodeError):
+            pass
     tmp = path.with_name(
         f".{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
     )

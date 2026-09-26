@@ -21,6 +21,13 @@ import pytest
 import fuzz_workspace_authority as fwa
 
 
+_EXECUTION_CAPABILITY = fwa.fuzz_execution_capability()
+_REQUIRES_FUZZ_EXECUTION_CONTAINMENT = pytest.mark.skipif(
+    _EXECUTION_CAPABILITY["status"] != "READY",
+    reason="host has no proof-grade fuzz execution boundary",
+)
+
+
 def _project(tmp_path: Path) -> tuple[Path, Path]:
     root = tmp_path / "project"
     (root / "src").mkdir(parents=True)
@@ -74,6 +81,7 @@ def _rewrite_command_as_forge_campaign(receipt: dict[str, object]) -> None:
     )
 
 
+@_REQUIRES_FUZZ_EXECUTION_CONTAINMENT
 def test_model_rewrite_cannot_turn_probe_receipt_into_measured_campaign(
     tmp_path: Path,
 ) -> None:
@@ -100,6 +108,7 @@ def test_model_rewrite_cannot_turn_probe_receipt_into_measured_campaign(
     }
 
 
+@_REQUIRES_FUZZ_EXECUTION_CONTAINMENT
 def test_exact_quarantined_harness_clone_is_not_fresh_generated_provenance(
     tmp_path: Path,
 ) -> None:
@@ -196,6 +205,7 @@ def test_approved_process_cannot_write_outside_workspace_via_inherited_env(
     assert not outside.exists()
 
 
+@_REQUIRES_FUZZ_EXECUTION_CONTAINMENT
 def test_successful_parent_cannot_leave_detached_child_after_runner_returns(
     tmp_path: Path,
 ) -> None:
@@ -354,7 +364,12 @@ def test_nonready_fuzz_leaf_never_launches_from_original_project_root(
         job=job,
         scratchpad=scratchpad,
         project_root=str(root),
-        config={"pipeline": "sc", "language": "evm", "mode": "thorough"},
+        config={
+            "pipeline": "sc",
+            "language": "evm",
+            "mode": "thorough",
+            "cli_backend": "claude",
+        },
         phase=next(item for item in driver.SC_PHASES if item.name == "depth"),
         base_cmd=["claude"],
         env=os.environ.copy(),
@@ -365,4 +380,9 @@ def test_nonready_fuzz_leaf_never_launches_from_original_project_root(
         inputs_prebound=True,
     )
 
-    assert Path(observed["cwd"]).resolve() != root.resolve()
+    # Refusing to launch an UNSCORED fuzz leaf is stronger containment than
+    # launching it in a disposable workspace.  If a transport is launched,
+    # it still must never receive the original project root as its cwd.
+    assert observed.get("cwd") is None or (
+        Path(observed["cwd"]).resolve() != root.resolve()
+    )

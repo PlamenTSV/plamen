@@ -51,19 +51,43 @@ import uuid
 
 import pytest
 
-from artifact_ledger import record_work_unit_artifacts, record_work_unit_inputs
+from artifact_ledger import (
+    read_artifact_ledger,
+    record_work_unit_artifacts,
+    record_work_unit_inputs,
+)
+import p0af_v2_queue_adapter as P0AF_V2
+from p0af_v2_queue_runtime import p0af_v2_resume_contract_issues
 from phase_io_contracts import ArtifactSpec, LaunchSpec, PhaseIOContract, canonical_work_unit_key
 import plamen_driver as DRIVER
 from finding_producer_registry import (
     write_application_skeptic_proposal_projection,
 )
+from security_obligation_authority import (
+    AUTHORITY_FILE as SECURITY_OBLIGATION_AUTHORITY_FILE,
+)
+import security_obligation_authority as SECURITY_AUTHORITY
+import security_obligation_lifecycle as SECURITY_LIFECYCLE
 import test_live_verify_queue_driver_adapter_cutover as ADAPTER_FIXTURE
 import test_live_verify_queue_transaction_semantic_closure as LIVE
+from test_security_obligation_lifecycle_p1_c import (
+    RUN_ID as SECURITY_LIFECYCLE_RUN_ID,
+    _setup as setup_security_obligation_source,
+)
 from verify_queue_transaction import validate_live_verify_queue_publication
 
 
 BOUNDARY_NAME = "_run_live_verify_queue_phase_boundary"
 BOUNDARY_SCHEMA = "plamen.live_verify_queue_phase_boundary.v1"
+P1M_OPTIONAL_OUTPUTS = frozenset({
+    P0AF_V2.CANDIDATE_FILE,
+    P0AF_V2.WORK_AUTHORITY_FILE,
+    P0AF_V2.ROUTE_DEBT_FILE,
+})
+CHAIN_GROUPING_OPTIONAL_OUTPUTS = frozenset({
+    "chain_grouping_relations.json",
+    "chain_anti_absorption_applied_receipt.json",
+})
 EXPECTED_PARAMETERS = (
     "phase",
     "checkpoint",
@@ -214,9 +238,20 @@ def _seed(
             "preverify_inventory_successor.json",
             "finding_delivery_successor.json",
         }
-    absent = {
-        ADAPTER_FIXTURE.SC_DYNAMIC_CANDIDATE
-    } if pipeline == "sc" else set()
+    # The P1-M trio is one registered, atomic chain-phase output family.  This
+    # fixture begins at the queue boundary and does not run the authentication
+    # role/composition workers, so its faithful no-composition branch leaves
+    # the entire optional family absent.  Seeding only the plan/route siblings
+    # would create an impossible partial family under a generic fixture owner.
+    # This queue-boundary fixture also omits the depth phase.  Its final
+    # security-obligation authority is therefore genuinely absent, not a
+    # schema-looking file owned by the generic fixture producer.  The report
+    # integration publishes the real haltless missing-source lifecycle later.
+    absent = frozenset({SECURITY_OBLIGATION_AUTHORITY_FILE}) | (
+        P1M_OPTIONAL_OUTPUTS | CHAIN_GROUPING_OPTIONAL_OUTPUTS
+        if pipeline == "sc"
+        else frozenset()
+    )
 
     (root / "findings_inventory.md").write_text(
         "# Findings Inventory\n", encoding="utf-8"
@@ -390,15 +425,9 @@ def _patch_prequeue_producers(
                 )
             ),
         )
-    # SC promotion remains a queue-boundary producer.  L1 freezes all additive
-    # promotion and semantic-dedup work earlier; its queue boundary validates
-    # the receipt-authorized post-dedup inventory rather than rerunning them.
-    if pipeline == "sc":
-        patch(
-            "_promote_findings_with_semantic_invalidation",
-            "semantic-promotion",
-            [],
-        )
+    # Both pipelines freeze all additive producers before semantic dedup.
+    # Re-running the legacy raw promoter at the queue boundary would be an
+    # unauthorized second writer over the canonical inventory generation.
     patch("_validate_inventory_evidence", "inventory-evidence", None)
     patch("_validate_depth_promotion_receipt", "depth-receipt", [])
     if pipeline == "l1":
@@ -546,6 +575,22 @@ def test_real_boundary_orders_producers_commits_t9_without_legacy_remutation(
         pipeline=pipeline,
         preseed_adapter_successors=False,
     )
+    assert not (root / SECURITY_OBLIGATION_AUTHORITY_FILE).exists()
+    assert not (root / SECURITY_OBLIGATION_AUTHORITY_FILE).is_symlink()
+    if pipeline == "sc":
+        assert all(
+            not (root / name).exists() and not (root / name).is_symlink()
+            for name in P1M_OPTIONAL_OUTPUTS
+        )
+        p1m_key = canonical_work_unit_key(
+            "sc",
+            str(config["mode"]),
+            str(config["ecosystem"]),
+            str(config["backend"]),
+            "chain",
+            "authentication_roles.compound_work",
+        )
+        assert p1m_key not in read_artifact_ledger(root)["work_units"]
     phase, phases = _phase_and_graph(pipeline)
     checkpoint = _checkpoint(root, config, run_id)
     trace: list[str] = []
@@ -634,6 +679,10 @@ def test_real_boundary_orders_producers_commits_t9_without_legacy_remutation(
         run_id=run_id,
     )
     assert validation["safe_to_consume"] is True
+    if pipeline == "sc":
+        # The real T0--T9 commit must remain resumable without inventing a
+        # P1-M producer for the explicitly absent no-composition branch.
+        assert p0af_v2_resume_contract_issues(root, config) == []
 
     durable = DRIVER.Checkpoint.load(root)
     assert phase.name in durable.completed
@@ -647,6 +696,275 @@ def test_real_boundary_orders_producers_commits_t9_without_legacy_remutation(
         assert phase.name not in durable.degraded
         assert durable.phase_commits[phase.name].state == "CLEAN"
     assert "_live_verify_queue_cutover_result" not in config
+
+
+def test_partial_p1m_family_is_not_adopted_as_resume_authority(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "partial-p1m-project"
+    project.mkdir()
+    root, config, _run_id = _seed(
+        project,
+        pipeline="sc",
+        preseed_adapter_successors=False,
+    )
+    assert all(not (root / name).exists() for name in P1M_OPTIONAL_OUTPUTS)
+
+    # One unowned sibling cannot turn the absent branch into a P1-M producer.
+    # This is deliberately malformed adversarial state, not fixture authority.
+    (root / P0AF_V2.ROUTE_DEBT_FILE).write_bytes(
+        _canonical_bytes({"artifact": P0AF_V2.ROUTE_DEBT_FILE})
+    )
+    issues = p0af_v2_resume_contract_issues(root, config)
+    assert any(
+        "P1-M authenticated producer invalid on resume" in issue
+        for issue in issues
+    )
+    assert any("upstream ledger row absent" in issue for issue in issues)
+
+
+def test_queue_boundary_without_chain_producer_does_not_forge_relation_authority(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "absent-chain-grouping-project"
+    project.mkdir()
+    root, config, _run_id = _seed(
+        project,
+        pipeline="sc",
+        preseed_adapter_successors=False,
+    )
+    outputs = tuple(root / name for name in CHAIN_GROUPING_OPTIONAL_OUTPUTS)
+    assert all(not path.exists() and not path.is_symlink() for path in outputs)
+
+    floor = next(phase for phase in DRIVER.SC_PHASES if phase.name == "report_floor")
+    assert DRIVER._write_and_record_chain_grouping_assurance(
+        scratchpad=root,
+        config=config,
+        phase=floor,
+    ) == []
+    assert all(not path.exists() and not path.is_symlink() for path in outputs)
+    assert not (root / "chain_grouping_assurance_reconciliation.json").exists()
+    assert not (root / "chain_grouping_assurance_limitations.md").exists()
+
+    # A schema-looking generic fixture blob is not equivalent to absence and
+    # must remain explicit integrity debt rather than being silently ignored.
+    (root / "chain_grouping_relations.json").write_bytes(
+        _canonical_bytes({"artifact": "chain_grouping_relations.json"})
+    )
+    issues = DRIVER._write_and_record_chain_grouping_assurance(
+        scratchpad=root,
+        config=config,
+        phase=floor,
+    )
+    assert issues == [
+        "chain grouping assurance reconciliation failed: ValueError: "
+        "chain grouping relation receipt digest mismatch"
+    ]
+
+
+def test_absent_depth_authority_publishes_registered_report_lifecycle_debt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Reuse the established genuine inventory/chain producers.  Importing
+    # lazily avoids the fixture module's deliberate dependency on this queue
+    # boundary module during collection.
+    from test_verification_report_tail_same_run_integration import (
+        _install_supported_queue_seed,
+    )
+
+    project = tmp_path / "missing-depth-authority-project"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "Unit.sol").write_text(
+        "pragma solidity ^0.8.20; contract Unit { uint256 public value; }\n",
+        encoding="utf-8",
+    )
+    _install_supported_queue_seed(monkeypatch)
+    root, config, run_id = _seed(
+        project,
+        pipeline="sc",
+        preseed_adapter_successors=False,
+    )
+    phase, phases = _phase_and_graph("sc")
+    checkpoint = _checkpoint(root, config, run_id)
+    _patch_prequeue_producers(monkeypatch, [], pipeline="sc")
+    outcome = _invoke(
+        boundary=_boundary(),
+        phase=phase,
+        checkpoint=checkpoint,
+        root=root,
+        config=config,
+        phases=phases,
+    )
+    assert outcome["state"] == "COMMITTED"
+    assert outcome["safe_to_continue"] is True
+    candidate_ids = tuple(
+        row["finding id"] for row in DRIVER.parse_verification_queue_rows(root)
+    )
+    assert candidate_ids
+    assert not (root / SECURITY_OBLIGATION_AUTHORITY_FILE).exists()
+    lifecycle_inputs = SECURITY_LIFECYCLE.security_obligation_lifecycle_input_artifacts(
+        root
+    )
+    assert "_v2_checkpoint.json" not in lifecycle_inputs
+
+    issues = DRIVER._record_security_obligation_lifecycle_phase_io(root, config)
+    assert issues == [
+        "security-obligation lifecycle retained unresolved/debt aliases "
+        "for human review"
+    ]
+    assert DRIVER._validate_security_obligation_lifecycle_phase_io(
+        root, config
+    ) == []
+    authority = json.loads(
+        (root / SECURITY_LIFECYCLE.AUTHORITY_FILE).read_text(
+            encoding="utf-8", errors="strict"
+        )
+    )
+    assert authority["status"] == "DEGRADED_HUMAN_REVIEW"
+    assert authority["run_id"] == run_id
+    assert authority["source_authority_digest"] is None
+    assert authority["denominator_complete"] is False
+    assert authority["rows"] == []
+    assert authority["issues"] == [
+        "security_authority: missing, malformed, or digest-mismatched"
+    ]
+
+    contract, _launch = DRIVER._security_obligation_lifecycle_contract_and_launch(
+        root, config
+    )
+    ledger = read_artifact_ledger(root)
+    row = ledger["work_units"][contract.key]
+    identities = {
+        f"scratchpad:{SECURITY_LIFECYCLE.AUTHORITY_FILE}",
+        f"scratchpad:{SECURITY_LIFECYCLE.PROJECTION_FILE}",
+        f"scratchpad:{SECURITY_LIFECYCLE.REPORT_RETENTION_FILE}",
+    }
+    assert row["semantic_status"] == "ACTIVE"
+    assert row["execution_state"] == "OUTPUT_COMMITTED"
+    assert set(row["artifacts"]) == identities
+    assert "scratchpad:security_obligation_authority.json" not in row[
+        "input_bindings"
+    ]
+    assert "scratchpad:_v2_checkpoint.json" not in row["input_bindings"]
+    assert all(
+        ledger["artifact_bindings"][identity]["owner_key"] == contract.key
+        for identity in identities
+    )
+    retained = {
+        path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
+        for path in (
+            *(root / identity.split(":", 1)[1] for identity in sorted(identities)),
+            root / "_artifact_state.json",
+        )
+    }
+
+    # A normal atomic checkpoint save may replace the inode even when its
+    # semantic bytes are unchanged. Missing-source lifecycle authority is
+    # bound to the authenticated driver run, not this unused mutable file.
+    checkpoint_path = root / "_v2_checkpoint.json"
+    checkpoint_bytes = checkpoint_path.read_bytes()
+    checkpoint_inode = checkpoint_path.stat().st_ino
+    DRIVER.Checkpoint.load(root).save(root)
+    assert checkpoint_path.read_bytes() == checkpoint_bytes
+    assert checkpoint_path.stat().st_ino != checkpoint_inode
+    assert (
+        SECURITY_LIFECYCLE.security_obligation_lifecycle_input_artifacts(root)
+        == lifecycle_inputs
+    )
+
+    assert DRIVER._record_security_obligation_lifecycle_phase_io(root, config) == []
+    assert DRIVER._validate_security_obligation_lifecycle_phase_io(
+        root, config
+    ) == []
+    assert {
+        path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
+        for path in retained
+    } == retained
+    assert tuple(
+        row["finding id"] for row in DRIVER.parse_verification_queue_rows(root)
+    ) == candidate_ids
+
+
+def test_lifecycle_expected_run_refuses_invalid_or_cross_run_source(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing"
+    missing.mkdir()
+    for invalid in ("", " ", 7):
+        with pytest.raises(
+            SECURITY_LIFECYCLE.SecurityObligationLifecycleError,
+            match="expected_run_id must be one nonblank trimmed string",
+        ):
+            SECURITY_LIFECYCLE.build_security_obligation_lifecycle(
+                missing, expected_run_id=invalid  # type: ignore[arg-type]
+            )
+
+    source_parent = tmp_path / "genuine-source"
+    source_parent.mkdir()
+    source_root, _aliases = setup_security_obligation_source(
+        source_parent, count=1
+    )
+    assert not (source_root / SECURITY_LIFECYCLE.AUTHORITY_FILE).exists()
+    source = json.loads(
+        (source_root / SECURITY_OBLIGATION_AUTHORITY_FILE).read_text(
+            encoding="utf-8", errors="strict"
+        )
+    )
+    assert source["run_binding"]["run_id"] == SECURITY_LIFECYCLE_RUN_ID
+    source_bytes = (source_root / SECURITY_OBLIGATION_AUTHORITY_FILE).read_bytes()
+    with pytest.raises(
+        SECURITY_LIFECYCLE.SecurityObligationLifecycleError,
+        match="security authority run_id differs from expected driver run",
+    ):
+        SECURITY_LIFECYCLE.write_security_obligation_lifecycle(
+            source_root,
+            expected_run_id="87654321-4321-4321-8321-cba987654321",
+        )
+    assert not (source_root / SECURITY_LIFECYCLE.AUTHORITY_FILE).exists()
+    assert (
+        source_root / SECURITY_OBLIGATION_AUTHORITY_FILE
+    ).read_bytes() == source_bytes
+    assert SECURITY_LIFECYCLE_RUN_ID != (
+        "87654321-4321-4321-8321-cba987654321"
+    )
+
+    blank_root = tmp_path / "blank-source-run"
+    blank_root.mkdir()
+    blank_source = SECURITY_AUTHORITY.write_security_obligation_authority(
+        blank_root
+    )
+    assert blank_source["run_binding"]["run_id"] == ""
+    with pytest.raises(
+        SECURITY_LIFECYCLE.SecurityObligationLifecycleError,
+        match="security authority run_id differs from expected driver run",
+    ):
+        SECURITY_LIFECYCLE.write_security_obligation_lifecycle(
+            blank_root, expected_run_id=SECURITY_LIFECYCLE_RUN_ID
+        )
+    assert not (blank_root / SECURITY_LIFECYCLE.AUTHORITY_FILE).exists()
+
+    rejected_parent = tmp_path / "digest-rejected-source"
+    rejected_parent.mkdir()
+    rejected_root, _rejected_aliases = setup_security_obligation_source(
+        rejected_parent, count=1
+    )
+    rejected_source_path = rejected_root / SECURITY_OBLIGATION_AUTHORITY_FILE
+    rejected_source = json.loads(
+        rejected_source_path.read_text(encoding="utf-8", errors="strict")
+    )
+    rejected_source["authority_digest"] = "0" * 64
+    rejected_source_path.write_bytes(_canonical_bytes(rejected_source))
+    assert rejected_source_path.name in (
+        SECURITY_LIFECYCLE.security_obligation_lifecycle_input_artifacts(
+            rejected_root
+        )
+    )
+    assert "_v2_checkpoint.json" not in (
+        SECURITY_LIFECYCLE.security_obligation_lifecycle_input_artifacts(
+            rejected_root
+        )
+    )
 
 
 def test_adapter_crash_before_t9_records_retryable_debt_without_public_queue(

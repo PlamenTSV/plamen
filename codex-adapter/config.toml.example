@@ -3,7 +3,11 @@
 # block. Existing user settings are preserved.
 model = "gpt-5.6-terra"
 model_auto_compact_token_limit = 220000
-service_tier = "flex"
+# service_tier is intentionally OMITTED: the backend rejects "flex" with
+# HTTP 400 "Unsupported service_tier: flex" (openai/codex #15099), and
+# codex-cli 0.156.1 advertises only the "priority" tier. Leaving the key
+# unset makes the server apply its default tier.
+# service_tier = "flex"
 approval_mode = "full-auto"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"

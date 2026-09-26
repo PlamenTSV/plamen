@@ -109,6 +109,11 @@ def _bytes_record(raw: bytes) -> dict[str, Any]:
 
 def _atomic_bytes(path: Path, raw: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if path.is_file() and path.read_bytes() == raw:
+            return
+    except OSError:
+        pass
     with tempfile.NamedTemporaryFile(
         "wb", dir=str(path.parent), delete=False,
         prefix=f".{path.name}.", suffix=".tmp",

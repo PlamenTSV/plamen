@@ -29,6 +29,7 @@ from artifact_ledger import (
 )
 from phase_io_contracts import (
     ArtifactSpec,
+    ConditionalOutputReceipt,
     DriverMergeEvent,
     LaunchSpec,
     PhaseIOContract,
@@ -83,6 +84,7 @@ def _fixture(
     tmp_path: Path,
     *,
     additional_consumers: tuple[str, ...] = (),
+    absent_conditional_sibling: bool = False,
 ) -> tuple[
     Path,
     PhaseIOContract,
@@ -105,31 +107,44 @@ def _fixture(
         relative_consumer,
         *additional_consumers,
     )
+    producer_outputs = [
+        _artifact(
+            owner=producer_key,
+            path="inventory_id_allocation_delta.json",
+            consumers=producer_consumers,
+        ),
+        _artifact(
+            owner=producer_key,
+            path="findings_inventory.md",
+            consumers=producer_consumers,
+        ),
+        _artifact(
+            owner=producer_key,
+            path="finding_records.json",
+            consumers=producer_consumers,
+        ),
+        _artifact(
+            owner=producer_key,
+            path="inventory_merge_receipt.md",
+        ),
+    ]
+    if absent_conditional_sibling:
+        producer_outputs.append(
+            ArtifactSpec(
+                root="scratchpad",
+                path="optional_inventory_receipt.json",
+                owner_key=producer_key,
+                artifact_class="CONDITIONAL",
+                writer="DRIVER",
+                write_mode="REPLACE",
+                condition_id="optional_inventory_receipt_required",
+            )
+        )
     producer = PhaseIOContract(
         **BASE,
         phase="inventory",
         work_unit_id="canonical_aggregate",
-        outputs=(
-            _artifact(
-                owner=producer_key,
-                path="inventory_id_allocation_delta.json",
-                consumers=producer_consumers,
-            ),
-            _artifact(
-                owner=producer_key,
-                path="findings_inventory.md",
-                consumers=producer_consumers,
-            ),
-            _artifact(
-                owner=producer_key,
-                path="finding_records.json",
-                consumers=producer_consumers,
-            ),
-            _artifact(
-                owner=producer_key,
-                path="inventory_merge_receipt.md",
-            ),
-        ),
+        outputs=tuple(producer_outputs),
         model_invoked=False,
     )
     assert producer.key == producer_key
@@ -149,6 +164,17 @@ def _fixture(
     )
     for name, raw in before.items():
         (scratch / name).write_bytes(raw)
+    conditional_receipts = {}
+    if absent_conditional_sibling:
+        identity = "scratchpad:optional_inventory_receipt.json"
+        conditional_receipts[identity] = ConditionalOutputReceipt(
+            work_unit_key=producer.key,
+            contract_digest=producer.digest,
+            artifact_identity=identity,
+            condition_id="optional_inventory_receipt_required",
+            state="NOT_TRIGGERED",
+            expected_denominator=0,
+        )
     producer_unit = record_work_unit_artifacts(
         scratch,
         tmp_path,
@@ -156,6 +182,7 @@ def _fixture(
         producer_launch,
         run_id=RUN_ID,
         actor="DRIVER",
+        conditional_receipts=conditional_receipts,
     )
     assert producer_unit["semantic_status"] == "ACTIVE"
 
@@ -368,6 +395,85 @@ def test_declared_partial_successor_resumes_and_commits_exactly(
         run_id=RUN_ID,
         actor="DRIVER",
     ) == []
+
+
+def test_authoritative_conditional_absence_is_a_stable_producer_sibling(
+    tmp_path: Path,
+) -> None:
+    (
+        scratch,
+        _producer,
+        _producer_launch,
+        consumer,
+        consumer_launch,
+        events,
+        raw,
+    ) = _fixture(tmp_path, absent_conditional_sibling=True)
+
+    armed, _plan = _arm(
+        scratch, tmp_path, consumer, consumer_launch, events, raw
+    )
+
+    assert armed["execution_state"] == "INPUTS_BOUND_PREEXECUTION"
+    assert validate_work_unit_inputs(
+        scratch,
+        tmp_path,
+        consumer,
+        consumer_launch,
+        run_id=RUN_ID,
+    ) == []
+
+    # The accepted state is exact authoritative absence, not a blanket
+    # exemption for optional siblings.  Unexpected bytes must still revoke
+    # the successor arm.
+    (scratch / "optional_inventory_receipt.json").write_text(
+        '{"unexpected":true}\n', encoding="utf-8"
+    )
+    issues = validate_work_unit_inputs(
+        scratch,
+        tmp_path,
+        consumer,
+        consumer_launch,
+        run_id=RUN_ID,
+    )
+    assert any(
+        "optional_inventory_receipt.json" in issue
+        and "producer sibling drifted" in issue
+        for issue in issues
+    )
+
+
+def test_conditional_sibling_binding_tamper_remains_fail_closed(
+    tmp_path: Path,
+) -> None:
+    (
+        scratch,
+        _producer,
+        _producer_launch,
+        consumer,
+        consumer_launch,
+        events,
+        raw,
+    ) = _fixture(tmp_path, absent_conditional_sibling=True)
+    _arm(scratch, tmp_path, consumer, consumer_launch, events, raw)
+    ledger = read_artifact_ledger(scratch)
+    identity = "scratchpad:optional_inventory_receipt.json"
+    ledger["artifact_bindings"][identity]["condition_id"] = "forged"
+    AL.write_artifact_ledger(scratch, ledger)
+
+    issues = validate_work_unit_inputs(
+        scratch,
+        tmp_path,
+        consumer,
+        consumer_launch,
+        run_id=RUN_ID,
+    )
+
+    assert any(
+        "optional_inventory_receipt.json" in issue
+        and "producer sibling drifted" in issue
+        for issue in issues
+    )
 
 
 def test_authenticated_progress_does_not_exempt_unrelated_bundle_sibling(

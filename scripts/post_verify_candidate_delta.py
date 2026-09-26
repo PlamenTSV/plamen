@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
 import tempfile
 from typing import Any, Iterable, Mapping
 
+from portable_path_contract import assert_lexically_bounded_relative_path
 from post_verify_lifecycle import parse_post_verify_candidate_proposals
 from queue_work_items import (
     QueueWorkItem,
@@ -271,6 +272,12 @@ def _strict_json(raw: bytes, context: str) -> dict[str, Any]:
 
 def _safe_source(root: Path, relative: str) -> tuple[Path, bytes]:
     name = _text(relative, "source artifact")
+    try:
+        assert_lexically_bounded_relative_path(name, label="source artifact")
+    except ValueError as exc:
+        raise PostVerifyCandidateDeltaError(
+            f"source artifact is not a safe relative path: {relative!r}"
+        ) from exc
     pure = PurePosixPath(name.replace("\\", "/"))
     if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
         raise PostVerifyCandidateDeltaError(
@@ -570,12 +577,23 @@ def authenticated_historical_typed_stage_scope(
 ):
     """Mint a bounded typed-history capability for one canonical stage.
 
-    The live T9 graph is replayed first.  Every transitive input used by the
+    A live T9 graph is replayed whenever any live-publication residue exists;
+    an explicitly residue-free historical typed run uses the module's same
+    closed legacy selection boundary.  Every transitive input used by the
     authenticated report universe must then be present in the isolated stage
     with byte-for-byte equality.  Only that exact resolved stage root may use
     the historical typed reader while the scope is active; all live and other
     roots retain the ordinary fail-closed residue rule.
     """
+
+    if (
+        not isinstance(run_id, str)
+        or not run_id.strip()
+        or run_id != run_id.strip()
+    ):
+        raise PostVerifyCandidateDeltaError(
+            "historical typed stage run_id must be a non-empty trimmed string"
+        )
 
     live = Path(live_scratchpad).resolve(strict=True)
     stage = Path(staged_scratchpad).resolve(strict=True)
@@ -591,16 +609,34 @@ def authenticated_historical_typed_stage_scope(
             "historical typed stage is outside the canonical recovery root"
         )
 
-    publication = load_authenticated_queue_publication(
-        live,
-        project_root=live.parent,
-        run_id=run_id,
+    typed_authority_required = report_candidate_universe_requires_typed_authority(
+        live
     )
+    publication = _select_current_queue_publication(
+        live,
+        run_id=run_id,
+        project_root=live.parent,
+    )
+    if not typed_authority_required:
+        # Residue-free Markdown-only report runs never enter the typed reader,
+        # so there is no typed capability or denominator to project.  The
+        # caller's canonical stage still enforces its registered input bytes
+        # and physical containment independently.
+        if publication is not None:
+            raise PostVerifyCandidateDeltaError(
+                "historical Markdown stage unexpectedly selected T9 authority"
+            )
+        yield None
+        return
     authority = load_candidate_universe_authority(
         live,
         run_id=run_id,
         authenticated_publication=publication,
     )
+    if authority.run_id != run_id:
+        raise PostVerifyCandidateDeltaError(
+            "historical typed stage candidate authority run mismatch"
+        )
     for relative in authority.input_artifacts:
         live_raw = _capture_artifact(live, relative, allow_absent=False)
         stage_raw = _capture_artifact(stage, relative, allow_absent=False)
@@ -611,7 +647,7 @@ def authenticated_historical_typed_stage_scope(
             )
 
     token = _AUTHENTICATED_HISTORICAL_STAGE.set(
-        (str(stage), publication.run_id)
+        (str(stage), run_id)
     )
     try:
         yield authority
@@ -1407,6 +1443,11 @@ def _payload(
 
 def _atomic_write(path: Path, raw: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if not path.is_symlink() and path.is_file() and path.read_bytes() == raw:
+            return
+    except OSError:
+        pass
     fd, temporary = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
     )

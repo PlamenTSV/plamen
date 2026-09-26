@@ -19,8 +19,11 @@ from pathlib import Path
 import re
 import sys
 import time
+from types import MappingProxyType
 from typing import Any, Callable, Collection, Iterator, Mapping, Sequence
 import uuid
+
+from portable_path_contract import assert_lexically_bounded_relative_path
 
 from worker_execution_receipts import (
     BoundInput,
@@ -72,6 +75,16 @@ from owned_process_scope import (
 )
 from provider_command_authority import argv_authority_sha256
 import rooted_path_io as _rooted_io
+
+if os.name != "nt":
+    from posix_backend_execution import (
+        PosixBackendExecution,
+        PosixBackendExecutionError,
+        prepare_posix_backend_execution,
+    )
+else:  # Keep the qualified Windows adapter importable without POSIX fcntl.
+    PosixBackendExecution = Any  # type: ignore[misc,assignment]
+    PosixBackendExecutionError = RuntimeError  # type: ignore[assignment]
 
 
 PHASE_WORK_ROSTER_SCHEMA = "plamen.phase_work_roster.v1"
@@ -578,6 +591,12 @@ def _relative_path(value: Any, label: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise WorkerTransactionError(f"{label} must be non-empty canonical text")
     text = value.replace("\\", "/")
+    try:
+        assert_lexically_bounded_relative_path(text, label=label)
+    except ValueError as exc:
+        raise WorkerTransactionError(
+            f"{label} is not a safe relative path"
+        ) from exc
     candidate = Path(text)
     parts = text.split("/")
     if (
@@ -1277,6 +1296,31 @@ def attempt_output_directory(
         write_scope["output_relative_path"], "attempt output path"
     )
     return root / ".worker_transactions" / relative
+
+
+def materialize_attempt_output_directory(
+    scratchpad: Path,
+    write_scope: Mapping[str, Any],
+) -> Path:
+    """Create and return the compiled attempt output lane.
+
+    :func:`attempt_output_directory` deliberately RESOLVES without creating --
+    several callers depend on the path not existing yet.  The POSIX
+    compatibility Claude leaf, however, binds its staging root with
+    ``resolve(strict=True)`` and fails closed with
+    ``BOUND_PATH: Claude output staging directory is unavailable`` when the
+    lane is absent.  The native transaction path materializes its lane inside
+    ``execute_worker_transaction``; the compatibility path had no equivalent
+    step, so every Claude compat leaf failed before launching.  This helper
+    supplies exactly that step, reusing the same safe rooted, fsync'd,
+    race-tolerant tree builder so the lane cannot be satisfied by a symlink or
+    a non-directory.
+    """
+
+    target = attempt_output_directory(scratchpad, write_scope)
+    root = _checked_root_directory(scratchpad, label="adapter scratchpad")
+    relative = target.relative_to(root).as_posix()
+    return _make_safe_directory_tree(root, relative)
 
 
 def _is_reparse(path: Path) -> bool:
@@ -2260,6 +2304,9 @@ def execute_worker_transaction(
     plan: Mapping[str, Any],
     adapter: NativeCommandAdapter | HeadlessModelAdapter,
     cancel_token: Any = None,
+    *,
+    native_backend_execution_authority: object | None = None,
+    backend_install_generation_authority: object | None = None,
 ) -> ExecutionRef:
     """Execute one native or headless-model plan into attempt-owned staging.
 
@@ -2274,6 +2321,11 @@ def execute_worker_transaction(
             "worker adapter type is unsupported"
         )
     provider = compiled["provider"]
+    posix_model_execution = (
+        os.name != "nt"
+        and isinstance(adapter, HeadlessModelAdapter)
+        and provider.get("backend") in {"codex", "claude"}
+    )
     phase_roster: dict[str, Any] | None = None
     if plan_is_v2:
         raw_roster = adapter.phase_roster
@@ -2408,12 +2460,19 @@ def execute_worker_transaction(
             if (
                 type(raw_provider_preparation)
                 is not ClaudeProviderPreparation
-                or type(raw_provider_runtime)
-                is not BoundClaudeProviderRuntime
+                or (
+                    not posix_model_execution
+                    and type(raw_provider_runtime)
+                    is not BoundClaudeProviderRuntime
+                )
+                or (
+                    posix_model_execution
+                    and raw_provider_runtime is not None
+                )
             ):
                 raise WorkerTransactionError(
-                    "Claude execution requires an exact prepared and bound "
-                    "provider parent"
+                    "Claude execution requires exactly one platform-qualified "
+                    "provider authority"
                 )
             try:
                 normalized_request = replay_claude_launch_security_request(
@@ -2438,12 +2497,17 @@ def execute_worker_transaction(
                 if (
                     plan_preparation_sha256
                     != raw_provider_preparation.preparation_sha256
-                    or raw_provider_runtime.preparation_sha256
-                    != raw_provider_preparation.preparation_sha256
-                    or raw_provider_runtime.runtime_host_policy_sha256
-                    != public_parent[
-                        "claude_runtime_host_policy_sha256"
-                    ]
+                    or (
+                        not posix_model_execution
+                        and (
+                            raw_provider_runtime.preparation_sha256
+                            != raw_provider_preparation.preparation_sha256
+                            or raw_provider_runtime.runtime_host_policy_sha256
+                            != public_parent[
+                                "claude_runtime_host_policy_sha256"
+                            ]
+                        )
+                    )
                     or public_parent["claude_launch_security"]
                     != raw_plan_claude_security
                     or public_parent[
@@ -2466,11 +2530,20 @@ def execute_worker_transaction(
                 ) from exc
             claude_launch_security_request = normalized_request
             claude_provider_preparation = raw_provider_preparation
-            claude_provider_runtime = raw_provider_runtime
+            claude_provider_runtime = (
+                None if posix_model_execution else raw_provider_runtime
+            )
         raw_codex_auth_policy = plan_completion_policy.get(
             CODEX_RUNTIME_AUTH_POLICY_KEY
         )
         raw_codex_auth_bytes = adapter.codex_auth_bytes
+        if posix_model_execution and (
+            raw_codex_auth_policy is not None or raw_codex_auth_bytes is not None
+        ):
+            raise WorkerTransactionError(
+                "POSIX Codex credentials must come only from the authenticated "
+                "outer-supervisor backend authority"
+            )
         if raw_codex_auth_policy is None:
             if raw_codex_auth_bytes is not None:
                 raise WorkerTransactionError(
@@ -2795,9 +2868,10 @@ def execute_worker_transaction(
 
     claude_runtime_materialization_request = None
     codex_home_lease: AuxiliaryWritableRootLease | None = None
+    posix_backend_execution_authority: PosixBackendExecution | None = None
     execution_environment = dict(adapter.environment)
     execution_auxiliary_leases: tuple[AuxiliaryWritableRootLease, ...] = ()
-    if provider["backend"] == "claude":
+    if provider["backend"] == "claude" and not posix_model_execution:
         if (
             claude_launch_security_request is None
             or claude_provider_preparation is None
@@ -2879,7 +2953,7 @@ def execute_worker_transaction(
         )
 
     try:
-        if codex_auth_policy is not None:
+        if codex_auth_policy is not None and not posix_model_execution:
             reservation = reserve_auxiliary_writable_root(
                 attempt_id=attempt_id,
                 purpose="codex-runtime-home",
@@ -2941,6 +3015,50 @@ def execute_worker_transaction(
                 "worker transaction was cancelled after arm and before launch",
             )
             raise WorkerTransactionError("worker transaction cancelled before launch")
+
+        if posix_model_execution:
+            try:
+                posix_backend_execution_authority = (
+                    prepare_posix_backend_execution(
+                        backend=str(provider["backend"]),
+                        model=str(provider["model"]),
+                        attempt_id=attempt_id,
+                        outer_attempt_arm_sha256=arm["arm_digest"],
+                        work_plan_sha256=hashlib.sha256(
+                            _canonical_bytes(compiled) + b"\n"
+                        ).hexdigest(),
+                        process_scope_identity=shard_id,
+                        base_argv=materialized_argv,
+                        base_environment=execution_environment,
+                        cwd=cwd,
+                        prompt_path=view_dir / view_names["prompt"],
+                        prompt_sha256=arm["materialized"]["prompt_sha256"],
+                        provider_stdout_evidence_configuration=(
+                            provider_stdout_evidence_configuration
+                        ),
+                        timeout_seconds=provider["timeout_seconds"],
+                        stdout_limit_bytes=provider["stream_limits"][
+                            "stdout_bytes"
+                        ],
+                        stderr_limit_bytes=provider["stream_limits"][
+                            "stderr_bytes"
+                        ],
+                        native_authority=(
+                            native_backend_execution_authority
+                        ),
+                        backend_install_generation_authority=(
+                            backend_install_generation_authority
+                        ),
+                    )
+                )
+            except PosixBackendExecutionError as exc:
+                terminal_debt(
+                    "POSIX_BACKEND_AUTHORITY_REJECTED",
+                    str(exc),
+                )
+                raise WorkerTransactionError(
+                    f"POSIX backend authority was rejected: {exc}"
+                ) from exc
 
         prefix = (
             attempt_dir.relative_to(scratchpad).as_posix()
@@ -3013,10 +3131,15 @@ def execute_worker_transaction(
                 ),
                 startup_authority_binding=startup_authority_binding,
                 claude_launch_security_request=(
-                    claude_launch_security_request
+                    None
+                    if posix_model_execution
+                    else claude_launch_security_request
                 ),
                 claude_runtime_materialization_request=(
                     claude_runtime_materialization_request
+                ),
+                posix_backend_execution=(
+                    posix_backend_execution_authority
                 ),
             )
         except WorkerExecutionIncomplete as exc:
@@ -3090,6 +3213,8 @@ def execute_worker_transaction(
             f"worker transaction execution failed: {type(exc).__name__}: {exc}"
         ) from exc
     finally:
+        if posix_backend_execution_authority is not None:
+            posix_backend_execution_authority.close()
         clear_active_attempt()
 
 
@@ -3192,15 +3317,29 @@ def _read_digest_bound_json(
     return value, claimed
 
 
-def validate_worker_execution_authority(
+@dataclass(frozen=True)
+class WorkerProjectedMember:
+    canonical_identity: str
+    sha256: str
+    size: int
+
+
+@dataclass(frozen=True)
+class WorkerExecutionPreimageAuthority:
+    normalized_authority: Mapping[str, Any]
+    projected_members: tuple[WorkerProjectedMember, ...]
+    record_relative_paths: tuple[str, str, str]
+
+
+def replay_worker_execution_preimage_authority(
     *,
     scratchpad: Path,
     authority: Mapping[str, Any],
     contract: Any,
     launch: Any,
     run_id: str,
-) -> dict[str, Any]:
-    """Replay the structural execution→incorporation chain for ArtifactLedger."""
+) -> WorkerExecutionPreimageAuthority:
+    """Replay immutable execution records and their original projection."""
 
     expected_keys = {
         "schema",
@@ -3241,6 +3380,46 @@ def validate_worker_execution_authority(
         raise WorkerTransactionError("execution authority contract mismatch")
     if normalized["launch_digest"] != getattr(launch, "digest", None):
         raise WorkerTransactionError("execution authority launch mismatch")
+    _identifier(normalized["run_id"], "execution authority run_id")
+    _identifier(normalized["phase"], "execution authority phase")
+    _identifier(
+        normalized["work_unit_id"], "execution authority work_unit_id"
+    )
+    # Native WorkPlan generations are positive ordinals; the admitted POSIX
+    # incorporation path uses a content-addressed generation. Both remain
+    # immutable scalars and must match the two historical records below.
+    if isinstance(normalized["generation"], str):
+        _sha256(normalized["generation"], "execution authority generation")
+    else:
+        _generation(normalized["generation"])
+    _sha256(
+        normalized["work_plan_digest"],
+        "execution authority work plan digest",
+    )
+    _identifier(normalized["attempt_id"], "execution authority attempt_id")
+    _sha256(
+        normalized["contract_digest"], "execution authority contract digest"
+    )
+    _sha256(
+        normalized["launch_digest"], "execution authority launch digest"
+    )
+    for field, label in (
+        ("attempt_completion_digest", "attempt completion digest"),
+        ("provider_completion_digest", "provider completion digest"),
+        ("incorporation_digest", "incorporation digest"),
+    ):
+        _sha256(normalized[field], f"execution authority {label}")
+    canonical_record_paths: list[str] = []
+    for field, label in (
+        ("attempt_completion_relative_path", "attempt completion"),
+        ("provider_completion_relative_path", "provider completion"),
+        ("incorporation_relative_path", "worker incorporation"),
+    ):
+        raw_path = normalized[field]
+        canonical_path = _relative_path(raw_path, label)
+        if raw_path != canonical_path:
+            raise WorkerTransactionError(f"{label} path is not canonical")
+        canonical_record_paths.append(canonical_path)
 
     root = _checked_root_directory(
         scratchpad,
@@ -3337,18 +3516,79 @@ def validate_worker_execution_authority(
         or len(projected) != len(expected_identities)
     ):
         raise WorkerTransactionError("incorporation output denominator mismatch")
+    normalized_members: list[WorkerProjectedMember] = []
+    seen_identities: set[str] = set()
     for row in projected:
-        if not isinstance(row, dict):
+        if not isinstance(row, dict) or set(row) != {
+            "canonical_identity", "sha256", "size",
+        }:
             raise WorkerTransactionError("incorporation member is malformed")
-        destination = _projection_destination(root, row["canonical_identity"])
+        identity = row.get("canonical_identity")
+        sha256 = row.get("sha256")
+        size = row.get("size")
+        if (
+            not isinstance(identity, str)
+            or identity in seen_identities
+            or not identity.startswith("scratchpad:")
+            or not isinstance(sha256, str)
+            or _HEX_RE.fullmatch(sha256) is None
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 0
+        ):
+            raise WorkerTransactionError("incorporation member is malformed")
+        canonical_relative = _relative_path(
+            identity.removeprefix("scratchpad:"), "projection identity"
+        )
+        if identity != f"scratchpad:{canonical_relative}":
+            raise WorkerTransactionError("incorporation member is malformed")
+        seen_identities.add(identity)
+        normalized_members.append(WorkerProjectedMember(
+            canonical_identity=identity,
+            sha256=sha256,
+            size=size,
+        ))
+    return WorkerExecutionPreimageAuthority(
+        normalized_authority=MappingProxyType(dict(normalized)),
+        projected_members=tuple(normalized_members),
+        record_relative_paths=(
+            canonical_record_paths[0],
+            canonical_record_paths[1],
+            canonical_record_paths[2],
+        ),
+    )
+
+
+def validate_worker_execution_authority(
+    *,
+    scratchpad: Path,
+    authority: Mapping[str, Any],
+    contract: Any,
+    launch: Any,
+    run_id: str,
+) -> dict[str, Any]:
+    """Replay execution records and require their canonical bytes are live."""
+
+    replay = replay_worker_execution_preimage_authority(
+        scratchpad=scratchpad,
+        authority=authority,
+        contract=contract,
+        launch=launch,
+        run_id=run_id,
+    )
+    root = _checked_root_directory(scratchpad, label="scratchpad")
+    for member in replay.projected_members:
+        destination = _projection_destination(
+            root, member.canonical_identity
+        )
         state = _artifact_state(destination)
         if (
             state["status"] != "ACTIVE"
-            or state["sha256"] != row.get("sha256")
-            or state["size"] != row.get("size")
+            or state["sha256"] != member.sha256
+            or state["size"] != member.size
         ):
             raise WorkerTransactionError("incorporated canonical bytes changed")
-    return normalized
+    return dict(replay.normalized_authority)
 
 
 def incorporate_worker_execution(
@@ -4263,6 +4503,8 @@ __all__ = [
     "WORKER_ATTEMPT_ARM_SCHEMA_V2",
     "WORKER_ATTEMPT_ARM_SCHEMA_V3",
     "WORKER_ATTEMPT_DEBT_SCHEMA",
+    "WorkerExecutionPreimageAuthority",
+    "WorkerProjectedMember",
     "WorkerTransactionError",
     "attempt_output_directory",
     "compile_attempt_write_scope",
@@ -4273,6 +4515,7 @@ __all__ = [
     "execute_worker_transaction",
     "incorporate_worker_execution",
     "reconcile_phase_work_roster",
+    "replay_worker_execution_preimage_authority",
     "recover_worker_transactions",
     "prompt_template_sha256",
     "staged_output_validator_binding",

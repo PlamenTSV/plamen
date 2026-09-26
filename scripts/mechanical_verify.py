@@ -47,7 +47,7 @@ import subprocess
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Mapping, Optional
 
 # ITEM H2: fail-closed supply-chain gate — sibling module, stdlib only. Called
 # before the per-finding test loop (which runs the TARGET repo's own
@@ -1017,8 +1017,14 @@ def _classify_evm_outcome(rc: int, stdout: str, isolated: bool = True) -> str:
 def _run_test_for_finding(verify_path: Path, build_root: Path, language: str,
                           registry: dict, per_test_timeout_s: int,
                           project_root: Optional[Path] = None,
-                          bug_class_map: Optional[dict[str, str]] = None) -> ExecResult:
+                          bug_class_map: Optional[dict[str, str]] = None,
+                          process_runner: Optional[Callable[..., object]] = None) -> ExecResult:
     """Execute one verify file's PoC and classify the outcome."""
+    # Resolve at call time so existing tests may still monkeypatch the legacy
+    # runner, while the compatibility route can inject its authenticated
+    # CANDIDATE_POC transport.  A default argument bound at import time would
+    # silently bypass both properties.
+    runner = process_runner or _run_owned_process
     spike = _spike_module()
     probe = spike.parse_verify_file(verify_path, language=language)
     result = ExecResult(
@@ -1086,7 +1092,7 @@ def _run_test_for_finding(verify_path: Path, build_root: Path, language: str,
             profile = env["FOUNDRY_PROFILE"]  # already set in the parent env
         t0 = time.time()
         try:
-            proc = _run_owned_process(
+            proc = runner(
                 cmd,
                 cwd=str(build_root),
                 timeout=per_test_timeout_s,
@@ -1157,7 +1163,7 @@ def _run_test_for_finding(verify_path: Path, build_root: Path, language: str,
 
     t0 = time.time()
     try:
-        proc = _run_owned_process(
+        proc = runner(
             cmd,
             cwd=str(build_root),
             encoding="utf-8",
@@ -1536,9 +1542,27 @@ def _write_manifest(results: list[ExecResult], scratchpad: Path) -> Path:
             f"| {r.finding_id or '?'} | {r.status} | {r.duration_s:.1f}s "
             f"| {tf} | {r.test_function or '—'} | {_recommended_tag(r.status) or '—'} |"
         )
-    (scratchpad / "mechanical_verify_manifest.md").write_text(
-        "\n".join(lines), encoding="utf-8"
-    )
+    manifest_md = scratchpad / "mechanical_verify_manifest.md"
+    markdown = "\n".join(lines)
+    preserve_markdown = False
+    if manifest_md.is_file():
+        try:
+            prior_markdown = manifest_md.read_text(
+                encoding="utf-8", errors="strict"
+            )
+            without_timestamp = lambda value: re.sub(
+                r"(?m)^\*\*Generated\*\*:\s*.*$",
+                "**Generated**: <timestamp>",
+                value,
+            )
+            preserve_markdown = (
+                without_timestamp(prior_markdown)
+                == without_timestamp(markdown)
+            )
+        except (OSError, UnicodeError):
+            preserve_markdown = False
+    if not preserve_markdown:
+        manifest_md.write_text(markdown, encoding="utf-8")
 
     # JSON sidecar for downstream programmatic consumption
     manifest_json = scratchpad / "mechanical_verify_manifest.json"
@@ -1614,11 +1638,11 @@ def _mechanical_successor_execution_identity(
 ) -> tuple[str, str]:
     """Resolve the run and exact driver bytes bound by successor receipts.
 
-    Production runs carry a UUID in ``_v2_checkpoint.json``.  The explicit
-    keyword parameters are retained for isolated tests and recovery tooling;
-    ordinary driver callers need no signature change.  ``test-unbound`` is a
-    loud compatibility identity for isolated legacy callers with no
-    checkpoint, never an invented production UUID.
+    Normal and recovery driver calls supply both identities explicitly.
+    Checkpoint/code-file fallback remains for legacy standalone callers only;
+    live compatibility execution requires explicit matching caller bindings
+    before reaching this helper. ``test-unbound`` is a loud identity for
+    isolated legacy callers without a checkpoint, never a production UUID.
     """
     run = str(run_identity or "").strip()
     if not run:
@@ -1928,20 +1952,33 @@ def _write_verdict_manifest(results: list, scratchpad: Path) -> None:
             "integrity_state": integrity_state,
             "effective_tag": effective_tag,
         })
-    payload = {
+    unsigned_payload = {
         "schema_version": "plamen.verdict_manifest.v1",
         "mechanical_source": "mechanical_verify_manifest.md",
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "row_count": len(verdicts),
         "verdicts": verdicts,
     }
     out = scratchpad / "verdict_manifest.json"
+    generated_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+    if out.is_file():
+        try:
+            prior = json.loads(out.read_text(encoding="utf-8", errors="strict"))
+            if isinstance(prior, dict):
+                prior_semantics = {
+                    key: value for key, value in prior.items()
+                    if key != "generated_at"
+                }
+                if prior_semantics == unsigned_payload:
+                    generated_at = str(prior.get("generated_at") or generated_at)
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            pass
+    payload = {**unsigned_payload, "generated_at": generated_at}
+    raw = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if out.is_file() and out.read_bytes() == raw:
+        return
     try:
         tmp = out.with_suffix(out.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        tmp.write_bytes(raw)
         tmp.replace(out)
     except OSError:
         pass
@@ -2112,7 +2149,10 @@ def run_phase5b_mechanical_verify(scratchpad: Path, project_root: Path,
                                   phase_budget_s: Optional[int] = None,
                                   registry: Optional[dict] = None,
                                   run_identity: Optional[str] = None,
-                                  driver_identity: Optional[str] = None) -> dict:
+                                  driver_identity: Optional[str] = None,
+                                  posix_compat_session: object | None = None,
+                                  audit_snapshot: Mapping | None = None,
+                                  assert_snapshot_current: Callable[[], None] | None = None) -> dict:
     """Execute mechanical PoC verification for every verify_*.md in scratchpad.
 
     Returns a summary dict (also written to mechanical_verify_manifest.json):
@@ -2134,6 +2174,28 @@ def run_phase5b_mechanical_verify(scratchpad: Path, project_root: Path,
     starts. The driver's phase try/except catches it like any other phase
     exception and marks this phase degraded without halting the pipeline.
     """
+    if posix_compat_session is not None:
+        # Validate before any tool lookup, scratchpad write or build-root
+        # selection. A session for a different run/root cannot activate this
+        # route, and checkpoint text cannot replace the caller's live binding.
+        try:
+            from posix_v2_compat_runtime import require_posix_v2_compat_session
+
+            binding = require_posix_v2_compat_session(posix_compat_session).binding
+            if (
+                not run_identity or run_identity == "test-unbound"
+                or binding["run_id"] != run_identity
+                or Path(binding["project_root"]).resolve() != Path(project_root).resolve()
+                or Path(binding["scratchpad"]).resolve() != Path(scratchpad).resolve()
+                or not isinstance(driver_identity, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", driver_identity) is None
+            ):
+                raise ValueError("mechanical caller differs from live session")
+        except Exception as exc:
+            raise SupplyChainAbortError(
+                "mechanical verification compatibility execution binding is invalid"
+            ) from exc
+
     per_test_timeout_s = per_test_timeout_s or _DEFAULT_PER_TEST_TIMEOUT_S
     phase_budget_s = phase_budget_s or _DEFAULT_PHASE_BUDGET_S
     registry = registry or _load_registry()
@@ -2221,14 +2283,33 @@ def run_phase5b_mechanical_verify(scratchpad: Path, project_root: Path,
     # wrapped in a try/except here, so a raised SupplyChainAbortError
     # propagates out of this function immediately and neither the pre-warm
     # build nor a single per-finding test subprocess runs.
-    gate_supply_chain(build_root)
+    source_build_root = build_root
+    compat_prewarm = None
+    if posix_compat_session is None:
+        gate_supply_chain(build_root)
+        prewarm_ok, prewarm_note = _prewarm_build(
+            build_root, lang, registry, _DEFAULT_BUILD_TIMEOUT_S)
+    else:
+        from mechanical_prewarm import run_compat_prewarm
 
-    # Warm the build cache ONCE before the per-finding loop. A cold, dependency-
-    # heavy (`--via-ir`) repo cannot compile inside a single per-test budget, so
-    # without this every finding TIMEOUTs and caps at [CODE-TRACE]; a warm cache
-    # makes each test an incremental build. Best-effort / non-fatal.
-    prewarm_ok, prewarm_note = _prewarm_build(
-        build_root, lang, registry, _DEFAULT_BUILD_TIMEOUT_S)
+        # Retain the actual gate object through workspace publication/launch;
+        # its JSON digest alone cannot authorize compilation. The compiler
+        # workspace is also the later execution cwd, so its cache is not lost.
+        admission = gate_supply_chain(
+            build_root, posix_compat_session=posix_compat_session)
+        compat_prewarm = run_compat_prewarm(
+            session_authority=posix_compat_session,
+            source_build_root=build_root,
+            language=lang,
+            registry=registry,
+            driver_identity=driver_identity,
+            audit_snapshot=audit_snapshot,
+            assert_snapshot_current=assert_snapshot_current,
+            supply_chain_admission=admission,
+            timeout_seconds=_DEFAULT_BUILD_TIMEOUT_S,
+        )
+        build_root = compat_prewarm.workspace_root
+        prewarm_ok, prewarm_note = compat_prewarm.ok, compat_prewarm.note
 
     # A1: l1_go-only best-effort Bug-Class lookup for `-race` routing. `{}`
     # for every SC language and for l1_rust — see `_load_race_bug_class_map`.
@@ -2246,10 +2327,80 @@ def run_phase5b_mechanical_verify(scratchpad: Path, project_root: Path,
                 stdout_tail="phase budget exhausted",
             ))
             continue
+        process_runner = None
+        execution_project_root: Optional[Path] = Path(project_root)
+        if compat_prewarm is not None:
+            # Verification workers own authenticated Markdown, not the audited
+            # checkout.  Extract their exact fenced source into the disposable
+            # prewarm workspace, then execute through the live compatibility
+            # authority.  Missing/ambiguous source is localized to this row as
+            # non-execution debt; it never aborts the verification phase.
+            try:
+                from mechanical_poc_source import (
+                    extract_mechanical_poc_source,
+                    materialize_mechanical_poc_source,
+                )
+                from mechanical_prewarm import run_compat_candidate
+
+                probe = _spike_module().parse_verify_file(vf, language=lang)
+                if not probe.test_file_resolved:
+                    raise ValueError("verifier artifact names no canonical Test File")
+                source = extract_mechanical_poc_source(
+                    vf,
+                    language=lang,
+                    test_path=probe.test_file_resolved,
+                    test_function=probe.test_function,
+                )
+                materialize_mechanical_poc_source(build_root, source)
+
+                def compat_runner(
+                    cmd, *, cwd, timeout, encoding=None, errors=None, env=None,
+                    _vf=vf, _probe=probe, _source=source,
+                ):
+                    if Path(cwd).resolve() != Path(build_root).resolve():
+                        raise ValueError("candidate cwd differs from prewarm workspace")
+                    overrides: dict[str, str] = {}
+                    if isinstance(env, Mapping):
+                        for name in ("CGO_ENABLED", "FOUNDRY_PROFILE"):
+                            value = env.get(name)
+                            if isinstance(value, str) and value:
+                                overrides[name] = value
+                    return run_compat_candidate(
+                        session_authority=posix_compat_session,
+                        prewarm=compat_prewarm,
+                        verify_path=_vf,
+                        finding_id=_probe.finding_id,
+                        constituent_id=f"{_probe.finding_id}.primary",
+                        test_relative_path=_source.relative_path,
+                        test_function=_probe.test_function,
+                        argv=list(cmd),
+                        environment_overrides=overrides,
+                        timeout_seconds=float(timeout),
+                    )
+
+                process_runner = compat_runner
+                # Never let the compatibility route fall back into the
+                # audited checkout when resolving a generated test path.
+                execution_project_root = None
+            except Exception as exc:
+                r = ExecResult(
+                    verify_file=vf.name,
+                    finding_id=vf.stem.replace("verify_", ""),
+                    language=lang,
+                    status="NO_TEST_FILE",
+                    stdout_tail=(
+                        "POC_SOURCE_INVALID: authenticated executable source "
+                        f"could not be materialized: {type(exc).__name__}: {exc}"
+                    )[-3000:],
+                )
+                r.recommended_tag = _recommended_tag(r.status)
+                results.append(r)
+                continue
         r = _run_test_for_finding(
             vf, build_root, lang, registry, per_test_timeout_s,
-            project_root=Path(project_root),
+            project_root=execution_project_root,
             bug_class_map=race_bug_class_map,
+            process_runner=process_runner,
         )
         r.recommended_tag = _recommended_tag(r.status)
         results.append(r)
@@ -2334,8 +2485,11 @@ def run_phase5b_mechanical_verify(scratchpad: Path, project_root: Path,
         "authority_rejections": len(authority_rejections),
         "p1e_execution_scope": p1e_scope,
         "build_root": str(build_root),
+        "source_build_root": str(source_build_root),
         "prewarm_ok": prewarm_ok,
         "prewarm_note": prewarm_note,
+        "prewarm_cargo_ok": compat_prewarm.cargo_ok if compat_prewarm else None,
+        "prewarm_cargo_note": compat_prewarm.cargo_note if compat_prewarm else None,
         "elapsed_s": time.time() - t_start,
     }
 

@@ -1,0 +1,1140 @@
+{
+  "authority_surface": {
+    "backend_execution": {
+      "bundle_member_name": "BackendExecutionAuthority",
+      "bundle_type": "GuestDriverAuthorities",
+      "initial_authority_role": 2,
+      "member_count": 1,
+      "method_order": [
+        "prepare",
+        "start_or_recover",
+        "wait_or_recover",
+        "read_output_or_recover",
+        "extinguish_or_recover",
+        "close_operation"
+      ],
+      "methods": [
+        {
+          "name": "close_operation",
+          "request_fields": [
+            "operation_key_sha256",
+            "prepared_receipt_sha256",
+            "schema",
+            "terminal_receipt_sha256"
+          ],
+          "request_schema": "plamen.posix_backend_execution.close_request.v2",
+          "response_fields": [
+            "close_request_sha256",
+            "disposition",
+            "operation_key_sha256",
+            "retained_descriptors_closed",
+            "retained_output_closed",
+            "schema",
+            "status",
+            "terminal_receipt_sha256"
+          ],
+          "response_schema": "plamen.posix_backend_execution.finished_receipt.v2"
+        },
+        {
+          "name": "extinguish_or_recover",
+          "request_fields": [
+            "latest_lifecycle_receipt_sha256",
+            "operation_key_sha256",
+            "prepared_receipt_sha256",
+            "reason_code",
+            "schema"
+          ],
+          "request_schema": "plamen.posix_backend_execution.extinguish_request.v2",
+          "response_fields": [
+            "credentials_revoked",
+            "disposition",
+            "egress_revoked",
+            "extinguish_request_sha256",
+            "latest_lifecycle_receipt_sha256",
+            "operation_key_sha256",
+            "output_retention_disposition",
+            "prepared_receipt_sha256",
+            "process_identity_sha256",
+            "process_population_zero_proven",
+            "reason_code",
+            "schema",
+            "status"
+          ],
+          "response_schema": "plamen.posix_backend_execution.revoked_receipt.v2"
+        },
+        {
+          "name": "prepare",
+          "request_fields": [
+            "execution_envelope",
+            "execution_envelope_sha256",
+            "operation_key_sha256",
+            "schema",
+            "stderr_limit_bytes",
+            "stdout_limit_bytes",
+            "timeout_seconds"
+          ],
+          "request_schema": "plamen.posix_backend_execution.prepare_request.v2",
+          "response_fields": [
+            "execution_envelope_sha256",
+            "operation_key_sha256",
+            "preparation_generation_sha256",
+            "prepare_request_sha256",
+            "retained_fd_roster_sha256",
+            "schema",
+            "status",
+            "stderr_effective_limit_bytes",
+            "stderr_requested_limit_bytes",
+            "stdout_effective_limit_bytes",
+            "stdout_requested_limit_bytes",
+            "timeout_seconds"
+          ],
+          "response_schema": "plamen.posix_backend_execution.prepared_receipt.v2"
+        },
+        {
+          "name": "read_output_or_recover",
+          "request_fields": [
+            "exited_receipt_sha256",
+            "max_bytes",
+            "offset",
+            "operation_key_sha256",
+            "schema",
+            "stream"
+          ],
+          "request_schema": "plamen.posix_backend_execution.output_request.v2",
+          "response_fields": [
+            "chunk_base64",
+            "chunk_sha256",
+            "eof",
+            "exited_receipt_sha256",
+            "full_stream_sha256",
+            "length",
+            "offset",
+            "operation_key_sha256",
+            "output_request_sha256",
+            "schema",
+            "status",
+            "stream"
+          ],
+          "response_schema": "plamen.posix_backend_execution.output_receipt.v2"
+        },
+        {
+          "name": "start_or_recover",
+          "request_fields": [
+            "operation_key_sha256",
+            "prepared_receipt_sha256",
+            "prepare_request_sha256",
+            "schema"
+          ],
+          "request_schema": "plamen.posix_backend_execution.start_request.v2",
+          "response_fields": [
+            "disposition",
+            "operation_key_sha256",
+            "prepared_receipt_sha256",
+            "process_identity",
+            "process_identity_sha256",
+            "schema",
+            "start_request_sha256",
+            "status"
+          ],
+          "response_schema": "plamen.posix_backend_execution.started_receipt.v2"
+        },
+        {
+          "name": "wait_or_recover",
+          "request_fields": [
+            "operation_key_sha256",
+            "schema",
+            "started_receipt_sha256",
+            "start_request_sha256"
+          ],
+          "request_schema": "plamen.posix_backend_execution.wait_request.v2",
+          "response_fields": [
+            "credentials_revoked",
+            "disposition",
+            "egress_revoked",
+            "exit_kind",
+            "operation_key_sha256",
+            "overflowed_stream",
+            "process_identity_sha256",
+            "process_population_zero_proven",
+            "returncode",
+            "schema",
+            "signal",
+            "started_receipt_sha256",
+            "status",
+            "stderr_effective_limit_bytes",
+            "stderr_requested_limit_bytes",
+            "stderr_sha256",
+            "stderr_size_bytes",
+            "stdout_effective_limit_bytes",
+            "stdout_requested_limit_bytes",
+            "stdout_sha256",
+            "stdout_size_bytes",
+            "timed_out",
+            "timeout_seconds",
+            "wait_request_sha256"
+          ],
+          "response_schema": "plamen.posix_backend_execution.exited_receipt.v2"
+        }
+      ],
+      "process_identity_fields": [
+        "executable_identity_sha256",
+        "native_process_handle_sha256",
+        "operation_key_sha256",
+        "peer",
+        "start_request_sha256"
+      ],
+      "process_role": 3,
+      "shared_static_authority": true
+    },
+    "outer_supervisor": {
+      "bundle_type": "SupervisorAuthorities",
+      "initial_authority_role": 1,
+      "member_count": 10,
+      "members": [
+        {
+          "methods": [
+            "authenticate"
+          ],
+          "name": "RuntimeImageAuthority",
+          "ordinal": 1
+        },
+        {
+          "methods": [
+            "admit_target",
+            "revalidate_target",
+            "prepare_layout",
+            "resume_layout",
+            "write_guest_config",
+            "recensus_layout"
+          ],
+          "name": "WorkspaceAuthority",
+          "ordinal": 2
+        },
+        {
+          "methods": [
+            "authenticate"
+          ],
+          "name": "BackendContextAuthority",
+          "ordinal": 3
+        },
+        {
+          "methods": [
+            "provider_kind",
+            "create_stopped",
+            "inspect_stopped",
+            "resume_guest",
+            "start_driver",
+            "wait_driver",
+            "delete_guest"
+          ],
+          "name": "ProviderAuthority",
+          "ordinal": 4
+        },
+        {
+          "methods": [
+            "admit_stopped_guest",
+            "resume_admission"
+          ],
+          "name": "GuestAdmissionAuthority",
+          "ordinal": 5
+        },
+        {
+          "methods": [
+            "extinguish"
+          ],
+          "name": "ExtinctionAuthority",
+          "ordinal": 6
+        },
+        {
+          "methods": [
+            "census"
+          ],
+          "name": "ArtifactAuthority",
+          "ordinal": 7
+        },
+        {
+          "methods": [
+            "export"
+          ],
+          "name": "ExportAuthority",
+          "ordinal": 8
+        },
+        {
+          "methods": [
+            "open",
+            "arm",
+            "commit",
+            "resolve",
+            "finish"
+          ],
+          "name": "JournalAuthority",
+          "ordinal": 9
+        },
+        {
+          "methods": [
+            "recover"
+          ],
+          "name": "RecoveryAuthority",
+          "ordinal": 10
+        }
+      ],
+      "rpc_contract": {
+        "call_document_schema": "plamen.native-supervisor-call.v1",
+        "encoding": "CANONICAL_ASCII_JSON_SORTED_KEYS_TRAILING_LF",
+        "methods": {
+          "01.RuntimeImageAuthority.authenticate": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.runtime_image.authenticate.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.runtime_image.authenticate.response.v2"
+          },
+          "02.WorkspaceAuthority.admit_target": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.workspace.admit_target.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.workspace.admit_target.response.v2"
+          },
+          "02.WorkspaceAuthority.prepare_layout": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.workspace.prepare_layout.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.workspace.prepare_layout.response.v2"
+          },
+          "02.WorkspaceAuthority.recensus_layout": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.workspace.recensus_layout.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.workspace.recensus_layout.response.v2"
+          },
+          "02.WorkspaceAuthority.resume_layout": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.workspace.resume_layout.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.workspace.resume_layout.response.v2"
+          },
+          "02.WorkspaceAuthority.revalidate_target": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.workspace.revalidate_target.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.workspace.revalidate_target.response.v2"
+          },
+          "02.WorkspaceAuthority.write_guest_config": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.workspace.write_guest_config.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.workspace.write_guest_config.response.v2"
+          },
+          "03.BackendContextAuthority.authenticate": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.backend_context.authenticate.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.backend_context.authenticate.response.v2"
+          },
+          "04.ProviderAuthority.create_stopped": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.provider.create_stopped.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.provider.create_stopped.response.v2"
+          },
+          "04.ProviderAuthority.delete_guest": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.provider.delete_guest.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.provider.delete_guest.response.v2"
+          },
+          "04.ProviderAuthority.inspect_stopped": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.provider.inspect_stopped.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.provider.inspect_stopped.response.v2"
+          },
+          "04.ProviderAuthority.provider_kind": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 4096,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.provider.provider_kind.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.provider.provider_kind.response.v2"
+          },
+          "04.ProviderAuthority.resume_guest": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.provider.resume_guest.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.provider.resume_guest.response.v2"
+          },
+          "04.ProviderAuthority.start_driver": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.provider.start_driver.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.provider.start_driver.response.v2"
+          },
+          "04.ProviderAuthority.wait_driver": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.provider.wait_driver.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.provider.wait_driver.response.v2"
+          },
+          "05.GuestAdmissionAuthority.admit_stopped_guest": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.guest_admission.admit_stopped_guest.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.guest_admission.admit_stopped_guest.response.v2"
+          },
+          "05.GuestAdmissionAuthority.resume_admission": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.guest_admission.resume_admission.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.guest_admission.resume_admission.response.v2"
+          },
+          "06.ExtinctionAuthority.extinguish": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.extinction.extinguish.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.extinction.extinguish.response.v2"
+          },
+          "07.ArtifactAuthority.census": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.artifact.census.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.artifact.census.response.v2"
+          },
+          "08.ExportAuthority.export": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.export.export.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.export.export.response.v2"
+          },
+          "09.JournalAuthority.arm": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.journal.arm.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.journal.arm.response.v2"
+          },
+          "09.JournalAuthority.commit": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.journal.commit.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.journal.commit.response.v2"
+          },
+          "09.JournalAuthority.finish": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.journal.finish.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.journal.finish.response.v2"
+          },
+          "09.JournalAuthority.open": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.journal.open.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.journal.open.response.v2"
+          },
+          "09.JournalAuthority.resolve": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.journal.resolve.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.journal.resolve.response.v2"
+          },
+          "10.RecoveryAuthority.recover": {
+            "max_request_bytes": 2096976,
+            "max_response_bytes": 2096976,
+            "request_arity": 1,
+            "request_schema": "plamen.native-supervisor.role1.recovery.recover.request.v2",
+            "response_schema": "plamen.native-supervisor.role1.recovery.recover.response.v2"
+          }
+        },
+        "response_document_schema": "plamen.native-supervisor-response.v1"
+      }
+    }
+  },
+  "canonicalization": {
+    "base64": "RFC4648_STANDARD_PADDED_CANONICAL",
+    "duplicate_object_keys_allowed": false,
+    "floats_allowed": false,
+    "json_key_order": "UTF8_ASCENDING",
+    "json_separators": ",:",
+    "null_allowed_in_projection": false,
+    "projection_trailing_lf": false,
+    "source_config_trailing_lf": true,
+    "string_normalization": "NFC",
+    "string_nul_allowed": false
+  },
+  "frame_protocol": {
+    "authentication": {
+      "chain_digest": "SHA256(header[0:196] || payload)",
+      "first_request_previous_digest": "AUTHENTICATED_HELLO_FRAME_SHA256",
+      "hello_operation_nonce": "ZERO32",
+      "hello_previous_digest": "ZERO32",
+      "hello_sequence": 0,
+      "sequence_rule": "INCREMENT_EXACTLY_ONE",
+      "tag": "HMAC-SHA256(session_key, header[0:164] || payload)"
+    },
+    "frame_types": [
+      {
+        "direction": "BROKER_TO_EXTENSION",
+        "name": "HELLO",
+        "value": 1
+      },
+      {
+        "direction": "EXTENSION_TO_BROKER",
+        "name": "AUTH_CONSUME",
+        "value": 2
+      },
+      {
+        "direction": "BROKER_TO_EXTENSION",
+        "name": "AUTH_ACCEPTED",
+        "value": 3
+      },
+      {
+        "direction": "EXTENSION_TO_BROKER",
+        "name": "REQUEST_PROJECTION",
+        "value": 4
+      },
+      {
+        "direction": "BROKER_TO_EXTENSION",
+        "name": "REQUEST_PROJECTED",
+        "value": 5
+      },
+      {
+        "direction": "EXTENSION_TO_BROKER",
+        "name": "CLI_PREPARE",
+        "value": 16
+      },
+      {
+        "direction": "BROKER_TO_EXTENSION",
+        "name": "CLI_COMMITTED",
+        "value": 17
+      },
+      {
+        "direction": "EXTENSION_TO_BROKER",
+        "name": "START_PREPARE",
+        "value": 32
+      },
+      {
+        "direction": "BROKER_TO_EXTENSION",
+        "name": "STARTED",
+        "value": 33
+      },
+      {
+        "direction": "EXTENSION_TO_BROKER",
+        "name": "START_RECOVER",
+        "value": 34
+      },
+      {
+        "direction": "EXTENSION_TO_BROKER",
+        "name": "WAIT_PREPARE",
+        "value": 48
+      },
+      {
+        "direction": "BROKER_TO_EXTENSION",
+        "name": "EXITED",
+        "value": 49
+      },
+      {
+        "direction": "EXTENSION_TO_BROKER",
+        "name": "WAIT_RECOVER",
+        "value": 50
+      },
+      {
+        "direction": "EXTENSION_TO_BROKER",
+        "name": "REVOKE_PREPARE",
+        "value": 64
+      },
+      {
+        "direction": "BROKER_TO_EXTENSION",
+        "name": "REVOKED",
+        "value": 65
+      },
+      {
+        "direction": "EXTENSION_TO_BROKER",
+        "name": "BACKEND_PREPARE",
+        "value": 80
+      },
+      {
+        "direction": "BROKER_TO_EXTENSION",
+        "name": "BACKEND_PREPARED",
+        "value": 81
+      },
+      {
+        "direction": "EXTENSION_TO_BROKER",
+        "name": "OUTPUT_READ",
+        "value": 96
+      },
+      {
+        "direction": "BROKER_TO_EXTENSION",
+        "name": "OUTPUT_CHUNK",
+        "value": 97
+      },
+      {
+        "direction": "EXTENSION_TO_BROKER",
+        "name": "OPERATION_CLOSE",
+        "value": 112
+      },
+      {
+        "direction": "BROKER_TO_EXTENSION",
+        "name": "OPERATION_FINISHED",
+        "value": 113
+      },
+      {
+        "direction": "EXTENSION_TO_BROKER",
+        "name": "OPERATION_REQUEST",
+        "value": 128
+      },
+      {
+        "direction": "BROKER_TO_EXTENSION",
+        "name": "OPERATION_RESPONSE",
+        "value": 129
+      },
+      {
+        "direction": "BROKER_TO_EXTENSION",
+        "name": "OPERATION_ERROR",
+        "value": 130
+      },
+      {
+        "direction": "EXTENSION_TO_BROKER",
+        "name": "WORKER_SESSION_OPEN",
+        "value": 144
+      },
+      {
+        "direction": "BROKER_TO_EXTENSION",
+        "name": "WORKER_SESSION_ACCEPTED",
+        "value": 145
+      },
+      {
+        "direction": "EITHER",
+        "name": "ERROR",
+        "value": 255
+      }
+    ],
+    "header_fields": [
+      {
+        "name": "magic",
+        "offset": 0,
+        "size": 8,
+        "value": "PLMBRK2\\0"
+      },
+      {
+        "name": "version",
+        "offset": 8,
+        "size": 2,
+        "value": 2
+      },
+      {
+        "name": "frame_type",
+        "offset": 10,
+        "size": 2
+      },
+      {
+        "name": "flags",
+        "offset": 12,
+        "size": 4,
+        "value": 0
+      },
+      {
+        "name": "header_size",
+        "offset": 16,
+        "size": 4,
+        "value": 196
+      },
+      {
+        "maximum": 2097152,
+        "minimum": 0,
+        "name": "payload_size",
+        "offset": 20,
+        "size": 4
+      },
+      {
+        "maximum": 16,
+        "minimum": 0,
+        "name": "scm_rights_fd_count",
+        "offset": 24,
+        "size": 2
+      },
+      {
+        "name": "reserved",
+        "offset": 26,
+        "size": 2,
+        "value": 0
+      },
+      {
+        "name": "sequence",
+        "offset": 28,
+        "size": 8
+      },
+      {
+        "name": "session_id",
+        "offset": 36,
+        "size": 32
+      },
+      {
+        "name": "operation_nonce",
+        "offset": 68,
+        "size": 32
+      },
+      {
+        "name": "previous_frame_digest",
+        "offset": 100,
+        "size": 32
+      },
+      {
+        "name": "payload_sha256",
+        "offset": 132,
+        "size": 32
+      },
+      {
+        "name": "hmac_sha256",
+        "offset": 164,
+        "size": 32
+      }
+    ],
+    "header_size": 196,
+    "magic_ascii": "PLMBRK2",
+    "network_byte_order": true
+  },
+  "limits": {
+    "apple_outer_observed_stream_bytes": 16777216,
+    "apple_outer_retained_stream_bytes": 1048576,
+    "authority_member_digest_bytes": 32,
+    "backend_execution_envelope_bytes": 65536,
+    "backend_stream_observed_bytes": 16777216,
+    "backend_stream_retained_bytes": 16777216,
+    "config_bytes": 262144,
+    "config_depth": 32,
+    "config_nodes": 8192,
+    "export_file_bytes": 268435456,
+    "export_files": 4096,
+    "export_total_bytes": 2147483648,
+    "frame_payload_bytes": 2097152,
+    "identifier_bytes": 128,
+    "output_chunk_bytes": 262144,
+    "projection_bytes": 1048576,
+    "role1_rpc_authenticated_prefix_bytes": 176,
+    "role1_rpc_canonical_bytes": 2096976,
+    "scm_rights_fds": 16,
+    "session_challenge_timeout_ms": 5000,
+    "session_id_bytes": 32,
+    "session_key_bytes": 32,
+    "text_bytes": 4096
+  },
+  "projection": {
+    "audit_request_fields": [
+      "attempt_id",
+      "backend",
+      "backend_admission_sha256",
+      "backend_context_sha256",
+      "credential_bundle_sha256",
+      "credential_isolation_sha256",
+      "docs_sha256",
+      "egress_admission_sha256",
+      "egress_policy_sha256",
+      "export_allowlist",
+      "export_destination_identity_sha256",
+      "export_max_total_bytes",
+      "failure_required_artifacts",
+      "image_closure_sha256",
+      "image_manifest_digest",
+      "language",
+      "mode",
+      "pipeline",
+      "provider_provenance_sha256",
+      "request_id",
+      "request_type",
+      "required_artifacts",
+      "run_id",
+      "runtime_layout_sha256",
+      "schema",
+      "scope_sha256",
+      "seccomp_profile_sha256",
+      "source_config",
+      "source_config_sha256",
+      "startup_decision_receipt_sha256",
+      "target_identity_sha256"
+    ],
+    "audit_request_schema": "plamen.posix_audit_supervisor.v1",
+    "binding_authority": {
+      "native_request_observations": [
+        "backend_admission_sha256",
+        "backend_context_sha256",
+        "credential_bundle_sha256",
+        "credential_isolation_sha256",
+        "docs_sha256",
+        "egress_admission_sha256",
+        "egress_policy_sha256",
+        "export_destination_identity_sha256",
+        "provider_provenance_sha256",
+        "scope_sha256",
+        "source_config",
+        "source_config_sha256",
+        "startup_decision_receipt_sha256",
+        "target_identity_sha256"
+      ],
+      "role5_schema": {
+        "fixed_export_allowlist": [
+          "project/AUDIT_REPORT.md",
+          "scratch/_plamen.log",
+          "scratch/_v2_checkpoint.json"
+        ],
+        "fixed_export_max_total_bytes": 2147483648,
+        "fixed_failure_required_artifacts": [
+          "scratch/_plamen.log"
+        ],
+        "fixed_protocol_policy_identifiers": {
+          "audit_request_schema": "plamen.posix_audit_supervisor.v1",
+          "backend_execution_abi_schema": "plamen.posix_backend_execution.native.v2",
+          "broker_abi_schema": "plamen.native-broker.v2",
+          "broker_protocol_version": 2,
+          "projection_schema": "plamen.native_audit_request_projection.v1"
+        },
+        "fixed_required_artifacts": [
+          "project/AUDIT_REPORT.md",
+          "scratch/_v2_checkpoint.json"
+        ]
+      },
+      "role8_runtime_manifest": {
+        "request_bindings": [
+          "image_closure_sha256",
+          "image_manifest_digest",
+          "runtime_layout_sha256",
+          "seccomp_profile_sha256"
+        ],
+        "runtime_bindings": [
+          "baked_toolchain_closure",
+          "outer_entrypoint",
+          "runtime_package_tree"
+        ],
+        "schema": "plamen.runtime-package-manifest.v2"
+      }
+    },
+    "commitment_fields": [
+      "request_fingerprint",
+      "attempt_id",
+      "run_identity",
+      "config_sha256",
+      "runtime_closure_sha256",
+      "image_closure_sha256",
+      "provider_provenance_sha256",
+      "backend_admission_sha256",
+      "credential_isolation_sha256",
+      "egress_admission_sha256"
+    ],
+    "digest_fields": [
+      "backend_admission_sha256",
+      "backend_context_sha256",
+      "credential_bundle_sha256",
+      "credential_isolation_sha256",
+      "docs_sha256",
+      "egress_admission_sha256",
+      "egress_policy_sha256",
+      "export_destination_identity_sha256",
+      "image_closure_sha256",
+      "provider_provenance_sha256",
+      "runtime_layout_sha256",
+      "scope_sha256",
+      "seccomp_profile_sha256",
+      "source_config_sha256",
+      "startup_decision_receipt_sha256",
+      "target_identity_sha256"
+    ],
+    "enum_domains": {
+      "backend": [
+        "claude",
+        "codex"
+      ],
+      "mode": [
+        "core",
+        "light",
+        "thorough"
+      ],
+      "pipeline": [
+        "l1",
+        "sc"
+      ],
+      "request_type": [
+        "L1_NEW",
+        "RESUME",
+        "SC_NEW",
+        "START_CONFIG"
+      ]
+    },
+    "image_manifest_digest_format": "sha256:LOWERCASE_HEX64",
+    "projection_schema": "plamen.native_audit_request_projection.v1",
+    "roster_fields": [
+      "export_allowlist",
+      "failure_required_artifacts",
+      "required_artifacts"
+    ],
+    "source_config": {
+      "decoded_schema": "CANONICAL_DRIVER_CONFIG_JSON",
+      "fields": [
+        "authenticated",
+        "canonical_utf8_b64",
+        "retained_source_handle",
+        "sha256"
+      ],
+      "retained_source_handle_format": "opaque:LOWERCASE_HEX64"
+    },
+    "top_level_fields": [
+      "audit_request",
+      "projection_schema"
+    ]
+  },
+  "schema": "plamen.native-supervisor.schema.v2",
+  "service_bootstrap": {
+    "authority_consume": {
+      "auth_accepted_binds": [
+        "authority_bundle_sha256",
+        "commitment",
+        "registration_burn_checkpoint_sha256"
+      ],
+      "auth_consume_payload": "EXACT_COMMITMENT_BYTES",
+      "consume_method": "INITIAL_AUTHORITY.consume_once(request_fingerprint,attempt_id)",
+      "request_projection_method": "INITIAL_AUTHORITY.request_projection()"
+    },
+    "messages": [
+      {
+        "fields": [
+          "broker_closure_sha256",
+          "installation_receipt_sha256",
+          "installed_closure_sha256"
+        ],
+        "name": "READINESS",
+        "payload_size": 96,
+        "value": 4096
+      },
+      {
+        "fields": [
+          "broker_closure_sha256",
+          "installation_receipt_sha256",
+          "installed_closure_sha256",
+          "request_envelope_sha256",
+          "service_peer"
+        ],
+        "name": "READY",
+        "payload_size": 204,
+        "value": 4100
+      },
+      {
+        "fields": [
+          "audit_request_fingerprint",
+          "authority_descriptors",
+          "authority_presence_mask",
+          "commitment",
+          "commitment_sha256",
+          "commitment_size",
+          "committed_audit_generation_sha256",
+          "initial_authority_role",
+          "initial_interpreter_slot",
+          "installed_closure_sha256",
+          "launcher",
+          "prior_audit_checkpoint_sha256",
+          "python_argv_sha256",
+          "python_entrypoint_sha256",
+          "python_environment_sha256",
+          "request_projection_sha256",
+          "request_projection_size",
+          "suspended_child"
+        ],
+        "name": "REGISTER_INITIAL",
+        "payload_size": 1488,
+        "transport_attachment": "request_projection",
+        "value": 4097
+      },
+      {
+        "fields": [
+          "audit_request_fingerprint",
+          "authority_descriptors",
+          "authority_presence_mask",
+          "commitment",
+          "commitment_sha256",
+          "commitment_size",
+          "committed_audit_generation_sha256",
+          "initial_authority_role",
+          "initial_interpreter_slot",
+          "installed_closure_sha256",
+          "launcher",
+          "prior_audit_checkpoint_sha256",
+          "python_argv_sha256",
+          "python_entrypoint_sha256",
+          "python_environment_sha256",
+          "request_projection_sha256",
+          "request_projection_size",
+          "suspended_child"
+        ],
+        "name": "REGISTER_RECOVERY",
+        "payload_size": 1488,
+        "transport_attachment": "request_projection",
+        "value": 4098
+      },
+      {
+        "fields": [
+          "broker_closure_sha256",
+          "initial_authority_role",
+          "initial_interpreter_slot",
+          "issuance_state",
+          "registration_checkpoint_sha256",
+          "registration_sha256",
+          "request_envelope_sha256",
+          "suspended_child"
+        ],
+        "name": "REGISTRATION_ACCEPTED",
+        "payload_size": 210,
+        "value": 4099
+      },
+      {
+        "fields": [
+          "extension_closure_sha256",
+          "interpreter_executable_sha256",
+          "session_id"
+        ],
+        "name": "SESSION_LOOKUP",
+        "payload_size": 96,
+        "value": 4104
+      },
+      {
+        "fields": [
+          "broker_closure_sha256",
+          "challenge_nonce",
+          "commitment",
+          "commitment_sha256",
+          "commitment_size",
+          "committed_audit_generation_sha256",
+          "extension_closure_sha256",
+          "extension_peer",
+          "initial_authority_role",
+          "initial_interpreter_slot",
+          "installed_closure_sha256",
+          "interpreter_executable_sha256",
+          "registration_sha256",
+          "request_envelope_sha256",
+          "request_projection_sha256",
+          "request_projection_size",
+          "session_id"
+        ],
+        "name": "SESSION_CHALLENGE",
+        "payload_size": 954,
+        "value": 4105
+      },
+      {
+        "descriptor_purposes": [
+          "SERVICE_CONTROL_SOCKET",
+          "SERVICE_KEY_PIPE_READ"
+        ],
+        "fields": [
+          "challenge_envelope_sha256",
+          "challenge_nonce",
+          "commitment_sha256",
+          "committed_audit_generation_sha256",
+          "descriptors",
+          "extension_closure_sha256",
+          "extension_peer",
+          "initial_authority_role",
+          "initial_interpreter_slot",
+          "interpreter_executable_sha256",
+          "registration_sha256",
+          "session_id"
+        ],
+        "name": "SESSION_OPEN",
+        "payload_size": 410,
+        "value": 4112
+      },
+      {
+        "fields": [
+          "authority_bundle_sha256",
+          "initial_authority_role",
+          "registration_burn_checkpoint_sha256",
+          "registration_sha256",
+          "session_binding_sha256",
+          "session_id"
+        ],
+        "name": "SESSION_ACCEPTED",
+        "payload_size": 164,
+        "value": 4113
+      },
+      {
+        "fields": [
+          "code",
+          "failed_message_type",
+          "flags",
+          "request_envelope_sha256"
+        ],
+        "name": "ERROR",
+        "payload_size": 40,
+        "value": 4351
+      }
+    ],
+    "sequence": [
+      "READINESS",
+      "READY",
+      "REGISTER_INITIAL_OR_RECOVERY",
+      "REGISTRATION_ACCEPTED",
+      "SESSION_LOOKUP",
+      "SESSION_CHALLENGE",
+      "SESSION_OPEN",
+      "SESSION_ACCEPTED",
+      "HELLO",
+      "REQUEST_PROJECTION_OR_AUTH_CONSUME",
+      "AUTH_ACCEPTED"
+    ],
+    "service_envelope": {
+      "header_size": 124,
+      "maximum_fds": 15,
+      "maximum_payload_bytes": 4096,
+      "version": 2
+    },
+    "transport": {
+      "darwin": "XPC_WITH_AUDIT_TOKEN_AND_CODE_IDENTITY",
+      "linux": "AF_UNIX_SOCK_SEQPACKET_WITH_SO_PEERCRED_PIDFD_AND_EXECUTABLE_IDENTITY"
+    },
+    "wire_field_names": {
+      "control_socket": "control_socket",
+      "envelope": "envelope",
+      "key_pipe_read": "key_pipe_read",
+      "request_projection": "request_projection"
+    }
+  },
+  "version_identifiers": {
+    "backend_execution_abi_schema": "plamen.posix_backend_execution.native.v2",
+    "broker_abi_schema": "plamen.native-broker.v2",
+    "broker_protocol_version": 2,
+    "darwin_service_name": "com.plamen.audit.broker.v2",
+    "linux_guest_socket": "/run/plamen/broker-v2.sock",
+    "linux_service_name": "plamen-audit-broker-v2",
+    "linux_user_socket_format": "/run/user/%llu/plamen/broker-v2.sock",
+    "projection_schema": "plamen.native_audit_request_projection.v1",
+    "supervisor_request_schema": "plamen.posix_audit_supervisor.v1"
+  },
+  "wire_primitives": {
+    "BOOL": "U8_EXACTLY_0_OR_1",
+    "BYTES": "U32_LENGTH_THEN_OPAQUE_BYTES",
+    "DIGEST": "RAW_SHA256_32_BYTES",
+    "ID": "U16_LENGTH_THEN_ASCII_[A-Za-z0-9_.:-]_1_TO_128",
+    "TEXT": "U32_LENGTH_THEN_SHORTEST_FORM_UTF8_1_TO_4096_NO_NUL",
+    "U16": "UNSIGNED_NETWORK_BYTE_ORDER",
+    "U32": "UNSIGNED_NETWORK_BYTE_ORDER",
+    "U64": "UNSIGNED_NETWORK_BYTE_ORDER",
+    "U8": "UNSIGNED_NETWORK_BYTE_ORDER",
+    "VECTOR": "U32_COUNT_THEN_EXACT_ITEMS"
+  }
+}

@@ -14,6 +14,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import stat
 from typing import Any
 
 from audit_snapshot import (
@@ -114,6 +115,7 @@ _UNSTRUCTURED = (r"unstructured\.v1",)
 _REPORT_BODY_OWNERS = (
     r"/report_body/model\.report_[a-z_]+",
     r"/report_body/report_[a-z_]+\.runtime_debt_fallback",
+    r"/report_body/report_[a-z_]+\.typed_fallback",
 )
 
 
@@ -1133,6 +1135,121 @@ def _run_id(value: object) -> str:
     return value
 
 
+def _capture_root_identity(path: Path, *, label: str) -> dict[str, Any]:
+    """Capture stable directory-object authority, excluding mutation clocks."""
+
+    checked = _rooted.checked_directory(path, label=label)
+    try:
+        row = _rooted.lstat(checked)
+    except OSError as exc:
+        _fail(f"{label} physical identity is unavailable: {exc}")
+    if not stat.S_ISDIR(row.st_mode):
+        _fail(f"{label} is not a directory")
+    return {
+        "resolved_path": str(checked),
+        "device": int(row.st_dev),
+        "inode": int(row.st_ino),
+        "file_type": stat.S_IFMT(row.st_mode),
+        "mode": stat.S_IMODE(row.st_mode),
+        "uid": int(getattr(row, "st_uid", 0)),
+        "gid": int(getattr(row, "st_gid", 0)),
+    }
+
+
+def build_report_capture_root_authority(
+    *,
+    scratchpad: str | Path,
+    project_root: str | Path,
+    run_id: str,
+    contract: PhaseIOContract,
+    launch: LaunchSpec,
+) -> dict[str, Any]:
+    """Build the exact persisted root authority for one capture transaction."""
+
+    scratch, project = _roots(scratchpad, project_root)
+    run = _run_id(run_id)
+    try:
+        replayed_contract, replayed_launch = replay_phase_io_authority_pair(
+            contract, launch
+        )
+    except (TypeError, ValueError) as exc:
+        _fail(f"report capture root authority pair is invalid: {exc}")
+    if (
+        replayed_contract.to_dict() != contract.to_dict()
+        or replayed_launch.to_dict() != launch.to_dict()
+        or contract.phase != "report_assemble"
+        or contract.work_unit_id not in {"source_capture", "final_capture"}
+        or launch.work_unit_key != contract.key
+    ):
+        _fail("report capture root authority transaction identity differs")
+    core: dict[str, Any] = {
+        "schema": "plamen.report-capture-root-authority.v1",
+        "run_id": run,
+        "work_unit_key": contract.key,
+        "contract_digest": contract.digest,
+        "launch_digest": launch.digest,
+        "root_identities": {
+            "scratchpad": _capture_root_identity(
+                scratch, label="report capture scratchpad"
+            ),
+            "project": _capture_root_identity(
+                project, label="report capture project"
+            ),
+        },
+    }
+    return {**core, "authority_sha256": _digest_without(core, "authority_sha256")}
+
+
+def build_report_capture_preexecution_authority(
+    *,
+    scratchpad: str | Path,
+    project_root: str | Path,
+    run_id: str,
+    contract: PhaseIOContract,
+    launch: LaunchSpec,
+    expected_output_records: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Seal capture roots and the exact CREATE postimage before publication."""
+
+    if not isinstance(expected_output_records, Mapping):
+        _fail("report capture expected output records are malformed")
+    expected_identities = {spec.identity for spec in contract.outputs}
+    if set(expected_output_records) != expected_identities:
+        _fail("report capture expected output denominator differs")
+    normalized: dict[str, dict[str, Any]] = {}
+    for identity in sorted(expected_identities):
+        row = expected_output_records.get(identity)
+        if (
+            type(row) is not dict
+            or set(row) != {"sha256", "size"}
+            or not isinstance(row.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is None
+            or type(row.get("size")) is not int
+            or row["size"] < 0
+        ):
+            _fail(f"{identity}: report capture expected output record is malformed")
+        normalized[identity] = {
+            "sha256": row["sha256"], "size": row["size"],
+        }
+    root_authority = build_report_capture_root_authority(
+        scratchpad=scratchpad,
+        project_root=project_root,
+        run_id=run_id,
+        contract=contract,
+        launch=launch,
+    )
+    core: dict[str, Any] = {
+        "schema": "plamen.report-capture-preexecution-authority.v1",
+        "run_id": _run_id(run_id),
+        "work_unit_key": contract.key,
+        "contract_digest": contract.digest,
+        "launch_digest": launch.digest,
+        "root_authority": root_authority,
+        "expected_output_records": normalized,
+    }
+    return {**core, "authority_sha256": _digest_without(core, "authority_sha256")}
+
+
 def _contract_from_committed_manifest(
     unit: dict[str, Any],
     *,
@@ -1365,7 +1482,10 @@ def _resolve_committed_capture(
         _fail(f"{identity}: active producer identity/writer/run/schema differs")
     units = ledger.get("work_units")
     unit = units.get(owner) if type(units) is dict else None
-    if type(unit) is not dict:
+    # ``read_artifact_ledger`` deliberately decorates persisted work-unit
+    # dictionaries with a private root capability.  Preserve that authenticated
+    # Mapping while rejecting absent or non-object producer receipts.
+    if not isinstance(unit, Mapping):
         _fail(f"{identity}: producer work-unit receipt is absent")
     issues = active_committed_work_unit_authority_issues(
         ledger,
@@ -1381,6 +1501,37 @@ def _resolve_committed_capture(
         expected_output_name=output_name,
     )
     launch = _launch_from_committed_manifest(unit, contract)
+    artifact = unit.get("artifacts", {}).get(identity)
+    if (
+        type(artifact) is not dict
+        or not isinstance(artifact.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"]) is None
+        or type(artifact.get("size")) is not int
+        or artifact["size"] < 0
+    ):
+        _fail(f"{identity}: committed capture output record is malformed")
+    stored_preexecution = unit.get("preexecution_authority")
+    stored_preexecution_digest = unit.get("preexecution_authority_digest")
+    expected_preexecution = build_report_capture_preexecution_authority(
+        scratchpad=scratch,
+        project_root=project,
+        run_id=run,
+        contract=contract,
+        launch=launch,
+        expected_output_records={
+            identity: {
+                "sha256": artifact["sha256"],
+                "size": artifact["size"],
+            },
+        },
+    )
+    if (
+        type(stored_preexecution) is not dict
+        or stored_preexecution != expected_preexecution
+        or stored_preexecution_digest
+        != expected_preexecution["authority_sha256"]
+    ):
+        _fail(f"{identity}: persisted report capture preexecution authority differs")
     live_issues = validate_work_unit_artifacts(
         scratch,
         project,
@@ -1389,6 +1540,7 @@ def _resolve_committed_capture(
         run_id=run,
         actor="DRIVER",
         require_live_input_authority=True,
+        preexecution_authority=expected_preexecution,
     )
     if live_issues:
         _fail(f"{identity}: live artifact authority failed: {'; '.join(live_issues)}")
@@ -1400,7 +1552,6 @@ def _resolve_committed_capture(
         )
     except (OSError, ValueError) as exc:
         _fail(f"{identity}: bounded single-link read failed: {exc}")
-    artifact = unit["artifacts"].get(identity)
     if (
         type(artifact) is not dict
         or artifact.get("sha256") != hashlib.sha256(raw).hexdigest()
@@ -1681,7 +1832,7 @@ def _producer_requirements_for_source(
             or writer not in {"MODEL", "DRIVER"}
             or binding.get("run_id") != run
             or binding.get("status") != "ACTIVE"
-            or type(unit) is not dict
+            or not isinstance(unit, Mapping)
             or unit.get("run_id") != run
             or unit.get("work_unit_key") != owner
             or unit.get("contract_digest") != binding.get("contract_digest")
@@ -2444,6 +2595,8 @@ __all__ = [
     "CommittedReportSourceInputs",
     "PreparedReportSourceCapture",
     "ReportCaptureAuthorityError",
+    "build_report_capture_preexecution_authority",
+    "build_report_capture_root_authority",
     "build_report_final_capture_bytes",
     "extract_committed_report_source_inputs",
     "extract_committed_report_outputs",

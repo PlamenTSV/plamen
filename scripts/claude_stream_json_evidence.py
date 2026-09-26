@@ -28,7 +28,7 @@ The CLI headless contract does not require ``stop_reason`` or
 ``terminal_reason`` on its final result JSON.  They are therefore optional
 diagnostics here.  The ordinary terminal semantic basis is the conjunction of
 a final root assistant ``end_turn`` and a root ``result/success`` row.  Claude
-Code 2.1.252 is additionally pinned to its observed final-envelope shape: a
+Legacy Code 2.1.252 is additionally pinned to its observed final-envelope shape: a
 same-session root assistant with non-empty text and a null ``stop_reason``,
 followed by the successful root result.  Neither row is sufficient alone.
 """
@@ -40,6 +40,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 from typing import Any, Mapping
 
 
@@ -51,7 +52,8 @@ EXPECTED_INIT_SECURITY_SCHEMA = "plamen.claude-expected-init/v2"
 
 RESTRICTED_ANALYSIS_CAPABILITY = "vendor-restricted-analysis"
 RESTRICTED_WEB_ANALYSIS_CAPABILITY = "vendor-restricted-web-analysis"
-REVIEWED_RESTRICTED_INIT_VERSION = "2.1.252"
+LEGACY_REVIEWED_RESTRICTED_INIT_VERSION = "2.1.252"
+LEGACY_REVIEWED_INIT_VERSIONS = frozenset({"2.1.220", "2.1.250", "2.1.252"})
 REVIEWED_RESTRICTED_INIT_AGENTS = tuple(
     sorted(("claude", "Explore", "general-purpose", "Plan", "statusline-setup"))
 )
@@ -94,6 +96,14 @@ _SYSTEM_AUXILIARY_SUBTYPES = frozenset(
         "hook_started",
         "informational",
         "local_command_output",
+        # A provider refusal row (Claude CLI >= 2.1.27x). DODO run41/43/45:
+        # Opus 5 refused inventory-chunk transcription (`api_refusal_category:
+        # reasoning_extraction`) and, because this subtype was unknown, the
+        # grammar reported EVENT_TYPE_UNSUPPORTED -- a parser violation --
+        # instead of the typed refusal the trailing `result.stop_reason ==
+        # "refusal"` carries. Admitting it keeps fail-closed field checks and
+        # lets the terminal row classify the attempt as PROVIDER_REFUSED.
+        "model_refusal_no_fallback",
         "permission_denied",
         "plugin_install",
         "session_state_changed",
@@ -258,6 +268,176 @@ def _canonical_json(value: Mapping[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def _claude_install_generation_projection(
+    authority: object,
+    *,
+    claude_code_version: str | None = None,
+    allow_test_only: bool = False,
+) -> Any:
+    """Project an opaque generation without resolving or opening anything."""
+
+    try:
+        import posix_backend_launch_policy as launch_policy
+
+        projection = (
+            launch_policy.TEST_ONLY_project_backend_install_generation(
+                authority
+            )
+            if allow_test_only
+            else launch_policy.require_backend_install_generation(authority)
+        )
+    except Exception as exc:
+        _fail(
+            "INSTALL_GENERATION_AUTHORITY",
+            "authenticated Claude install-generation authority is required",
+        )
+    expected_behavior = launch_policy.backend_cli_behavior_contract_sha256(
+        "claude"
+    )
+    if (
+        projection.backend != "claude"
+        or (
+            claude_code_version is not None
+            and projection.resolved_version != claude_code_version
+        )
+        or projection.cli_behavior_contract_sha256 != expected_behavior
+    ):
+        _fail(
+            "INSTALL_GENERATION_MISMATCH",
+            "Claude stream semantics differ from the authenticated generation",
+        )
+    return projection
+
+
+@dataclass(frozen=True, slots=True)
+class _NativeInstallGenerationBinding:
+    resolved_version: str
+    install_generation_sha256: str
+    cli_behavior_contract_sha256: str
+    cli_conformance_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PosixV2CompatExecutableBinding:
+    resolved_version: str
+
+
+def _validated_posix_v2_compat_executable_binding(
+    value: Mapping[str, Any],
+) -> _PosixV2CompatExecutableBinding:
+    """Validate the derivative of an already-authenticated opaque compat plan.
+
+    The mapping is not standalone authority.  The sole caller first resolves
+    the opaque compatibility plan record, whose compiler descriptor-binds the
+    executable bytes, version/help observations, profile, and terminal grammar.
+    This mirrors the native-receipt derivative below without mislabelling the
+    reduced-isolation compatibility observation as install-generation proof.
+    """
+
+    if not isinstance(value, Mapping) or set(value) != {
+        "backend", "compatibility_mode", "executable_observation_sha256",
+        "plan_sha256", "resolved_version", "terminal_grammar",
+    }:
+        _fail(
+            "COMPAT_EXECUTABLE_BINDING",
+            "POSIX compatibility executable binding is malformed",
+        )
+    version = value.get("resolved_version")
+    if (
+        value.get("backend") != "claude"
+        or value.get("compatibility_mode")
+        != "V2_COMPATIBILITY_REDUCED_ISOLATION"
+        or value.get("terminal_grammar")
+        != (
+            "FINAL_ROOT_ASSISTANT_END_TURN_OR_CAPABILITY_BOUND_TEXT_NULL_"
+            "AND_RESULT_COMPLETED_V1"
+        )
+        or not isinstance(version, str)
+        or re.fullmatch(
+            r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+            version,
+        ) is None
+        or any(
+            not isinstance(value.get(field), str)
+            or re.fullmatch(r"[0-9a-f]{64}", value[field]) is None
+            for field in ("executable_observation_sha256", "plan_sha256")
+        )
+    ):
+        _fail(
+            "COMPAT_EXECUTABLE_BINDING",
+            "POSIX compatibility executable binding fields differ",
+        )
+    return _PosixV2CompatExecutableBinding(resolved_version=version)
+
+
+def _validated_native_install_generation_binding(
+    value: Mapping[str, Any],
+) -> _NativeInstallGenerationBinding:
+    """Validate WER's derivative of a native-authenticated generation.
+
+    This is deliberately private.  The WER caller must first authenticate the
+    containing native operation receipt; this parser only checks the exact
+    semantic projection and never treats the mapping itself as installer
+    authority.
+    """
+
+    if not isinstance(value, Mapping) or set(value) != {
+        "backend_resolved_version",
+        "install_generation_sha256",
+        "cli_behavior_contract_sha256",
+        "cli_conformance_sha256",
+    }:
+        _fail(
+            "INSTALL_GENERATION_BINDING",
+            "native install-generation projection is malformed",
+        )
+    version = value.get("backend_resolved_version")
+    digests = (
+        value.get("install_generation_sha256"),
+        value.get("cli_behavior_contract_sha256"),
+        value.get("cli_conformance_sha256"),
+    )
+    if (
+        not isinstance(version, str)
+        or re.fullmatch(
+            r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+            version,
+        )
+        is None
+        or any(
+            not isinstance(item, str)
+            or re.fullmatch(r"[0-9a-f]{64}", item) is None
+            for item in digests
+        )
+    ):
+        _fail(
+            "INSTALL_GENERATION_BINDING",
+            "native install-generation projection fields are malformed",
+        )
+    try:
+        import posix_backend_launch_policy as launch_policy
+
+        behavior = launch_policy.backend_cli_behavior_contract_sha256(
+            "claude"
+        )
+    except Exception as exc:
+        _fail(
+            "INSTALL_GENERATION_BINDING",
+            "Claude CLI behavior contract is unavailable",
+        )
+    if value.get("cli_behavior_contract_sha256") != behavior:
+        _fail(
+            "INSTALL_GENERATION_MISMATCH",
+            "native generation has a different CLI behavior contract",
+        )
+    return _NativeInstallGenerationBinding(
+        resolved_version=version,
+        install_generation_sha256=str(digests[0]),
+        cli_behavior_contract_sha256=str(digests[1]),
+        cli_conformance_sha256=str(digests[2]),
+    )
+
+
 def _unique_string_list(value: Any, label: str) -> list[str]:
     if (
         not isinstance(value, list)
@@ -280,6 +460,8 @@ def _object_list(value: Any, label: str) -> list[dict[str, Any]]:
 
 def _normalize_expected_init_v1(
     value: Mapping[str, Any],
+    *,
+    install_generation_projection: Any | None = None,
 ) -> dict[str, Any]:
     fields = {
         "schema",
@@ -357,11 +539,22 @@ def _normalize_expected_init_v1(
         _fail("CONFIG_INVALID", "expected init accepts no model")
     if not result["accepted_api_key_sources"]:
         _fail("CONFIG_INVALID", "expected init accepts no auth source")
+    version = result["claude_code_version"]
+    if version not in LEGACY_REVIEWED_INIT_VERSIONS and (
+        install_generation_projection is None
+        or install_generation_projection.resolved_version != version
+    ):
+        _fail(
+            "INSTALL_GENERATION_AUTHORITY",
+            "current Claude expected-init requires authenticated generation conformance",
+        )
     return result
 
 
 def _normalize_expected_init_v2(
     value: Mapping[str, Any],
+    *,
+    install_generation_projection: Any | None = None,
 ) -> dict[str, Any]:
     """Normalize a fail-closed capability policy for current Claude init.
 
@@ -541,10 +734,22 @@ def _normalize_expected_init_v2(
             "CONFIG_INVALID",
             "default permission mode is restricted to the reviewed analysis lane",
         )
+    version = result["claude_code_version"]
+    dynamic_generation = (
+        install_generation_projection is not None
+        and install_generation_projection.resolved_version == version
+    )
+    if version not in LEGACY_REVIEWED_INIT_VERSIONS and not dynamic_generation:
+        _fail(
+            "INSTALL_GENERATION_AUTHORITY",
+            "current Claude expected-init requires authenticated generation conformance",
+        )
     if restricted_fs and (
-        result["claude_code_version"]
-        != REVIEWED_RESTRICTED_INIT_VERSION
-        or result["permission_mode"] != "default"
+        (
+            version != LEGACY_REVIEWED_RESTRICTED_INIT_VERSION
+            and not dynamic_generation
+        )
+        or result["permission_mode"] not in {"default", "dontAsk"}
         or result["allowed_tools"]
         != list(REVIEWED_RESTRICTED_INIT_TOOLS)
         or result["allowed_tool_prefixes"] != []
@@ -561,9 +766,16 @@ def _normalize_expected_init_v2(
             "restricted init contract differs from its pinned reviewed denominator",
         )
     if restricted_web and (
-        result["claude_code_version"]
-        != REVIEWED_RESTRICTED_INIT_VERSION
-        or result["permission_mode"] != "default"
+        (
+            version != LEGACY_REVIEWED_RESTRICTED_INIT_VERSION
+            and not dynamic_generation
+        )
+        # {"default", "dontAsk"} -- the same reviewed set the restricted
+        # FILESYSTEM lane above already accepts. The web lane was missed when
+        # the newer CLI mode landed, which disabled bounded web research
+        # entirely (see REVIEWED_WEB_PERMISSION_MODES in
+        # claude_phase_tool_policy for the full failure trace).
+        or result["permission_mode"] not in {"default", "dontAsk"}
         or result["allowed_tools"]
         != list(REVIEWED_RESTRICTED_WEB_INIT_TOOLS)
         or result["allowed_tool_prefixes"] != []
@@ -584,14 +796,22 @@ def _normalize_expected_init_v2(
 
 def _normalize_expected_init_contract(
     value: Mapping[str, Any],
+    *,
+    install_generation_projection: Any | None = None,
 ) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         _fail("CONFIG_INVALID", "expected init contract must be an object")
     schema = value.get("schema")
     if schema == EXPECTED_INIT_SCHEMA:
-        return _normalize_expected_init_v1(value)
+        return _normalize_expected_init_v1(
+            value,
+            install_generation_projection=install_generation_projection,
+        )
     if schema == EXPECTED_INIT_SECURITY_SCHEMA:
-        return _normalize_expected_init_v2(value)
+        return _normalize_expected_init_v2(
+            value,
+            install_generation_projection=install_generation_projection,
+        )
     _fail("CONFIG_INVALID", "expected init contract schema is unsupported")
 
 
@@ -623,6 +843,14 @@ class ClaudeStreamJsonEvidence:
     result_stop_reason_observed: str | None
     result_terminal_reason_observed: str | None
     terminal_basis: str
+    # Permission denials observed on an otherwise-successful result.  These are
+    # a COVERAGE FACT about the turn, carried as bound evidence rather than
+    # silently dropped OR silently tolerated: the driver binds them to the
+    # produced artifact as typed debt so a reader can see exactly what the
+    # worker could not reach.
+    permission_denial_count: int = 0
+    permission_denial_digest: str = ""
+    permission_denial_tools: tuple[str, ...] = ()
 
     def _core_summary(self) -> dict[str, Any]:
         return {
@@ -647,6 +875,9 @@ class ClaudeStreamJsonEvidence:
             "assistant_end_turn_count": self.assistant_end_turn_count,
             "root_assistant_end_turn_count": self.root_assistant_end_turn_count,
             "result_text_sha256": self.result_text_sha256,
+            "permission_denial_count": self.permission_denial_count,
+            "permission_denial_digest": self.permission_denial_digest,
+            "permission_denial_tools": list(self.permission_denial_tools),
             "init_event_sha256": self.init_event_sha256,
             "init_applicability": self.init_applicability,
             "expected_init_contract_sha256": (
@@ -685,21 +916,54 @@ class ClaudeStreamJsonEvidenceParser:
         *,
         expected_session_id: str | None = None,
         expected_init_contract: Mapping[str, Any] | None = None,
+        allow_capability_bound_text_null_stop_terminal: bool = False,
+        install_generation_authority: object | None = None,
+        _allow_test_only_install_generation: bool = False,
         max_line_bytes: int = DEFAULT_MAX_LINE_BYTES,
         max_stream_bytes: int = DEFAULT_MAX_STREAM_BYTES,
     ) -> None:
         if expected_session_id is not None:
             _nonempty_string(expected_session_id, "expected_session_id")
+        generation_projection = (
+            None
+            if install_generation_authority is None
+            else _claude_install_generation_projection(
+                install_generation_authority,
+                allow_test_only=_allow_test_only_install_generation,
+            )
+        )
+        self._install_generation_projection = generation_projection
         self._expected_init_contract = (
             None
             if expected_init_contract is None
-            else _normalize_expected_init_contract(expected_init_contract)
+            else _normalize_expected_init_contract(
+                expected_init_contract,
+                install_generation_projection=generation_projection,
+            )
         )
         self._restricted_web_analysis = bool(
             self._expected_init_contract is not None
             and RESTRICTED_WEB_ANALYSIS_CAPABILITY
             in self._expected_init_contract.get("required_capabilities", [])
         )
+        if not isinstance(
+            allow_capability_bound_text_null_stop_terminal, bool
+        ):
+            _fail(
+                "CONFIG_INVALID",
+                "capability-bound null-stop terminal selection must be boolean",
+            )
+        self._allow_capability_bound_text_null_stop_terminal = (
+            allow_capability_bound_text_null_stop_terminal
+        )
+        if (
+            allow_capability_bound_text_null_stop_terminal
+            and generation_projection is None
+        ):
+            _fail(
+                "INSTALL_GENERATION_AUTHORITY",
+                "capability-bound terminal grammar requires authenticated generation conformance",
+            )
         if (
             not isinstance(max_line_bytes, int)
             or isinstance(max_line_bytes, bool)
@@ -726,10 +990,12 @@ class ClaudeStreamJsonEvidenceParser:
         self._session_id: str | None = None
         self._init_event: dict[str, Any] | None = None
         self._result_event: dict[str, Any] | None = None
+        self._permission_denials: tuple[dict[str, Any], ...] = ()
         self._event_counts: dict[str, int] = {}
         self._root_count = 0
         self._subagent_count = 0
         self._unattributed_count = 0
+        self._refusal_count = 0
         self._post_result_event_count = 0
         self._protocol_adverse_event_count = 0
         self._event_uuids: set[str] = set()
@@ -848,9 +1114,27 @@ class ClaudeStreamJsonEvidenceParser:
         ):
             _fail("SESSION_MISMATCH", "init session does not match the armed session")
         self._accept_uuid(event, "init")
-        _nonempty_string(
+        observed_version = _nonempty_string(
             event.get("claude_code_version"), "init.claude_code_version"
         )
+        if re.fullmatch(
+            r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+            observed_version,
+        ) is None:
+            _fail(
+                "INIT_VERSION_INVALID",
+                "init Claude version is not canonical semantic versioning",
+            )
+        if observed_version not in LEGACY_REVIEWED_INIT_VERSIONS:
+            projection = self._install_generation_projection
+            if (
+                projection is None
+                or projection.resolved_version != observed_version
+            ):
+                _fail(
+                    "INSTALL_GENERATION_MISMATCH",
+                    "observed Claude version differs from its authenticated generation",
+                )
         _nonempty_string(event.get("cwd"), "init.cwd")
         _nonempty_string(event.get("model"), "init.model")
         _nonempty_string(event.get("permissionMode"), "init.permissionMode")
@@ -1144,7 +1428,7 @@ class ClaudeStreamJsonEvidenceParser:
     def _accept_progress(
         self, event_type: str, event: dict[str, Any]
     ) -> None:
-        # The pinned 2.1.252 null-stop exception is an exact terminal envelope
+        # The legacy 2.1.252 null-stop exception is an exact terminal envelope
         # pair.  Ordinary Claude subscription telemetry may place a structured
         # ``rate_limit_event`` with status ``allowed`` (or ``allowed_warning``)
         # between the final assistant text and the successful result.  That row
@@ -1175,6 +1459,13 @@ class ClaudeStreamJsonEvidenceParser:
                 )
             if subtype == "api_retry":
                 self._validate_api_retry(event)
+            elif subtype == "model_refusal_no_fallback":
+                for field in ("api_refusal_category", "original_model"):
+                    _nonempty_string(
+                        event.get(field),
+                        f"model_refusal_no_fallback.{field}",
+                    )
+                self._refusal_count += 1
             elif subtype == "thinking_tokens":
                 total = _nonnegative_int(
                     event.get("estimated_tokens"),
@@ -1362,6 +1653,19 @@ class ClaudeStreamJsonEvidenceParser:
                     )
                 error = event.get("error")
                 if error is not None:
+                    if self._refusal_count:
+                        # The CLI emits the typed `system/model_refusal_no_
+                        # fallback` row and THEN an assistant error envelope
+                        # (`error: invalid_request`, stop_reason refusal) --
+                        # measured on DODO run45 chunk_b attempt 1, line 50
+                        # then 51. Name the refusal: the runtime maps it to
+                        # PROVIDER_REFUSED without any model switch.
+                        _fail(
+                            "PROVIDER_REFUSAL",
+                            f"provider refused {self._refusal_count} request(s); "
+                            "no audit artifact was accepted and Plamen will not "
+                            "silently switch models",
+                        )
                     _fail(
                         "ASSISTANT_ERROR",
                         "assistant error envelopes cannot support completion",
@@ -1582,7 +1886,7 @@ class ClaudeStreamJsonEvidenceParser:
                 self._expected_init_contract["accepted_models"]
             )
             if self._restricted_web_analysis:
-                # Locked Claude 2.1.252 reports this exact internal model in
+                # Legacy locked Claude 2.1.252 reports this internal model in
                 # aggregate result telemetry even when init and every
                 # assistant message remain on the explicitly armed model.
                 # It is not admitted anywhere else in the stream grammar.
@@ -1617,9 +1921,26 @@ class ClaudeStreamJsonEvidenceParser:
                 "result.permission_denials must be an array",
             )
         if permission_denials:
-            _fail(
-                "RESULT_PERMISSION_DENIED",
-                "successful result contains permission denials",
+            # A denial is NOT a contradiction of success and MUST NOT discard a
+            # completed artifact.  A live DODO breadth worker was denied four
+            # `Glob` shapes, routed around them, and produced a valid 95KB
+            # analysis carrying 11 findings -- which this gate then threw away.
+            # Losing a true finding is the unacceptable error in this pipeline,
+            # and every other degraded path here records visible debt instead of
+            # dropping work.  So denials are retained as bound, hashed coverage
+            # evidence on the record; publication remains gated on the worker
+            # actually producing its exact expected output and passing the
+            # staged validator, which is the real soundness check.  They are
+            # deliberately NOT ignored: the digest, count and tool names travel
+            # with the artifact so the coverage limit stays auditable.
+            for entry in permission_denials:
+                if not isinstance(entry, Mapping):
+                    _fail(
+                        "EVENT_FIELD_INVALID",
+                        "result.permission_denials entries must be objects",
+                    )
+            self._permission_denials = tuple(
+                dict(entry) for entry in permission_denials
             )
         if event.get("api_error_status") is not None:
             _fail(
@@ -1647,9 +1968,26 @@ class ClaudeStreamJsonEvidenceParser:
                 "FINAL_ROOT_ASSISTANT_END_TURN_AND_RESULT_SUCCESS"
             )
         elif (
+            self._allow_capability_bound_text_null_stop_terminal
+            and self._pinned_null_stop_terminal_candidate
+            and event.get("terminal_reason") == "completed"
+        ):
+            # Latest-version POSIX compatibility plans opt into this grammar
+            # only after binding the observed executable/help/profile.  The
+            # candidate itself remains the existing exact final root envelope:
+            # an explicit null stop and one nonempty text block, with no later
+            # root turn or adverse protocol event.  This does not rewrite the
+            # stream or broaden the legacy 2.1.252 compatibility rule below.
+            # Origin is optional in current CLI output; the shared check above
+            # still rejects every explicitly foreign origin.
+            self._terminal_basis = (
+                "FINAL_ROOT_ASSISTANT_TEXT_NULL_STOP_AND_RESULT_SUCCESS_"
+                "CAPABILITY_BOUND"
+            )
+        elif (
             self._init_event is not None
             and self._init_event.get("claude_code_version")
-            == REVIEWED_RESTRICTED_INIT_VERSION
+            == LEGACY_REVIEWED_RESTRICTED_INIT_VERSION
             and self._expected_init_contract is not None
             and self._expected_init_contract.get("schema")
             == EXPECTED_INIT_SECURITY_SCHEMA
@@ -1736,6 +2074,17 @@ class ClaudeStreamJsonEvidenceParser:
                 result_stop_reason_observed=result.get("stop_reason"),
                 result_terminal_reason_observed=result.get("terminal_reason"),
                 terminal_basis=self._terminal_basis or "",
+                permission_denial_count=len(self._permission_denials),
+                permission_denial_digest=(
+                    hashlib.sha256(
+                        _canonical_json({"denials": list(self._permission_denials)})
+                    ).hexdigest()
+                    if self._permission_denials else ""
+                ),
+                permission_denial_tools=tuple(sorted({
+                    str(entry.get("tool_name") or "")
+                    for entry in self._permission_denials
+                })),
             )
             self._finished = evidence
             return evidence
@@ -1749,6 +2098,8 @@ def validate_claude_stream_json(
     *,
     expected_session_id: str | None = None,
     expected_init_contract: Mapping[str, Any] | None = None,
+    allow_capability_bound_text_null_stop_terminal: bool = False,
+    install_generation_authority: object | None = None,
     max_line_bytes: int = DEFAULT_MAX_LINE_BYTES,
     max_stream_bytes: int = DEFAULT_MAX_STREAM_BYTES,
 ) -> dict[str, Any]:
@@ -1759,6 +2110,10 @@ def validate_claude_stream_json(
     parser = ClaudeStreamJsonEvidenceParser(
         expected_session_id=expected_session_id,
         expected_init_contract=expected_init_contract,
+        allow_capability_bound_text_null_stop_terminal=(
+            allow_capability_bound_text_null_stop_terminal
+        ),
+        install_generation_authority=install_generation_authority,
         max_line_bytes=max_line_bytes,
         max_stream_bytes=max_stream_bytes,
     )
@@ -1766,12 +2121,170 @@ def validate_claude_stream_json(
     return parser.finish().canonical_summary()
 
 
+def _validate_claude_stream_json_from_authenticated_native_binding(
+    raw: bytes,
+    *,
+    native_install_generation_binding: Mapping[str, Any],
+    expected_session_id: str | None = None,
+    expected_init_contract: Mapping[str, Any] | None = None,
+    allow_capability_bound_text_null_stop_terminal: bool = False,
+    max_line_bytes: int = DEFAULT_MAX_LINE_BYTES,
+    max_stream_bytes: int = DEFAULT_MAX_STREAM_BYTES,
+) -> dict[str, Any]:
+    """WER-only replay after the containing native receipt was authenticated."""
+
+    if not isinstance(raw, bytes):
+        _fail("STREAM_INVALID", "raw provider stream must be bytes")
+    projection = _validated_native_install_generation_binding(
+        native_install_generation_binding
+    )
+    parser = ClaudeStreamJsonEvidenceParser(
+        expected_session_id=expected_session_id,
+        expected_init_contract=None,
+        allow_capability_bound_text_null_stop_terminal=False,
+        max_line_bytes=max_line_bytes,
+        max_stream_bytes=max_stream_bytes,
+    )
+    # The parser's construction path accepts only opaque authorities.  WER has
+    # already authenticated the native operation receipt, so install its exact
+    # derivative projection before normalizing any provider-controlled bytes.
+    parser._install_generation_projection = projection
+    parser._expected_init_contract = (
+        None
+        if expected_init_contract is None
+        else _normalize_expected_init_contract(
+            expected_init_contract,
+            install_generation_projection=projection,
+        )
+    )
+    parser._restricted_web_analysis = bool(
+        parser._expected_init_contract is not None
+        and RESTRICTED_WEB_ANALYSIS_CAPABILITY
+        in parser._expected_init_contract.get("required_capabilities", [])
+    )
+    parser._allow_capability_bound_text_null_stop_terminal = (
+        allow_capability_bound_text_null_stop_terminal
+    )
+    parser.feed(raw)
+    return parser.finish().canonical_summary()
+
+
+def _validate_claude_stream_json_from_authenticated_posix_v2_compat_plan(
+    raw: bytes,
+    *,
+    compatibility_executable_binding: Mapping[str, Any],
+    expected_session_id: str | None = None,
+    allow_capability_bound_text_null_stop_terminal: bool = False,
+    max_line_bytes: int = DEFAULT_MAX_LINE_BYTES,
+    max_stream_bytes: int = DEFAULT_MAX_STREAM_BYTES,
+) -> dict[str, Any]:
+    """Compatibility-only replay after its opaque live plan was resolved.
+
+    This boundary deliberately does not mint or claim install-generation
+    authority.  It permits the reduced-isolation adapter to reuse the strict
+    stream state machine for the exact executable/version/profile observation
+    already retained by its opaque plan and final compatibility receipt.
+    """
+
+    if not isinstance(raw, bytes):
+        _fail("STREAM_INVALID", "raw provider stream must be bytes")
+    projection = _validated_posix_v2_compat_executable_binding(
+        compatibility_executable_binding
+    )
+    parser = ClaudeStreamJsonEvidenceParser(
+        expected_session_id=expected_session_id,
+        expected_init_contract=None,
+        allow_capability_bound_text_null_stop_terminal=False,
+        max_line_bytes=max_line_bytes,
+        max_stream_bytes=max_stream_bytes,
+    )
+    # Construction accepts only opaque installer authority.  The compatibility
+    # caller instead authenticated its own opaque plan record; install only the
+    # minimum exact version projection and retain UNBOUND init applicability.
+    parser._install_generation_projection = projection
+    parser._allow_capability_bound_text_null_stop_terminal = (
+        allow_capability_bound_text_null_stop_terminal
+    )
+    parser.feed(raw)
+    return parser.finish().canonical_summary()
+
+
+def _normalize_expected_init_from_authenticated_native_binding(
+    value: Mapping[str, Any],
+    *,
+    native_install_generation_binding: Mapping[str, Any],
+) -> dict[str, Any]:
+    """WER-only normalization of a native-receipt-bound init contract."""
+
+    projection = _validated_native_install_generation_binding(
+        native_install_generation_binding
+    )
+    return _normalize_expected_init_contract(
+        value,
+        install_generation_projection=projection,
+    )
+
+
 def normalize_expected_init_contract(
     value: Mapping[str, Any],
+    *,
+    install_generation_authority: object | None = None,
 ) -> dict[str, Any]:
     """Validate and canonicalize the provider-init applicability contract."""
 
-    return _normalize_expected_init_contract(value)
+    projection = (
+        None
+        if install_generation_authority is None
+        else _claude_install_generation_projection(
+            install_generation_authority
+        )
+    )
+    return _normalize_expected_init_contract(
+        value,
+        install_generation_projection=projection,
+    )
+
+
+def TEST_ONLY_normalize_expected_init_contract(
+    value: Mapping[str, Any],
+    *,
+    install_generation_authority: object,
+) -> dict[str, Any]:
+    projection = _claude_install_generation_projection(
+        install_generation_authority,
+        allow_test_only=True,
+    )
+    return _normalize_expected_init_contract(
+        value,
+        install_generation_projection=projection,
+    )
+
+
+def TEST_ONLY_validate_claude_stream_json(
+    raw: bytes,
+    *,
+    install_generation_authority: object,
+    expected_session_id: str | None = None,
+    expected_init_contract: Mapping[str, Any] | None = None,
+    allow_capability_bound_text_null_stop_terminal: bool = False,
+    max_line_bytes: int = DEFAULT_MAX_LINE_BYTES,
+    max_stream_bytes: int = DEFAULT_MAX_STREAM_BYTES,
+) -> dict[str, Any]:
+    if not isinstance(raw, bytes):
+        _fail("STREAM_INVALID", "raw provider stream must be bytes")
+    parser = ClaudeStreamJsonEvidenceParser(
+        expected_session_id=expected_session_id,
+        expected_init_contract=expected_init_contract,
+        allow_capability_bound_text_null_stop_terminal=(
+            allow_capability_bound_text_null_stop_terminal
+        ),
+        install_generation_authority=install_generation_authority,
+        _allow_test_only_install_generation=True,
+        max_line_bytes=max_line_bytes,
+        max_stream_bytes=max_stream_bytes,
+    )
+    parser.feed(raw)
+    return parser.finish().canonical_summary()
 
 
 def replay_claude_stream_json(
@@ -1780,6 +2293,8 @@ def replay_claude_stream_json(
     *,
     expected_session_id: str | None = None,
     expected_init_contract: Mapping[str, Any] | None = None,
+    allow_capability_bound_text_null_stop_terminal: bool = False,
+    install_generation_authority: object | None = None,
     max_line_bytes: int = DEFAULT_MAX_LINE_BYTES,
     max_stream_bytes: int = DEFAULT_MAX_STREAM_BYTES,
 ) -> dict[str, Any]:
@@ -1791,6 +2306,10 @@ def replay_claude_stream_json(
         raw,
         expected_session_id=expected_session_id,
         expected_init_contract=expected_init_contract,
+        allow_capability_bound_text_null_stop_terminal=(
+            allow_capability_bound_text_null_stop_terminal
+        ),
+        install_generation_authority=install_generation_authority,
         max_line_bytes=max_line_bytes,
         max_stream_bytes=max_stream_bytes,
     )
@@ -1821,10 +2340,12 @@ __all__ = [
     "REVIEWED_RESTRICTED_INIT_AGENTS",
     "REVIEWED_RESTRICTED_INIT_CAPABILITIES",
     "REVIEWED_RESTRICTED_INIT_TOOLS",
-    "REVIEWED_RESTRICTED_INIT_VERSION",
+    "LEGACY_REVIEWED_RESTRICTED_INIT_VERSION",
     "REVIEWED_RESTRICTED_WEB_INIT_TOOLS",
     "REVIEWED_RESTRICTED_WEB_AUXILIARY_USAGE_MODELS",
     "implementation_files",
+    "TEST_ONLY_normalize_expected_init_contract",
+    "TEST_ONLY_validate_claude_stream_json",
     "normalize_expected_init_contract",
     "replay_claude_stream_json",
     "validate_claude_stream_json",

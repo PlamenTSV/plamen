@@ -10,7 +10,7 @@ Every finding MUST use this format:
 ```markdown
 ## Finding [{PREFIX}-N]: Title
 
-**Verdict**: CONFIRMED / PARTIAL / REFUTED / CONTESTED
+**Verdict**: CONFIRMED / PARTIAL / CONTESTED / REFUTATION_PROPOSAL / NOT_APPLICABLE_PROPOSAL / UNRESOLVED
 **Step Execution**: ✓1,2,3,5 | ✗4(N/A) | ?6,7(uncertain)
 **Rules Applied**: [R4:✓, R5:✓, R6:✗(no role), R8:✗(single-step), R10:✓]
 **Depth Evidence** (depth agents only): [BOUNDARY:tested X=0,MAX], [VARIATION:param changed from A→B], [TRACE:followed to revert at L120]
@@ -22,7 +22,7 @@ Every finding MUST use this format:
 **Material Harm** (MANDATORY): The concrete CONSEQUENCE in one sentence — not the mechanism, the harm. State WHO loses WHAT (specific user class + funds/privilege/liveness/accounting/integrity consequence), e.g. "depositors lose 25-50% of their pro-rata share" or "any peer can permanently halt block production". A finding whose only stated harm is a MECHANISM ("state is corrupted", "a guard is missing", "the function is callable", "value diverges") without a concrete consequence is NOT a body finding: cap it at Informational and route it to the Quality Observations megasection. "Could be exploited" / "may be unsafe" without a named consequence does not qualify.
 **Evidence**: Code snippets
 
-### Precondition Analysis (if PARTIAL or REFUTED)
+### Precondition Analysis (if PARTIAL or REFUTATION_PROPOSAL)
 **Missing Precondition**: [What blocks this attack]
 **Precondition Type**: STATE / ACCESS / TIMING / EXTERNAL / BALANCE
 **Why This Blocks**: [Specific reason]
@@ -32,6 +32,55 @@ Every finding MUST use this format:
 **Postcondition Types**: [STATE, ACCESS, TIMING, EXTERNAL, BALANCE]
 **Who Benefits**: [Who can use these]
 ```
+
+The Precondition and Postcondition Analysis headings are subordinate to their
+finding. If another phase-specific envelope requires the finding heading at
+`###` or `####` instead of the `##` shown above, render these analysis headings
+exactly one level deeper. Never emit an analysis heading as a peer of a new
+finding.
+
+## Candidate-negative proposal contract
+
+Discovery workers propose negative dispositions; they do not close candidates.
+Every real candidate MUST have one exact, stable ID. Use `Finding [ID]`,
+`Candidate [ID]`, or `Issue [ID]` in a heading. In a Markdown table, put the
+bare ID token in exactly one column headed `Finding ID`, `Candidate ID`,
+`Issue ID`, or `ID`; IDs embedded in titles, notes, evidence, or other columns
+do not establish identity.
+
+Use only these producer dispositions:
+
+- `REFUTATION_PROPOSAL`: evidence currently blocks or refutes the candidate.
+- `NOT_APPLICABLE_PROPOSAL`: a real, identified candidate is inapplicable; it
+  remains in the negative-proposal denominator for independent review.
+- `UNRESOLVED`: the producer cannot support either conclusion.
+
+Do not emit terminal `SAFE`, `CLEAR`, `REFUTED`, `DISMISSED`, `NO_FINDING`, or
+similar closure language. A true zero-candidate table may use an em dash or
+`None new` in its explicit ID column together with an N/A proposal; never use
+that placeholder for a real candidate.
+
+Each value- or liveness-bearing `REFUTATION_PROPOSAL` MUST include exactly one
+one-to-one committed invariant, unique to that candidate and not shared with
+another proposal:
+
+```markdown
+**Invariant Commitment**: CI:CI-N
+
+committed-invariant [CI-N]
+Locus: relative/production/file.ext:L123
+Shape: CONSERVATION / REQUESTED_EQ_DELIVERED / APPROVE_EQ_SPEND / NO_REVERT_AT_BOUNDARY / ROUNDTRIP / FRESHNESS
+Assertion: concrete property whose violation would falsify the proposal
+Falsify Class: property / boundary / roundtrip / conservation
+Provenance: <the exact candidate ID>
+```
+
+Only a mechanically non-value-bearing item may instead use exactly one of
+`DOCUMENTATION_ONLY`, `OBSERVABILITY_ONLY`, `TEST_ONLY`, or
+`NON_PRODUCTION_ONLY` as its `Non-Value-Bearing Category`, together with
+`Invariant Commitment: NOT_REQUIRED_NON_VALUE_BEARING: <reason>`. Missing,
+malformed, duplicated, or reused commitments are input debt, not negative
+closure.
 
 ---
 

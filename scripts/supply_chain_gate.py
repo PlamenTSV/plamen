@@ -12,8 +12,9 @@ Design
 - **Hermetic**: the actual scanner invocation is isolated behind
   ``_call_offline_scanner`` so tests can monkeypatch it directly instead of
   needing a real network-connected scanner binary. No network calls are made
-  by this module itself (``osv-scanner --offline`` / ``npm audit --offline`` /
-  ``cargo audit --no-fetch`` are mechanically no-fetch).
+  by this module itself (``osv-scanner --offline`` / ``cargo audit
+  --no-fetch`` are mechanically no-fetch). ``npm audit --offline`` is
+  explicitly ineligible because npm skips advisory lookup in that mode.
 - **Fail-closed**: a typed malicious-package signal (scanner hit, IoC denylist
   match, or the install-script/base64 heuristic) raises
   :class:`SupplyChainAbortError` — a TRUE circuit breaker. The caller MUST
@@ -36,16 +37,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
+import sys
 import tempfile
+import weakref
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from types import MappingProxyType
+from typing import Any, Iterable, List, Mapping, Optional, Sequence
 
 from owned_process_runner import run_owned_process
 
@@ -53,7 +59,9 @@ log = logging.getLogger("plamen.supply_chain_gate")
 
 __all__ = [
     "SupplyChainAbortError",
+    "SupplyChainAdmission",
     "gate_supply_chain",
+    "project_supply_chain_admission",
     "denylist_has_not_shrunk",
     "DEFAULT_IOC_DENYLIST",
 ]
@@ -83,6 +91,83 @@ class OfflineScanResult:
     output: str = ""
     reason: str = ""
     returncode: int | None = None
+
+
+@dataclass(frozen=True)
+class _ValidatedCompatSession:
+    project_root: Path
+    scratchpad: Path
+    session_binding_sha256: str
+    run_id: str
+
+
+@dataclass(frozen=True)
+class _CompatTransportResult:
+    returncode: int
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+    receipt_path: Path | None = None
+    stdout_raw_sha256: str = ""
+    stderr_raw_sha256: str = ""
+
+
+class SupplyChainAdmission:
+    """Opaque, process-local result of the explicit compatibility gate."""
+
+    __slots__ = ("__token", "__weakref__")
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("supply-chain admissions are gate-issued")
+
+    def __reduce__(self) -> object:
+        raise TypeError("supply-chain admissions cannot be serialized")
+
+    def __repr__(self) -> str:
+        return "<SupplyChainAdmission opaque>"
+
+
+@dataclass(frozen=True)
+class _AdmissionRecord:
+    token: str
+    authority_ref: weakref.ReferenceType[Any]
+    session_authority_ref: weakref.ReferenceType[Any]
+    projection: Mapping[str, object]
+
+
+_ADMISSIONS: dict[int, _AdmissionRecord] = {}
+
+
+@dataclass(frozen=True)
+class _CompatScanObservation:
+    result_ref: weakref.ReferenceType[Any]
+    session_ref: weakref.ReferenceType[Any]
+    scanner_id: str
+    lockfile: str
+    receipt_path: Path
+    receipt_sha256: str
+    raw_stdout_sha256: str
+    normalized_output_sha256: str
+    gate_nonce: str
+    staged_input_manifest_sha256: str
+
+
+_COMPAT_SCAN_OBSERVATIONS: dict[int, _CompatScanObservation] = {}
+
+
+@dataclass(frozen=True)
+class _CompatInputSnapshot:
+    rows: tuple[dict[str, object], ...]
+    contents: Mapping[str, bytes]
+
+
+_POSIX_COMPAT_RECEIPT_SCHEMA = (
+    "plamen.posix_v2_compat_supply_chain_execution.v1"
+)
+_POSIX_COMPAT_RECEIPT_DIR = "_posix_v2_compat_supply_chain_receipts"
+_POSIX_COMPAT_STDOUT_MAX_BYTES = 32 * 1024 * 1024
+_POSIX_COMPAT_STDERR_MAX_BYTES = 8 * 1024 * 1024
+_POSIX_COMPAT_KILL_GRACE_SECONDS = 2.0
 
 
 # Append-only IoC denylist of known-malicious dependency name/version
@@ -124,10 +209,13 @@ def _is_lockfile_skip_dir(name: str) -> bool:
 # Offline/local dependency-vulnerability scanners, in preference order. None
 # of these are hard dependencies — `_pick_scanner_binary` degrades to "none
 # found" (the one fail-closed hard stop) rather than assuming any is present.
-_SCANNER_BINARIES = ("osv-scanner", "npm", "cargo-audit")
+_SCANNER_BINARIES = ("osv-scanner", "cargo-audit")
 _LOCKFILE_SCANNERS = {
-    "package-lock.json": ("osv-scanner", "npm"),
-    "npm-shrinkwrap.json": ("npm",),
+    "package-lock.json": ("osv-scanner",),
+    # Neither OSV's documented lockfile list nor another genuinely offline
+    # advisory provider covers npm-shrinkwrap. npm audit --offline explicitly
+    # skips advisory lookup and therefore cannot verify this denominator row.
+    "npm-shrinkwrap.json": (),
     "yarn.lock": ("osv-scanner",),
     "pnpm-lock.yaml": ("osv-scanner",),
     "Cargo.lock": ("osv-scanner", "cargo-audit"),
@@ -593,8 +681,666 @@ def _validated_scanner_json(
     return payload, ""
 
 
-def _call_offline_scanner(binary: str, lockfile: Path) -> OfflineScanResult:
+def _validated_posix_v2_compat_session(
+    session_authority: object,
+    *,
+    scan_root: Path,
+) -> _ValidatedCompatSession:
+    """Validate the exact opaque same-process compatibility session."""
+
+    if os.name == "nt":
+        raise SupplyChainAbortError(
+            "supply-chain gate: POSIX V2 compatibility is unavailable on Windows"
+        )
+    try:
+        from posix_v2_compat_runtime import (
+            _COMPAT_BACKENDS,
+            COMPATIBILITY_MODE,
+            require_posix_v2_compat_session,
+        )
+
+        authority = require_posix_v2_compat_session(session_authority)
+        binding = dict(authority.binding)
+        # This gate scans dependency lockfiles for malicious packages; it is
+        # entirely backend-agnostic (``backend`` appears nowhere else in this
+        # module).  It previously required the literal ``"codex"``, which meant
+        # a Claude-backend session -- minted and fully supported by the compat
+        # runtime -- was rejected here, aborting startup before recon and
+        # making the Claude backend unrunnable on POSIX compatibility.  Bind to
+        # the runtime's supported-backend denominator so the two cannot drift
+        # again, while still refusing an absent or unsupported backend.
+        if (
+            binding.get("mode") != COMPATIBILITY_MODE
+            or binding.get("backend") not in _COMPAT_BACKENDS
+            or not isinstance(binding.get("session_binding_sha256"), str)
+            or len(binding["session_binding_sha256"]) != 64
+            or not isinstance(binding.get("run_id"), str)
+            or not binding["run_id"]
+        ):
+            raise ValueError("session binding is incomplete")
+        project_root = Path(str(binding["project_root"])).resolve(strict=True)
+        scratchpad = Path(str(binding["scratchpad"])).resolve(strict=True)
+        resolved_scan_root = Path(scan_root).resolve(strict=True)
+        project_meta = os.lstat(project_root)
+        scratch_meta = os.lstat(scratchpad)
+    except Exception as exc:
+        raise SupplyChainAbortError(
+            "supply-chain gate: exact POSIX V2 compatibility session could "
+            f"not be admitted ({type(exc).__name__})"
+        ) from exc
+    if (
+        not stat.S_ISDIR(project_meta.st_mode)
+        or not stat.S_ISDIR(scratch_meta.st_mode)
+        or _path_is_link_or_reparse(project_root)
+        or _path_is_link_or_reparse(scratchpad)
+        or scratchpad == project_root
+        or not _path_is_within(scratchpad, project_root)
+        or not _path_is_within(resolved_scan_root, project_root)
+        or _path_is_within(resolved_scan_root, scratchpad)
+    ):
+        raise SupplyChainAbortError(
+            "supply-chain gate: POSIX V2 compatibility roots violate the "
+            "read-only-project/scratchpad-write boundary"
+        )
+    return _ValidatedCompatSession(
+        project_root=project_root,
+        scratchpad=scratchpad,
+        session_binding_sha256=binding["session_binding_sha256"],
+        run_id=binding["run_id"],
+    )
+
+
+def _compat_safe_path(project_root: Path, executable: str) -> str:
+    """Retain only executable search directories outside the target tree."""
+
+    candidates = [str(Path(executable).parent)]
+    candidates.extend(os.environ.get("PATH", os.defpath).split(os.pathsep))
+    candidates.extend(os.defpath.split(os.pathsep))
+    retained: list[str] = []
+    for raw in candidates:
+        if not raw:
+            continue
+        try:
+            candidate = Path(raw).expanduser().resolve(strict=True)
+        except OSError:
+            continue
+        if not candidate.is_dir() or _path_is_within(candidate, project_root):
+            continue
+        rendered = str(candidate)
+        if rendered not in retained:
+            retained.append(rendered)
+    return os.pathsep.join(retained)
+
+
+def _compat_environment(
+    *,
+    scanner_id: str,
+    project_root: Path,
+    executable: str,
+    transient: Path,
+) -> dict[str, str]:
+    isolated_home = transient / "home"
+    temp_root = transient / "tmp"
+    cache = transient / "cache"
+    for directory in (isolated_home, temp_root, cache):
+        directory.mkdir(mode=0o700)
+    npm_user_config = transient / "npmrc"
+    npm_user_config.write_text("# Plamen neutral npm policy\n", encoding="utf-8")
+    npm_user_config.chmod(0o600)
+    # OSV's pre-provisioned offline database lives below the account cache on
+    # macOS. Seatbelt admits those bytes read-only while denying all writes
+    # outside this invocation's scratch transient. Other scanners receive an
+    # isolated HOME so npm/cargo logs and caches cannot target the account.
+    try:
+        import pwd
+
+        account_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve(
+            strict=True
+        )
+    except (ImportError, KeyError, OSError) as exc:
+        raise SupplyChainAbortError(
+            "supply-chain gate: account home cannot be resolved safely"
+        ) from exc
+    child_home = account_home if scanner_id == "osv-scanner" else isolated_home
+    env = {
+        "PATH": _compat_safe_path(project_root, executable),
+        "HOME": str(child_home),
+        "TMPDIR": str(temp_root),
+        "TMP": str(temp_root),
+        "TEMP": str(temp_root),
+        "XDG_CACHE_HOME": str(cache),
+        "NPM_CONFIG_CACHE": str(cache / "npm"),
+        "npm_config_cache": str(cache / "npm"),
+        "NPM_CONFIG_USERCONFIG": str(npm_user_config),
+        "npm_config_userconfig": str(npm_user_config),
+        "NPM_CONFIG_OFFLINE": "true",
+        "NPM_CONFIG_IGNORE_SCRIPTS": "true",
+        "NPM_CONFIG_PACKAGE_LOCK_ONLY": "true",
+        "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+        "CARGO_HOME": str(cache / "cargo"),
+        "CARGO_NET_OFFLINE": "true",
+    }
+    for name in ("LANG", "LC_ALL", "LC_CTYPE"):
+        value = os.environ.get(name)
+        if value:
+            env[name] = value
+    return env
+
+
+def _scheme_string(value: str) -> str:
+    if (
+        not value
+        or "\x00" in value
+        or any(ord(character) < 32 for character in value)
+    ):
+        raise SupplyChainAbortError(
+            "supply-chain gate: Seatbelt path contains unsupported bytes"
+        )
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _compat_execution_argv(
+    argv: Sequence[str], *, writable_root: Path,
+) -> tuple[list[str], str]:
+    """Wrap macOS execution in write-denying Seatbelt confinement."""
+
+    requested = [str(value) for value in argv]
+    if sys.platform != "darwin":
+        return requested, "UNAVAILABLE_NON_DARWIN"
+    sandbox_exec = Path("/usr/bin/sandbox-exec")
+    try:
+        metadata = sandbox_exec.stat(follow_symlinks=False)
+        resolved = sandbox_exec.resolve(strict=True)
+    except OSError as exc:
+        raise SupplyChainAbortError(
+            "supply-chain gate: macOS Seatbelt provider is unavailable"
+        ) from exc
+    if not stat.S_ISREG(metadata.st_mode) or not os.access(resolved, os.X_OK):
+        raise SupplyChainAbortError(
+            "supply-chain gate: macOS Seatbelt provider is not executable"
+        )
+    profile = "\n".join(
+        (
+            "(version 1)",
+            "(allow default)",
+            "(deny file-write*)",
+            "(allow file-write* (subpath "
+            + _scheme_string(str(writable_root))
+            + "))",
+        )
+    ) + "\n"
+    return [str(resolved), "-p", profile, *requested], "DARWIN_SEATBELT"
+
+
+def _compat_scanner_command(
+    scanner_id: str,
+    executable: str,
+    lockfile: Path,
+    transient: Path,
+) -> tuple[list[str], Path] | OfflineScanResult:
+    if scanner_id == "osv-scanner":
+        target = lockfile
+        if lockfile.name == "go.sum":
+            target = lockfile.with_name("go.mod")
+            if not target.is_file():
+                return OfflineScanResult(
+                    OfflineScanState.UNAVAILABLE,
+                    reason="go.sum requires its governed go.mod manifest",
+                )
+        neutral_config = transient / "osv-scanner.toml"
+        neutral_config.write_text("# Plamen neutral policy\n", encoding="utf-8")
+        neutral_config.chmod(0o600)
+        return (
+            [
+                executable,
+                "scan",
+                "--offline",
+                "--offline-vulnerabilities",
+                "-L",
+                str(target.resolve()),
+                "--format",
+                "json",
+                "--config",
+                str(neutral_config),
+            ],
+            transient,
+        )
+    if scanner_id == "npm":
+        return OfflineScanResult(
+            OfflineScanState.UNAVAILABLE,
+            reason="npm audit --offline skips advisory lookup",
+        )
+    if scanner_id == "cargo-audit":
+        advisory_root = Path(
+            os.environ.get("PLAMEN_RUSTSEC_DB", "")
+        ).expanduser()
+        if not advisory_root.is_dir():
+            return OfflineScanResult(
+                OfflineScanState.UNAVAILABLE,
+                reason="PLAMEN_RUSTSEC_DB is not a local directory",
+            )
+        return (
+            [
+                executable,
+                "audit",
+                "--json",
+                "--no-fetch",
+                "--db",
+                str(advisory_root.resolve()),
+                "--file",
+                str(lockfile.resolve()),
+            ],
+            transient,
+        )
+    return OfflineScanResult(
+        OfflineScanState.UNAVAILABLE,
+        reason=f"unsupported scanner executable: {scanner_id}",
+    )
+
+
+def _read_bounded_output(
+    handle, *, label: str, maximum: int, strict_utf8: bool = False,
+) -> tuple[str, int, str]:
+    handle.flush()
+    size = int(os.fstat(handle.fileno()).st_size)
+    if size > maximum:
+        raise SupplyChainAbortError(
+            f"supply-chain gate: compatibility {label} exceeded the bounded "
+            f"output limit ({maximum} bytes)"
+        )
+    handle.seek(0)
+    raw = handle.read(maximum + 1)
+    if len(raw) != size:
+        raise SupplyChainAbortError(
+            f"supply-chain gate: compatibility {label} changed while reading"
+        )
+    try:
+        text = raw.decode(
+            "utf-8", errors="strict" if strict_utf8 else "replace"
+        )
+    except UnicodeDecodeError as exc:
+        raise SupplyChainAbortError(
+            f"supply-chain gate: compatibility {label} is not valid UTF-8"
+        ) from exc
+    return text, size, hashlib.sha256(raw).hexdigest()
+
+
+def _terminate_compat_process_group(proc: subprocess.Popen) -> None:
+    """Best-effort bounded termination of the compatibility process group."""
+
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        pass
+    try:
+        proc.wait(timeout=_POSIX_COMPAT_KILL_GRACE_SECONDS)
+        return
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        try:
+            proc.kill()
+        except (OSError, ProcessLookupError):
+            pass
+    try:
+        proc.wait(timeout=_POSIX_COMPAT_KILL_GRACE_SECONDS)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
+def _write_posix_v2_compat_receipt(
+    session: _ValidatedCompatSession,
+    *,
+    scanner_id: str,
+    executable: str,
+    lockfile: Path,
+    argv: Sequence[str],
+    execution_argv: Sequence[str],
+    write_confinement: str,
+    transient: Path,
+    result: _CompatTransportResult,
+    stdout_bytes: int,
+    stderr_bytes: int,
+    staged_input_manifest_sha256: str = "",
+) -> Path:
+    receipt_root = session.scratchpad / _POSIX_COMPAT_RECEIPT_DIR
+    try:
+        receipt_root.mkdir(mode=0o700, exist_ok=True)
+        metadata = os.lstat(receipt_root)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or _path_is_link_or_reparse(receipt_root)
+            or not _path_is_within(receipt_root, session.scratchpad)
+        ):
+            raise OSError("receipt root is not a local scratchpad directory")
+        relative_lock = lockfile.resolve().relative_to(
+            session.project_root
+        ).as_posix()
+        receipt_name = hashlib.sha256(
+            f"{scanner_id}\0{relative_lock}\0{os.urandom(32).hex()}".encode("utf-8")
+        ).hexdigest() + ".json"
+        payload: Mapping[str, object] = {
+            "schema_version": _POSIX_COMPAT_RECEIPT_SCHEMA,
+            "state": "COMMITTED",
+            "transport": "posix_v2_compat_subprocess_group",
+            "scanner_id": scanner_id,
+            "scanner_executable": executable,
+            "session_binding_sha256": session.session_binding_sha256,
+            "lockfile": relative_lock,
+            "argv": list(argv),
+            "execution_argv": list(execution_argv),
+            "working_directory": transient.name,
+            "read_only_intent_roots": [str(session.project_root)],
+            "writable_roots": [str(transient)],
+            "security_properties": {
+                "reduced_isolation": True,
+                "native_owned_process_runner": False,
+                "native_broker_authority": False,
+                "wer_authority": False,
+                "population_zero_proven": False,
+                "shell": False,
+                "new_process_group": True,
+                "bounded_file_output": True,
+                "write_confinement": write_confinement,
+            },
+            "timeout_seconds": 120,
+            "timed_out": result.timed_out,
+            "returncode": result.returncode,
+            "stdout_bytes": stdout_bytes,
+            "stderr_bytes": stderr_bytes,
+            "stdout_sha256": hashlib.sha256(
+                result.stdout.encode("utf-8", errors="replace")
+            ).hexdigest() if not result.stdout_raw_sha256 else result.stdout_raw_sha256,
+            "stderr_sha256": hashlib.sha256(
+                result.stderr.encode("utf-8", errors="replace")
+            ).hexdigest() if not result.stderr_raw_sha256 else result.stderr_raw_sha256,
+            "staged_input_manifest_sha256": staged_input_manifest_sha256,
+        }
+        raw = (
+            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        with tempfile.NamedTemporaryFile(
+            mode="w+b", dir=receipt_root, prefix=".pending-", delete=False
+        ) as pending:
+            pending_path = Path(pending.name)
+            os.fchmod(pending.fileno(), 0o600)
+            pending.write(raw)
+            pending.flush()
+            os.fsync(pending.fileno())
+        destination = receipt_root / receipt_name
+        os.replace(pending_path, destination)
+        directory_fd = os.open(receipt_root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except Exception as exc:
+        try:
+            if "pending_path" in locals() and pending_path.exists():
+                pending_path.unlink()
+        except OSError:
+            pass
+        raise SupplyChainAbortError(
+            "supply-chain gate: compatibility execution receipt could not be "
+            f"committed ({type(exc).__name__})"
+        ) from exc
+    log.warning(
+        "supply_chain_gate: POSIX V2 reduced-isolation scanner receipt=%s "
+        "population_zero_proven=false",
+        destination,
+    )
+    return destination
+
+
+def _run_posix_v2_compat_scanner(
+    binary: str,
+    lockfile: Path,
+    session_authority: object,
+    *,
+    scan_root: Path | None = None,
+    admitted_inputs: Mapping[str, bytes] | None = None,
+    input_manifest_sha256: str = "",
+) -> OfflineScanResult | _CompatTransportResult:
+    session = _validated_posix_v2_compat_session(
+        session_authority, scan_root=lockfile.parent
+    )
+    scanner_id = _scanner_id(binary)
+    executable = _scanner_executable(binary)
+    transient_path = Path(
+        tempfile.mkdtemp(
+            prefix=".posix-v2-supply-chain-",
+            dir=session.scratchpad,
+        )
+    )
+    transient_path.chmod(0o700)
+    try:
+        scanner_lockfile = lockfile
+        if scan_root is not None and admitted_inputs is not None:
+            resolved_scan_root = scan_root.resolve(strict=True)
+            staging_root = transient_path / "admitted-inputs"
+            staging_root.mkdir(mode=0o700)
+            for relative, raw in admitted_inputs.items():
+                destination = staging_root / relative
+                destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                destination.write_bytes(raw)
+                destination.chmod(0o600)
+                if destination.read_bytes() != raw:
+                    raise SupplyChainAbortError(
+                        "supply-chain gate: staged scanner input differs from admission"
+                    )
+            scanner_lockfile = staging_root / lockfile.resolve().relative_to(
+                resolved_scan_root
+            )
+            if not scanner_lockfile.is_file():
+                raise SupplyChainAbortError(
+                    "supply-chain gate: admitted scanner lockfile was not staged"
+                )
+        command = _compat_scanner_command(
+            scanner_id, executable, scanner_lockfile, transient_path
+        )
+        if isinstance(command, OfflineScanResult):
+            return command
+        argv, run_cwd = command
+        env = _compat_environment(
+            scanner_id=scanner_id,
+            project_root=session.project_root,
+            executable=executable,
+            transient=transient_path,
+        )
+        execution_argv, write_confinement = _compat_execution_argv(
+            argv, writable_root=transient_path
+        )
+        timed_out = False
+        with tempfile.TemporaryFile(mode="w+b", dir=transient_path) as stdout_file, \
+                tempfile.TemporaryFile(mode="w+b", dir=transient_path) as stderr_file:
+            try:
+                proc = subprocess.Popen(
+                    execution_argv,
+                    cwd=str(run_cwd),
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    shell=False,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+                try:
+                    returncode = proc.wait(timeout=120)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    _terminate_compat_process_group(proc)
+                    returncode = 124
+            except (OSError, subprocess.SubprocessError) as exc:
+                returncode = 125
+                stderr_file.write(
+                    (f"compatibility scanner transport failed: "
+                     f"{type(exc).__name__}").encode("utf-8")
+                )
+            stdout, stdout_bytes, stdout_raw_sha256 = _read_bounded_output(
+                stdout_file,
+                label="stdout",
+                maximum=_POSIX_COMPAT_STDOUT_MAX_BYTES,
+                strict_utf8=True,
+            )
+            stderr, stderr_bytes, stderr_raw_sha256 = _read_bounded_output(
+                stderr_file,
+                label="stderr",
+                maximum=_POSIX_COMPAT_STDERR_MAX_BYTES,
+            )
+        result = _CompatTransportResult(
+            returncode=int(returncode),
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=timed_out,
+            stdout_raw_sha256=stdout_raw_sha256,
+            stderr_raw_sha256=stderr_raw_sha256,
+        )
+        receipt_path = _write_posix_v2_compat_receipt(
+            session,
+            scanner_id=scanner_id,
+            executable=executable,
+            lockfile=lockfile,
+            argv=argv,
+            execution_argv=execution_argv,
+            write_confinement=write_confinement,
+            transient=transient_path,
+            result=result,
+            stdout_bytes=stdout_bytes,
+            stderr_bytes=stderr_bytes,
+            staged_input_manifest_sha256=input_manifest_sha256,
+        )
+        return _CompatTransportResult(
+            returncode=result.returncode, stdout=result.stdout,
+            stderr=result.stderr, timed_out=result.timed_out,
+            receipt_path=receipt_path,
+            stdout_raw_sha256=result.stdout_raw_sha256,
+            stderr_raw_sha256=result.stderr_raw_sha256,
+        )
+    finally:
+        shutil.rmtree(transient_path, ignore_errors=True)
+
+
+def _call_offline_scanner(
+    binary: str,
+    lockfile: Path,
+    *,
+    posix_compat_session: object | None = None,
+    _compat_gate_nonce: str | None = None,
+    _compat_scan_root: Path | None = None,
+    _compat_admitted_inputs: Mapping[str, bytes] | None = None,
+    _compat_input_manifest_sha256: str | None = None,
+) -> OfflineScanResult:
     """Run a no-fetch scanner and return a typed transport/schema result."""
+    if _scanner_id(binary) == "npm":
+        return OfflineScanResult(
+            OfflineScanState.UNAVAILABLE,
+            reason="npm audit --offline skips advisory lookup",
+        )
+    if posix_compat_session is not None:
+        try:
+            proc = _run_posix_v2_compat_scanner(
+                binary, lockfile, posix_compat_session,
+                scan_root=_compat_scan_root,
+                admitted_inputs=_compat_admitted_inputs,
+                input_manifest_sha256=_compat_input_manifest_sha256 or "",
+            )
+        except Exception as exc:
+            log.warning(
+                "supply_chain_gate: POSIX V2 scanner call failed (%s on %s): %s",
+                binary,
+                lockfile,
+                exc,
+            )
+            return OfflineScanResult(
+                OfflineScanState.FAILED,
+                reason=(
+                    "POSIX V2 compatibility scanner transport failed: "
+                    f"{type(exc).__name__}"
+                ),
+            )
+        if isinstance(proc, OfflineScanResult):
+            return proc
+        raw = proc.stdout or ""
+        if proc.timed_out:
+            return OfflineScanResult(
+                OfflineScanState.FAILED,
+                reason="scanner timed out; process group terminated",
+                returncode=proc.returncode,
+            )
+        if proc.returncode not in (0, 1):
+            return OfflineScanResult(
+                OfflineScanState.FAILED,
+                reason=f"scanner exited with rc={proc.returncode}",
+                returncode=proc.returncode,
+            )
+        payload, issue = _validated_scanner_json(_scanner_id(binary), raw)
+        if payload is None:
+            return OfflineScanResult(
+                OfflineScanState.FAILED,
+                reason=issue,
+                returncode=proc.returncode,
+            )
+        result = OfflineScanResult(
+            OfflineScanState.SUCCEEDED,
+            output=json.dumps(payload, sort_keys=True),
+            returncode=proc.returncode,
+        )
+        session = _validated_posix_v2_compat_session(
+            posix_compat_session, scan_root=lockfile.parent,
+        )
+        relative = lockfile.resolve().relative_to(session.project_root).as_posix()
+        receipt_path = proc.receipt_path
+        if receipt_path is None:
+            raise SupplyChainAbortError(
+                "supply-chain gate: current scanner execution has no receipt path"
+            )
+        try:
+            receipt_raw = receipt_path.read_bytes()
+            receipt_payload = json.loads(receipt_raw)
+        except (OSError, ValueError, TypeError) as exc:
+            raise SupplyChainAbortError(
+                "supply-chain gate: current scanner receipt cannot be observed"
+            ) from exc
+        raw_stdout_sha256 = proc.stdout_raw_sha256
+        if not raw_stdout_sha256:
+            raise SupplyChainAbortError(
+                "supply-chain gate: current scanner stdout byte digest is absent"
+            )
+        if (
+            not isinstance(receipt_payload, dict)
+            or receipt_payload.get("stdout_sha256") != raw_stdout_sha256
+            or receipt_payload.get("returncode") != proc.returncode
+            or receipt_payload.get("session_binding_sha256")
+            != session.session_binding_sha256
+            or receipt_payload.get("staged_input_manifest_sha256")
+            != (_compat_input_manifest_sha256 or "")
+        ):
+            raise SupplyChainAbortError(
+                "supply-chain gate: current result and execution receipt differ"
+            )
+        result_id = id(result)
+        def forget(_reference: object, *, key: int = result_id) -> None:
+            _COMPAT_SCAN_OBSERVATIONS.pop(key, None)
+        _COMPAT_SCAN_OBSERVATIONS[result_id] = _CompatScanObservation(
+            result_ref=weakref.ref(result, forget),
+            session_ref=weakref.ref(posix_compat_session),
+            scanner_id=_scanner_id(binary), lockfile=relative,
+            receipt_path=receipt_path,
+            receipt_sha256=hashlib.sha256(receipt_raw).hexdigest(),
+            raw_stdout_sha256=raw_stdout_sha256,
+            normalized_output_sha256=hashlib.sha256(
+                result.output.encode("utf-8")
+            ).hexdigest(),
+            gate_nonce=_compat_gate_nonce or "",
+            staged_input_manifest_sha256=(
+                _compat_input_manifest_sha256 or ""
+            ),
+        )
+        return result
+
     neutral_context: Optional[tempfile.TemporaryDirectory[str]] = None
     run_cwd = lockfile.parent
     run_env = None
@@ -626,10 +1372,10 @@ def _call_offline_scanner(binary: str, lockfile: Path) -> OfflineScanResult:
             str(neutral_config),
         ]
     elif scanner_id == "npm":
-        cmd = [
-            executable, "audit", "--json", "--offline",
-            "--prefix", str(lockfile.parent),
-        ]
+        return OfflineScanResult(
+            OfflineScanState.UNAVAILABLE,
+            reason="npm audit --offline skips advisory lookup",
+        )
     elif scanner_id == "cargo-audit":
         advisory_root = Path(
             os.environ.get("PLAMEN_RUSTSEC_DB", "")
@@ -717,7 +1463,9 @@ def _denylist_hit(text: str, denylist: Iterable[str]) -> Optional[str]:
     return None
 
 
-def _install_script_heuristic_hit(root: Path) -> Optional[str]:
+def _install_script_heuristic_hit(
+    root: Path, *, fail_on_read_error: bool = False,
+) -> Optional[str]:
     """Offline, no-network heuristic: flag pre/post/install script hooks
     combined with a base64+eval-style obfuscation chain in the TARGET repo's
     own manifest files. Best-effort — a miss here does not weaken the other
@@ -728,7 +1476,12 @@ def _install_script_heuristic_hit(root: Path) -> Optional[str]:
             if not p.is_file():
                 continue
             text = p.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        except OSError as exc:
+            if fail_on_read_error:
+                raise SupplyChainAbortError(
+                    "supply-chain gate: heuristic source cannot be read "
+                    f"exactly: {p} ({type(exc).__name__})"
+                ) from exc
             continue
         if _BASE64_EVAL_RE.search(text):
             return f"base64/eval obfuscation chain in {name}"
@@ -740,7 +1493,252 @@ def _install_script_heuristic_hit(root: Path) -> Optional[str]:
     return None
 
 
-def gate_supply_chain(root: Path, *, denylist: Optional[Sequence[str]] = None) -> None:
+def _compat_input_snapshot(root: Path, lockfiles: Sequence[Path]) -> _CompatInputSnapshot:
+    """Bind the bounded physical identities and bytes of all implicit inputs."""
+
+    resolved_root = root.resolve(strict=True)
+    inputs: dict[Path, set[str]] = {}
+    for lockfile in lockfiles:
+        path = lockfile.resolve(strict=True)
+        inputs.setdefault(path, set()).add("LOCKFILE")
+        if _name_key(path.name) == _name_key("go.sum"):
+            inputs.setdefault(path.with_name("go.mod"), set()).add("SCANNER_IMPLICIT")
+        if _name_key(path.name) in {
+            _name_key("package-lock.json"), _name_key("npm-shrinkwrap.json")
+        }:
+            inputs.setdefault(path.with_name("package.json"), set()).add("SCANNER_IMPLICIT")
+    inputs.setdefault(resolved_root / "package.json", set()).add("HEURISTIC_INPUT")
+    rows: list[dict[str, object]] = []
+    contents: dict[str, bytes] = {}
+    for path in sorted(inputs, key=lambda item: item.relative_to(resolved_root).as_posix()):
+        relative = path.relative_to(resolved_root).as_posix()
+        kinds = tuple(sorted(inputs[path]))
+        try:
+            before = os.lstat(path)
+        except FileNotFoundError:
+            rows.append({"kinds": kinds, "path": relative, "state": "ABSENT"})
+            continue
+        except OSError as exc:
+            raise SupplyChainAbortError(
+                "supply-chain gate: compatibility input cannot be inspected "
+                f"exactly: {path} ({type(exc).__name__})"
+            ) from exc
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or _path_is_link_or_reparse(path)
+            or before.st_size < 0
+            or before.st_size > 128 * 1024 * 1024
+        ):
+            raise SupplyChainAbortError(
+                f"supply-chain gate: compatibility input type or size is unsafe: {path}"
+            )
+        try:
+            raw = path.read_bytes()
+            after = os.lstat(path)
+        except OSError as exc:
+            raise SupplyChainAbortError(
+                "supply-chain gate: compatibility input cannot be read "
+                f"exactly: {path} ({type(exc).__name__})"
+            ) from exc
+        identity = lambda observed: (
+            int(observed.st_dev), int(observed.st_ino), int(observed.st_mode),
+            int(observed.st_uid), int(observed.st_gid), int(observed.st_nlink),
+            int(observed.st_size), int(observed.st_mtime_ns), int(observed.st_ctime_ns),
+        )
+        if identity(before) != identity(after) or len(raw) != before.st_size:
+            raise SupplyChainAbortError(
+                f"supply-chain gate: compatibility input changed while read: {path}"
+            )
+        rows.append({
+            "kinds": kinds, "path": relative, "state": "PRESENT",
+            "identity": {
+                "device": int(before.st_dev), "inode": int(before.st_ino),
+                "mode": int(before.st_mode), "owner": int(before.st_uid),
+                "group": int(before.st_gid), "link_count": int(before.st_nlink),
+                "size": int(before.st_size), "mtime_ns": int(before.st_mtime_ns),
+                "ctime_ns": int(before.st_ctime_ns),
+            },
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        })
+        contents[relative] = raw
+    return _CompatInputSnapshot(
+        rows=tuple(rows), contents=MappingProxyType(contents),
+    )
+
+
+def _canonical_sha(value: object) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")).hexdigest()
+
+
+def _compat_snapshot_heuristic_hit(snapshot: _CompatInputSnapshot) -> Optional[str]:
+    for name in ("package.json", "package-lock.json"):
+        raw = snapshot.contents.get(name)
+        if raw is None:
+            continue
+        text = raw.decode("utf-8", errors="replace")
+        if _BASE64_EVAL_RE.search(text):
+            return f"base64/eval obfuscation chain in {name}"
+        has_install_hook = any(f'"{key}"' in text for key in _INSTALL_SCRIPT_KEYS)
+        if has_install_hook and "base64" in text.lower() and (
+            "eval(" in text or "Function(" in text
+        ):
+            return f"install-script hook + base64/eval in {name}"
+    return None
+
+
+def _compat_receipt_evidence(
+    session: _ValidatedCompatSession, *, scanner: str, lockfile: Path,
+    result: OfflineScanResult, session_authority: object, gate_nonce: str,
+    input_manifest_sha256: str,
+) -> dict[str, object]:
+    relative = lockfile.resolve().relative_to(session.project_root).as_posix()
+    observation = _COMPAT_SCAN_OBSERVATIONS.pop(id(result), None)
+    if (
+        observation is None
+        or observation.result_ref() is not result
+        or observation.session_ref() is not session_authority
+        or observation.scanner_id != _scanner_id(scanner)
+        or observation.lockfile != relative
+        or observation.gate_nonce != gate_nonce
+        or observation.staged_input_manifest_sha256 != input_manifest_sha256
+        or observation.normalized_output_sha256
+        != hashlib.sha256(result.output.encode("utf-8")).hexdigest()
+    ):
+        raise SupplyChainAbortError(
+            "supply-chain gate: scanner result lacks current process-local execution lineage"
+        )
+    path = observation.receipt_path
+    try:
+        metadata = os.lstat(path)
+        if not stat.S_ISREG(metadata.st_mode) or _path_is_link_or_reparse(path) or metadata.st_size <= 0 or metadata.st_size > 2 * 1024 * 1024:
+            raise OSError("receipt type or size is invalid")
+        raw = path.read_bytes()
+        confirmed = os.lstat(path)
+        payload = json.loads(raw)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise SupplyChainAbortError(
+            "supply-chain gate: actual compatibility scanner evidence is missing or malformed "
+            f"({type(exc).__name__})"
+        ) from exc
+    if len(raw) != metadata.st_size or (metadata.st_dev, metadata.st_ino, metadata.st_mtime_ns, metadata.st_ctime_ns) != (confirmed.st_dev, confirmed.st_ino, confirmed.st_mtime_ns, confirmed.st_ctime_ns):
+        raise SupplyChainAbortError("supply-chain gate: scanner receipt changed while admitted")
+    required = {
+        "schema_version": _POSIX_COMPAT_RECEIPT_SCHEMA, "state": "COMMITTED",
+        "scanner_id": _scanner_id(scanner), "session_binding_sha256": session.session_binding_sha256,
+        "lockfile": relative, "timed_out": False,
+        "staged_input_manifest_sha256": input_manifest_sha256,
+    }
+    if not isinstance(payload, dict) or any(payload.get(key) != value for key, value in required.items()) or payload.get("returncode") != result.returncode or hashlib.sha256(raw).hexdigest() != observation.receipt_sha256 or payload.get("stdout_sha256") != observation.raw_stdout_sha256:
+        raise SupplyChainAbortError("supply-chain gate: scanner receipt does not bind the admitted execution")
+    return {
+        "lockfile": relative, "scanner_id": _scanner_id(scanner),
+        "receipt_path": path.relative_to(session.scratchpad).as_posix(),
+        "receipt_sha256": hashlib.sha256(raw).hexdigest(),
+        "scanner_output_sha256": observation.normalized_output_sha256,
+        "returncode": result.returncode,
+        "staged_input_manifest_sha256": input_manifest_sha256,
+    }
+
+
+def _freeze_admission_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(key): _freeze_admission_value(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_admission_value(item) for item in value)
+    return value
+
+
+def _plain_admission_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _plain_admission_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_admission_value(item) for item in value]
+    return value
+
+
+def _issue_admission(session_authority: object, projection: Mapping[str, object]) -> SupplyChainAdmission:
+    authority = object.__new__(SupplyChainAdmission)
+    token = os.urandom(32).hex()
+    object.__setattr__(authority, "_SupplyChainAdmission__token", token)
+    issued_projection = dict(projection)
+    issued_projection["admission_sha256"] = _canonical_sha(issued_projection)
+    authority_id = id(authority)
+    def forget(_reference: object, *, key: int = authority_id) -> None:
+        _ADMISSIONS.pop(key, None)
+    _ADMISSIONS[authority_id] = _AdmissionRecord(
+        token=token, authority_ref=weakref.ref(authority, forget),
+        session_authority_ref=weakref.ref(session_authority),
+        projection=_freeze_admission_value(issued_projection),
+    )
+    return authority
+
+
+def project_supply_chain_admission(
+    admission: object, *, posix_compat_session: object,
+) -> Mapping[str, object]:
+    """Replay a live admission, rejecting expiry, forgery, or input/evidence drift."""
+
+    if type(admission) is not SupplyChainAdmission:
+        raise SupplyChainAbortError("supply-chain gate: admission has the wrong exact type")
+    record = _ADMISSIONS.get(id(admission))
+    try:
+        token = object.__getattribute__(admission, "_SupplyChainAdmission__token")
+    except BaseException as exc:
+        raise SupplyChainAbortError("supply-chain gate: admission shell is incomplete") from exc
+    if record is None or record.authority_ref() is not admission or record.token != token or record.session_authority_ref() is not posix_compat_session:
+        raise SupplyChainAbortError("supply-chain gate: admission is forged or belongs to another session")
+    projection = dict(record.projection)
+    scan_root = Path(str(projection["scan_root"]))
+    session = _validated_posix_v2_compat_session(posix_compat_session, scan_root=scan_root)
+    try:
+        resolved_scan_root = scan_root.resolve(strict=True)
+    except OSError as exc:
+        raise SupplyChainAbortError("supply-chain gate: admitted scan root is unavailable") from exc
+    lockfiles = _find_lockfiles(resolved_scan_root)
+    inputs = _compat_input_snapshot(resolved_scan_root, lockfiles)
+    claimed_digest = projection.pop("admission_sha256", None)
+    if claimed_digest != _canonical_sha(_plain_admission_value(projection)):
+        raise SupplyChainAbortError("supply-chain gate: admission projection digest differs")
+    projection["admission_sha256"] = claimed_digest
+    if projection.get("project_root") != str(session.project_root) or projection.get("scan_root") != str(resolved_scan_root) or projection.get("run_id") != session.run_id or projection.get("session_binding_sha256") != session.session_binding_sha256 or projection.get("input_denominator_sha256") != _canonical_sha(inputs.rows):
+        raise SupplyChainAbortError("supply-chain gate: admission session or relevant inputs drifted")
+    evidence_rows = projection.get("scanner_evidence", ())
+    expected_locks = {
+        path.resolve().relative_to(session.project_root).as_posix()
+        for path in lockfiles
+    }
+    if not isinstance(evidence_rows, tuple) or {
+        row.get("lockfile") for row in evidence_rows if isinstance(row, Mapping)
+    } != expected_locks or len(evidence_rows) != len(expected_locks):
+        raise SupplyChainAbortError("supply-chain gate: scanner evidence denominator is incomplete")
+    for evidence in evidence_rows:
+        if not isinstance(evidence, Mapping):
+            raise SupplyChainAbortError("supply-chain gate: scanner evidence projection is malformed")
+        path = session.scratchpad / str(evidence.get("receipt_path", ""))
+        try:
+            metadata = os.lstat(path)
+            if not stat.S_ISREG(metadata.st_mode) or _path_is_link_or_reparse(path) or metadata.st_size <= 0 or metadata.st_size > 2 * 1024 * 1024:
+                raise OSError("receipt type or size is invalid")
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise SupplyChainAbortError("supply-chain gate: scanner evidence is missing") from exc
+        if hashlib.sha256(raw).hexdigest() != evidence.get("receipt_sha256"):
+            raise SupplyChainAbortError("supply-chain gate: scanner evidence drifted")
+        try:
+            payload = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            raise SupplyChainAbortError("supply-chain gate: scanner evidence is malformed") from exc
+        if not isinstance(payload, dict) or payload.get("schema_version") != _POSIX_COMPAT_RECEIPT_SCHEMA or payload.get("state") != "COMMITTED" or payload.get("session_binding_sha256") != session.session_binding_sha256 or payload.get("scanner_id") != evidence.get("scanner_id") or payload.get("lockfile") != evidence.get("lockfile") or payload.get("timed_out") is not False or payload.get("returncode") != evidence.get("returncode") or payload.get("staged_input_manifest_sha256") != projection.get("input_denominator_sha256") or evidence.get("staged_input_manifest_sha256") != projection.get("input_denominator_sha256"):
+            raise SupplyChainAbortError("supply-chain gate: scanner evidence no longer validates")
+    return MappingProxyType(projection)
+
+
+def gate_supply_chain(
+    root: Path,
+    *,
+    denylist: Optional[Sequence[str]] = None,
+    posix_compat_session: object | None = None,
+) -> SupplyChainAdmission | None:
     """Fail-closed pre-exec safety gate.
 
     Call BEFORE any subprocess that installs/builds/tests dependencies
@@ -764,21 +1762,59 @@ def gate_supply_chain(root: Path, *, denylist: Optional[Sequence[str]] = None) -
     entirely (explicit opt-out for trusted/offline dev environments — never
     the default, and always logged when used).
     """
-    if os.environ.get("PLAMEN_SKIP_SUPPLY_CHAIN_GATE") == "1":
+    root = Path(root)
+    compat_session: _ValidatedCompatSession | None = None
+    compat_inputs: _CompatInputSnapshot | None = None
+    scanner_evidence: list[dict[str, object]] = []
+    ordinary_risk_count = 0
+    compat_gate_nonce = os.urandom(32).hex() if posix_compat_session is not None else ""
+    if posix_compat_session is not None:
+        # Exact opaque same-process authority is checked before lockfile,
+        # executable, or opt-out inspection; no config/env marker can activate
+        # or bypass this strict post-session path.
+        compat_session = _validated_posix_v2_compat_session(
+            posix_compat_session, scan_root=root
+        )
+        try:
+            resolved_requested_root = root.resolve(strict=True)
+        except OSError as exc:
+            raise SupplyChainAbortError(
+                "supply-chain gate: compatibility scan root is unavailable"
+            ) from exc
+        root = resolved_requested_root
+    if (
+        os.environ.get("PLAMEN_SKIP_SUPPLY_CHAIN_GATE") == "1"
+        and posix_compat_session is None
+    ):
         log.warning("supply_chain_gate: SKIPPED via PLAMEN_SKIP_SUPPLY_CHAIN_GATE=1 "
                      "for %s", root)
         return
+    if os.environ.get("PLAMEN_SKIP_SUPPLY_CHAIN_GATE") == "1":
+        raise SupplyChainAbortError(
+            "supply-chain gate: PLAMEN_SKIP_SUPPLY_CHAIN_GATE cannot bypass "
+            "the POSIX V2 compatibility post-session gate"
+        )
 
     active_denylist = tuple(denylist) if denylist is not None else tuple(DEFAULT_IOC_DENYLIST)
-    root = Path(root)
     lockfiles = _find_lockfiles(root)
+    if compat_session is not None:
+        compat_inputs = _compat_input_snapshot(root, lockfiles)
 
     # --- Signal 1: append-only IoC denylist (no binary required) ----------
     for lf in lockfiles:
-        try:
-            text = lf.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+        if compat_inputs is not None:
+            relative = lf.resolve().relative_to(root).as_posix()
+            admitted = compat_inputs.contents.get(relative)
+            if admitted is None:
+                raise SupplyChainAbortError(
+                    "supply-chain gate: admitted lockfile bytes are missing"
+                )
+            text = admitted.decode("utf-8", errors="replace")
+        else:
+            try:
+                text = lf.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
         hit = _denylist_hit(text, active_denylist)
         if hit:
             log.error("supply_chain_gate: denylisted IoC %r found in %s", hit, lf)
@@ -788,7 +1824,11 @@ def gate_supply_chain(root: Path, *, denylist: Optional[Sequence[str]] = None) -
             )
 
     # --- Signal 2: install-script + base64/eval heuristic (no binary) -----
-    heuristic_hit = _install_script_heuristic_hit(root)
+    heuristic_hit = (
+        _compat_snapshot_heuristic_hit(compat_inputs)
+        if compat_inputs is not None
+        else _install_script_heuristic_hit(root)
+    )
     if heuristic_hit:
         log.error("supply_chain_gate: install-script heuristic fired (%s) in %s",
                    heuristic_hit, root)
@@ -802,7 +1842,27 @@ def gate_supply_chain(root: Path, *, denylist: Optional[Sequence[str]] = None) -
     if not lockfiles:
         log.info("supply_chain_gate: no lockfile found under %s — scanner step "
                   "skipped (nothing to verify)", root)
-        return
+        if compat_session is None:
+            return None
+        confirmed_inputs = _compat_input_snapshot(root, _find_lockfiles(root))
+        if confirmed_inputs != compat_inputs or compat_inputs is None:
+            raise SupplyChainAbortError(
+                "supply-chain gate: relevant supply-chain inputs drifted during admission"
+            )
+        projection = {
+            "schema_version": "plamen.posix_v2_compat_supply_chain_admission.v1",
+            "status": "ADMITTED", "scanner_applicability": "NOT_APPLICABLE",
+            "scope_limit": "no dependency lockfile was present; dependencies were not proven safe",
+            "run_id": compat_session.run_id,
+            "project_root": str(compat_session.project_root),
+            "scan_root": str(root),
+            "session_binding_sha256": compat_session.session_binding_sha256,
+            "input_denominator": compat_inputs.rows,
+            "input_denominator_sha256": _canonical_sha(compat_inputs.rows),
+            "lockfile_count": 0, "scanner_evidence": (),
+            "ordinary_vulnerability_count": 0,
+        }
+        return _issue_admission(posix_compat_session, projection)
 
     resolved_scanners = {
         scanner_id: resolved
@@ -852,9 +1912,32 @@ def gate_supply_chain(root: Path, *, denylist: Optional[Sequence[str]] = None) -
         output: Optional[str] = None
         binary = available[0]
         for binary in available:
-            result = _call_offline_scanner(binary, lf)
+            if posix_compat_session is None:
+                # Preserve the historical two-argument seam and the normal
+                # OwnedProcessRunner transport exactly.
+                result = _call_offline_scanner(binary, lf)
+            else:
+                result = _call_offline_scanner(
+                    binary,
+                    lf,
+                    posix_compat_session=posix_compat_session,
+                    _compat_gate_nonce=compat_gate_nonce,
+                    _compat_scan_root=root,
+                    _compat_admitted_inputs=(
+                        None if compat_inputs is None else compat_inputs.contents
+                    ),
+                    _compat_input_manifest_sha256=(
+                        "" if compat_inputs is None
+                        else _canonical_sha(compat_inputs.rows)
+                    ),
+                )
             # Compatibility for the historical private fixture seam.
             if isinstance(result, str):
+                if compat_session is not None:
+                    raise SupplyChainAbortError(
+                        "supply-chain gate: compatibility scanner fixture output "
+                        "has no actual execution receipt"
+                    )
                 output = result
                 break
             if result.state is OfflineScanState.SUCCEEDED:
@@ -896,6 +1979,18 @@ def gate_supply_chain(root: Path, *, denylist: Optional[Sequence[str]] = None) -
                 f"malicious-package/IoC evidence for {lf} ({evidence}). "
                 "Aborting before install/build/test -- fail-closed."
             )
+        if compat_session is not None:
+            if not isinstance(result, OfflineScanResult):
+                raise SupplyChainAbortError(
+                    "supply-chain gate: compatibility scanner result is not typed"
+                )
+            scanner_evidence.append(_compat_receipt_evidence(
+                compat_session, scanner=binary, lockfile=lf, result=result,
+                session_authority=posix_compat_session,
+                gate_nonce=compat_gate_nonce,
+                input_manifest_sha256=_canonical_sha(compat_inputs.rows),
+            ))
+        ordinary_risk_count += assessment.vulnerability_count
         if assessment.vulnerability_count:
             log.warning(
                 "supply_chain_gate: %s reported %d ordinary dependency "
@@ -909,3 +2004,25 @@ def gate_supply_chain(root: Path, *, denylist: Optional[Sequence[str]] = None) -
         "supply_chain_gate: %d lockfile(s) scanned without a blocking signal "
         "under %s", len(lockfiles), root,
     )
+    if compat_session is None:
+        return None
+    confirmed_inputs = _compat_input_snapshot(root, _find_lockfiles(root))
+    if confirmed_inputs != compat_inputs or compat_inputs is None:
+        raise SupplyChainAbortError(
+            "supply-chain gate: relevant supply-chain inputs drifted during admission"
+        )
+    projection = {
+        "schema_version": "plamen.posix_v2_compat_supply_chain_admission.v1",
+        "status": "ADMITTED", "scanner_applicability": "APPLICABLE",
+        "scope_limit": "offline scanners classify their supported lockfile formats from private admitted-byte copies; staging closes input TOCTOU but does not prove network isolation or full process containment; ordinary vulnerabilities remain audit risk and admission is not a dependency-safety proof",
+        "run_id": compat_session.run_id,
+        "project_root": str(compat_session.project_root),
+        "scan_root": str(root),
+        "session_binding_sha256": compat_session.session_binding_sha256,
+        "input_denominator": compat_inputs.rows,
+        "input_denominator_sha256": _canonical_sha(compat_inputs.rows),
+        "lockfile_count": len(lockfiles),
+        "scanner_evidence": tuple(scanner_evidence),
+        "ordinary_vulnerability_count": ordinary_risk_count,
+    }
+    return _issue_admission(posix_compat_session, projection)

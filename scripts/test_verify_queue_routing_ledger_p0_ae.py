@@ -552,7 +552,7 @@ def test_mechanical_queue_branch_records_typed_routing_before_checkpoint_complet
         )
         result = D._commit_verification_transaction(
             phase,
-            object(),
+            SimpleNamespace(run_id=f"fixture-{pipeline}"),
             scratchpad,
             {
                 "pipeline": pipeline,

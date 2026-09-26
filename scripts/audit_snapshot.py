@@ -9,6 +9,7 @@ snapshot can be built and tested before phase orchestration starts.
 from __future__ import annotations
 
 import atexit
+import configparser
 from dataclasses import dataclass
 from contextlib import contextmanager, nullcontext
 import csv
@@ -21,6 +22,7 @@ import os
 import platform
 from pathlib import Path, PurePosixPath
 import re
+import signal
 import shlex
 import shutil
 import socket
@@ -33,7 +35,7 @@ import tempfile
 import threading
 import time
 import tomllib
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 import uuid
 from urllib.parse import urljoin, urlparse
 
@@ -50,14 +52,43 @@ import toolchain_control_authority as _toolchain_controls
 
 SNAPSHOT_SCHEMA = "plamen.audit-input-snapshot.v1"
 RUNTIME_TOOL_IDENTITY_SCHEMA = "plamen.runtime-tool-identity.v2"
-TOOLCHAIN_VERSION_LOCK_SCHEMA = "plamen.toolchain_version_lock.v1"
-TOOLCHAIN_GOVERNANCE_SCHEMA = "plamen.toolchain_governance.v1"
 NEW = "NEW"
 MATCH = "MATCH"
 MISMATCH = "MISMATCH"
 LEGACY_UNBOUND = "LEGACY_UNBOUND"
 
-_COMPONENTS = ("source_scope", "audit_config", "methodology", "toolchain")
+_DARWIN_GIT_SHIM = Path("/usr/bin/git")
+_DARWIN_XCRUN = Path("/usr/bin/xcrun")
+_DARWIN_DISPATCH_OUTPUT_LIMIT = 16 * 1024
+_DARWIN_DISPATCH_TIMEOUT_SECONDS = 3.0
+_DARWIN_XCRUN_OVERRIDE_VARIABLES = (
+    "DEVELOPER_DIR",
+    "SDKROOT",
+    "TOOLCHAINS",
+    "xcrun_nocache",
+)
+_DARWIN_DISPATCH_ENV = {
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+    "HOME": "/var/empty",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+}
+
+_BASE_COMPONENTS = ("source_scope", "audit_config", "methodology", "toolchain")
+_EVM_ANALYSIS_PROJECTION_COMPONENT = "evm_analysis_projection"
+_EVM_ANALYSIS_PROJECTION_RECEIPT = "evm_analysis_projection_receipt.v1.json"
+_EVM_ANALYSIS_PROJECTION_STAGING_RECEIPT = (
+    ".evm-analysis-projection-staging/projection_receipt.v1.json"
+)
+_EVM_MATERIALIZATION_LINEAGE_STAGING_RECEIPT = (
+    ".evm-analysis-projection-staging/materialization_lineage.v2.json"
+)
+_EVM_ANALYSIS_PROJECTION_SCHEMA = "plamen.private-analysis-projection-custody.v1"
+_MAX_EVM_ANALYSIS_PROJECTION_RECEIPT_BYTES = 8 * 1024 * 1024
+_MAX_EVM_ANALYSIS_PROJECTION_BYTES = 16 * 1024 * 1024 * 1024
 _SOURCE_SUFFIXES = SOURCE_SUFFIXES_BY_ECOSYSTEM
 _L1_SOURCE_SUFFIXES = L1_SOURCE_SUFFIXES
 _ALL_SOURCE_SUFFIXES = ALL_AUDIT_SOURCE_SUFFIXES
@@ -132,6 +163,53 @@ _GENERATED_AUDIT_NAME_RE = re.compile(
     r"(?:[_\-.]|$)",
     re.IGNORECASE,
 )
+
+
+def _normalized_snapshot_language(value: object) -> str:
+    language = str(value or "").strip().lower()
+    return {"solidity": "evm", "ethereum": "evm"}.get(language, language)
+
+
+def _evm_projection_receipt_path(config: Mapping[str, Any]) -> Path:
+    staged = str(
+        config.get("_evm_analysis_projection_staging_receipt_path") or ""
+    ).strip()
+    if staged:
+        path = Path(staged).expanduser()
+        if not path.is_absolute():
+            raise SnapshotInputError(
+                "EVM analysis projection staging receipt path must be absolute"
+            )
+        return Path(os.path.abspath(os.fspath(path)))
+    raw = str(config.get("scratchpad") or "").strip()
+    if not raw:
+        # This sentinel cannot accidentally name a project file and lets the
+        # degraded direct-library caller bind an explicit absence.
+        return Path(os.devnull) / _EVM_ANALYSIS_PROJECTION_RECEIPT
+    return (
+        Path(raw).expanduser().resolve()
+        / _EVM_ANALYSIS_PROJECTION_STAGING_RECEIPT
+    )
+
+
+def _evm_materialization_lineage_path(config: Mapping[str, Any]) -> Path:
+    staged = str(
+        config.get("_evm_tool_materialization_lineage_staging_path") or ""
+    ).strip()
+    if staged:
+        path = Path(staged).expanduser()
+        if not path.is_absolute():
+            raise SnapshotInputError(
+                "EVM materialization lineage staging path must be absolute"
+            )
+        return Path(os.path.abspath(os.fspath(path)))
+    raw = str(config.get("scratchpad") or "").strip()
+    if not raw:
+        return Path(os.devnull) / "evm_tool_materialization_lineage.v2.json"
+    return (
+        Path(raw).expanduser().resolve()
+        / _EVM_MATERIALIZATION_LINEAGE_STAGING_RECEIPT
+    )
 
 
 def _name_in_set(name: str, values: set[str]) -> bool:
@@ -256,6 +334,13 @@ _METHODOLOGY_DIRS = (
     "codex-adapter/skills",
     "verification_policy",
 )
+_PIPELINE_METHODOLOGY_FILES = {
+    # This L1-only policy lives under docs rather than a shared methodology
+    # directory.  Keep its denominator explicit so unrelated documentation
+    # edits do not invalidate SC or L1 evidence.
+    "l1": ("docs/l1-mode/severity-matrix.md",),
+    "sc": (),
+}
 _TOOLCHAIN_DIRS = (
     ".github",
     "hooks",
@@ -1928,7 +2013,11 @@ def _build_context_entries(
     inventory limits remain the fail-closed guard for an unexpectedly broad
     root.
     """
-    raw = str(config.get("_resolved_build_root") or "").strip()
+    raw = str(
+        config.get("_resolved_source_build_root")
+        or config.get("_resolved_build_root")
+        or ""
+    ).strip()
     if not raw:
         return [("@build_root_relation", b"project_root")]
     build_root = Path(raw).expanduser().resolve()
@@ -2165,7 +2254,11 @@ def _snapshot_foundry_dependency_roots(
 ) -> tuple[Path, ...]:
     if str(config.get("language") or "").strip().lower() != "evm":
         return ()
-    raw = str(config.get("_resolved_build_root") or "").strip()
+    raw = str(
+        config.get("_resolved_source_build_root")
+        or config.get("_resolved_build_root")
+        or ""
+    ).strip()
     build_root = Path(raw).resolve() if raw else project_root.resolve()
     if not raw:
         for candidate in (project_root.resolve(), *project_root.resolve().parents):
@@ -2479,6 +2572,42 @@ def _source_scope_inventory(
     )
 
 
+def _evm_input_preparation_state(config: Mapping[str, Any]) -> tuple[str, str]:
+    """Validate the in-process preparation result used only for debt posture.
+
+    The receipt never grants projection or execution authority.  Missing state
+    is therefore converted to bound UNAVAILABLE debt, while malformed state is
+    rejected instead of being usable as an omission switch.
+    """
+
+    value = config.get("_snapshot_input_preparation")
+    if value is None:
+        return "UNAVAILABLE", "no recomputed deterministic input preparation result"
+    if not isinstance(value, Mapping) or set(value) != {
+        "schema_version", "status", "reason", "preparation_sha256"
+    }:
+        raise SnapshotInputError("deterministic input preparation receipt is malformed")
+    unsigned = {
+        "schema_version": value.get("schema_version"),
+        "status": value.get("status"),
+        "reason": value.get("reason"),
+    }
+    status = value.get("status")
+    reason = value.get("reason")
+    if (
+        unsigned["schema_version"] != "plamen.evm_input_preparation.v1"
+        or status not in {"PREPARED", "DEGRADED", "UNAVAILABLE", "SKIPPED"}
+        or not isinstance(reason, str)
+        or value.get("preparation_sha256") != _sha256(_canonical_json(unsigned))
+    ):
+        raise SnapshotInputError("deterministic input preparation receipt does not replay")
+    if status == "SKIPPED":
+        # An EVM audit with production source cannot silently translate SKIPPED
+        # into readiness; it is an explicit unavailable/degraded posture.
+        return "UNAVAILABLE", reason or "EVM preparation was skipped"
+    return str(status), reason
+
+
 def _source_component(config: Mapping[str, Any]) -> dict[str, Any]:
     (
         project_root,
@@ -2504,6 +2633,17 @@ def _source_component(config: Mapping[str, Any]) -> dict[str, Any]:
             f"preparation cannot be complete ({reason}); source-only findings "
             "remain valid but build/AST/PoC completeness requires human review"
         )
+    if pipeline == "sc" and _normalized_snapshot_language(language) == "evm":
+        preparation_state, preparation_reason = _evm_input_preparation_state(config)
+        if (
+            preparation_state != "PREPARED"
+            and not _evm_projection_receipt_path(config).is_file()
+        ):
+            limitations.append(
+                "EVM_ANALYSIS_PROJECTION_UNAVAILABLE: deterministic input "
+                f"preparation is {preparation_state} ({preparation_reason[:800]}); "
+                "EVM tool rows remain unadmitted and the audit cannot certify clean"
+            )
     vyper_production = [
         path for path in production_files if path.suffix.lower() == ".vy"
     ]
@@ -2563,6 +2703,11 @@ def _source_component(config: Mapping[str, Any]) -> dict[str, Any]:
         context_paths.add(str(path.resolve()).casefold())
         entries.append((f"context/{relative}", path))
 
+    # The source component is the immutable *original* input denominator.
+    # A private EVM projection is derived from this closure and is bound by a
+    # separate component.  Its presence must therefore never change the source
+    # component it names: doing so creates a receipt/digest cycle and makes a
+    # pre-snapshot native projection impossible to reproduce on resume.
     entries.extend(_build_context_entries(config, project_root))
 
     # Scope targets bypass default dependency/test exclusions. External targets
@@ -2612,7 +2757,78 @@ def _source_component(config: Mapping[str, Any]) -> dict[str, Any]:
             "coverage_limitations": limitations,
         }
     )
+    component.update(_partitioned_scope_digests(entries))
     return component
+
+
+# Entry-label prefixes that identify DRIVER-MATERIALISABLE build context rather
+# than audited source. `context/` is the project/build-root closure walk and
+# `@build_` are its relation markers; everything else -- `explicit_scope/`,
+# `@production_paths`, `@explicit_scope_paths`, `@git_*`, external inputs -- is
+# audited-target identity.
+_BUILD_CONTEXT_ENTRY_PREFIXES = ("context/", "@build_")
+_SOURCE_SCOPE_PARTITION_KEYS = frozenset({
+    "audited_source_digest",
+    "audited_source_path_set_digest",
+    "audited_source_file_count",
+    "build_context_digest",
+    "build_context_file_count",
+})
+
+
+def _partitioned_scope_digests(
+    entries: Sequence[tuple[str, Any]],
+) -> dict[str, Any]:
+    """Digest audited source and build context SEPARATELY, as well as together.
+
+    The aggregate `digest`/`path_set_digest` above remain authoritative and
+    unchanged; these are additive fields.
+
+    Why they are needed: the driver MATERIALISES build inputs during recon
+    (`forge install`, package fetches) and records that it did so by clearing
+    `FOUNDRY_LIBRARY_MISSING` / `JS_LOCK_DEPENDENCIES_UNMATERIALIZED` from
+    `coverage_limitations`. The snapshot is captured BEFORE that step and
+    recomputed AFTER it on resume, so the aggregate legitimately differs even
+    when the audited target never changed. DODO run40 stopped on an ordinary
+    rate limit with four phases committed and could not resume: `source_scope`
+    file_count 78 -> 69, while 0 files in the audited tree had changed.
+
+    With only aggregates recorded, "the driver fetched dependencies" and
+    "someone edited a contract" are INDISTINGUISHABLE -- an earlier attempt to
+    tolerate the drift was reverted for exactly that reason. Splitting the
+    roster is what makes the distinction expressible: `audited_source_digest`
+    must stay byte-identical across a resume, while `build_context_digest` may
+    move when accompanied by resolved materialisation limitations.
+    """
+
+    audited: list[tuple[str, Any]] = []
+    build_context: list[tuple[str, Any]] = []
+    for label, payload in entries:
+        target = (
+            build_context
+            if label.startswith(_BUILD_CONTEXT_ENTRY_PREFIXES)
+            else audited
+        )
+        target.append((label, payload))
+    audited_component = _digest_entries(audited) if audited else None
+    context_component = _digest_entries(build_context) if build_context else None
+    return {
+        "audited_source_digest": (
+            audited_component["digest"] if audited_component else ""
+        ),
+        "audited_source_path_set_digest": (
+            audited_component["path_set_digest"] if audited_component else ""
+        ),
+        "audited_source_file_count": (
+            audited_component["file_count"] if audited_component else 0
+        ),
+        "build_context_digest": (
+            context_component["digest"] if context_component else ""
+        ),
+        "build_context_file_count": (
+            context_component["file_count"] if context_component else 0
+        ),
+    }
 
 
 def _production_source_names(config: Mapping[str, Any]) -> list[str]:
@@ -2841,16 +3057,31 @@ def canonical_production_source_path_authority_bytes(
     return _canonical_json(normalized) + b"\n"
 
 
-def _config_component(config: Mapping[str, Any]) -> dict[str, Any]:
+def canonical_semantic_config_bytes(config: Mapping[str, Any]) -> bytes:
+    """Return the exact canonical audit-semantic config preimage."""
+
+    return _canonical_json(_semantic_config(config))
+
+
+def build_audit_config_snapshot_component(
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
     semantic = _semantic_config(config)
+    raw = _canonical_json(semantic)
     return {
-        "digest": _sha256(_canonical_json(semantic)),
+        "digest": _sha256(raw),
         "field_count": len(semantic),
     }
 
 
+def _config_component(config: Mapping[str, Any]) -> dict[str, Any]:
+    return build_audit_config_snapshot_component(config)
+
+
 def build_methodology_snapshot_component(
     implementation_root: Path,
+    *,
+    pipeline: str | None = None,
 ) -> dict[str, Any]:
     """Build the one canonical content identity for audit methodology.
 
@@ -2866,11 +3097,44 @@ def build_methodology_snapshot_component(
             "methodology implementation root is missing or not a directory: "
             f"{implementation_root}"
         )
-    return _digest_entries(_tree_entries(implementation_root, _METHODOLOGY_DIRS))
+    entries = _tree_entries(implementation_root, _METHODOLOGY_DIRS)
+    pipeline_name = "" if pipeline is None else str(pipeline).strip().lower()
+    if pipeline_name and pipeline_name not in _PIPELINE_METHODOLOGY_FILES:
+        raise SnapshotInputError(
+            f"unsupported methodology snapshot pipeline: {pipeline!r}"
+        )
+    for relative in _PIPELINE_METHODOLOGY_FILES.get(pipeline_name, ()):
+        path = implementation_root.joinpath(*relative.split("/"))
+        cursor = implementation_root
+        for part in relative.split("/"):
+            cursor = cursor / part
+            if cursor.is_symlink() or (
+                hasattr(cursor, "is_junction") and cursor.is_junction()
+            ):
+                raise SnapshotInputError(
+                    "selected methodology input uses a symlink or junction: "
+                    f"{relative}"
+                )
+        if not path.is_file():
+            raise SnapshotInputError(
+                f"selected methodology input is missing: {relative}"
+            )
+        entries.append((relative, path))
+    return _digest_entries(entries)
 
 
-def _methodology_component(implementation_root: Path) -> dict[str, Any]:
-    return build_methodology_snapshot_component(implementation_root)
+def _methodology_component(
+    implementation_root: Path,
+    config: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    return build_methodology_snapshot_component(
+        implementation_root,
+        pipeline=(
+            None
+            if config is None
+            else str(config.get("pipeline") or "sc")
+        ),
+    )
 
 
 def _toolchain_component(
@@ -2933,312 +3197,6 @@ def _semantic_probe_output(tool_id: str, raw: bytes) -> str:
         return text
     _TOOL_PROBE_DIAGNOSTICS[tool_id] = text[:4096]
     return f"PROBE_FAILED:RC_{return_code}"
-
-
-def _load_toolchain_identity_controls_legacy() -> tuple[
-    dict[str, dict[str, Any]],
-    dict[str, dict[str, Any]],
-    str,
-    str,
-]:
-    """Load local reviewed identity controls without acquiring any tool."""
-    try:
-        lock_raw = _TOOLCHAIN_VERSION_LOCK_PATH.read_bytes()
-        governance_raw = _TOOLCHAIN_GOVERNANCE_PATH.read_bytes()
-        lock = json.loads(lock_raw)
-        governance = json.loads(governance_raw)
-    except Exception as exc:
-        raise SnapshotInputError(
-            "toolchain identity controls are unreadable"
-        ) from exc
-    identities = lock.get("identities") if isinstance(lock, dict) else None
-    tools = governance.get("tools") if isinstance(governance, dict) else None
-    reviewed_lock = (
-        governance.get("reviewed_version_lock")
-        if isinstance(governance, dict)
-        else None
-    )
-    if (
-        lock.get("schema_version") != TOOLCHAIN_VERSION_LOCK_SCHEMA
-        or governance.get("schema_version") != TOOLCHAIN_GOVERNANCE_SCHEMA
-        or not isinstance(identities, list)
-        or not identities
-        or not isinstance(tools, list)
-        or not tools
-        or not isinstance(reviewed_lock, dict)
-        or reviewed_lock.get("path")
-        != "verification_policy/toolchain_version_lock.v1.json"
-        or reviewed_lock.get("schema_version")
-        != TOOLCHAIN_VERSION_LOCK_SCHEMA
-    ):
-        raise SnapshotInputError(
-            "toolchain identity version-lock schema/path is invalid"
-        )
-    reviewed_lock_digest = str(reviewed_lock.get("sha256") or "")
-    observed_lock_digest = hashlib.sha256(lock_raw).hexdigest()
-    runtime_statuses = reviewed_lock.get("runtime_statuses")
-    if (
-        re.fullmatch(r"[0-9a-f]{64}", reviewed_lock_digest) is None
-        or reviewed_lock_digest != observed_lock_digest
-        or not isinstance(runtime_statuses, list)
-        or len(runtime_statuses) != len(set(runtime_statuses))
-        or set(runtime_statuses)
-        != {
-            "MATCH",
-            "MISMATCH",
-            "UNAVAILABLE",
-            "EXTERNAL_MANAGER",
-            "DEBT",
-            "UNREGISTERED",
-            "REVOKED",
-        }
-    ):
-        raise SnapshotInputError(
-            "toolchain version-lock digest/statuses do not match governance"
-        )
-    locked: dict[str, dict[str, Any]] = {}
-    for row in identities:
-        if not isinstance(row, dict):
-            raise SnapshotInputError(
-                "toolchain version-lock identity is invalid"
-            )
-        identity_id = str(row.get("identity_id") or "")
-        expected = str(row.get("expected_version") or "")
-        identity_kind = str(row.get("identity_kind") or "")
-        parser = str(row.get("version_output_parser") or "")
-        package_name = str(row.get("package_name") or "")
-        install_spec = str(row.get("install_spec") or "")
-        probe = row.get("version_probe")
-        if (
-            not identity_id
-            or identity_id in locked
-            or re.fullmatch(r"\d+\.\d+\.\d+", expected) is None
-            or identity_kind not in {"command", "python_distribution"}
-            or parser
-            not in {"SCIP_GO_EXACT_V1", "PYTHON_METADATA_EXACT"}
-            or not package_name
-            or not isinstance(probe, list)
-            or not probe
-            or not all(isinstance(item, str) and item for item in probe)
-            or row.get("acquisition_scope") != "SETUP_ONLY"
-            or row.get("deterministic_provider_authority_requires")
-            != "MATCH"
-        ):
-            raise SnapshotInputError(
-                "toolchain version-lock identity is invalid"
-            )
-        if identity_kind == "python_distribution":
-            if (
-                not str(row.get("python_module") or "")
-                or parser != "PYTHON_METADATA_EXACT"
-                or install_spec
-                != f"{package_name}=={expected}"
-                or probe
-                != ["python-importlib-metadata", package_name]
-            ):
-                raise SnapshotInputError(
-                    "toolchain version-lock Python module binding is invalid"
-                )
-            generated_version = str(
-                row.get("generated_code_version") or ""
-            )
-            if generated_version:
-                generated = _semantic_version_tuple(generated_version)
-                runtime = _semantic_version_tuple(expected)
-                if (
-                    generated is None
-                    or runtime is None
-                    or generated[0] != runtime[0]
-                    or generated > runtime
-                    or (
-                        identity_id == "protobuf"
-                        and row.get("generated_module_path")
-                        != "plamen_l1/scip_pb2.py"
-                    )
-                ):
-                    raise SnapshotInputError(
-                        "toolchain version-lock generated/runtime binding "
-                        "is invalid"
-                    )
-            if identity_id == "protobuf" and not generated_version:
-                raise SnapshotInputError(
-                    "toolchain version-lock generated/runtime binding "
-                    "is invalid"
-                )
-        if identity_kind == "command" and (
-            parser != "SCIP_GO_EXACT_V1"
-            or install_spec != f"{package_name}@v{expected}"
-            or probe[0] != identity_id
-        ):
-            raise SnapshotInputError(
-                "toolchain version-lock identity/install binding is invalid"
-            )
-        if identity_id == "scip-go":
-            if (
-                row.get("go_command_path")
-                != "github.com/scip-code/scip-go/cmd/scip-go"
-                or row.get("go_module_path")
-                != "github.com/scip-code/scip-go"
-                or package_name != row.get("go_command_path")
-            ):
-                raise SnapshotInputError(
-                    "toolchain version-lock Go build binding is invalid"
-                )
-        locked[identity_id] = dict(row)
-    governed: dict[str, dict[str, Any]] = {}
-    lock_references: dict[str, list[str]] = {}
-    for row in tools:
-        if not isinstance(row, dict):
-            raise SnapshotInputError(
-                "toolchain governance identity is invalid"
-            )
-        tool_id = str(row.get("tool_id") or "")
-        authority = row.get("runtime_authority")
-        update = row.get("update_policy")
-        revocation = row.get("revocation_policy")
-        blocked_versions = (
-            revocation.get("blocked_version_substrings")
-            if isinstance(revocation, dict)
-            else None
-        )
-        blocked_digests = (
-            revocation.get("blocked_executable_sha256")
-            if isinstance(revocation, dict)
-            else None
-        )
-        if (
-            not tool_id
-            or tool_id in governed
-            or not isinstance(authority, dict)
-            or authority.get("identity_status")
-            not in {
-                "MATCH",
-                "EXTERNAL_MANAGER",
-                "DEBT",
-                "UNREGISTERED",
-            }
-            or not isinstance(
-                authority.get("deterministic_provider_authority"),
-                bool,
-            )
-            or not isinstance(update, dict)
-            or not str(update.get("state") or "")
-            or not str(update.get("acquisition_scope") or "")
-            or not isinstance(revocation, dict)
-            or set(revocation)
-            != {
-                "blocked_version_substrings",
-                "blocked_executable_sha256",
-            }
-            or not isinstance(blocked_versions, list)
-            or not all(
-                isinstance(value, str) and bool(value.strip())
-                for value in blocked_versions
-            )
-            or not isinstance(blocked_digests, list)
-            or not all(
-                isinstance(value, str)
-                and re.fullmatch(r"[0-9a-f]{64}", value) is not None
-                for value in blocked_digests
-            )
-        ):
-            raise SnapshotInputError(
-                "toolchain governance identity/revocation is invalid"
-            )
-        state = str(update["state"])
-        acquisition_scope = str(update["acquisition_scope"])
-        mismatch_effect = str(authority.get("mismatch_effect") or "")
-        semantic_match = False
-        if state == "EXACT_REVIEWED_RELEASE":
-            semantic_match = (
-                acquisition_scope == "SETUP_ONLY"
-                and authority
-                == {
-                    "identity_status": "MATCH",
-                    "deterministic_provider_authority": True,
-                    "mismatch_effect": "FAIL_PROVIDER_SELECTION",
-                }
-                and bool(str(update.get("version_lock_identity") or ""))
-            )
-        elif state == "GOVERNED_DEBT":
-            semantic_match = (
-                acquisition_scope == "SETUP_ONLY"
-                and update.get("unresolved_debt") is True
-                and bool(str(update.get("reason") or "").strip())
-                and authority
-                == {
-                    "identity_status": "DEBT",
-                    "deterministic_provider_authority": False,
-                    "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY",
-                }
-            )
-        elif state in {
-            "EXTERNAL_TOOLCHAIN_MANAGER",
-            "EXTERNAL_PLATFORM_MANAGER",
-        }:
-            semantic_match = (
-                acquisition_scope == "EXTERNAL_OPERATOR_SETUP"
-                and authority
-                == {
-                    "identity_status": "EXTERNAL_MANAGER",
-                    "deterministic_provider_authority": False,
-                    "mismatch_effect": "SNAPSHOT_OBSERVED_IDENTITY_ONLY",
-                }
-            )
-        elif state == "HUMAN_REVIEWED_DIGEST_REQUIRED":
-            semantic_match = (
-                acquisition_scope == "EXTERNAL_OPERATOR_SETUP"
-                and authority
-                == {
-                    "identity_status": "DEBT",
-                    "deterministic_provider_authority": False,
-                    "mismatch_effect": "FAIL_WITHOUT_REVIEWED_DIGEST",
-                }
-            )
-        if not semantic_match or not mismatch_effect:
-            raise SnapshotInputError(
-                f"toolchain governance semantics are invalid: {tool_id}"
-            )
-        reference = str(update.get("version_lock_identity") or "")
-        if reference:
-            lock_references.setdefault(reference, []).append(tool_id)
-        governed[tool_id] = dict(row)
-    for identity_id, locked_row in locked.items():
-        references = lock_references.get(identity_id, [])
-        governed_row = governed.get(identity_id)
-        if references != [identity_id] or governed_row is None:
-            raise SnapshotInputError(
-                "each version-lock identity must have exactly one matching "
-                f"governance row: {identity_id}"
-            )
-        update = governed_row["update_policy"]
-        authority = governed_row["runtime_authority"]
-        if (
-            update.get("state") != "EXACT_REVIEWED_RELEASE"
-            or update.get("acquisition_scope")
-            != locked_row["acquisition_scope"]
-            or authority
-            != {
-                "identity_status": "MATCH",
-                "deterministic_provider_authority": True,
-                "mismatch_effect": "FAIL_PROVIDER_SELECTION",
-            }
-        ):
-            raise SnapshotInputError(
-                "version-lock and governance authority do not reconcile: "
-                f"{identity_id}"
-            )
-    unknown_references = set(lock_references) - set(locked)
-    if unknown_references:
-        raise SnapshotInputError(
-            "toolchain governance references an unknown version-lock identity"
-        )
-    return (
-        locked,
-        governed,
-        hashlib.sha256(lock_raw).hexdigest(),
-        hashlib.sha256(governance_raw).hexdigest(),
-    )
 
 
 def _load_toolchain_identity_controls() -> tuple[
@@ -4088,6 +4046,475 @@ def _scip_go_build_information_matches(
     )
 
 
+def _bounded_darwin_dispatch_command(
+    command: tuple[str, ...],
+    *,
+    timeout: float = _DARWIN_DISPATCH_TIMEOUT_SECONDS,
+    output_limit: int = _DARWIN_DISPATCH_OUTPUT_LIMIT,
+) -> tuple[int, bytes, bytes]:
+    """Run one trusted Darwin dispatch command with bounded pipe storage.
+
+    This intentionally does not use the native owned-process runner: that
+    runner must reject Darwin until it has exhaustive descendant containment.
+    The only callers here execute the fixed, protected ``xcrun`` resolver and
+    the root-owned singleton Git selected by it.  Darwin kqueue observes exit
+    without first reaping the group leader, so the fresh process group can be
+    terminated on success, timeout, or output overflow without a PID-reuse
+    race.  This still does not claim containment of a deliberately detached
+    descendant and is not a general process-tree execution primitive.
+    """
+
+    if sys.platform != "darwin":
+        raise SnapshotInputError("Darwin dispatch execution is unavailable")
+    if (
+        not command
+        or not Path(command[0]).is_absolute()
+        or timeout <= 0
+        or output_limit <= 0
+    ):
+        raise SnapshotInputError("Darwin dispatch command is invalid")
+
+    try:
+        process = subprocess.Popen(
+            list(command),
+            cwd="/",
+            env=dict(_DARWIN_DISPATCH_ENV),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except (OSError, ValueError) as exc:
+        raise SnapshotInputError(
+            "Darwin dispatch command could not be launched"
+        ) from exc
+    assert process.stdout is not None
+    assert process.stderr is not None
+
+    retained = [bytearray(), bytearray()]
+    observed = [0, 0]
+    read_errors: list[BaseException] = []
+    termination_errors: list[BaseException] = []
+    overflowed = threading.Event()
+    termination_lock = threading.Lock()
+
+    def terminate_group(*, leader_exited: bool) -> None:
+        with termination_lock:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                return
+            except PermissionError as exc:
+                # macOS reports EPERM when the unreaped group contains only
+                # its exited zombie leader.  Any same-user live descendant in
+                # this fresh group remains signalable, as covered by the
+                # focused closed-pipe descendant test.
+                if leader_exited:
+                    return
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                raise SnapshotInputError(
+                    "Darwin dispatch process-group cleanup failed"
+                ) from exc
+            except OSError as exc:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                raise SnapshotInputError(
+                    "Darwin dispatch process-group cleanup failed"
+                ) from exc
+
+    def drain(stream: Any, index: int) -> None:
+        try:
+            while True:
+                chunk = stream.read(64 * 1024)
+                if not chunk:
+                    return
+                observed[index] += len(chunk)
+                remaining = output_limit + 1 - len(retained[index])
+                if remaining > 0:
+                    retained[index].extend(chunk[:remaining])
+                if observed[index] > output_limit and not overflowed.is_set():
+                    overflowed.set()
+                    try:
+                        terminate_group(leader_exited=False)
+                    except BaseException as exc:
+                        termination_errors.append(exc)
+        except BaseException as exc:  # pragma: no cover - defensive pipe I/O
+            read_errors.append(exc)
+
+    readers = (
+        threading.Thread(
+            target=drain,
+            args=(process.stdout, 0),
+            name="plamen-darwin-dispatch-stdout",
+            daemon=True,
+        ),
+        threading.Thread(
+            target=drain,
+            args=(process.stderr, 1),
+            name="plamen-darwin-dispatch-stderr",
+            daemon=True,
+        ),
+    )
+    started_readers: list[threading.Thread] = []
+    queue = None
+    timed_out = False
+    try:
+        import select
+
+        queue = select.kqueue()
+        watch = select.kevent(
+            process.pid,
+            filter=select.KQ_FILTER_PROC,
+            flags=(
+                select.KQ_EV_ADD
+                | select.KQ_EV_ENABLE
+                | select.KQ_EV_ONESHOT
+            ),
+            fflags=select.KQ_NOTE_EXIT,
+        )
+        for reader in readers:
+            reader.start()
+            started_readers.append(reader)
+        events = queue.control([watch], 1, timeout)
+        timed_out = not events
+        terminate_group(leader_exited=not timed_out)
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired as exc:  # pragma: no cover - kernel fault
+            process.kill()
+            raise SnapshotInputError(
+                "Darwin dispatch process did not terminate"
+            ) from exc
+    except BaseException:
+        try:
+            terminate_group(leader_exited=False)
+        except BaseException:
+            pass
+        try:
+            process.wait(timeout=1)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        raise
+    finally:
+        if queue is not None:
+            queue.close()
+        for reader in started_readers:
+            reader.join(timeout=1)
+        for stream in (process.stdout, process.stderr):
+            try:
+                stream.close()
+            except OSError:
+                pass
+    if (
+        any(reader.is_alive() for reader in started_readers)
+        or read_errors
+        or termination_errors
+    ):
+        raise SnapshotInputError("Darwin dispatch output could not be drained")
+    if timed_out:
+        raise subprocess.TimeoutExpired(list(command), timeout)
+    if overflowed.is_set() or any(count > output_limit for count in observed):
+        raise SnapshotInputError("Darwin dispatch output exceeded its bound")
+    return process.returncode, bytes(retained[0]), bytes(retained[1])
+
+
+def _validate_darwin_dispatch_metadata(
+    row: os.stat_result,
+    *,
+    label: str,
+    allow_protected_git_shim_hardlinks: bool,
+) -> None:
+    """Validate one dispatch-chain file without weakening generic POSIX rules."""
+
+    if not stat.S_ISREG(row.st_mode):
+        raise SnapshotInputError(f"{label} is not a regular file")
+    if int(row.st_uid) != 0:
+        raise SnapshotInputError(f"{label} is not root-owned")
+    if int(row.st_mode) & (stat.S_IWGRP | stat.S_IWOTH):
+        raise SnapshotInputError(f"{label} is writable outside its root owner")
+    if not int(row.st_mode) & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+        raise SnapshotInputError(f"{label} is not executable")
+    if int(row.st_nlink) != 1 and not allow_protected_git_shim_hardlinks:
+        raise SnapshotInputError(f"{label} has an unexpected hardlink alias")
+
+
+def _assert_darwin_root_path_authority(path: Path, *, label: str) -> None:
+    """Reject mutable or linked ancestors of a selected developer tool."""
+
+    absolute = path.absolute()
+    cursor = Path(absolute.anchor)
+    for component in absolute.parts[1:-1]:
+        cursor = cursor / component
+        try:
+            row = cursor.lstat()
+        except OSError as exc:
+            raise SnapshotInputError(f"{label} ancestry is unreadable") from exc
+        if (
+            not stat.S_ISDIR(row.st_mode)
+            or stat.S_ISLNK(row.st_mode)
+            or int(row.st_uid) != 0
+            or int(row.st_mode) & (stat.S_IWGRP | stat.S_IWOTH)
+            or (
+                hasattr(os, "geteuid")
+                and os.geteuid() != 0
+                and os.access(cursor, os.W_OK)
+            )
+        ):
+            raise SnapshotInputError(f"{label} ancestry is mutable or linked")
+
+
+def _capture_darwin_dispatch_component(
+    path: Path,
+    *,
+    label: str,
+    project_root: Path | None,
+    allow_protected_git_shim_hardlinks: bool = False,
+    require_protected_system_volume: bool = False,
+) -> dict[str, Any]:
+    """Capture one stable, root-controlled Darwin dispatch-chain component."""
+
+    try:
+        absolute = _assert_no_lexical_links(path, label=label)
+        if allow_protected_git_shim_hardlinks and (
+            sys.platform != "darwin"
+            or absolute != _DARWIN_GIT_SHIM
+            or not require_protected_system_volume
+        ):
+            raise SnapshotInputError(
+                "Darwin Git hardlink exception escaped its exact protected shim"
+            )
+        resolved = absolute.resolve(strict=True)
+        if resolved != absolute:
+            raise SnapshotInputError(f"{label} is symlinked")
+        if _path_is_within(resolved, project_root):
+            raise SnapshotInputError(f"{label} resolves inside audit target")
+        _assert_darwin_root_path_authority(resolved, label=label)
+        before = resolved.lstat()
+        _validate_darwin_dispatch_metadata(
+            before,
+            label=label,
+            allow_protected_git_shim_hardlinks=(
+                allow_protected_git_shim_hardlinks
+            ),
+        )
+        if (
+            hasattr(os, "geteuid")
+            and os.geteuid() != 0
+            and os.access(resolved, os.W_OK)
+        ):
+            raise SnapshotInputError(f"{label} is writable by the audit user")
+        if require_protected_system_volume:
+            volume = os.statvfs(resolved)
+            read_only_flag = int(getattr(os, "ST_RDONLY", 1))
+            restricted_flag = int(getattr(stat, "UF_RESTRICTED", 0x00080000))
+            if (
+                not int(volume.f_flag) & read_only_flag
+                or not int(getattr(before, "st_flags", 0)) & restricted_flag
+            ):
+                raise SnapshotInputError(
+                    f"{label} is not on the protected read-only macOS system volume"
+                )
+        if not allow_protected_git_shim_hardlinks:
+            _reject_unexpected_hardlinks(
+                resolved,
+                label,
+                project_root=project_root,
+            )
+        digest, size = _hash_runtime_executable(resolved)
+        after = resolved.lstat()
+    except SnapshotInputError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise SnapshotInputError(f"{label} cannot be inspected") from exc
+    stable_fields = (
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_uid",
+        "st_gid",
+        "st_nlink",
+        "st_size",
+        "st_mtime_ns",
+        "st_ctime_ns",
+    )
+    if any(getattr(before, name) != getattr(after, name) for name in stable_fields):
+        raise SnapshotInputError(f"{label} changed during identity capture")
+    return {
+        "path": str(resolved),
+        "sha256": digest.hex(),
+        "bytes": size,
+        "device": int(before.st_dev),
+        "file_id": int(before.st_ino),
+        "mode": stat.S_IMODE(before.st_mode),
+        "uid": int(before.st_uid),
+        "gid": int(before.st_gid),
+        "link_count": int(before.st_nlink),
+    }
+
+
+def _parse_darwin_git_selection(raw: bytes) -> Path:
+    """Parse exactly one bounded absolute path emitted by ``xcrun``."""
+
+    if not raw or len(raw) > _DARWIN_DISPATCH_OUTPUT_LIMIT:
+        raise SnapshotInputError("xcrun Git selection output is empty or oversized")
+    try:
+        text = raw.decode("utf-8", "strict")
+    except UnicodeDecodeError as exc:
+        raise SnapshotInputError("xcrun Git selection output is not UTF-8") from exc
+    match = re.fullmatch(r"(/[^\x00\r\n]+)\n?", text)
+    if match is None:
+        raise SnapshotInputError("xcrun Git selection output is not one absolute path")
+    if any(ord(character) < 32 or ord(character) == 127 for character in match.group(1)):
+        raise SnapshotInputError("xcrun Git selection output contains control bytes")
+    selected = Path(match.group(1))
+    if selected != Path(os.path.normpath(str(selected))) or ".." in selected.parts:
+        raise SnapshotInputError("xcrun Git selection path is not canonical")
+    return selected
+
+
+def _assert_no_darwin_xcrun_environment_override(
+    environment: Mapping[str, str] | None = None,
+) -> None:
+    """Keep later Apple shim dispatch aligned with the captured selection."""
+
+    values = os.environ if environment is None else environment
+    present = sorted(
+        name
+        for name in _DARWIN_XCRUN_OVERRIDE_VARIABLES
+        if str(values.get(name, "")).strip()
+    )
+    if present:
+        raise SnapshotInputError(
+            "Darwin Git dispatch environment overrides xcrun selection: "
+            + ", ".join(present)
+        )
+
+
+def _darwin_git_dispatch_identity(
+    command: tuple[str, ...],
+    *,
+    project_root: Path | None,
+    probe_version: bool = True,
+) -> tuple[Path, str, str, int, dict[str, Any]]:
+    """Resolve, probe, and revalidate Apple's Git dispatch chain."""
+
+    if command != ("git", "--version"):
+        raise SnapshotInputError("Darwin Git dispatch command is invalid")
+
+    shim = _capture_darwin_dispatch_component(
+        _DARWIN_GIT_SHIM,
+        label="Darwin Git dispatch shim",
+        project_root=project_root,
+        allow_protected_git_shim_hardlinks=True,
+        require_protected_system_volume=True,
+    )
+    resolver = _capture_darwin_dispatch_component(
+        _DARWIN_XCRUN,
+        label="Darwin Git dispatch resolver",
+        project_root=project_root,
+        require_protected_system_volume=True,
+    )
+    try:
+        selection_rc, selection_stdout, selection_stderr = (
+            _bounded_darwin_dispatch_command(
+                (str(_DARWIN_XCRUN), "--find", "git")
+            )
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SnapshotInputError("xcrun Git selection timed out") from exc
+    if selection_rc != 0 or selection_stderr:
+        raise SnapshotInputError("xcrun Git selection failed")
+    selected_path = _parse_darwin_git_selection(selection_stdout)
+    if selected_path in {_DARWIN_GIT_SHIM, _DARWIN_XCRUN}:
+        raise SnapshotInputError("xcrun did not select a real Git executable")
+    selected = _capture_darwin_dispatch_component(
+        selected_path,
+        label="xcrun-selected real Git",
+        project_root=project_root,
+    )
+
+    if probe_version:
+        try:
+            version_rc, version_stdout, version_stderr = (
+                _bounded_darwin_dispatch_command(
+                    (str(selected_path), *tuple(command[1:]))
+                )
+            )
+            probe_output = version_stdout.strip()
+            if version_stderr.strip():
+                probe_output += (
+                    (b"\n" if probe_output else b"")
+                    + version_stderr.strip()
+                )
+            version_raw = f"rc={version_rc}\n".encode("ascii") + probe_output
+            version = _semantic_probe_output("git", version_raw)
+        except subprocess.TimeoutExpired:
+            version = "TIMEOUT"
+    else:
+        version = "NOT_PROBED_NONAUTHORITATIVE"
+
+    try:
+        replay_rc, replay_stdout, replay_stderr = (
+            _bounded_darwin_dispatch_command(
+                (str(_DARWIN_XCRUN), "--find", "git")
+            )
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SnapshotInputError("xcrun Git replay timed out") from exc
+    if (
+        replay_rc != 0
+        or replay_stderr
+        or _parse_darwin_git_selection(replay_stdout) != selected_path
+    ):
+        raise SnapshotInputError("xcrun Git selection changed during identity capture")
+    shim_after = _capture_darwin_dispatch_component(
+        _DARWIN_GIT_SHIM,
+        label="Darwin Git dispatch shim",
+        project_root=project_root,
+        allow_protected_git_shim_hardlinks=True,
+        require_protected_system_volume=True,
+    )
+    resolver_after = _capture_darwin_dispatch_component(
+        _DARWIN_XCRUN,
+        label="Darwin Git dispatch resolver",
+        project_root=project_root,
+        require_protected_system_volume=True,
+    )
+    selected_after = _capture_darwin_dispatch_component(
+        selected_path,
+        label="xcrun-selected real Git",
+        project_root=project_root,
+    )
+    if (shim, resolver, selected) != (shim_after, resolver_after, selected_after):
+        raise SnapshotInputError("Darwin Git dispatch chain changed during probe")
+
+    dispatch_chain = {
+        "schema": "plamen.darwin-git-dispatch-chain.v1",
+        "selection_command": [str(_DARWIN_XCRUN), "--find", "git"],
+        "selection_environment": dict(_DARWIN_DISPATCH_ENV),
+        "rejected_ambient_selection_overrides": list(
+            _DARWIN_XCRUN_OVERRIDE_VARIABLES
+        ),
+        "shim": shim,
+        "resolver": resolver,
+        "selected_real_git": selected,
+    }
+    return (
+        selected_path,
+        version,
+        str(selected["sha256"]),
+        int(selected["bytes"]),
+        dispatch_chain,
+    )
+
+
 def _runtime_tool_fingerprint(
     command: tuple[str, ...],
     *,
@@ -4109,7 +4536,30 @@ def _runtime_tool_fingerprint(
 
     executable = shutil.which(command[0])
     executable_path: Path | None = None
-    if executable:
+    darwin_dispatch_chain: dict[str, Any] | None = None
+    before_digest = ""
+    before_size = 0
+    version = "UNAVAILABLE"
+    use_darwin_git_dispatch = (
+        sys.platform == "darwin"
+        and command[0] == "git"
+        and executable is not None
+        and executable == str(_DARWIN_GIT_SHIM)
+    )
+    if use_darwin_git_dispatch:
+        _assert_no_darwin_xcrun_environment_override()
+        (
+            executable_path,
+            version,
+            before_digest,
+            before_size,
+            darwin_dispatch_chain,
+        ) = _darwin_git_dispatch_identity(
+            command,
+            project_root=project_root,
+            probe_version=probe_version,
+        )
+    elif executable:
         try:
             executable_path = Path(executable).resolve(strict=True)
         except OSError as exc:
@@ -4143,9 +4593,7 @@ def _runtime_tool_fingerprint(
     )
     lock_digest = controls[2]
     governance_digest = controls[3]
-    before_digest = ""
-    before_size = 0
-    if executable_path is not None:
+    if executable_path is not None and not use_darwin_git_dispatch:
         try:
             digest, before_size = _hash_runtime_executable(executable_path)
             before_digest = digest.hex()
@@ -4172,7 +4620,7 @@ def _runtime_tool_fingerprint(
             raise SnapshotInputError(
                 f"runtime tool changed during identity capture: {command[0]}"
             )
-    else:
+    elif executable_path is None:
         version = "UNAVAILABLE"
     identity: dict[str, Any] = {
         "schema": RUNTIME_TOOL_IDENTITY_SCHEMA,
@@ -4191,6 +4639,8 @@ def _runtime_tool_fingerprint(
                 "executable_bytes": before_size,
             }
         )
+    if darwin_dispatch_chain is not None:
+        identity["darwin_git_dispatch_chain"] = darwin_dispatch_chain
     expected, status, authority, lock_digest, governance_digest = (
         _runtime_identity_policy(
             command[0],
@@ -4232,6 +4682,10 @@ def _runtime_tool_fingerprint(
     if "executable_sha256" in identity:
         observed["executable_sha256"] = identity["executable_sha256"]
         observed["executable_bytes"] = identity["executable_bytes"]
+    if darwin_dispatch_chain is not None:
+        observed["darwin_git_dispatch_chain_sha256"] = hashlib.sha256(
+            _canonical_json(darwin_dispatch_chain)
+        ).hexdigest()
     identity.update({
         "expected_identity": expected,
         "observed_identity": observed,
@@ -4434,6 +4888,365 @@ def _fold_python_distribution_entries(
     return content.hexdigest(), path_set.hexdigest(), total
 
 
+def _normalized_python_record_name(value: object) -> tuple[str, tuple[str, ...]]:
+    """Return one canonical, relative RECORD spelling or reject it."""
+
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise SnapshotInputError("Python provider RECORD path is invalid")
+    if "\\" in value and os.name != "nt":
+        raise SnapshotInputError("Python provider RECORD path is invalid")
+    normalized = value.replace("\\", "/")
+    if (
+        normalized.startswith("/")
+        or normalized.endswith("/")
+        or "//" in normalized
+        or re.search(r"%2e|%2f|%5c", normalized, re.IGNORECASE)
+    ):
+        raise SnapshotInputError("Python provider RECORD path is invalid")
+    parts = tuple(normalized.split("/"))
+    if (
+        not parts
+        or any(part in {"", "."} or ":" in part for part in parts)
+    ):
+        raise SnapshotInputError("Python provider RECORD path is invalid")
+    parent_count = 0
+    while parent_count < len(parts) and parts[parent_count] == "..":
+        parent_count += 1
+    if any(part == ".." for part in parts[parent_count:]):
+        raise SnapshotInputError("Python provider RECORD path is invalid")
+    return normalized, parts
+
+
+def _python_distribution_install_namespace(
+    install_root: Path,
+) -> tuple[Path, Path]:
+    """Map a site-packages root to its exact interpreter data/scripts scheme."""
+
+    install_name = os.path.normcase(os.path.abspath(str(install_root)))
+    matches: dict[tuple[str, str], tuple[Path, Path]] = {}
+    for scheme in sysconfig.get_scheme_names():
+        try:
+            paths = sysconfig.get_paths(scheme=scheme)
+        except (KeyError, TypeError, ValueError):
+            continue
+        libraries = {
+            os.path.normcase(os.path.abspath(str(paths[key])))
+            for key in ("purelib", "platlib")
+            if paths.get(key)
+        }
+        if (
+            install_name not in libraries
+            or not paths.get("data")
+            or not paths.get("scripts")
+        ):
+            continue
+        data_root = Path(os.path.abspath(str(paths["data"])))
+        scripts_root = Path(os.path.abspath(str(paths["scripts"])))
+        try:
+            data_name = os.path.normcase(str(data_root))
+            if (
+                os.path.commonpath((data_name, install_name)) != data_name
+                or os.path.commonpath(
+                    (data_name, os.path.normcase(str(scripts_root)))
+                )
+                != data_name
+            ):
+                continue
+        except ValueError:
+            continue
+        key = (
+            os.path.normcase(str(data_root)),
+            os.path.normcase(str(scripts_root)),
+        )
+        matches[key] = (data_root, scripts_root)
+    if len(matches) != 1:
+        raise SnapshotInputError(
+            "Python provider install root does not identify one interpreter scheme"
+        )
+    return next(iter(matches.values()))
+
+
+def _python_console_script_api(dist: Any) -> dict[str, str]:
+    """Read the distribution API's exact console-script declarations."""
+
+    declared: dict[str, tuple[str, str]] = {}
+    try:
+        entry_points = tuple(getattr(dist, "entry_points", ()))
+    except Exception as exc:
+        raise SnapshotInputError(
+            "Python provider console-script declarations are unreadable"
+        ) from exc
+    for entry_point in entry_points:
+        if getattr(entry_point, "group", None) != "console_scripts":
+            continue
+        name = getattr(entry_point, "name", None)
+        value = getattr(entry_point, "value", None)
+        if not isinstance(name, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]*", name
+        ) or not isinstance(value, str) or not value.strip():
+            raise SnapshotInputError(
+                "Python provider console-script declaration is invalid"
+            )
+        if any(ord(character) < 32 for character in value):
+            raise SnapshotInputError(
+                "Python provider console-script declaration is invalid"
+            )
+        prior = declared.get(name.casefold())
+        if prior is not None:
+            raise SnapshotInputError(
+                "Python provider console-script declarations are duplicated"
+            )
+        declared[name.casefold()] = (name, value.strip())
+    return {name: value for name, value in declared.values()}
+
+
+def _parse_python_console_script_metadata(raw: bytes) -> dict[str, str]:
+    """Parse only ``console_scripts`` from authenticated entry-point bytes."""
+
+    parser = configparser.ConfigParser(
+        interpolation=None,
+        strict=True,
+        delimiters=("=",),
+        comment_prefixes=("#", ";"),
+        inline_comment_prefixes=None,
+        empty_lines_in_values=False,
+    )
+    parser.optionxform = str
+    try:
+        parser.read_string(raw.decode("utf-8", "strict"))
+    except (UnicodeDecodeError, configparser.Error) as exc:
+        raise SnapshotInputError(
+            "Python provider entry-point metadata is malformed"
+        ) from exc
+    if parser.defaults():
+        raise SnapshotInputError(
+            "Python provider entry-point metadata contains defaults"
+        )
+    if not parser.has_section("console_scripts"):
+        return {}
+    declared: dict[str, tuple[str, str]] = {}
+    for name, value in parser.items("console_scripts", raw=True):
+        if (
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name)
+            or not value.strip()
+            or any(ord(character) < 32 for character in value)
+        ):
+            raise SnapshotInputError(
+                "Python provider console-script metadata is invalid"
+            )
+        prior = declared.get(name.casefold())
+        if prior is not None:
+            raise SnapshotInputError(
+                "Python provider console-script metadata is duplicated"
+            )
+        declared[name.casefold()] = (name, value.strip())
+    return {name: value for name, value in declared.values()}
+
+
+def _content_bound_python_console_scripts(
+    dist: Any,
+    *,
+    distribution: str,
+    record_relative: str,
+    record_path: Path,
+    record_by_name: Mapping[str, Mapping[str, Any]],
+    install_root: Path,
+    authority_root: Path,
+    scripts_root: Path,
+    lexical_validation_cache: set[str],
+    spelling_validation_cache: set[str],
+    project_root: Path | None,
+) -> frozenset[str]:
+    """Authorize script names from the exact RECORD-bound metadata file."""
+
+    dist_info_name, separator, record_leaf = record_relative.rpartition("/")
+    if not separator or record_leaf != "RECORD":
+        raise SnapshotInputError(
+            f"Python provider RECORD path is invalid: {distribution}"
+        )
+    entry_points_name = f"{dist_info_name}/entry_points.txt"
+    row = record_by_name.get(entry_points_name)
+    if row is None or not row.get("hash") or not isinstance(row.get("bytes"), int):
+        raise SnapshotInputError(
+            f"Python provider entry-point metadata is unauthenticated: "
+            f"{distribution}"
+        )
+    entry_points_path, is_script = _python_record_member_location(
+        dist,
+        entry_points_name,
+        distribution=distribution,
+        install_root=install_root,
+        authority_root=authority_root,
+        scripts_root=scripts_root,
+        declared_scripts=frozenset(),
+        lexical_validation_cache=lexical_validation_cache,
+        spelling_validation_cache=spelling_validation_cache,
+    )
+    if is_script or entry_points_path.parent != record_path.parent:
+        raise SnapshotInputError(
+            f"Python provider entry-point metadata was retargeted: {distribution}"
+        )
+    resolved_project_root = (
+        project_root.resolve(strict=True) if project_root is not None else None
+    )
+    if resolved_project_root is not None and _path_is_within(
+        entry_points_path, resolved_project_root
+    ):
+        raise SnapshotInputError(
+            f"Python provider entry-point metadata entered audit target: "
+            f"{distribution}"
+        )
+    info = entry_points_path.lstat()
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or entry_points_path.is_symlink()
+        or _is_reparse_point(entry_points_path)
+    ):
+        raise SnapshotInputError(
+            f"Python provider entry-point metadata is not a regular file: "
+            f"{distribution}"
+        )
+    _reject_unexpected_hardlinks(
+        entry_points_path,
+        f"Python provider entry-point metadata {distribution}",
+        project_root=project_root,
+        retain_fully_enumerated_external_aliases=True,
+        retained_authority_root=authority_root,
+    )
+    raw = entry_points_path.read_bytes()
+    digest = hashlib.sha256(raw).digest()
+    import base64
+
+    encoded = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    if row["hash"] != f"sha256={encoded}" or row["bytes"] != len(raw):
+        raise SnapshotInputError(
+            f"Python provider entry-point metadata drifted: {distribution}"
+        )
+    content_declarations = _parse_python_console_script_metadata(raw)
+    api_declarations = _python_console_script_api(dist)
+    if content_declarations != api_declarations:
+        raise SnapshotInputError(
+            f"Python provider console-script declarations disagree with "
+            f"installed metadata: {distribution}"
+        )
+    return frozenset(content_declarations)
+
+
+def _assert_exact_python_record_spelling(
+    path: Path,
+    authority_root: Path,
+    *,
+    validated_paths: set[str],
+) -> None:
+    """Reject case/normalization aliases in a RECORD member's live path."""
+
+    try:
+        components = path.relative_to(authority_root).parts
+    except ValueError as exc:
+        raise SnapshotInputError(
+            "Python provider RECORD spelling escaped its authority root"
+        ) from exc
+    cursor = authority_root
+    for component in components:
+        cursor = cursor / component
+        cache_key = os.path.abspath(str(cursor))
+        if cache_key in validated_paths:
+            continue
+        try:
+            sibling_names = tuple(entry.name for entry in os.scandir(cursor.parent))
+        except OSError as exc:
+            raise SnapshotInputError(
+                "Python provider RECORD spelling is unreadable"
+            ) from exc
+        aliases = [
+            name for name in sibling_names if name.casefold() == component.casefold()
+        ]
+        if aliases != [component]:
+            raise SnapshotInputError(
+                "Python provider RECORD path uses a case or Unicode alias"
+            )
+        validated_paths.add(cache_key)
+
+
+def _python_record_member_location(
+    dist: Any,
+    relative_name: str,
+    *,
+    distribution: str,
+    install_root: Path,
+    authority_root: Path,
+    scripts_root: Path,
+    declared_scripts: frozenset[str],
+    lexical_validation_cache: set[str],
+    spelling_validation_cache: set[str],
+) -> tuple[Path, bool]:
+    """Resolve one RECORD row within its authenticated interpreter scheme."""
+
+    normalized, parts = _normalized_python_record_name(relative_name)
+    parent_count = 0
+    while parent_count < len(parts) and parts[parent_count] == "..":
+        parent_count += 1
+    scripts_member = parent_count > 0
+    if scripts_member:
+        if distribution.casefold() != "slither-analyzer":
+            raise SnapshotInputError(
+                "Python provider RECORD parent path is not an approved script"
+            )
+        expected_names = (
+            {f"{name}.exe" for name in declared_scripts}
+            if os.name == "nt"
+            else set(declared_scripts)
+        )
+        leaf = parts[-1]
+        expected_relative = os.path.relpath(
+            scripts_root / leaf, install_root
+        ).replace(os.sep, "/")
+        if leaf not in expected_names or normalized != expected_relative:
+            raise SnapshotInputError(
+                "Python provider RECORD parent path is not an exact declared script"
+            )
+        expected = scripts_root / leaf
+    else:
+        expected = install_root.joinpath(*parts)
+    expected_absolute = Path(os.path.abspath(str(expected)))
+    expected_name = os.path.normcase(str(expected_absolute))
+    authority_name = os.path.normcase(os.path.abspath(str(authority_root)))
+    try:
+        inside_authority = os.path.commonpath(
+            (authority_name, expected_name)
+        ) == authority_name
+    except ValueError:
+        inside_authority = False
+    if not inside_authority:
+        raise SnapshotInputError(
+            "Python provider RECORD member escapes its interpreter scheme"
+        )
+    located_candidate = Path(dist.locate_file(normalized))
+    if os.path.normcase(os.path.abspath(str(located_candidate))) != expected_name:
+        raise SnapshotInputError(
+            "Python provider RECORD member location was retargeted"
+        )
+    located = _assert_no_lexical_links(
+        expected_absolute,
+        label=(
+            "Python provider distribution file "
+            f"{distribution}:{normalized}"
+        ),
+        _validated_paths=lexical_validation_cache,
+        _validated_root=authority_root,
+    ).resolve(strict=True)
+    _assert_exact_python_record_spelling(
+        expected_absolute,
+        authority_root,
+        validated_paths=spelling_validation_cache,
+    )
+    if scripts_member and located.parent != scripts_root:
+        raise SnapshotInputError(
+            "Python provider RECORD script escaped its exact scripts directory"
+        )
+    return located, scripts_member
+
+
 def _replay_python_distribution_closure_cache(
     distribution: str,
     module_name: str,
@@ -4489,6 +5302,39 @@ def _replay_python_distribution_closure_cache(
         if payload.get("project_root") != project_name:
             return None
         authority_root = Path(str(payload["authority_root"]))
+        install_root = Path(str(payload["install_root"]))
+        scripts_root = Path(str(payload["scripts_root"]))
+        declared_scripts_raw = payload.get("declared_scripts")
+        if (
+            not isinstance(declared_scripts_raw, list)
+            or not all(
+                isinstance(name, str)
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name)
+                for name in declared_scripts_raw
+            )
+            or len(declared_scripts_raw) != len(set(declared_scripts_raw))
+            or len(declared_scripts_raw)
+            != len({name.casefold() for name in declared_scripts_raw})
+        ):
+            raise SnapshotInputError(
+                f"Python provider retained script declarations drifted: "
+                f"{distribution}"
+            )
+        declared_scripts = frozenset(declared_scripts_raw)
+        if distribution.casefold() == "slither-analyzer":
+            expected_authority_root, expected_scripts_root = (
+                _python_distribution_install_namespace(install_root)
+            )
+            if (
+                os.path.normcase(os.path.abspath(str(expected_authority_root)))
+                != os.path.normcase(os.path.abspath(str(authority_root)))
+                or os.path.normcase(os.path.abspath(str(expected_scripts_root)))
+                != os.path.normcase(os.path.abspath(str(scripts_root)))
+            ):
+                raise SnapshotInputError(
+                    f"Python provider retained interpreter scheme drifted: "
+                    f"{distribution}"
+                )
         _assert_no_lexical_links(
             authority_root,
             label=f"Python provider authority root {distribution}",
@@ -4539,7 +5385,12 @@ def _replay_python_distribution_closure_cache(
                 f"Python provider retained RECORD identity drifted: {distribution}"
             )
         record_path = Path(str(record_cache_rows[0]["path"]))
-        install_root = record_path.parent.parent
+        if os.path.normcase(os.path.abspath(str(record_path.parent.parent))) != (
+            os.path.normcase(os.path.abspath(str(install_root)))
+        ):
+            raise SnapshotInputError(
+                f"Python provider retained install root drifted: {distribution}"
+            )
         record_entries: list[tuple[str, str, int]] = []
         content_entries: list[tuple[str, str, int]] = []
         observed_identities: set[tuple[int, int]] = set()
@@ -4551,29 +5402,46 @@ def _replay_python_distribution_closure_cache(
                 raise SnapshotInputError(
                     f"Python provider retained closure row drifted: {distribution}"
                 )
-            relative_name = str(row["relative_name"])
+            relative_name, relative_parts = _normalized_python_record_name(
+                str(row["relative_name"])
+            )
             located = Path(str(row["path"]))
             identity = (int(row["device"]), int(row["file_id"]))
             expected_size = int(row["size"])
             expected_link_count = int(row["link_count"])
-            relative_parts = PurePosixPath(relative_name).parts
-            scripts_member = (
-                len(relative_parts) == 4
-                and relative_parts[:3] == ("..", "..", "Scripts")
-                and relative_parts[-1].casefold().endswith(".exe")
-            )
-            if (
-                not relative_name
-                or relative_name.startswith("/")
-                or (".." in relative_parts and not scripts_member)
+            parent_count = 0
+            while (
+                parent_count < len(relative_parts)
+                and relative_parts[parent_count] == ".."
             ):
+                parent_count += 1
+            scripts_member = parent_count > 0
+            if row.get("script_member") is not scripts_member:
                 raise SnapshotInputError(
                     f"Python provider retained RECORD path drifted: "
                     f"{distribution}:{relative_name}"
                 )
-            expected_path = os.path.normcase(os.path.abspath(str(
-                install_root / Path(relative_name)
-            )))
+            if scripts_member:
+                leaf = relative_parts[-1]
+                expected_names = {f"{name}.exe" for name in declared_scripts}
+                expected_relative = os.path.relpath(
+                    scripts_root / leaf, install_root
+                ).replace(os.sep, "/")
+                if (
+                    distribution.casefold() != "slither-analyzer"
+                    or leaf not in expected_names
+                    or relative_name != expected_relative
+                ):
+                    raise SnapshotInputError(
+                        f"Python provider retained script path drifted: "
+                        f"{distribution}:{relative_name}"
+                    )
+                expected_location = scripts_root / leaf
+            else:
+                expected_location = install_root.joinpath(*relative_parts)
+            expected_path = os.path.normcase(
+                os.path.abspath(str(expected_location))
+            )
             if os.path.normcase(os.path.abspath(str(located))) != expected_path:
                 raise SnapshotInputError(
                     f"Python provider retained RECORD path was retargeted: "
@@ -4679,12 +5547,15 @@ def _replay_python_distribution_closure_cache(
             )
         parsed_normalized_rows: list[dict[str, Any]] = []
         for name, digest_value, size_value in parsed_rows_raw:
-            normalized = name.replace("\\", "/")
-            if not normalized or normalized.startswith("/"):
+            try:
+                normalized, _normalized_parts = (
+                    _normalized_python_record_name(name)
+                )
+            except SnapshotInputError as exc:
                 raise SnapshotInputError(
                     f"Python provider retained RECORD path is invalid: "
                     f"{distribution}"
-                )
+                ) from exc
             if digest_value:
                 if (
                     not digest_value.startswith("sha256=")
@@ -4714,6 +5585,8 @@ def _replay_python_distribution_closure_cache(
         parsed_names = [str(row["path"]) for row in parsed_normalized_rows]
         if (
             len(parsed_names) != len(set(parsed_names))
+            or len(parsed_names)
+            != len({name.casefold() for name in parsed_names})
             or len(parsed_names) != len(rows)
             or set(parsed_names) != set(cached_relative_names)
         ):
@@ -4862,15 +5735,41 @@ def _python_distribution_closure(
         raise SnapshotInputError(
             f"Python provider closure is incomplete: {distribution}"
         )
-    distribution_authority_root = (
-        Path(dist.locate_file(".")).resolve(strict=True).parent.parent
-    )
     lexical_validation_cache: set[str] = set()
-    _assert_no_lexical_links(
+    spelling_validation_cache: set[str] = set()
+    distribution_install_root = _assert_no_lexical_links(
+        Path(dist.locate_file(".")),
+        label=f"Python provider install root {distribution}",
+        _validated_paths=lexical_validation_cache,
+    ).resolve(strict=True)
+    if distribution.casefold() == "slither-analyzer":
+        (
+            distribution_authority_root,
+            distribution_scripts_root,
+        ) = _python_distribution_install_namespace(distribution_install_root)
+    else:
+        # Non-Slither closures do not admit parent-relative RECORD members.
+        # Preserve their existing narrow lexical authority while the scripts
+        # scheme remains unused.
+        distribution_authority_root = distribution_install_root.parent.parent
+        distribution_scripts_root = distribution_authority_root
+    distribution_authority_root = _assert_no_lexical_links(
         distribution_authority_root,
         label=f"Python provider authority root {distribution}",
         _validated_paths=lexical_validation_cache,
-    )
+    ).resolve(strict=True)
+    distribution_scripts_root = _assert_no_lexical_links(
+        distribution_scripts_root,
+        label=f"Python provider scripts root {distribution}",
+        _validated_paths=lexical_validation_cache,
+        _validated_root=distribution_authority_root,
+    ).resolve(strict=True)
+    try:
+        distribution_install_root.relative_to(distribution_authority_root)
+    except ValueError as exc:
+        raise SnapshotInputError(
+            f"Python provider install root escapes its scheme: {distribution}"
+        ) from exc
     try:
         resolved_project_root = (
             project_root.resolve(strict=True)
@@ -4917,15 +5816,35 @@ def _python_distribution_closure(
         raise SnapshotInputError(
             f"Python provider RECORD is ambiguous: {distribution}"
         )
-    record_relative = str(record_candidates[0]).replace("\\", "/")
     try:
-        located_record_path = Path(dist.locate_file(record_candidates[0]))
-        record_path = _assert_no_lexical_links(
-            located_record_path,
-            label=f"Python provider RECORD {distribution}",
-            _validated_paths=lexical_validation_cache,
-            _validated_root=distribution_authority_root,
-        ).resolve(strict=True)
+        record_relative, record_relative_parts = _normalized_python_record_name(
+            str(record_candidates[0])
+        )
+    except SnapshotInputError as exc:
+        raise SnapshotInputError(
+            f"Python provider RECORD path is invalid: {distribution}"
+        ) from exc
+    if ".." in record_relative_parts:
+        raise SnapshotInputError(
+            f"Python provider RECORD path is invalid: {distribution}"
+        )
+    try:
+        record_path, record_is_script = _python_record_member_location(
+            dist,
+            record_relative,
+            distribution=distribution,
+            install_root=distribution_install_root,
+            authority_root=distribution_authority_root,
+            scripts_root=distribution_scripts_root,
+            declared_scripts=frozenset(),
+            lexical_validation_cache=lexical_validation_cache,
+            spelling_validation_cache=spelling_validation_cache,
+        )
+        if record_is_script:
+            raise SnapshotInputError(
+                f"Python provider RECORD path is invalid: {distribution}"
+            )
+        located_record_path = record_path
         if inside_project(record_path):
             raise SnapshotInputError(
                 f"Python provider RECORD resolves inside audit target: "
@@ -4968,14 +5887,15 @@ def _python_distribution_closure(
     normalized_record_rows: list[dict[str, Any]] = []
     record_names: list[str] = []
     for name, digest_value, size_value in record_rows_raw:
-        normalized = name.replace("\\", "/")
+        try:
+            normalized, normalized_parts = _normalized_python_record_name(name)
+        except SnapshotInputError as exc:
+            raise SnapshotInputError(
+                f"Python provider RECORD path is invalid: {distribution}"
+            ) from exc
         if (
-            not normalized
-            or normalized.startswith("/")
-            or (
-                distribution.casefold() == "protobuf"
-                and ".." in PurePosixPath(normalized).parts
-            )
+            distribution.casefold() == "protobuf"
+            and ".." in normalized_parts
         ):
             raise SnapshotInputError(
                 f"Python provider RECORD path is invalid: {distribution}"
@@ -5000,15 +5920,31 @@ def _python_distribution_closure(
             {"path": normalized, "hash": digest_value, "bytes": normalized_size}
         )
         record_names.append(normalized)
-    if len(record_names) != len(set(record_names)):
+    if (
+        len(record_names) != len(set(record_names))
+        or len(record_names) != len({name.casefold() for name in record_names})
+    ):
         raise SnapshotInputError(
-            f"Python provider RECORD contains duplicate paths: {distribution}"
+            f"Python provider RECORD contains duplicate or case-aliased paths: "
+            f"{distribution}"
         )
     normalized_record_rows.sort(key=lambda row: row["path"])
-    metadata_names = {
-        str(relative).replace("\\", "/") for relative in files
-    }
-    if metadata_names != set(record_names):
+    try:
+        metadata_name_rows = [
+            _normalized_python_record_name(str(relative))[0]
+            for relative in files
+        ]
+    except SnapshotInputError as exc:
+        raise SnapshotInputError(
+            f"Python provider installed-file roster is invalid: {distribution}"
+        ) from exc
+    metadata_names = set(metadata_name_rows)
+    if (
+        len(metadata_name_rows) != len(metadata_names)
+        or len(metadata_name_rows)
+        != len({name.casefold() for name in metadata_name_rows})
+        or metadata_names != set(record_names)
+    ):
         raise SnapshotInputError(
             f"Python provider RECORD denominator is inconsistent: {distribution}"
         )
@@ -5021,15 +5957,31 @@ def _python_distribution_closure(
     record_by_name = {
         str(row["path"]): row for row in normalized_record_rows
     }
-    # RECORD is rooted at ``<install-root>/<dist-info>/RECORD``.  A reviewed
-    # console-script row may use the wheel-standard ``../../Scripts/name.exe``
-    # spelling, but it must still resolve beneath this one interpreter prefix.
+    # RECORD is rooted at ``<install-root>/<dist-info>/RECORD``.  A declared
+    # console script may be installed in the exact scripts directory belonging
+    # to the one sysconfig scheme whose purelib/platlib is this install root.
     # No other parent traversal is admitted.
     install_root = record_path.parent.parent
-    if install_root.parent.parent.resolve(strict=True) != distribution_authority_root:
+    if install_root != distribution_install_root:
         raise SnapshotInputError(
             f"Python provider authority root is inconsistent: {distribution}"
         )
+    if distribution.casefold() == "slither-analyzer":
+        declared_scripts = _content_bound_python_console_scripts(
+            dist,
+            distribution=distribution,
+            record_relative=record_relative,
+            record_path=record_path,
+            record_by_name=record_by_name,
+            install_root=install_root,
+            authority_root=distribution_authority_root,
+            scripts_root=distribution_scripts_root,
+            lexical_validation_cache=lexical_validation_cache,
+            spelling_validation_cache=spelling_validation_cache,
+            project_root=project_root,
+        )
+    else:
+        declared_scripts = frozenset()
     entries: list[tuple[str, str, int]] = []
     record_entries: list[tuple[str, str, int]] = []
     retained_cache_rows: list[dict[str, Any]] = []
@@ -5042,34 +5994,28 @@ def _python_distribution_closure(
         files,
         key=lambda value: str(value).replace("\\", "/"),
     ):
-        relative_name = str(relative).replace("\\", "/")
-        relative_parts = PurePosixPath(relative_name).parts
-        scripts_member = (
-            distribution.casefold() == "slither-analyzer"
-            and len(relative_parts) == 4
-            and relative_parts[:3] == ("..", "..", "Scripts")
-            and relative_parts[-1].casefold().endswith(".exe")
-        )
-        if (
-            not relative_name
-            or relative_name.startswith("/")
-            or (".." in relative_parts and not scripts_member)
-        ):
+        raw_relative_name = str(relative)
+        try:
+            relative_name, relative_parts = _normalized_python_record_name(
+                raw_relative_name
+            )
+        except SnapshotInputError as exc:
             raise SnapshotInputError(
                 f"Python provider RECORD member path is outside its fixed "
-                f"runtime namespace: {distribution}:{relative_name}"
-            )
+                f"runtime namespace: {distribution}:{raw_relative_name}"
+            ) from exc
         try:
-            located_candidate = Path(dist.locate_file(relative))
-            located = _assert_no_lexical_links(
-                located_candidate,
-                label=(
-                    "Python provider distribution file "
-                    f"{distribution}:{relative_name}"
-                ),
-                _validated_paths=lexical_validation_cache,
-                _validated_root=distribution_authority_root,
-            ).resolve(strict=True)
+            located, scripts_member = _python_record_member_location(
+                dist,
+                relative_name,
+                distribution=distribution,
+                install_root=install_root,
+                authority_root=distribution_authority_root,
+                scripts_root=distribution_scripts_root,
+                declared_scripts=declared_scripts,
+                lexical_validation_cache=lexical_validation_cache,
+                spelling_validation_cache=spelling_validation_cache,
+            )
         except OSError as exc:
             raise SnapshotInputError(
                 f"Python provider distribution file is missing: "
@@ -5182,6 +6128,7 @@ def _python_distribution_closure(
                 "record_member": located == record_path,
                 "record_size": record_row["bytes"],
                 "relative_name": relative_name,
+                "script_member": scripts_member,
                 "size": size,
             })
     if (
@@ -5259,7 +6206,11 @@ def _python_distribution_closure(
             "authority_root": os.path.normcase(
                 os.path.abspath(str(distribution_authority_root))
             ),
+            "declared_scripts": sorted(declared_scripts),
             "distribution": distribution,
+            "install_root": os.path.normcase(
+                os.path.abspath(str(install_root))
+            ),
             "module_name": module_name,
             "module_origin": os.path.normcase(
                 os.path.abspath(str(module_origin))
@@ -5280,6 +6231,9 @@ def _python_distribution_closure(
             "record_sha256": hashlib.sha256(record_raw).hexdigest(),
             "rows": retained_cache_rows,
             "schema": "plamen.retained-python-distribution-closure.v1",
+            "scripts_root": os.path.normcase(
+                os.path.abspath(str(distribution_scripts_root))
+            ),
         }
         _PYTHON_DISTRIBUTION_CLOSURE_CACHE[distribution.casefold()] = (
             payload,
@@ -5461,8 +6415,19 @@ def _runtime_python_distribution_fingerprint(
     identity_id: str,
     *,
     project_root: Path | None = None,
+    controls: tuple[
+        dict[str, dict[str, Any]],
+        dict[str, dict[str, Any]],
+        str,
+        str,
+    ]
+    | None = None,
 ) -> bytes:
-    controls = _load_toolchain_identity_controls()
+    controls = (
+        controls
+        if controls is not None
+        else _load_toolchain_identity_controls()
+    )
     locked_row = controls[0].get(identity_id)
     if (
         locked_row is None
@@ -5474,6 +6439,28 @@ def _runtime_python_distribution_fingerprint(
     distribution = str(locked_row["package_name"])
     module_name = str(locked_row["python_module"])
     version = _python_distribution_version(distribution)
+    try:
+        interpreter_path = Path(sys.executable).resolve(strict=True)
+        if _path_is_within(interpreter_path, project_root):
+            raise SnapshotInputError(
+                "Python provider interpreter resolves inside audit target"
+            )
+        _reject_unexpected_hardlinks(
+            interpreter_path,
+            "Python provider interpreter",
+            project_root=project_root,
+        )
+        interpreter_digest, interpreter_bytes = _hash_runtime_executable(
+            interpreter_path
+        )
+    except OSError as exc:
+        raise SnapshotInputError(
+            "Python provider interpreter is unreadable"
+        ) from exc
+    interpreter_version = (
+        f"{sys.version_info.major}.{sys.version_info.minor}."
+        f"{sys.version_info.micro}"
+    )
     expected, status, authority, lock_digest, governance_digest = (
         _runtime_identity_policy(
             identity_id,
@@ -5559,7 +6546,11 @@ def _runtime_python_distribution_fingerprint(
         "tool_id": identity_id,
         "identity_kind": "python_distribution",
         "command": ["python-importlib-metadata", distribution],
-        "resolved_executable": sys.executable,
+        "resolved_executable": str(interpreter_path),
+        "interpreter_implementation": platform.python_implementation(),
+        "interpreter_version": interpreter_version,
+        "interpreter_sha256": interpreter_digest.hex(),
+        "interpreter_bytes": interpreter_bytes,
         "version": version,
         "expected_identity": expected_distribution,
         "observed_identity": {
@@ -5723,9 +6714,12 @@ def _installed_python_packages() -> bytes:
         from importlib import metadata
         import sysconfig
 
-        prefix = Path(sys.prefix).resolve(strict=True)
-        managed_roots: dict[str, str] = {}
         configured_paths = sysconfig.get_paths()
+        raw_data_root = configured_paths.get("data")
+        if not isinstance(raw_data_root, str) or not raw_data_root:
+            raise SnapshotInputError("managed Python data path is unavailable")
+        scheme_root = Path(raw_data_root).resolve(strict=True)
+        managed_roots: dict[str, str] = {}
         for key in ("purelib", "platlib"):
             raw = configured_paths.get(key)
             if not isinstance(raw, str) or not raw:
@@ -5734,10 +6728,10 @@ def _installed_python_packages() -> bytes:
                 )
             try:
                 root = Path(raw).resolve(strict=True)
-                root.relative_to(prefix)
+                root.relative_to(scheme_root)
             except (OSError, ValueError) as exc:
                 raise SnapshotInputError(
-                    f"managed Python {key} path escapes the interpreter prefix"
+                    f"managed Python {key} path escapes its interpreter scheme"
                 ) from exc
             if not root.is_dir():
                 raise SnapshotInputError(
@@ -5804,10 +6798,245 @@ RUNTIME_TOOL_COMMANDS: dict[str, tuple[str, ...]] = {
     "ast-grep": ("ast-grep", "--version"),
 }
 
+MANAGED_EVM_SLITHER_PROJECTION_CONFIG = (
+    "_managed_evm_slither_snapshot_projection_bytes"
+)
+MANAGED_EVM_GENERATION_AUTHORITY_CONFIG = "_managed_evm_generation_authority"
+
+
+def managed_evm_slither_snapshot_projection(
+    managed_generation_authority: object,
+    *,
+    project_root: Path | None = None,
+) -> bytes:
+    """Build snapshot evidence from one opaque immutable guest generation.
+
+    Guest Slither is intentionally not imported by the host Python process.
+    The managed toolchain replays the full generation/RECORD denominator and
+    returns evidence only; this function joins it to the repository-reviewed
+    version/governance controls and emits the ordinary runtime identity bytes
+    consumed by the audit snapshot.
+    """
+
+    try:
+        import managed_evm_python_toolchain as managed
+
+        observation = dict(
+            managed.managed_evm_slither_snapshot_observation(
+                managed_generation_authority
+            )
+        )
+    except Exception as exc:
+        raise SnapshotInputError(
+            "managed EVM Slither generation authority is unavailable"
+        ) from exc
+    expected_observation_fields = {
+        "managed_generation_binding_sha256",
+        "interpreter_implementation", "interpreter_version",
+        "interpreter_path", "interpreter_sha256", "interpreter_bytes",
+        "version", "distribution_files_sha256",
+        "distribution_path_set_sha256", "distribution_file_count",
+        "distribution_bytes", "record_member_files_sha256",
+        "record_member_path_set_sha256", "record_member_file_count",
+        "record_member_native_identity_count", "record_member_bytes",
+        "record_path", "record_sha256", "record_bytes", "record_row_count",
+        "record_normalized_rows_sha256", "module_origin", "module_sha256",
+        "entrypoint_path", "entrypoint_sha256", "entrypoint_bytes",
+    }
+    if set(observation) != expected_observation_fields:
+        raise SnapshotInputError(
+            "managed EVM Slither snapshot observation fields differ"
+        )
+    for field in (
+        "managed_generation_binding_sha256", "interpreter_sha256",
+        "distribution_files_sha256", "distribution_path_set_sha256",
+        "record_member_files_sha256", "record_member_path_set_sha256",
+        "record_sha256", "record_normalized_rows_sha256", "module_sha256",
+        "entrypoint_sha256",
+    ):
+        if not isinstance(observation.get(field), str) or _HEX_64_RE.fullmatch(
+            str(observation[field])
+        ) is None:
+            raise SnapshotInputError(
+                f"managed EVM Slither {field} is malformed"
+            )
+    for field in (
+        "interpreter_bytes", "distribution_file_count", "distribution_bytes",
+        "record_member_file_count", "record_member_native_identity_count",
+        "record_member_bytes", "record_bytes", "record_row_count",
+        "entrypoint_bytes",
+    ):
+        if (
+            isinstance(observation.get(field), bool)
+            or not isinstance(observation.get(field), int)
+            or int(observation[field]) <= 0
+        ):
+            raise SnapshotInputError(
+                f"managed EVM Slither {field} is malformed"
+            )
+    if (
+        observation.get("interpreter_implementation") != "CPython"
+        or not str(observation.get("interpreter_version") or "").startswith(
+            "3.12."
+        )
+        or observation.get("version") != "0.11.5"
+    ):
+        raise SnapshotInputError(
+            "managed EVM Slither interpreter/version observation differs"
+        )
+    resolved_project = (
+        Path(project_root).resolve(strict=True)
+        if project_root is not None else None
+    )
+    for field in ("interpreter_path", "module_origin", "entrypoint_path"):
+        candidate = Path(str(observation.get(field) or ""))
+        if not candidate.is_absolute():
+            raise SnapshotInputError(
+                f"managed EVM Slither {field} is not absolute"
+            )
+        try:
+            resolved_candidate = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise SnapshotInputError(
+                f"managed EVM Slither {field} is unreadable"
+            ) from exc
+        if resolved_project is not None:
+            try:
+                resolved_candidate.relative_to(resolved_project)
+            except ValueError:
+                pass
+            else:
+                raise SnapshotInputError(
+                    f"managed EVM Slither {field} resolves inside audit target"
+                )
+
+    controls = _load_toolchain_identity_controls()
+    expected, status, deterministic, lock_digest, governance_digest = (
+        _runtime_identity_policy(
+            "slither",
+            resolved_identity="slither-analyzer",
+            version=str(observation["version"]),
+            identity_kind="python_distribution",
+            controls=controls,
+        )
+    )
+    if status != "OBSERVED_NONAUTHORITATIVE" or deterministic is not False:
+        raise SnapshotInputError(
+            "managed EVM Slither controls exceed local evidence authority"
+        )
+    expected_distribution = {
+        "distribution": "slither-analyzer",
+        "version": expected["version"],
+        "content_authority": expected.get("content_authority"),
+    }
+    identity = {
+        "schema": RUNTIME_TOOL_IDENTITY_SCHEMA,
+        "tool_id": "slither",
+        "identity_kind": "python_distribution",
+        "command": ["python-importlib-metadata", "slither-analyzer"],
+        "resolved_executable": observation["interpreter_path"],
+        "interpreter_implementation": observation[
+            "interpreter_implementation"
+        ],
+        "interpreter_version": observation["interpreter_version"],
+        "interpreter_sha256": observation["interpreter_sha256"],
+        "interpreter_bytes": observation["interpreter_bytes"],
+        "version": observation["version"],
+        "expected_identity": expected_distribution,
+        "observed_identity": {
+            "distribution": "slither-analyzer",
+            "version": observation["version"],
+        },
+        "identity_status": status,
+        "deterministic_provider_authority": False,
+        "toolchain_version_lock_sha256": lock_digest,
+        "toolchain_governance_sha256": governance_digest,
+        **{
+            key: observation[key]
+            for key in expected_observation_fields
+            - {
+                "interpreter_implementation", "interpreter_version",
+                "interpreter_path", "interpreter_sha256", "interpreter_bytes",
+                "version",
+            }
+        },
+    }
+    return _canonical_json(identity)
+
+
+def capture_managed_evm_slither_provider_authority(
+    managed_generation_authority: object,
+    *,
+    project_root: Path | None = None,
+) -> dict[str, Any]:
+    """Return the signed local-evidence wrapper used by workspace issuance."""
+
+    raw = managed_evm_slither_snapshot_projection(
+        managed_generation_authority,
+        project_root=project_root,
+    )
+    identity = json.loads(raw)
+    result = {
+        **identity,
+        "authority_status": "OBSERVED_NONAUTHORITATIVE",
+        "reason": (
+            "managed immutable generation is operational evidence; executed "
+            "image-member content authority remains independently native-bound"
+        ),
+    }
+    return _signed_provider_authority(result)
+
+
+def _managed_evm_slither_runtime_entry(
+    config: Mapping[str, Any] | None,
+    *,
+    project_root: Path | None,
+    controls: tuple[
+        dict[str, dict[str, Any]],
+        dict[str, dict[str, Any]],
+        str,
+        str,
+    ],
+) -> bytes:
+    """Select managed evidence only as a bytes+opaque-handle pair.
+
+    Supplying either half makes managed generation authority expected and
+    disables ambient fallback.  Rebuilding the bytes from the opaque handle
+    prevents a caller from substituting a same-version host installation.
+    """
+
+    values = config or {}
+    supplied = values.get(MANAGED_EVM_SLITHER_PROJECTION_CONFIG)
+    authority = values.get(MANAGED_EVM_GENERATION_AUTHORITY_CONFIG)
+    if supplied is None and authority is None:
+        return _runtime_python_distribution_fingerprint(
+            "slither", project_root=project_root, controls=controls
+        )
+    if supplied is None or authority is None:
+        raise SnapshotInputError(
+            "managed EVM Slither snapshot requires evidence bytes and opaque "
+            "generation authority together"
+        )
+    if type(supplied) is not bytes or not supplied or supplied.endswith(b"\n"):
+        raise SnapshotInputError(
+            "managed EVM Slither snapshot evidence bytes are malformed"
+        )
+    replayed = managed_evm_slither_snapshot_projection(
+        authority,
+        project_root=project_root,
+    )
+    if supplied != replayed:
+        raise SnapshotInputError(
+            "managed EVM Slither snapshot evidence differs from opaque "
+            "generation replay"
+        )
+    return bytes(supplied)
+
 
 def _fixed_runtime_tool_entries(
     *,
     project_root: Path | None = None,
+    config: Mapping[str, Any] | None = None,
 ) -> tuple[tuple[str, bytes], ...]:
     """Capture runtime/tool identity on every snapshot construction.
 
@@ -5837,6 +7066,14 @@ def _fixed_runtime_tool_entries(
                     "blocked_version_substrings"
                 ]
             )
+            # Apple's /usr/bin/git is a dispatch shim rather than the Git
+            # implementation.  The Darwin-specific resolver must capture the
+            # selected real Git's version as well as all three content hashes.
+            or (
+                sys.platform == "darwin"
+                and name == "git"
+                and shutil.which("git") == str(_DARWIN_GIT_SHIM)
+            )
         )
         fingerprint = (
             _runtime_tool_fingerprint(
@@ -5853,13 +7090,22 @@ def _fixed_runtime_tool_entries(
             )
         )
         try:
-            from tool_coverage_ledger import tool_identity_policy_issues
-
-            policy_issues = tool_identity_policy_issues(name, fingerprint)
-        except (ImportError, ValueError, OSError) as exc:
+            fingerprint_value = json.loads(fingerprint)
+        except (UnicodeError, json.JSONDecodeError) as exc:
             raise SnapshotInputError(
-                "toolchain governance evaluator is unavailable"
+                "runtime tool identity is not canonical JSON"
             ) from exc
+        if not isinstance(fingerprint_value, dict):
+            raise SnapshotInputError("runtime tool identity schema is invalid")
+        policy_issues = fingerprint_value.get("revocation_issues")
+        if (
+            policy_issues is not None
+            and (
+                not isinstance(policy_issues, list)
+                or not all(isinstance(issue, str) for issue in policy_issues)
+            )
+        ):
+            raise SnapshotInputError("runtime tool identity schema is invalid")
         if policy_issues:
             raise SnapshotInputError(
                 f"runtime tool {name} violates revocation policy: "
@@ -5869,8 +7115,10 @@ def _fixed_runtime_tool_entries(
     entries.append(
         (
             "@runtime/tool/slither",
-            _runtime_python_distribution_fingerprint(
-                "slither", project_root=project_root
+            _managed_evm_slither_runtime_entry(
+                config,
+                project_root=project_root,
+                controls=controls,
             ),
         )
     )
@@ -5878,7 +7126,7 @@ def _fixed_runtime_tool_entries(
         (
             "@runtime/tool/protobuf",
             _runtime_python_distribution_fingerprint(
-                "protobuf", project_root=project_root
+                "protobuf", project_root=project_root, controls=controls
             ),
         )
     )
@@ -5961,7 +7209,10 @@ def _runtime_tool_entries(
 ) -> list[tuple[str, bytes]]:
     """Bind OS, interpreter, tools, and audit-semantic environment knobs."""
     entries = list(
-        _fixed_runtime_tool_entries(project_root=project_root)
+        _fixed_runtime_tool_entries(
+            project_root=project_root,
+            config=config,
+        )
     )
     semantic_env = {
         key: value
@@ -5993,6 +7244,239 @@ def _runtime_tool_entries(
     return entries
 
 
+_EVM_PROJECTION_RECEIPT_KEYS = {
+    "analysis_workspace_bytes", "analysis_workspace_closure_sha256",
+    "analysis_workspace_directory_count", "analysis_workspace_file_count",
+    "component_kind",
+    "dependency_materialization_receipt_sha256",
+    "guest_mount_identity_sha256", "guest_mount_path",
+    "host_descriptor_identity_sha256", "invocation_sha256",
+    "js_lock_selection_sha256", "materialized_node_modules_bytes",
+    "materialized_node_modules_closure_sha256",
+    "materialized_node_modules_directory_count",
+    "materialized_node_modules_file_count",
+    "materialization_lineage_byte_count", "materialization_lineage_sha256",
+    "native_materialization_request_sha256",
+    "native_projection_custody_sha256", "original_source_scope_sha256",
+    "project_read_only", "receipt_byte_count", "receipt_sha256", "schema",
+    "source_copy_bytes", "source_copy_closure_sha256",
+    "source_copy_directory_count", "source_copy_file_count", "writable_mounts",
+}
+_EVM_PROJECTION_COMPONENT_KEYS = {
+    "kind", "receipt_sha256", "receipt_byte_count",
+    "original_source_scope_sha256", "source_copy_closure_sha256",
+    "js_lock_selection_sha256", "dependency_materialization_receipt_sha256",
+    "materialized_node_modules_closure_sha256",
+    "analysis_workspace_closure_sha256", "native_projection_custody_sha256",
+    "materialization_lineage_sha256", "materialization_lineage_byte_count",
+    "native_materialization_request_sha256",
+    "digest",
+}
+
+
+def _read_stable_projection_receipt(path: Path) -> tuple[bytes, dict[str, Any]]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = -1
+    try:
+        before = os.lstat(path)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or int(before.st_nlink) != 1
+            or int(before.st_size) < 1
+            or int(before.st_size) > _MAX_EVM_ANALYSIS_PROJECTION_RECEIPT_BYTES
+        ):
+            raise SnapshotInputError(
+                "EVM analysis projection receipt is not a bounded single-link file"
+            )
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        identity = lambda row: (
+            int(row.st_dev), int(row.st_ino), int(row.st_mode), int(row.st_nlink),
+            int(row.st_uid), int(row.st_gid), int(row.st_size),
+            int(row.st_mtime_ns), int(row.st_ctime_ns),
+        )
+        if identity(before) != identity(opened):
+            raise SnapshotInputError("EVM analysis projection receipt changed while opening")
+        chunks: list[bytes] = []
+        remaining = int(opened.st_size)
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                raise SnapshotInputError("EVM analysis projection receipt became short")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            raise SnapshotInputError("EVM analysis projection receipt grew while reading")
+        after = os.fstat(descriptor)
+        final = os.lstat(path)
+        if identity(opened) != identity(after) or identity(after) != identity(final):
+            raise SnapshotInputError("EVM analysis projection receipt changed while reading")
+        raw = b"".join(chunks)
+        value = json.loads(raw.decode("utf-8", "strict"))
+    except SnapshotInputError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SnapshotInputError("EVM analysis projection receipt is unreadable") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not isinstance(value, dict) or raw != _canonical_json(value):
+        raise SnapshotInputError("EVM analysis projection receipt is not canonical JSON")
+    return raw, value
+
+
+def _evm_analysis_projection_component(
+    config: Mapping[str, Any], source: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    pipeline = str(source.get("pipeline") or "").strip().lower()
+    language = _normalized_snapshot_language(source.get("language"))
+    path = _evm_projection_receipt_path(config)
+    exists = path.is_file()
+    if pipeline != "sc" or language != "evm":
+        if exists:
+            raise SnapshotInputError(
+                "EVM analysis projection receipt is unexpected for this audit ecosystem"
+            )
+        return None
+    state, _reason = _evm_input_preparation_state(config)
+    if not exists:
+        if state == "PREPARED":
+            raise SnapshotInputError(
+                "prepared EVM input state lacks the mandatory native projection receipt"
+            )
+        limitations = source.get("coverage_limitations")
+        if not isinstance(limitations, list) or not any(
+            isinstance(item, str)
+            and item.startswith("EVM_ANALYSIS_PROJECTION_UNAVAILABLE:")
+            for item in limitations
+        ):
+            raise SnapshotInputError(
+                "missing EVM projection is not bound as an audit-input limitation"
+            )
+        return None
+    raw, receipt = _read_stable_projection_receipt(path)
+    unsigned = dict(receipt)
+    stored_self_digest = unsigned.pop("receipt_sha256", None)
+    digest_fields = {
+        "analysis_workspace_closure_sha256",
+        "dependency_materialization_receipt_sha256",
+        "guest_mount_identity_sha256", "host_descriptor_identity_sha256",
+        "invocation_sha256", "materialized_node_modules_closure_sha256",
+        "native_projection_custody_sha256", "original_source_scope_sha256",
+        "materialization_lineage_sha256", "native_materialization_request_sha256",
+        "js_lock_selection_sha256",
+        "source_copy_closure_sha256",
+    }
+    if (
+        set(receipt) != _EVM_PROJECTION_RECEIPT_KEYS
+        or receipt.get("schema") != _EVM_ANALYSIS_PROJECTION_SCHEMA
+        or receipt.get("component_kind") != "evm_analysis_projection.v1"
+        or stored_self_digest != _sha256(_canonical_json(unsigned))
+        or any(
+            not isinstance(receipt.get(field), str)
+            or re.fullmatch(r"[0-9a-f]{64}", receipt[field]) is None
+            for field in digest_fields
+        )
+        or any(
+            type(receipt.get(field)) is not int
+            or not 0 < receipt[field] <= _MAX_EVM_ANALYSIS_PROJECTION_BYTES
+            for field in (
+                "analysis_workspace_bytes", "analysis_workspace_directory_count",
+                "analysis_workspace_file_count", "materialized_node_modules_bytes",
+                "materialization_lineage_byte_count",
+                "materialized_node_modules_directory_count",
+                "materialized_node_modules_file_count", "source_copy_bytes",
+                "source_copy_directory_count", "source_copy_file_count",
+            )
+        )
+        or receipt.get("receipt_byte_count") != len(raw)
+        or receipt.get("guest_mount_path") != "/workspace/project"
+        or receipt.get("project_read_only") is not True
+        or receipt.get("writable_mounts")
+        != ["/workspace/scratch", "/workspace/state"]
+        or receipt.get("original_source_scope_sha256") != source.get("digest")
+    ):
+        raise SnapshotInputError(
+            "EVM analysis projection receipt does not bind the original source scope"
+        )
+    lineage_path = _evm_materialization_lineage_path(config)
+    lineage_raw, lineage = _read_stable_projection_receipt(lineage_path)
+    try:
+        from snapshot_bound_tool_authority import parse_materialization_lineage
+
+        parsed_lineage = parse_materialization_lineage(lineage_raw)
+    except Exception as exc:
+        raise SnapshotInputError(
+            "EVM materialization lineage is invalid"
+        ) from exc
+    terminal = parsed_lineage.get("native_materialization_terminal")
+    lineage_source = parsed_lineage.get("source_snapshot")
+    if (
+        hashlib.sha256(lineage_raw).hexdigest()
+        != receipt["materialization_lineage_sha256"]
+        or len(lineage_raw) != receipt["materialization_lineage_byte_count"]
+        or not isinstance(terminal, Mapping)
+        or terminal.get("request_sha256")
+        != receipt["native_materialization_request_sha256"]
+        or not isinstance(lineage_source, Mapping)
+        or lineage_source.get("snapshot_sha256") != source.get("digest")
+        or lineage_source.get("source_scope_sha256") != source.get("digest")
+        or lineage != parsed_lineage
+    ):
+        raise SnapshotInputError(
+            "EVM materialization lineage differs from native projection custody"
+        )
+    component: dict[str, Any] = {
+        "kind": "evm_analysis_projection.v1",
+        "receipt_sha256": receipt["receipt_sha256"],
+        "receipt_byte_count": len(raw),
+        "materialization_lineage_sha256": receipt[
+            "materialization_lineage_sha256"
+        ],
+        "materialization_lineage_byte_count": receipt[
+            "materialization_lineage_byte_count"
+        ],
+        "native_materialization_request_sha256": receipt[
+            "native_materialization_request_sha256"
+        ],
+        "original_source_scope_sha256": receipt["original_source_scope_sha256"],
+        "source_copy_closure_sha256": receipt["source_copy_closure_sha256"],
+        "js_lock_selection_sha256": receipt["js_lock_selection_sha256"],
+        "dependency_materialization_receipt_sha256": receipt[
+            "dependency_materialization_receipt_sha256"
+        ],
+        "materialized_node_modules_closure_sha256": receipt[
+            "materialized_node_modules_closure_sha256"
+        ],
+        "analysis_workspace_closure_sha256": receipt[
+            "analysis_workspace_closure_sha256"
+        ],
+        "native_projection_custody_sha256": receipt[
+            "native_projection_custody_sha256"
+        ],
+    }
+    component["digest"] = _sha256(_canonical_json(component))
+    return component
+
+
+def _expected_snapshot_components(source: Mapping[str, Any]) -> tuple[str, ...]:
+    if (
+        str(source.get("pipeline") or "").strip().lower() == "sc"
+        and _normalized_snapshot_language(source.get("language")) == "evm"
+    ):
+        limitations = source.get("coverage_limitations")
+        degraded = isinstance(limitations, list) and any(
+            isinstance(item, str)
+            and item.startswith("EVM_ANALYSIS_PROJECTION_UNAVAILABLE:")
+            for item in limitations
+        )
+        return _BASE_COMPONENTS if degraded else (
+            *_BASE_COMPONENTS, _EVM_ANALYSIS_PROJECTION_COMPONENT
+        )
+    return _BASE_COMPONENTS
+
+
 def build_audit_snapshot(
     config: Mapping[str, Any], implementation_root: Path
 ) -> dict[str, Any]:
@@ -6002,16 +7486,20 @@ def build_audit_snapshot(
         raise SnapshotInputError(
             f"implementation root is missing or not a directory: {implementation_root}"
         )
+    source = _source_component(config)
     components = {
-        "source_scope": _source_component(config),
+        "source_scope": source,
         "audit_config": _config_component(config),
-        "methodology": _methodology_component(implementation_root),
+        "methodology": _methodology_component(implementation_root, config),
         "toolchain": _toolchain_component(
             implementation_root,
             project_root=Path(str(config.get("project_root") or "")).resolve(),
             config=config,
         ),
     }
+    projection = _evm_analysis_projection_component(config, source)
+    if projection is not None:
+        components[_EVM_ANALYSIS_PROJECTION_COMPONENT] = projection
     binding = {
         "schema": SNAPSHOT_SCHEMA,
         "components": components,
@@ -6056,7 +7544,13 @@ def _valid_snapshot(snapshot: Any) -> bool:
     ):
         return False
     components = snapshot.get("components")
-    if not isinstance(components, dict) or set(components) != set(_COMPONENTS):
+    if not isinstance(components, dict):
+        return False
+    source_candidate = components.get("source_scope")
+    if not isinstance(source_candidate, dict):
+        return False
+    expected_components = _expected_snapshot_components(source_candidate)
+    if set(components) != set(expected_components):
         return False
 
     expected_keys = {
@@ -6067,8 +7561,9 @@ def _valid_snapshot(snapshot: Any) -> bool:
         "audit_config": {"digest", "field_count"},
         "methodology": {"digest", "path_set_digest", "file_count", "byte_count"},
         "toolchain": {"digest", "path_set_digest", "file_count", "byte_count"},
+        "evm_analysis_projection": _EVM_PROJECTION_COMPONENT_KEYS,
     }
-    for name in _COMPONENTS:
+    for name in expected_components:
         component = components.get(name)
         allowed_keys = expected_keys[name]
         if name == "toolchain" and isinstance(component, dict):
@@ -6083,6 +7578,21 @@ def _valid_snapshot(snapshot: Any) -> bool:
                 ):
                     return False
             elif component_keys != allowed_keys:
+                return False
+        elif name == "source_scope" and isinstance(component, dict):
+            # Snapshots produced before the audited-source / build-context
+            # partition remain valid, exactly as v1 toolchain snapshots do
+            # above. The partition is ADDITIVE: `digest` and `path_set_digest`
+            # keep their original meaning and still compare across the change,
+            # so a stored legacy snapshot and a freshly built partitioned one
+            # compare cleanly on the aggregate. Only the optional resume
+            # tolerance in `_driver_materialized_build_context_only` requires
+            # both sides to carry the partition, and it refuses when either
+            # does not.
+            component_keys = set(component)
+            if component_keys not in (
+                allowed_keys, allowed_keys | _SOURCE_SCOPE_PARTITION_KEYS,
+            ):
                 return False
         elif not isinstance(component, dict) or set(component) != allowed_keys:
             return False
@@ -6116,6 +7626,32 @@ def _valid_snapshot(snapshot: Any) -> bool:
         or _GIT_HEAD_RE.fullmatch(source["git_head"]) is not None
     ):
         return False
+    projection = components.get(_EVM_ANALYSIS_PROJECTION_COMPONENT)
+    if projection is not None:
+        unsigned_projection = dict(projection)
+        supplied_projection_digest = unsigned_projection.pop("digest", None)
+        if (
+            projection.get("kind") != "evm_analysis_projection.v1"
+            or type(projection.get("receipt_byte_count")) is not int
+            or not 0 < projection["receipt_byte_count"]
+            <= _MAX_EVM_ANALYSIS_PROJECTION_RECEIPT_BYTES
+            or type(projection.get("materialization_lineage_byte_count")) is not int
+            or not 0 < projection["materialization_lineage_byte_count"]
+            <= _MAX_EVM_ANALYSIS_PROJECTION_RECEIPT_BYTES
+            or projection.get("original_source_scope_sha256") != source.get("digest")
+            or any(
+                not isinstance(projection.get(field), str)
+                or _HEX_64_RE.fullmatch(projection[field]) is None
+                for field in _EVM_PROJECTION_COMPONENT_KEYS
+                - {
+                    "kind", "receipt_byte_count",
+                    "materialization_lineage_byte_count", "digest",
+                }
+            )
+            or supplied_projection_digest
+            != _sha256(_canonical_json(unsigned_projection))
+        ):
+            return False
     expected = dict(snapshot)
     supplied_digest = expected.pop("snapshot_digest", None)
     return supplied_digest == _sha256(_canonical_json(expected))
@@ -6151,6 +7687,81 @@ def _runtime_entry_changes(
     return tuple(changes)
 
 
+_BUILD_MATERIALIZATION_MARKERS = (
+    "BUILD_INPUT_PREPARATION_DEGRADED",
+    "FOUNDRY_LIBRARY_MISSING",
+    "FOUNDRY_REMAPPING_MISSING",
+    "JS_LOCK_DEPENDENCIES_UNMATERIALIZED",
+    "JS_LOCK_TOOL_MISSING",
+)
+
+
+def _driver_materialized_build_context_only(
+    stored: Mapping[str, Any], current: Mapping[str, Any]
+) -> bool:
+    """True when `source_scope` drift is ONLY the driver's own build fetch.
+
+    The audited target must be byte-identical; only build context may move, and
+    only in the direction that materialisation explains.
+
+    Requires ALL of:
+      1. both sides carry the partitioned fields (older snapshots do not, and
+         must keep the strict aggregate comparison -- no silent upgrade);
+      2. `audited_source_digest` AND `audited_source_path_set_digest` AND
+         `audited_source_file_count` identical -- an edited or added contract
+         moves at least one of these, so this cannot mask source tampering;
+      3. `language`, `pipeline`, `git_head` identical;
+      4. the stored side declared build-input degradation and the current side
+         RESOLVED a strict subset of it, acquiring none. A run that gains a new
+         limitation, or resolves nothing, is real drift.
+
+    Build-context content is still bound by `build_context_digest`; this
+    predicate does not stop it being recorded, only stops it REFUSING a resume
+    for work the driver itself performed.
+    """
+
+    try:
+        old = stored["components"]["source_scope"]
+        new = current["components"]["source_scope"]
+    except (KeyError, TypeError):
+        return False
+    if not isinstance(old, Mapping) or not isinstance(new, Mapping):
+        return False
+
+    partition_fields = (
+        "audited_source_digest",
+        "audited_source_path_set_digest",
+        "audited_source_file_count",
+    )
+    for field in partition_fields:
+        if field not in old or field not in new:
+            return False            # legacy snapshot: no silent upgrade
+        if old[field] != new[field]:
+            return False            # audited source moved: real drift
+    if not str(old.get("audited_source_digest") or ""):
+        return False                # empty partition proves nothing
+
+    for field in ("language", "pipeline", "git_head"):
+        if old.get(field) != new.get(field):
+            return False
+
+    old_limits = old.get("coverage_limitations")
+    new_limits = new.get("coverage_limitations")
+    if not isinstance(old_limits, list) or not isinstance(new_limits, list):
+        return False
+    old_set, new_set = set(old_limits), set(new_limits)
+    if new_set - old_set:
+        return False                # acquired a NEW limitation
+    resolved = old_set - new_set
+    if not resolved:
+        return False                # nothing resolved; not materialisation
+    return any(
+        marker in text
+        for text in resolved
+        for marker in _BUILD_MATERIALIZATION_MARKERS
+    )
+
+
 def classify_snapshot(
     stored: Any, current: Mapping[str, Any], *, has_prior_progress: bool
 ) -> SnapshotVerdict:
@@ -6164,12 +7775,29 @@ def classify_snapshot(
     if not _valid_snapshot(stored):
         return SnapshotVerdict(LEGACY_UNBOUND, ("snapshot_binding",))
 
+    stored_names = set(stored["components"])
+    current_names = set(current["components"])
     changed = tuple(
         name
-        for name in _COMPONENTS
-        if stored["components"][name]["digest"]
-        != current["components"][name]["digest"]
+        for name in (*_BASE_COMPONENTS, _EVM_ANALYSIS_PROJECTION_COMPONENT)
+        # Optional components absent from both valid snapshots are unchanged.
+        # In particular, source-only/degraded EVM and non-EVM runs have no
+        # projection component. Presence on only one side remains real drift.
+        if name in stored_names | current_names
+        if (
+            name not in stored_names
+            or name not in current_names
+            or stored["components"][name]["digest"]
+            != current["components"][name]["digest"]
+        )
     )
+    if changed and "source_scope" in changed and _driver_materialized_build_context_only(
+        stored, current
+    ):
+        # Audited source is byte-identical; only the driver's own build
+        # materialisation moved. Narrow the verdict rather than suppress it:
+        # every other changed component still reports.
+        changed = tuple(name for name in changed if name != "source_scope")
     if changed:
         runtime_changes = (
             _runtime_entry_changes(

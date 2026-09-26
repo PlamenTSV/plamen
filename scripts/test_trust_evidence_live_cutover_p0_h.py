@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
 
@@ -12,8 +13,10 @@ from artifact_ledger import (
     read_artifact_ledger,
     record_work_unit_artifacts,
     record_work_unit_inputs,
+    recover_uncommitted_driver_input_denominator,
     replace_uncommitted_driver_input_denominator,
     validate_work_unit_inputs,
+    write_artifact_ledger,
 )
 from assurance_limitations import (
     assurance_projection_input_paths,
@@ -461,7 +464,40 @@ def test_postseverity_reconcile_recovers_input_arriving_after_first_input_record
     assert D._trust_evidence_provider_resume_issues(tmp_path, config) == []
 
 
-def _provisional_trust_unit(tmp_path: Path):
+def _test_preexecution_extension(contract, launch, *, run_context=None) -> dict:
+    core = {
+        "schema_version": "plamen.security-obligation-phaseio-context.v1",
+        "run_context": run_context or {
+            "run_id": RUN_ID,
+            "pipeline": "sc",
+            "mode": "thorough",
+            "ecosystem": "evm",
+            "backend": "claude",
+            "snapshot_digest": "a" * 64,
+        },
+        "work_unit_key": contract.key,
+        "contract_digest": contract.digest,
+        "launch_digest": launch.digest,
+        "run_id": RUN_ID,
+    }
+    digest = hashlib.sha256(json.dumps(
+        core, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    ).encode("utf-8")).hexdigest()
+    return {**core, "authority_sha256": digest}
+
+
+def _resign_extension(value: dict, **changes) -> dict:
+    core = {**value, **changes}
+    core.pop("authority_sha256", None)
+    digest = hashlib.sha256(json.dumps(
+        core, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    ).encode("utf-8")).hexdigest()
+    return {**core, "authority_sha256": digest}
+
+
+def _provisional_trust_unit(
+    tmp_path: Path, *, extended: bool = False,
+):
     _checkpoint(tmp_path)
     decision = _synthetically_adjudicate(_trust_decision())
     _write_severity_state(tmp_path, [decision])
@@ -472,8 +508,16 @@ def _provisional_trust_unit(tmp_path: Path):
     contract, launch = D._trust_provider_contract_and_launch(
         tmp_path, config, receipt
     )
+    prior_extension = (
+        _test_preexecution_extension(contract, launch) if extended else None
+    )
     unit = record_work_unit_inputs(
-        tmp_path, tmp_path.parent, contract, launch, run_id=RUN_ID
+        tmp_path,
+        tmp_path.parent,
+        contract,
+        launch,
+        run_id=RUN_ID,
+        preexecution_authority=prior_extension,
     )
     write_trust_evidence_provider_state(
         tmp_path, run_id=RUN_ID, planned_state=(ledger, receipt)
@@ -489,6 +533,235 @@ def _provisional_trust_unit(tmp_path: Path):
         tmp_path, config, next_receipt
     )
     return contract, launch, unit, replacement, replacement_launch
+
+
+def _replace_extended(root: Path):
+    contract, launch, unit, replacement, replacement_launch = (
+        _provisional_trust_unit(root, extended=True)
+    )
+    prior = _test_preexecution_extension(contract, launch)
+    successor = _test_preexecution_extension(replacement, replacement_launch)
+    rebound = replace_uncommitted_driver_input_denominator(
+        root, root.parent, contract, replacement, replacement_launch,
+        run_id=RUN_ID,
+        expected_prior_input_set_digest=unit["input_set_digest"],
+        reason_code="DYNAMIC_INPUT_DENOMINATOR_DRIFT_BEFORE_OUTPUT_COMMIT",
+        expected_prior_preexecution_authority=prior,
+        replacement_preexecution_authority=successor,
+    )
+    return contract, launch, unit, replacement, replacement_launch, prior, successor, rebound
+
+
+def test_extended_input_rebind_preserves_exact_authority_transition(tmp_path: Path):
+    (_prior_contract, _launch, _unit, replacement, replacement_launch,
+     _prior, successor, rebound) = _replace_extended(tmp_path)
+    assert rebound["preexecution_authority"] == successor
+    assert rebound["preexecution_authority_digest"] == successor["authority_sha256"]
+    event = rebound["input_rebind_history"][-1]
+    assert event["schema"] == "plamen.artifact-input-rebind.v2"
+    assert event["replacement_preexecution_authority_digest"] == (
+        successor["authority_sha256"]
+    )
+    assert validate_work_unit_inputs(
+        tmp_path, tmp_path.parent, replacement, replacement_launch,
+        run_id=RUN_ID, preexecution_authority=successor,
+    ) == []
+
+
+@pytest.mark.parametrize("omit", ["prior", "replacement"])
+def test_extended_input_rebind_rejects_authority_omission(tmp_path: Path, omit: str):
+    contract, launch, unit, replacement, replacement_launch = (
+        _provisional_trust_unit(tmp_path, extended=True)
+    )
+    prior = _test_preexecution_extension(contract, launch)
+    successor = _test_preexecution_extension(replacement, replacement_launch)
+    before = (tmp_path / "_artifact_state.json").read_bytes()
+    with pytest.raises(ArtifactLedgerError, match="prior and replacement"):
+        replace_uncommitted_driver_input_denominator(
+            tmp_path, tmp_path.parent, contract, replacement, replacement_launch,
+            run_id=RUN_ID, expected_prior_input_set_digest=unit["input_set_digest"],
+            reason_code="DYNAMIC_INPUT_DENOMINATOR_DRIFT_BEFORE_OUTPUT_COMMIT",
+            expected_prior_preexecution_authority=None if omit == "prior" else prior,
+            replacement_preexecution_authority=None if omit == "replacement" else successor,
+        )
+    assert (tmp_path / "_artifact_state.json").read_bytes() == before
+
+
+def test_extended_input_rebind_rejects_foreign_self_signed_context(tmp_path: Path):
+    contract, launch, unit, replacement, replacement_launch = (
+        _provisional_trust_unit(tmp_path, extended=True)
+    )
+    foreign_context = {
+        **_test_preexecution_extension(contract, launch)["run_context"],
+        "snapshot_digest": "b" * 64,
+    }
+    foreign = _test_preexecution_extension(
+        contract, launch, run_context=foreign_context
+    )
+    successor = _test_preexecution_extension(replacement, replacement_launch)
+    with pytest.raises(ArtifactLedgerError, match="prior preexecution authority mismatch"):
+        replace_uncommitted_driver_input_denominator(
+            tmp_path, tmp_path.parent, contract, replacement, replacement_launch,
+            run_id=RUN_ID, expected_prior_input_set_digest=unit["input_set_digest"],
+            reason_code="DYNAMIC_INPUT_DENOMINATOR_DRIFT_BEFORE_OUTPUT_COMMIT",
+            expected_prior_preexecution_authority=foreign,
+            replacement_preexecution_authority=successor,
+        )
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["run_context", "contract_digest", "launch_digest", "run_id", "work_unit_key"],
+)
+def test_extended_input_rebind_rejects_foreign_replacement_on_real_drift(
+    tmp_path: Path, damage: str,
+):
+    contract, launch, unit, replacement, replacement_launch = (
+        _provisional_trust_unit(tmp_path, extended=True)
+    )
+    prior = _test_preexecution_extension(contract, launch)
+    successor = _test_preexecution_extension(replacement, replacement_launch)
+    if damage == "run_context":
+        foreign_context = {
+            **successor["run_context"], "snapshot_digest": "e" * 64,
+        }
+        foreign = _resign_extension(successor, run_context=foreign_context)
+    else:
+        foreign = _resign_extension(
+            successor,
+            **{damage: "f" * 64 if damage.endswith("digest") else "foreign"},
+        )
+    before = (tmp_path / "_artifact_state.json").read_bytes()
+    with pytest.raises(ArtifactLedgerError, match="transition is unsupported"):
+        replace_uncommitted_driver_input_denominator(
+            tmp_path, tmp_path.parent, contract, replacement, replacement_launch,
+            run_id=RUN_ID, expected_prior_input_set_digest=unit["input_set_digest"],
+            reason_code="DYNAMIC_INPUT_DENOMINATOR_DRIFT_BEFORE_OUTPUT_COMMIT",
+            expected_prior_preexecution_authority=prior,
+            replacement_preexecution_authority=foreign,
+        )
+    assert (tmp_path / "_artifact_state.json").read_bytes() == before
+
+
+def test_legacy_input_rebind_cannot_adopt_extension(tmp_path: Path):
+    contract, _launch, unit, replacement, replacement_launch = _provisional_trust_unit(tmp_path)
+    successor = _test_preexecution_extension(replacement, replacement_launch)
+    with pytest.raises(ArtifactLedgerError, match="cannot add authority"):
+        replace_uncommitted_driver_input_denominator(
+            tmp_path, tmp_path.parent, contract, replacement, replacement_launch,
+            run_id=RUN_ID, expected_prior_input_set_digest=unit["input_set_digest"],
+            reason_code="DYNAMIC_INPUT_DENOMINATOR_DRIFT_BEFORE_OUTPUT_COMMIT",
+            replacement_preexecution_authority=successor,
+        )
+
+
+def test_legacy_input_rebind_retains_v1_behavior(tmp_path: Path):
+    contract, _launch, unit, replacement, replacement_launch = _provisional_trust_unit(tmp_path)
+    rebound = replace_uncommitted_driver_input_denominator(
+        tmp_path, tmp_path.parent, contract, replacement, replacement_launch,
+        run_id=RUN_ID, expected_prior_input_set_digest=unit["input_set_digest"],
+        reason_code="DYNAMIC_INPUT_DENOMINATOR_DRIFT_BEFORE_OUTPUT_COMMIT",
+    )
+    assert rebound["input_rebind_history"][-1]["schema"] == (
+        "plamen.artifact-input-rebind.v1"
+    )
+    assert "preexecution_authority" not in rebound
+
+
+def test_one_sided_stored_extension_is_rejected(tmp_path: Path):
+    contract, launch, unit, replacement, replacement_launch = (
+        _provisional_trust_unit(tmp_path, extended=True)
+    )
+    ledger = read_artifact_ledger(tmp_path)
+    ledger["work_units"][contract.key].pop("preexecution_authority_digest")
+    write_artifact_ledger(tmp_path, ledger)
+    with pytest.raises(ArtifactLedgerError, match="prior and replacement"):
+        replace_uncommitted_driver_input_denominator(
+            tmp_path, tmp_path.parent, contract, replacement, replacement_launch,
+            run_id=RUN_ID, expected_prior_input_set_digest=unit["input_set_digest"],
+            reason_code="DYNAMIC_INPUT_DENOMINATOR_DRIFT_BEFORE_OUTPUT_COMMIT",
+            expected_prior_preexecution_authority=_test_preexecution_extension(contract, launch),
+            replacement_preexecution_authority=_test_preexecution_extension(
+                replacement, replacement_launch
+            ),
+        )
+
+
+def test_extended_noop_rebind_cannot_change_context(tmp_path: Path):
+    contract, launch, unit, _replacement, _replacement_launch = (
+        _provisional_trust_unit(tmp_path, extended=True)
+    )
+    prior = _test_preexecution_extension(contract, launch)
+    changed_context = {**prior["run_context"], "snapshot_digest": "c" * 64}
+    changed = _test_preexecution_extension(contract, launch, run_context=changed_context)
+    with pytest.raises(ArtifactLedgerError, match="unsupported|without denominator"):
+        replace_uncommitted_driver_input_denominator(
+            tmp_path, tmp_path.parent, contract, contract, launch,
+            run_id=RUN_ID, expected_prior_input_set_digest=unit["input_set_digest"],
+            reason_code="DYNAMIC_INPUT_DENOMINATOR_DRIFT_BEFORE_OUTPUT_COMMIT",
+            expected_prior_preexecution_authority=prior,
+            replacement_preexecution_authority=changed,
+        )
+
+
+def test_extended_recovery_uses_stored_prior_and_requires_replacement(tmp_path: Path):
+    contract, launch, _unit, replacement, replacement_launch = (
+        _provisional_trust_unit(tmp_path, extended=True)
+    )
+    successor = _test_preexecution_extension(replacement, replacement_launch)
+    rebound = recover_uncommitted_driver_input_denominator(
+        tmp_path, tmp_path.parent, replacement, replacement_launch,
+        run_id=RUN_ID,
+        reason_code="DYNAMIC_INPUT_DENOMINATOR_DRIFT_BEFORE_OUTPUT_COMMIT",
+        replacement_preexecution_authority=successor,
+    )
+    assert rebound["preexecution_authority"] == successor
+
+
+def test_v2_first_prior_authority_tamper_is_rejected_when_event_is_resigned(
+    tmp_path: Path,
+):
+    (_contract, _launch, _unit, replacement, replacement_launch,
+     _prior, successor, _rebound) = _replace_extended(tmp_path)
+    ledger = read_artifact_ledger(tmp_path)
+    event = ledger["work_units"][replacement.key]["input_rebind_history"][0]
+    event["prior_preexecution_authority_digest"] = "d" * 64
+    unsigned = {key: value for key, value in event.items() if key != "event_digest"}
+    event["event_digest"] = hashlib.sha256(json.dumps(
+        unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    ).encode("utf-8")).hexdigest()
+    write_artifact_ledger(tmp_path, ledger)
+    issues = validate_work_unit_inputs(
+        tmp_path, tmp_path.parent, replacement, replacement_launch,
+        run_id=RUN_ID, preexecution_authority=successor,
+    )
+    assert any("input rebind history" in issue for issue in issues)
+
+
+def test_generic_preexecution_extension_without_rebind_history_remains_valid(
+    tmp_path: Path,
+):
+    contract, launch, _unit, _replacement, _replacement_launch = (
+        _provisional_trust_unit(tmp_path)
+    )
+    generic = _resign_extension({
+        "schema_version": "plamen.report-capture-root-authority.v1",
+        "root_authority": {"project_root": str(tmp_path.parent)},
+    })
+    ledger = read_artifact_ledger(tmp_path)
+    stored = ledger["work_units"][contract.key]
+    stored["preexecution_authority"] = generic
+    stored["preexecution_authority_digest"] = generic["authority_sha256"]
+    assert stored.get("input_rebind_history", []) == []
+    write_artifact_ledger(tmp_path, ledger)
+    assert validate_work_unit_inputs(
+        tmp_path,
+        tmp_path.parent,
+        contract,
+        launch,
+        run_id=RUN_ID,
+        preexecution_authority=generic,
+    ) == []
 
 
 def test_postseverity_reconcile_recovers_crash_persisted_provisional_unit(

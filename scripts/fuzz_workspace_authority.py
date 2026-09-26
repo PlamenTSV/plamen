@@ -22,6 +22,7 @@ and adversarially validated without launching an LLM.
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -33,7 +34,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 import uuid
 
 from owned_process_scope import (
@@ -52,6 +53,8 @@ PREPARED_CAMPAIGN_SCHEMA = "plamen.fuzz-prepared-campaign.v1"
 SECURE_LAUNCHER_SCHEMA = "plamen.secure-fuzz-launcher-receipt.v1"
 WORKSPACE_INDEX_SCHEMA = "plamen.fuzz-workspace-index.v1"
 RESULT_INDEX_SCHEMA = "plamen.fuzz-workspace-result-index.v1"
+EXECUTION_CAPABILITY_SCHEMA = "plamen.fuzz-execution-capability.v1"
+APPLE_CONTAINER_PROCESS_POLICY = "APPLE_CONTAINER_GUEST_VM_STOP_V2"
 
 WORKSPACE_INDEX_FILE = "fuzz_workspace_index.json"
 RESULT_INDEX_FILE = "fuzz_workspace_result_index.json"
@@ -66,8 +69,64 @@ MAX_CONTROL_JSON_BYTES = 16 * 1024 * 1024
 MAX_INDEX_ROWS = 128
 MAX_INDEX_ISSUES_PER_ROW = 256
 
+# These codes describe an unavailable execution substrate.  They are not
+# model-repairable output defects: no model turn can manufacture an operating
+# system containment primitive or an installed tool.  Keeping the set closed
+# prevents an arbitrary debt string from being reclassified as an excused
+# absence.
+_EXECUTION_UNAVAILABLE_DEBT_CODES = frozenset({
+    "FILESYSTEM_CONTAINMENT_UNAVAILABLE",
+    "NETWORK_CONTAINMENT_UNAVAILABLE",
+    "POSIX_CONTAINMENT_UNAVAILABLE",
+    "PROCESS_CONTAINMENT_UNAVAILABLE",
+    "TOOL_UNAVAILABLE",
+    "APPLE_CONTAINER_ADMISSION_UNAVAILABLE",
+    "APPLE_CONTAINER_EXECUTION_UNAVAILABLE",
+    "APPLE_CONTAINER_PROOF_INVALID",
+    "APPLE_FUZZ_SERVICE_SESSION_PRODUCER_ABSENT",
+    "APPLE_FUZZ_SECURE_RECEIPT_MINTER_ABSENT",
+    "APPLE_FUZZ_CONTINUATION_LEASE_PRODUCER_ABSENT",
+    "APPLE_FUZZ_LIFECYCLE_TERMINAL_PRODUCER_ABSENT",
+})
+_EXECUTION_DEFERRED_DEBT_CODES = frozenset({
+    "EXECUTION_CAPABILITY_DEFERRED",
+    "FUZZ_CAMPAIGN_DEFERRED",
+})
+
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+_APPLE_NATIVE_CONTAINER_ID_RE = re.compile(r"^plamen-[0-9a-f]{32}$")
 _JOB_TOKEN_RE = re.compile(r"[^a-z0-9_.-]+")
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_FORGE_SUITE_RESULT_RE = re.compile(
+    r"(?:Suite|Test) result:\s*(?:FAILED|failed)\.\s*"
+    r"(?P<passed>\d+) passed;\s*(?P<failed>\d+) failed",
+    re.IGNORECASE,
+)
+_FORGE_FAILING_TOTAL_RE = re.compile(
+    r"Encountered (?:a total of )?(?P<failed>\d+) failing tests?",
+    re.IGNORECASE,
+)
+_FORGE_FAILING_ID_RE = re.compile(
+    r"^\s*\[FAIL(?:[:.]|\])[^\n]*?\]\s+"
+    r"(?P<identity>[A-Za-z_][A-Za-z0-9_.$]*(?:\([^\n)]*\))?)",
+    re.MULTILINE,
+)
+_MEDUSA_SUMMARY_RE = re.compile(
+    r"Test summary:\s*(?P<passed>\d+)\s+test\(s\) passed,\s*"
+    r"(?P<failed>\d+)\s+test\(s\) failed",
+    re.IGNORECASE,
+)
+_MEDUSA_FAILING_ID_RE = re.compile(
+    r"^\s*(?:[^\n]*?)(?:\[FAILED\])\s*"
+    r"(?:Assertion|Property) Test:\s*(?P<identity>[^\n]+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_MEDUSA_TERMINAL_PROPERTY_RE = re.compile(
+    r"\[(?P<status>PASSED|FAILED)\]\s*Property Test:\s*"
+    r"[A-Za-z_][A-Za-z0-9_.$]*\."
+    r"(?P<name>property_[A-Za-z0-9_]+)\s*\(",
+    re.IGNORECASE,
+)
 _TEST_FILE_RE = re.compile(
     r"(?:^test[_-]|[_-]test\.(?:rs|go|move)$|\.t\.sol$|"
     r"\.(?:test|spec)\.(?:js|cjs|mjs|ts)$|^(?:fuzz|invariant)[_-])",
@@ -226,6 +285,12 @@ def _atomic_json(path: Path, payload: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     _assert_existing_path_chain_no_links(path.parent, Path(path.parent.anchor))
     data = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
+    if path.is_file() and not path.is_symlink():
+        try:
+            if path.read_text(encoding="utf-8", errors="strict") == data:
+                return
+        except (OSError, UnicodeError):
+            pass
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", newline="\n", dir=str(path.parent),
         prefix=".plamen-", suffix=".tmp", delete=False,
@@ -1355,8 +1420,10 @@ def _secure_launcher_issues(
         problems.append(_issue("SECURE_LAUNCHER_RECEIPT_INVALID", "workspace"))
     if receipt.get("filesystem_policy") != "READONLY_INPUTS_EXPLICIT_WRITE_LANES":
         problems.append(_issue("FILESYSTEM_CONTAINMENT_UNAVAILABLE", "filesystem policy"))
-    if receipt.get("process_tree_policy") not in {
+    process_policy = receipt.get("process_tree_policy")
+    if process_policy not in {
         "WINDOWS_JOB_OBJECT_KILL_ON_CLOSE", "POSIX_DELEGATED_CGROUP_KILL",
+        APPLE_CONTAINER_PROCESS_POLICY,
     }:
         problems.append(_issue("PROCESS_CONTAINMENT_UNAVAILABLE", "process policy"))
     if receipt.get("network_policy") not in {"DENY", "LOOPBACK_ONLY"}:
@@ -1365,7 +1432,67 @@ def _secure_launcher_issues(
         problems.append(_issue(
             "COMMAND_PROVENANCE_UNAUTHENTICATED", "PhaseIO binding absent"
         ))
+    if process_policy == APPLE_CONTAINER_PROCESS_POLICY:
+        problems.extend(_apple_secure_launcher_issues(receipt))
     return _normalize_issues(problems)
+
+
+def _apple_secure_launcher_issues(
+    receipt: Mapping[str, object],
+) -> list[dict[str, str]]:
+    problems: list[dict[str, str]] = []
+    for field in (
+        "apple_container_preflight_sha256",
+        "apple_container_provider_provenance_sha256",
+        "apple_container_cli_executable_sha256",
+        "guest_executable_sha256",
+        "apple_container_spec_sha256",
+        "apple_container_launch_policy_sha256",
+    ):
+        if not _HEX64_RE.fullmatch(str(receipt.get(field) or "")):
+            problems.append(_issue(
+                "APPLE_CONTAINER_ADMISSION_UNAVAILABLE", field
+            ))
+    for field in ("apple_container_id", "apple_container_attempt_id"):
+        value = receipt.get(field)
+        if (
+            type(value) is not str or not value or len(value) > 128
+            or "\x00" in value or "/" in value or "\\" in value
+            or value in {".", ".."}
+        ):
+            problems.append(_issue(
+                "APPLE_CONTAINER_ADMISSION_UNAVAILABLE", field
+            ))
+    if _APPLE_NATIVE_CONTAINER_ID_RE.fullmatch(
+        str(receipt.get("apple_container_id") or "")
+    ) is None:
+        problems.append(_issue(
+            "APPLE_CONTAINER_ADMISSION_UNAVAILABLE", "apple_container_id"
+        ))
+    for field in ("guest_executable", "guest_cwd"):
+        value = receipt.get(field)
+        path = Path(str(value or ""))
+        if (
+            type(value) is not str or not path.is_absolute()
+            or ".." in path.parts or "\x00" in value
+        ):
+            problems.append(_issue(
+                "APPLE_CONTAINER_ADMISSION_UNAVAILABLE", field
+            ))
+    environment = receipt.get("guest_environment")
+    if (
+        not isinstance(environment, list)
+        or any(type(item) is not str or not item or "\x00" in item
+               for item in environment)
+    ):
+        problems.append(_issue(
+            "APPLE_CONTAINER_ADMISSION_UNAVAILABLE", "guest_environment"
+        ))
+    if type(receipt.get("rosetta_required")) is not bool:
+        problems.append(_issue(
+            "APPLE_CONTAINER_ADMISSION_UNAVAILABLE", "rosetta_required"
+        ))
+    return problems
 
 
 def prepare_fuzz_campaign_contract(
@@ -1494,7 +1621,16 @@ def _campaign_execution_status(
 ) -> str:
     if not campaign_commands:
         return "NOT_EXECUTED"
-    if any(row.get("returncode") == 0 for row in campaign_commands):
+    if any(
+        row.get("semantic_outcome") == "VIOLATION_OBSERVED"
+        for row in campaign_commands
+    ):
+        return "EXECUTED_VIOLATION"
+    if any(
+        row.get("semantic_outcome") == "PASS_OBSERVED"
+        or row.get("returncode") == 0
+        for row in campaign_commands
+    ):
         return "EXECUTED_SUCCESS"
     if any(bool(row.get("timed_out")) for row in campaign_commands):
         return "TIMEOUT"
@@ -1643,6 +1779,164 @@ def _transaction_write_authority(capability: Mapping[str, Any]) -> str | None:
     ):
         return "SERIALIZED_PLAMEN_STAGE"
     return None
+
+
+def fuzz_execution_capability(
+    *, apple_preflight: object | None = None,
+    secure_launcher_receipt: Mapping[str, object] | None = None,
+    apple_service_admission: object | None = None,
+) -> dict[str, object]:
+    """Project the native runner boundary into stable, typed fuzz debt.
+
+    Workspace materialization and command admission are portable even when the
+    current host cannot provide a proof-grade execution boundary.  Keep that
+    distinction explicit: callers can still preserve the immutable workspace
+    denominator, but must not launch tools unless both exhaustive descendant
+    ownership and an admitted write authority are present.
+
+    The returned projection intentionally excludes helper paths and other host
+    details.  It is suitable for durable debt receipts and never upgrades a
+    diagnostic process group (or a merely installed sandbox utility) into
+    execution authority.
+    """
+
+    capability = process_tree_termination_capability()
+    platform = re.sub(
+        r"[^A-Z0-9_]+", "_", str(capability.get("platform") or "UNKNOWN").upper()
+    ).strip("_") or "UNKNOWN"
+    strategy = re.sub(
+        r"[^A-Z0-9_]+", "_", str(capability.get("strategy") or "UNAVAILABLE").upper()
+    ).strip("_") or "UNAVAILABLE"
+    write_policy = re.sub(
+        r"[^A-Z0-9_]+", "_",
+        str(capability.get("write_confinement") or "UNAVAILABLE").upper(),
+    ).strip("_") or "UNAVAILABLE"
+    limitation = re.sub(
+        r"[^A-Z0-9_:+.-]+", "_",
+        str(capability.get("limitation") or "CAPABILITY_REQUIREMENTS_NOT_MET").upper(),
+    ).strip("_") or "CAPABILITY_REQUIREMENTS_NOT_MET"
+
+    issues: list[dict[str, str]] = []
+    apple_ready = False
+    if platform in {"DARWIN", "MACOS"}:
+        try:
+            import apple_container_provider as apple_provider
+            import apple_supervisor_adapter as apple_adapter
+
+            service_status = apple_adapter.apple_fuzz_service_admission_status()
+            if service_status.get("status") != "READY":
+                for row in service_status.get("issues", []):
+                    if isinstance(row, Mapping):
+                        issues.append(_issue(
+                            str(row.get("code") or (
+                                "APPLE_CONTAINER_ADMISSION_UNAVAILABLE"
+                            )),
+                            str(row.get("detail") or (
+                                "atomic Apple fuzz admission is unavailable"
+                            )),
+                        ))
+                raise ValueError("atomic Apple fuzz admission service absent")
+            if apple_preflight is None:
+                issues.append(_issue(
+                    "APPLE_CONTAINER_ADMISSION_UNAVAILABLE",
+                    "compatible Apple provider preflight was not supplied",
+                ))
+                raise ValueError("compatible Apple provider preflight absent")
+            apple_adapter.require_apple_fuzz_service_admission(
+                apple_service_admission, secure_launcher_receipt,
+            )
+
+            preflight_sha256 = apple_provider.apple_container_preflight_sha256(
+                apple_preflight
+            )
+            if not isinstance(secure_launcher_receipt, Mapping):
+                raise ValueError("secure launcher receipt absent")
+            apple_issues = _apple_secure_launcher_issues(secure_launcher_receipt)
+            if apple_issues:
+                raise ValueError("secure launcher Apple admission malformed")
+            if (
+                secure_launcher_receipt.get("schema_version")
+                != SECURE_LAUNCHER_SCHEMA
+                or secure_launcher_receipt.get("payload_digest")
+                != payload_digest(secure_launcher_receipt)
+                or secure_launcher_receipt.get("status") != "ENFORCED"
+                or secure_launcher_receipt.get("process_tree_policy")
+                != APPLE_CONTAINER_PROCESS_POLICY
+                or secure_launcher_receipt.get(
+                    "apple_container_preflight_sha256"
+                ) != preflight_sha256
+                or secure_launcher_receipt.get(
+                    "apple_container_provider_provenance_sha256"
+                ) != preflight_sha256
+                or secure_launcher_receipt.get(
+                    "apple_container_cli_executable_sha256"
+                ) != apple_preflight.executable_sha256
+                or secure_launcher_receipt.get("network_policy")
+                not in {"DENY", "LOOPBACK_ONLY"}
+                or not _HEX64_RE.fullmatch(str(
+                    secure_launcher_receipt.get("phase_io_binding_digest") or ""
+                ))
+            ):
+                raise ValueError("secure launcher Apple admission differs")
+            apple_ready = True
+            strategy = APPLE_CONTAINER_PROCESS_POLICY
+            write_policy = "READONLY_INPUTS_EXPLICIT_WRITE_LANES"
+        except Exception:
+            if not any(
+                str(row.get("code") or "").startswith("APPLE_FUZZ_")
+                or str(row.get("code") or "")
+                    == "APPLE_CONTAINER_ADMISSION_UNAVAILABLE"
+                for row in issues
+            ):
+                issues.append(_issue(
+                    "APPLE_CONTAINER_ADMISSION_UNAVAILABLE",
+                    "authenticated compatible Apple Container admission is unavailable",
+                ))
+    if not apple_ready and capability.get(
+        "exhaustive_descendant_termination_authority"
+    ) is not True:
+        issues.append(_issue(
+            "PROCESS_CONTAINMENT_UNAVAILABLE",
+            f"platform={platform}; strategy={strategy}; limitation={limitation}",
+        ))
+    write_authority = _transaction_write_authority(capability)
+    if not apple_ready and write_authority is None:
+        write_detail = (
+            f"platform={platform}; policy={write_policy}; "
+            "proof-grade write authority is not admitted"
+        )
+        if capability.get("seatbelt_write_confinement_provider_available") is True:
+            write_detail += (
+                "; Seatbelt is installed but is not activated without exhaustive "
+                "descendant ownership"
+            )
+        issues.append(_issue("FILESYSTEM_CONTAINMENT_UNAVAILABLE", write_detail))
+
+    normalized = _normalize_issues(issues)
+    projection: dict[str, object] = {
+        "schema_version": EXECUTION_CAPABILITY_SCHEMA,
+        "status": "READY" if not normalized else "UNSCORED",
+        "platform": platform,
+        "process_tree_policy": strategy,
+        "write_confinement_policy": write_policy,
+        "issues": normalized,
+    }
+    projection["payload_digest"] = payload_digest(projection)
+    return projection
+
+
+def _append_execution_capability_debt(
+    payload: Mapping[str, object], capability: Mapping[str, object]
+) -> None:
+    issues = capability.get("issues")
+    if not isinstance(issues, list):
+        issues = [_issue(
+            "PROCESS_CONTAINMENT_UNAVAILABLE",
+            "execution capability projection is malformed",
+        )]
+    for issue in issues:
+        if isinstance(issue, Mapping):
+            _append_debt_issue(payload, issue)
 
 
 def _popen_contained(
@@ -1996,6 +2290,10 @@ def run_recorded_command(
                 payload, _issue("COMMAND_CWD_MISSING", cwd_token)
             )
             return 125
+        execution_capability = fuzz_execution_capability()
+        if execution_capability.get("status") != "READY":
+            _append_execution_capability_debt(payload, execution_capability)
+            return 125
         runtime = Path(str(payload["runtime_root"]))
         receipt_path, stdout_path, stderr_path = _command_receipt_paths(runtime)
         env, overrides = _tool_environment(payload)
@@ -2127,6 +2425,265 @@ def run_recorded_command(
         return 125
 
 
+def run_prepared_apple_container_campaign(
+    authority_path: Path,
+    prepared_campaign_path: Path,
+    *,
+    apple_preflight: object,
+    execute_lifecycle: Callable[[object], object],
+    apple_service_admission: object | None = None,
+) -> int:
+    """Execute one driver-prepared Forge/Medusa campaign in Apple Container.
+
+    ``apple_service_admission`` must be the non-constructible continuation
+    issued atomically with the secure receipt.  ``execute_lifecycle`` is the
+    deliberately thin native-driver integration seam retained for terminal
+    projection; it receives an ``AppleFuzzExecutionRequest`` and must return
+    an ``AppleNativeFuzzExecutionBundle`` containing the exact native
+    launch/terminal/delete projection and retained output.  Nothing is
+    recorded as executed until the adapter has
+    authenticated VM stop, guest population extinction, and post-delete
+    absence.  This Python function never discovers or launches ``container``.
+    """
+
+    try:
+        import apple_container_provider as apple_provider
+        import apple_supervisor_adapter as apple_adapter
+
+        service_status = apple_adapter.apple_fuzz_service_admission_status()
+        if service_status.get("status") != "READY":
+            service_issues = service_status.get("issues")
+            first = (
+                service_issues[0]
+                if isinstance(service_issues, list)
+                and service_issues
+                and isinstance(service_issues[0], Mapping)
+                else {}
+            )
+            raise FuzzWorkspaceError(
+                str(first.get("code") or (
+                    "APPLE_CONTAINER_ADMISSION_UNAVAILABLE"
+                )),
+                str(first.get("detail") or (
+                    "atomic Apple fuzz admission service is unavailable"
+                )),
+            )
+        payload = _read_json(Path(authority_path))
+        validation = validate_fuzz_workspace_authority(
+            Path(authority_path), check_source=True
+        )
+        if validation:
+            first = validation[0]
+            code, _, detail = first.partition(":")
+            _append_debt_issue(payload, _issue(code, detail or first))
+            return 125
+        contract_raw = _read_json(Path(prepared_campaign_path))
+        command_raw = contract_raw.get("argv")
+        if not isinstance(command_raw, list) or not command_raw:
+            raise FuzzWorkspaceError(
+                "COMMAND_PROVENANCE_UNAUTHENTICATED",
+                "prepared campaign argv is malformed",
+            )
+        timeout = contract_raw.get("timeout_seconds")
+        if type(timeout) not in {int, float}:
+            raise FuzzWorkspaceError(
+                "COMMAND_PROVENANCE_UNAUTHENTICATED",
+                "prepared campaign timeout is malformed",
+            )
+        cwd_relative = str(contract_raw.get("cwd_relative") or ".")
+        contract = _validated_prepared_campaign(
+            payload, Path(prepared_campaign_path), argv=command_raw,
+            timeout_seconds=float(timeout), cwd_relative=cwd_relative,
+        )
+        secure = contract.get("secure_launcher_receipt")
+        if not isinstance(secure, Mapping):
+            raise FuzzWorkspaceError(
+                "APPLE_CONTAINER_ADMISSION_UNAVAILABLE",
+                "Apple secure launcher receipt is absent",
+            )
+        apple_adapter.require_apple_fuzz_service_admission(
+            apple_service_admission, dict(secure),
+        )
+        if secure.get("process_tree_policy") != APPLE_CONTAINER_PROCESS_POLICY:
+            raise FuzzWorkspaceError(
+                "APPLE_CONTAINER_ADMISSION_UNAVAILABLE",
+                "prepared campaign is not bound to Apple VM containment",
+            )
+        preflight_sha256 = apple_provider.apple_container_preflight_sha256(
+            apple_preflight
+        )
+        if (
+            secure.get("apple_container_preflight_sha256")
+            != preflight_sha256
+            or secure.get("apple_container_provider_provenance_sha256")
+            != preflight_sha256
+            or secure.get("apple_container_cli_executable_sha256")
+            != apple_preflight.executable_sha256
+        ):
+            raise FuzzWorkspaceError(
+                "APPLE_CONTAINER_ADMISSION_UNAVAILABLE",
+                "compatible Apple provider admission differs from the launcher",
+            )
+        guest_argv = (
+            str(secure["guest_executable"]),
+            *(str(item) for item in command_raw[1:]),
+        )
+        if _tool_family(guest_argv[0]) != _tool_family(str(command_raw[0])):
+            raise FuzzWorkspaceError(
+                "APPLE_CONTAINER_ADMISSION_UNAVAILABLE",
+                "guest executable family differs from the prepared campaign",
+            )
+        operation_key_sha256 = apple_provider.apple_fuzz_operation_key(
+            str(payload["payload_digest"]),
+            str(secure["phase_io_binding_digest"]),
+            str(secure["apple_container_attempt_id"]),
+            str(secure["guest_executable_sha256"]),
+        )
+        expected_container_id = apple_provider.derive_apple_fuzz_container_id(
+            str(payload["payload_digest"]), operation_key_sha256
+        )
+        if secure.get("apple_container_id") != expected_container_id:
+            raise FuzzWorkspaceError(
+                "APPLE_CONTAINER_ADMISSION_UNAVAILABLE",
+                "Apple container identity differs from its native operation key",
+            )
+        request = apple_provider.AppleFuzzExecutionRequest(
+            authority_digest=str(payload["payload_digest"]),
+            prepared_campaign_digest=str(contract["payload_digest"]),
+            secure_launcher_digest=str(secure["payload_digest"]),
+            phase_io_binding_digest=str(secure["phase_io_binding_digest"]),
+            provider_preflight_sha256=preflight_sha256,
+            provider_provenance_sha256=str(
+                secure["apple_container_provider_provenance_sha256"]
+            ),
+            cli_executable_sha256=str(
+                secure["apple_container_cli_executable_sha256"]
+            ),
+            guest_executable_sha256=str(secure["guest_executable_sha256"]),
+            operation_key_sha256=operation_key_sha256,
+            container_id=str(secure["apple_container_id"]),
+            attempt_id=str(secure["apple_container_attempt_id"]),
+            spec_sha256=str(secure["apple_container_spec_sha256"]),
+            launch_policy_sha256=str(
+                secure["apple_container_launch_policy_sha256"]
+            ),
+            guest_argv=guest_argv,
+            guest_environment=tuple(
+                str(item) for item in secure["guest_environment"]
+            ),
+            guest_cwd=str(secure["guest_cwd"]),
+            timeout_seconds=float(timeout),
+            init_image_reference=apple_preflight.init_image_reference,
+            init_image_index_digest=apple_preflight.init_image_index_digest,
+            init_image_manifest_digest=
+                apple_preflight.init_image_manifest_digest,
+            rosetta_required=bool(secure["rosetta_required"]),
+        )
+        pre_generated = _generated_harness_rows(payload)
+        host_started_at = _utc_now()
+        try:
+            bundle = execute_lifecycle(request)
+        except Exception as exc:
+            raise FuzzWorkspaceError(
+                "APPLE_CONTAINER_EXECUTION_UNAVAILABLE",
+                f"native Apple lifecycle failed: {type(exc).__name__}",
+            ) from exc
+        try:
+            execution_authority = apple_adapter.authenticate_apple_fuzz_execution(
+                request, bundle
+            )
+        except Exception as exc:
+            raise FuzzWorkspaceError(
+                "APPLE_CONTAINER_PROOF_INVALID",
+                f"Apple terminal/delete proof differs: {type(exc).__name__}",
+            ) from exc
+        host_finished_at = _utc_now()
+
+        runtime = Path(str(payload["runtime_root"]))
+        workspace = Path(str(payload["workspace_root"]))
+        active = Path(str(payload["active_root"]))
+        command_cwd = (active / cwd_relative).resolve(strict=False)
+        if not _is_descendant_or_equal(command_cwd, active):
+            raise FuzzWorkspaceError("COMMAND_CWD_ESCAPE", cwd_relative)
+        receipt_path, stdout_path, stderr_path = _command_receipt_paths(runtime)
+        stdout_path.write_bytes(bundle.stdout)
+        stderr_path.write_bytes(bundle.stderr)
+        post_generated = _generated_harness_rows(payload)
+        authority_projection = asdict(execution_authority)
+        authority_projection["authority_sha256"] = (
+            execution_authority.authority_sha256
+        )
+        receipt: dict[str, object] = {
+            "schema_version": COMMAND_SCHEMA,
+            "authority_digest": str(payload["payload_digest"]),
+            "run_id": str(payload["run_id"]),
+            "job_id": str(payload["job_id"]),
+            "status": (
+                "COMPLETED"
+                if execution_authority.exit_code == 0 else "FAILED"
+            ),
+            # Host wall-clock observations satisfy the portable command-record
+            # schema; containment authority comes only from the native
+            # monotonic launch/terminal receipts below.
+            "started_at": host_started_at,
+            "finished_at": host_finished_at,
+            "cwd": str(command_cwd),
+            "argv": [str(item) for item in command_raw],
+            "timeout_seconds": float(timeout),
+            "executable": {
+                "path": str(secure["guest_executable"]),
+                "size": 0,
+                "sha256": str(secure["guest_executable_sha256"]),
+            },
+            "tool_version": {
+                "provider": "APPLE_CONTAINER",
+                "provider_version": apple_preflight.cli_version,
+                "provider_preflight_sha256": preflight_sha256,
+            },
+            "environment_overrides": {},
+            "inherited_environment_fingerprint": {
+                "variables": [], "set_digest": record_set_digest([]),
+            },
+            "process_tree_policy": APPLE_CONTAINER_PROCESS_POLICY,
+            "prepared_campaign_digest": str(contract["payload_digest"]),
+            "apple_container_request_sha256": request.request_sha256,
+            "apple_container_execution": authority_projection,
+            "apple_container_start_monotonic_ms":
+                bundle.launch.start_monotonic_ms,
+            "apple_container_end_monotonic_ms":
+                bundle.terminal.end_monotonic_ms,
+            "generated_pre_set_digest": record_set_digest(pre_generated),
+            "generated_post_set_digest": record_set_digest(post_generated),
+            "returncode": execution_authority.exit_code,
+            "timed_out": execution_authority.exit_code == 124,
+            "stdout": _file_receipt(stdout_path, workspace),
+            "stderr": _file_receipt(stderr_path, workspace),
+        }
+        receipt["runner_witness"] = _write_runner_witness(
+            receipt_path, receipt, payload
+        )
+        receipt["payload_digest"] = payload_digest(receipt)
+        _atomic_json(receipt_path, receipt)
+        return execution_authority.exit_code
+    except FuzzWorkspaceError as exc:
+        try:
+            payload = _read_json(Path(authority_path))
+            _append_debt_issue(payload, _issue(exc.code, exc.message))
+        except Exception:
+            pass
+        return 125
+    except Exception as exc:
+        try:
+            payload = _read_json(Path(authority_path))
+            _append_debt_issue(payload, _issue(
+                "APPLE_CONTAINER_ADMISSION_UNAVAILABLE",
+                f"Apple fuzz admission failed: {type(exc).__name__}",
+            ))
+        except Exception:
+            pass
+        return 125
+
+
 def _generated_harness_rows(payload: Mapping[str, object]) -> list[dict[str, object]]:
     active = Path(str(payload["active_root"]))
     roots = [str(item) for item in payload.get("generated_write_roots", [])]
@@ -2175,6 +2732,329 @@ def _generated_provenance_issues(
     return issues
 
 
+def _medusa_terminal_property_issues(
+    output: str,
+    expected_properties: Iterable[str],
+    *,
+    campaign_label: str,
+) -> list[str]:
+    observed = [
+        (match.group("name"), match.group("status").upper())
+        for match in _MEDUSA_TERMINAL_PROPERTY_RE.finditer(
+            _ANSI_ESCAPE_RE.sub("", str(output or ""))
+        )
+    ]
+    expected_set = {str(item) for item in expected_properties if str(item)}
+    observed_set = {name for name, _status in observed}
+    details: list[str] = []
+    missing = sorted(expected_set - observed_set)
+    unknown = sorted(observed_set - expected_set)
+    statuses_by_name: dict[str, set[str]] = {}
+    for name, status in observed:
+        statuses_by_name.setdefault(name, set()).add(status)
+    contradictory = sorted(
+        name for name, statuses in statuses_by_name.items() if len(statuses) > 1
+    )
+    if missing:
+        details.append(
+            f"{campaign_label} has no terminal Property Test result for: "
+            + ", ".join(missing)
+        )
+    if unknown:
+        details.append(
+            f"{campaign_label} reports undeclared properties: "
+            + ", ".join(unknown)
+        )
+    if contradictory:
+        details.append(
+            f"{campaign_label} reports contradictory terminal statuses for: "
+            + ", ".join(contradictory)
+        )
+    return details
+
+
+def _medusa_generated_oracle_issues(
+    payload: Mapping[str, object],
+    generated: Sequence[Mapping[str, object]],
+    commands: Sequence[Mapping[str, object]],
+) -> list[dict[str, str]]:
+    """Re-authenticate the executed Medusa oracle from workspace bytes.
+
+    Bundle admission normally rejects a boolean-returning function that Medusa
+    would classify as an assertion test.  Finalization repeats the semantic
+    check from the actual generated denominator so alternate materialization
+    or execution paths cannot mint a proof-grade PASS from an ignored return
+    value.
+    """
+
+    if str(payload.get("role") or "").strip().casefold() != "medusa_fuzz":
+        return []
+    try:
+        from fuzz_harness_bundle import (
+            GeneratedFile,
+            medusa_harness_property_names,
+            medusa_harness_semantic_issues,
+        )
+
+        active = Path(str(payload["active_root"])).resolve(strict=True)
+        selected: list[GeneratedFile] = []
+        relevant = sorted({
+            str(row.get("relative_path") or "")
+            for row in generated
+            if (
+                str(row.get("relative_path") or "")
+                == ".medusa-tests/medusa.json"
+                or (
+                    str(row.get("relative_path") or "").endswith(".sol")
+                    and _under_relative_root(
+                        str(row.get("relative_path") or ""),
+                        [".medusa-tests"],
+                    )
+                )
+            )
+        })
+        for relative in relevant:
+            path = active / relative
+            if not path.is_file() or _is_link_or_reparse(path):
+                continue
+            if not _is_descendant_or_equal(path, active):
+                raise ValueError(f"generated path escaped active root: {relative}")
+            selected.append(GeneratedFile(
+                relative_path=relative,
+                language="json" if relative.endswith(".json") else "solidity",
+                content=_stable_read(path, max_file_bytes=MAX_CONTROL_JSON_BYTES),
+            ))
+
+        manifest_path = active / ".plamen-generated/plamen-fuzz-bundle.json"
+        assertions: tuple[str, ...] = ()
+        manifest_issue = ""
+        if manifest_path.is_file() and not _is_link_or_reparse(manifest_path):
+            manifest = _read_json(manifest_path)
+            if (
+                manifest.get("schema_version")
+                != "plamen.fuzz-harness-bundle.v2"
+                or manifest.get("payload_digest") != payload_digest(manifest)
+                or manifest.get("role") != "medusa_fuzz"
+            ):
+                raise ValueError("bundle manifest identity/digest is invalid")
+            campaign = manifest.get("campaign")
+            raw_assertions = (
+                campaign.get("assertion_ids")
+                if isinstance(campaign, Mapping)
+                else None
+            )
+            if (
+                not isinstance(raw_assertions, list)
+                or not raw_assertions
+                or any(type(item) is not str or not item for item in raw_assertions)
+            ):
+                manifest_issue = "bundle manifest has no exact assertion roster"
+            else:
+                assertions = tuple(raw_assertions)
+        else:
+            manifest_issue = "bundle manifest is absent or unsafe"
+
+        details = list(medusa_harness_semantic_issues(
+            selected, assertion_ids=assertions
+        ))
+        expected_properties = set(medusa_harness_property_names(selected))
+        for command_index, command in enumerate(commands, start=1):
+            argv = command.get("argv")
+            if not isinstance(argv, list) or _campaign_command_kind(
+                str(payload.get("language") or ""),
+                str(payload.get("role") or ""),
+                [str(item) for item in argv],
+            ) != "MEDUSA_FUZZ":
+                continue
+            output = (
+                _command_stream_text(payload, command, "stdout")
+                + "\n"
+                + _command_stream_text(payload, command, "stderr")
+            )
+            details.extend(_medusa_terminal_property_issues(
+                output,
+                expected_properties,
+                campaign_label=f"campaign {command_index}",
+            ))
+        if manifest_issue:
+            details.append(manifest_issue)
+        return [
+            _issue("MEDUSA_PROPERTY_ORACLE_UNBOUND", detail)
+            for detail in sorted(set(details))
+        ]
+    except Exception as exc:
+        return [_issue(
+            "MEDUSA_PROPERTY_ORACLE_UNBOUND",
+            f"generated oracle authentication failed: {type(exc).__name__}: {exc}",
+        )]
+
+
+def _apple_command_execution_issues(
+    receipt: Mapping[str, object],
+) -> list[dict[str, str]]:
+    if receipt.get("process_tree_policy") != APPLE_CONTAINER_PROCESS_POLICY:
+        return []
+    execution = receipt.get("apple_container_execution")
+    if not isinstance(execution, Mapping):
+        return [_issue("APPLE_CONTAINER_PROOF_INVALID", "execution authority absent")]
+    issues: list[dict[str, str]] = []
+    if execution.get("schema") != "plamen.apple-supervisor.fuzz-execution.v1":
+        issues.append(_issue("APPLE_CONTAINER_PROOF_INVALID", "authority schema"))
+    supplied_authority = str(execution.get("authority_sha256") or "")
+    unsigned = dict(execution)
+    unsigned.pop("authority_sha256", None)
+    if (
+        not _HEX64_RE.fullmatch(supplied_authority)
+        or supplied_authority != _sha256_bytes(_canonical_json(unsigned))
+    ):
+        issues.append(_issue("APPLE_CONTAINER_PROOF_INVALID", "authority digest"))
+    for field in (
+        "request_sha256", "launch_request_sha256", "start_receipt_sha256",
+        "wait_receipt_sha256", "delete_receipt_sha256", "stdout_sha256",
+        "stderr_sha256", "stdout_retained_sha256",
+        "stderr_retained_sha256", "stop_argv_sha256", "stop_stdout_sha256",
+        "stop_stderr_sha256", "stopped_observation_sha256",
+        "guest_population_extinction_sha256",
+    ):
+        if not _HEX64_RE.fullmatch(str(execution.get(field) or "")):
+            issues.append(_issue("APPLE_CONTAINER_PROOF_INVALID", field))
+    if execution.get("request_sha256") != receipt.get(
+        "apple_container_request_sha256"
+    ):
+        issues.append(_issue("APPLE_CONTAINER_PROOF_INVALID", "request binding"))
+    for field in (
+        "descendants_extinct", "guest_process_extinct",
+        "backend_egress_revoked", "stop_control_process_reaped",
+        "stop_control_process_group_extinct", "guest_population_zero",
+        "container_vm_stopped",
+    ):
+        if execution.get(field) is not True:
+            issues.append(_issue("APPLE_CONTAINER_PROOF_INVALID", field))
+    if type(execution.get("exit_code")) is not int or execution.get(
+        "exit_code"
+    ) != receipt.get("returncode"):
+        issues.append(_issue("APPLE_CONTAINER_PROOF_INVALID", "exit code"))
+    for stream in ("stdout", "stderr"):
+        stream_receipt = receipt.get(stream)
+        if not isinstance(stream_receipt, Mapping):
+            issues.append(_issue("APPLE_CONTAINER_PROOF_INVALID", stream))
+            continue
+        if (
+            execution.get(f"{stream}_retained_sha256")
+            != stream_receipt.get("sha256")
+            or execution.get(f"{stream}_retained_bytes")
+            != stream_receipt.get("size")
+            or type(execution.get(f"{stream}_observed_bytes")) is not int
+            or type(execution.get(f"{stream}_truncated")) is not bool
+            or execution.get(f"{stream}_truncated")
+            is not (
+                execution.get(f"{stream}_observed_bytes")
+                != execution.get(f"{stream}_retained_bytes")
+            )
+        ):
+            issues.append(_issue(
+                "APPLE_CONTAINER_PROOF_INVALID", f"{stream} binding"
+            ))
+    return _normalize_issues(issues)
+
+
+def _posix_compat_command_execution_issues(
+    receipt: Mapping[str, object], payload: Mapping[str, object]
+) -> list[dict[str, str]]:
+    """Authenticate the reduced-isolation campaign projection.
+
+    These receipts are recall-positive execution evidence, never native proof.
+    The exact compatibility terminal remains the authority; the fuzz command
+    receipt is only a typed projection into the existing result index.
+    """
+
+    if receipt.get("process_tree_policy") != "POSIX_V2_COMPAT_SEATBELT_REDUCED":
+        return []
+    execution = receipt.get("posix_v2_compat_execution")
+    if not isinstance(execution, Mapping):
+        return [_issue("POSIX_COMPAT_EXECUTION_INVALID", "projection absent")]
+    expected_keys = {
+        "request_sha256", "model_output_sha256", "bundle_manifest_digest",
+        "terminal_sha256", "terminal_receipt_path",
+        "terminal_status", "actual_tool_started",
+        "actual_tool_completion_observed", "network_denial_proven",
+        "proof_authority",
+    }
+    issues: list[dict[str, str]] = []
+    if set(execution) != expected_keys:
+        issues.append(_issue(
+            "POSIX_COMPAT_EXECUTION_INVALID", "projection field denominator"
+        ))
+        return issues
+    for field in (
+        "request_sha256", "model_output_sha256", "bundle_manifest_digest",
+        "terminal_sha256",
+    ):
+        if not _HEX64_RE.fullmatch(str(execution.get(field) or "")):
+            issues.append(_issue("POSIX_COMPAT_EXECUTION_INVALID", field))
+    if (
+        execution.get("actual_tool_started") is not True
+        or execution.get("actual_tool_completion_observed") is not True
+        or execution.get("network_denial_proven") is not False
+        or execution.get("proof_authority")
+        != "EXECUTION_SCOPE_REQUIRES_CONSUMER"
+    ):
+        issues.append(_issue(
+            "POSIX_COMPAT_EXECUTION_INVALID", "reduced authority semantics"
+        ))
+    try:
+        scratchpad = Path(str(payload["scratchpad_root"])).resolve(strict=True)
+        relative = Path(str(execution["terminal_receipt_path"]))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("terminal receipt path escape")
+        terminal_path = scratchpad / relative
+        _assert_existing_path_chain_no_links(terminal_path, scratchpad)
+        raw = terminal_path.read_bytes()
+        if _sha256_bytes(raw) != execution.get("terminal_sha256"):
+            raise ValueError("terminal receipt digest")
+        terminal = json.loads(raw.decode("ascii", errors="strict"))
+        if (
+            terminal.get("schema")
+            != "plamen.posix_v2_compat_mechanical_poc_terminal.v1"
+            or terminal.get("purpose") != "CANDIDATE_FUZZ"
+            or terminal.get("request_sha256")
+            != execution.get("request_sha256")
+            or terminal.get("run_id") != payload.get("run_id")
+            or terminal.get("subject_kind") != "GENERATED_FUZZ_HARNESS"
+            or terminal.get("status") != execution.get("terminal_status")
+            or terminal.get("actual_tool_started") is not True
+            or terminal.get("actual_tool_completion_observed") is not True
+            or terminal.get("reduced_isolation") is not True
+            or terminal.get("network_denial_proven") is not False
+            or terminal.get("native_broker_authority") is not False
+            or terminal.get("process_group_empty_observed") is not True
+            or terminal.get("returncode") != receipt.get("returncode")
+        ):
+            raise ValueError("terminal semantic binding")
+        bindings = terminal.get("candidate_request_bindings")
+        if (
+            not isinstance(bindings, Mapping)
+            or bindings.get("argv") != receipt.get("argv")
+        ):
+            raise ValueError("terminal argv binding")
+        for stream in ("stdout", "stderr"):
+            projected = receipt.get(stream)
+            if (
+                not isinstance(projected, Mapping)
+                or terminal.get(f"{stream}_retained_sha256")
+                != projected.get("sha256")
+                or terminal.get(f"{stream}_retained_bytes")
+                != projected.get("size")
+            ):
+                raise ValueError(f"terminal {stream} binding")
+    except Exception as exc:
+        issues.append(_issue(
+            "POSIX_COMPAT_EXECUTION_INVALID",
+            f"terminal replay failed: {type(exc).__name__}: {exc}",
+        ))
+    return _normalize_issues(issues)
+
+
 def _command_receipts(payload: Mapping[str, object]) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
     runtime = Path(str(payload["runtime_root"]))
     workspace = Path(str(payload["workspace_root"]))
@@ -2211,6 +3091,16 @@ def _command_receipts(payload: Mapping[str, object]) -> tuple[list[dict[str, obj
                 raise ValueError("authority digest")
             if receipt.get("status") not in {"COMPLETED", "FAILED", "TIMEOUT"}:
                 raise ValueError("terminal status")
+            apple_issues = _apple_command_execution_issues(receipt)
+            if apple_issues:
+                issues.extend(apple_issues)
+                continue
+            compat_issues = _posix_compat_command_execution_issues(
+                receipt, payload
+            )
+            if compat_issues:
+                issues.extend(compat_issues)
+                continue
             receipt_cwd = Path(str(receipt.get("cwd") or "")).resolve(strict=False)
             active = Path(str(payload["active_root"])).resolve(strict=False)
             if not _is_descendant_or_equal(receipt_cwd, active):
@@ -2243,6 +3133,184 @@ def _command_receipts(payload: Mapping[str, object]) -> tuple[list[dict[str, obj
                 "COMMAND_RECEIPT_INVALID", f"{path.name}: {type(exc).__name__}: {exc}"
             ))
     return rows, issues
+
+
+def _campaign_text_semantics(
+    *,
+    kind: str,
+    returncode: object,
+    timed_out: bool,
+    stdout_text: str,
+    stderr_text: str,
+) -> dict[str, object]:
+    """Classify tool semantics without treating every nonzero exit as tool debt.
+
+    Fuzzers conventionally use a nonzero process exit when a property is
+    falsified.  That is successful security work, not an execution failure.
+    Conversely, some fuzzers can report a failed property in structured text
+    while still exiting zero.  The exact retained streams therefore form the
+    semantic boundary; the process return code remains recorded but is not the
+    sole meaning authority.
+    """
+
+    stdout = _ANSI_ESCAPE_RE.sub("", str(stdout_text or ""))
+    stderr = _ANSI_ESCAPE_RE.sub("", str(stderr_text or ""))
+    combined = stdout + ("\n" if stdout and stderr else "") + stderr
+    normalized_kind = str(kind or "").strip().upper()
+    try:
+        code = int(returncode)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        code = -1
+    if timed_out:
+        return {
+            "semantic_outcome": "TIMEOUT",
+            "semantic_parser": "terminal-status-v1",
+            "violation_count": 0,
+            "violation_ids": [],
+        }
+
+    if normalized_kind == "FOUNDRY_INVARIANT":
+        suite_failures = [
+            int(match.group("failed"))
+            for match in _FORGE_SUITE_RESULT_RE.finditer(combined)
+        ]
+        total_failures = [
+            int(match.group("failed"))
+            for match in _FORGE_FAILING_TOTAL_RE.finditer(combined)
+        ]
+        failure_count = max([*suite_failures, *total_failures], default=0)
+        identities = sorted({
+            match.group("identity").strip()
+            for match in _FORGE_FAILING_ID_RE.finditer(combined)
+            if match.group("identity").strip()
+        })[:64]
+        # Requiring Forge's suite-start line prevents an arbitrary compiler or
+        # wrapper error containing the word FAIL from minting an observation.
+        suite_started = bool(re.search(
+            r"^Ran\s+\d+\s+tests?\s+for\s+", combined, re.MULTILINE
+        ))
+        if failure_count > 0 and suite_started:
+            return {
+                "semantic_outcome": "VIOLATION_OBSERVED",
+                "semantic_parser": "foundry-suite-v1",
+                "violation_count": failure_count,
+                "violation_ids": identities,
+            }
+        if code == 0:
+            return {
+                "semantic_outcome": "PASS_OBSERVED",
+                "semantic_parser": "foundry-suite-v1",
+                "violation_count": 0,
+                "violation_ids": [],
+            }
+
+    if normalized_kind == "MEDUSA_FUZZ":
+        summaries = list(_MEDUSA_SUMMARY_RE.finditer(combined))
+        failure_count = max(
+            (int(match.group("failed")) for match in summaries), default=0
+        )
+        identities = sorted({
+            match.group("identity").strip()
+            for match in _MEDUSA_FAILING_ID_RE.finditer(combined)
+            if match.group("identity").strip()
+        })[:64]
+        if failure_count > 0:
+            return {
+                "semantic_outcome": "VIOLATION_OBSERVED",
+                "semantic_parser": "medusa-summary-v1",
+                "violation_count": failure_count,
+                "violation_ids": identities,
+            }
+        if summaries and code == 0:
+            return {
+                "semantic_outcome": "PASS_OBSERVED",
+                "semantic_parser": "medusa-summary-v1",
+                "violation_count": 0,
+                "violation_ids": [],
+            }
+
+    return {
+        "semantic_outcome": "PASS_OBSERVED" if code == 0 else "TOOL_FAILURE",
+        "semantic_parser": "returncode-fallback-v1",
+        "violation_count": 0,
+        "violation_ids": [],
+    }
+
+
+def _command_stream_text(
+    payload: Mapping[str, object],
+    command: Mapping[str, object],
+    stream: str,
+) -> str:
+    """Read a receipt-bound retained stream after `_command_receipts` replay."""
+
+    record = command.get(stream)
+    if not isinstance(record, Mapping):
+        raise FuzzWorkspaceError("COMMAND_RECEIPT_INVALID", f"missing {stream}")
+    path = Path(str(payload["workspace_root"])) / str(record.get("path") or "")
+    raw = _stable_read(path, max_file_bytes=MAX_COMMAND_LOG_BYTES)
+    recorded_size = record.get("size")
+    if (
+        _sha256_bytes(raw) != str(record.get("sha256") or "")
+        or not isinstance(recorded_size, int)
+        or len(raw) != recorded_size
+    ):
+        raise FuzzWorkspaceError("COMMAND_RECEIPT_INVALID", f"{stream} drift")
+    return raw.decode("utf-8", errors="replace")
+
+
+def _campaign_command_projection(
+    payload: Mapping[str, object], command: Mapping[str, object]
+) -> dict[str, object] | None:
+    command_argv = command.get("argv")
+    argv = command_argv if isinstance(command_argv, list) else []
+    kind = _campaign_command_kind(
+        str(payload.get("language") or ""),
+        str(payload.get("role") or ""),
+        argv,
+    )
+    if not kind:
+        return None
+    parsed_spec = _campaign_command_spec(
+        str(payload.get("language") or ""),
+        str(payload.get("role") or ""),
+        argv,
+    )
+    semantics = _campaign_text_semantics(
+        kind=kind,
+        returncode=command.get("returncode"),
+        timed_out=bool(command.get("timed_out")),
+        stdout_text=_command_stream_text(payload, command, "stdout"),
+        stderr_text=_command_stream_text(payload, command, "stderr"),
+    )
+    return {
+        "command_payload_digest": str(command.get("payload_digest") or ""),
+        "kind": kind,
+        "command_spec": parsed_spec or {
+            "kind": kind,
+            "tool_family": "UNBOUND",
+            "selector": {},
+            "requested_cases": {},
+        },
+        "status": str(command.get("status") or ""),
+        "returncode": command.get("returncode"),
+        "timed_out": bool(command.get("timed_out")),
+        "process_tree_policy": str(command.get("process_tree_policy") or ""),
+        "apple_execution_authority_sha256": str(
+            (
+                command.get("apple_container_execution")
+                if isinstance(command.get("apple_container_execution"), Mapping)
+                else {}
+            ).get("authority_sha256") or ""
+        ),
+        "generated_pre_set_digest": str(
+            command.get("generated_pre_set_digest") or ""
+        ),
+        "generated_post_set_digest": str(
+            command.get("generated_post_set_digest") or ""
+        ),
+        **semantics,
+    }
 
 
 def finalize_fuzz_workspace(
@@ -2286,36 +3354,9 @@ def finalize_fuzz_workspace(
         issues.append(_issue("NO_RECORDED_COMMAND", "no runner command receipt exists"))
     campaign_commands: list[dict[str, object]] = []
     for command in commands:
-        command_argv = command.get("argv")
-        kind = _campaign_command_kind(
-            str(payload.get("language") or ""),
-            str(payload.get("role") or ""),
-            command_argv if isinstance(command_argv, list) else [],
-        )
-        if not kind:
-            continue
-        parsed_spec = _campaign_command_spec(
-            str(payload.get("language") or ""),
-            str(payload.get("role") or ""),
-            command_argv if isinstance(command_argv, list) else [],
-        )
-        campaign_commands.append({
-            "command_payload_digest": str(command.get("payload_digest") or ""),
-            "kind": kind,
-            "command_spec": parsed_spec or {
-                "kind": kind, "tool_family": "UNBOUND",
-                "selector": {}, "requested_cases": {},
-            },
-            "status": str(command.get("status") or ""),
-            "returncode": command.get("returncode"),
-            "timed_out": bool(command.get("timed_out")),
-            "generated_pre_set_digest": str(
-                command.get("generated_pre_set_digest") or ""
-            ),
-            "generated_post_set_digest": str(
-                command.get("generated_post_set_digest") or ""
-            ),
-        })
+        projected = _campaign_command_projection(payload, command)
+        if projected is not None:
+            campaign_commands.append(projected)
     if not campaign_commands:
         issues.append(_issue(
             "NO_RECORDED_CAMPAIGN_COMMAND",
@@ -2330,6 +3371,7 @@ def finalize_fuzz_workspace(
                 ))
     generated = _generated_harness_rows(payload)
     issues.extend(_generated_provenance_issues(payload, generated))
+    issues.extend(_medusa_generated_oracle_issues(payload, generated, commands))
     generated_digest = record_set_digest(generated)
     if campaign_commands and not generated:
         issues.append(_issue(
@@ -2360,6 +3402,18 @@ def finalize_fuzz_workspace(
         issues.append(_issue(
             "CAMPAIGN_EXECUTION_FAILED", "no campaign completed successfully"
         ))
+    for row in campaign_commands:
+        if row.get("semantic_outcome") != "VIOLATION_OBSERVED":
+            continue
+        identities = row.get("violation_ids")
+        identity_text = ", ".join(
+            str(item) for item in identities if str(item).strip()
+        ) if isinstance(identities, list) else ""
+        runner_observations.append(_issue(
+            "FUZZ_PROPERTY_VIOLATION_OBSERVED",
+            f"{row.get('kind')}: count={row.get('violation_count', 0)}"
+            + (f" ids={identity_text}" if identity_text else ""),
+        ))
     normalized = _normalize_issues(issues)
     result: dict[str, object] = {
         "schema_version": RESULT_SCHEMA,
@@ -2380,8 +3434,21 @@ def finalize_fuzz_workspace(
         "runner_observations": _normalize_issues(runner_observations),
         "issues": normalized,
         "proof_authority": (
-            "EXECUTION_SCOPE_REQUIRES_CONSUMER"
-            if not normalized and campaign_status == "EXECUTED_SUCCESS"
+            (
+                "APPLE_CONTAINER_V2_TERMINAL_DELETE"
+                if campaign_commands and all(
+                    row.get("process_tree_policy")
+                    == APPLE_CONTAINER_PROCESS_POLICY
+                    and _HEX64_RE.fullmatch(str(
+                        row.get("apple_execution_authority_sha256") or ""
+                    ))
+                    for row in campaign_commands
+                )
+                else "EXECUTION_SCOPE_REQUIRES_CONSUMER"
+            )
+            if not normalized and campaign_status in {
+                "EXECUTED_SUCCESS", "EXECUTED_VIOLATION",
+            }
             else "NONE"
         ),
     }
@@ -2423,35 +3490,9 @@ def validate_fuzz_workspace_result(authority_path: Path) -> list[str]:
             issues.append("RESULT_HARNESS_DIGEST_INVALID: digest mismatch")
         expected_campaigns = []
         for command in commands:
-            command_argv = command.get("argv")
-            kind = _campaign_command_kind(
-                str(authority.get("language") or ""),
-                str(authority.get("role") or ""),
-                command_argv if isinstance(command_argv, list) else [],
-            )
-            if kind:
-                parsed_spec = _campaign_command_spec(
-                    str(authority.get("language") or ""),
-                    str(authority.get("role") or ""),
-                    command_argv if isinstance(command_argv, list) else [],
-                )
-                expected_campaigns.append({
-                    "command_payload_digest": str(command.get("payload_digest") or ""),
-                    "kind": kind,
-                    "command_spec": parsed_spec or {
-                        "kind": kind, "tool_family": "UNBOUND",
-                        "selector": {}, "requested_cases": {},
-                    },
-                    "status": str(command.get("status") or ""),
-                    "returncode": command.get("returncode"),
-                    "timed_out": bool(command.get("timed_out")),
-                    "generated_pre_set_digest": str(
-                        command.get("generated_pre_set_digest") or ""
-                    ),
-                    "generated_post_set_digest": str(
-                        command.get("generated_post_set_digest") or ""
-                    ),
-                })
+            projected = _campaign_command_projection(authority, command)
+            if projected is not None:
+                expected_campaigns.append(projected)
         if result.get("campaign_commands") != expected_campaigns:
             issues.append("RESULT_CAMPAIGN_DRIFT: campaign denominator changed")
         if result.get("campaign_command_count") != len(expected_campaigns):
@@ -2493,6 +3534,88 @@ def _index_issue_codes(values: Iterable[object]) -> tuple[list[str], int]:
 def _index_row_digest(row: Mapping[str, object]) -> str:
     unsigned = {key: value for key, value in row.items() if key != "row_digest"}
     return hashlib.sha256(_canonical_json(unsigned)).hexdigest()
+
+
+def _bound_launch_debt(
+    authority: Mapping[str, object],
+    job: Mapping[str, object],
+) -> tuple[dict[str, object], list[str]]:
+    """Load or replay the exact debt snapshot bound into the launch index.
+
+    Workspace debt is monotonic and may legitimately gain command/finalization
+    issues after launch.  The launch index therefore embeds its authenticated
+    prelaunch snapshot rather than consulting mutable current debt during
+    replay.  The surrounding compare-only index binds the snapshot digest.
+    """
+
+    supplied = job.get("fuzz_launch_debt")
+    try:
+        if supplied is None:
+            debt = _read_json(Path(str(authority["debt_path"])))
+        elif isinstance(supplied, Mapping):
+            debt = dict(supplied)
+        else:
+            raise ValueError("launch debt must be an object")
+    except Exception as exc:
+        return {}, [f"DEBT_RECEIPT_INVALID: {type(exc).__name__}: {exc}"]
+
+    issues: list[str] = []
+    raw_issues = debt.get("issues")
+    normalized = (
+        _normalize_issues(row for row in raw_issues if isinstance(row, Mapping))
+        if isinstance(raw_issues, list)
+        else []
+    )
+    expected = _debt_payload(
+        run_id=str(authority.get("run_id") or ""),
+        job_id=str(authority.get("job_id") or ""),
+        authority_digest=str(authority.get("payload_digest") or ""),
+        issues=normalized,
+    )
+    if debt != expected:
+        issues.append("DEBT_RECEIPT_INVALID: launch debt identity/digest/shape differs")
+    if not isinstance(raw_issues, list) or len(normalized) != len(raw_issues):
+        issues.append("DEBT_RECEIPT_INVALID: launch debt issues are malformed")
+    return debt, sorted(set(issues))
+
+
+def _effective_launch_status(
+    *,
+    requested_status: str,
+    authority_ready: bool,
+    authority_issues: Sequence[str],
+    launch_debt: Mapping[str, object],
+    debt_issues: Sequence[str],
+) -> str:
+    """Classify absence without turning it into proof or model repair work."""
+
+    if not authority_ready or authority_issues or debt_issues:
+        return "UNSCORED"
+    issue_rows = launch_debt.get("issues")
+    if not isinstance(issue_rows, list):
+        return "UNSCORED"
+    codes = {
+        str(row.get("code") or "").strip().upper()
+        for row in issue_rows
+        if isinstance(row, Mapping)
+    }
+    if not codes:
+        return "READY" if requested_status in {"", "READY"} else "UNSCORED"
+    if codes <= _EXECUTION_UNAVAILABLE_DEBT_CODES:
+        return "UNAVAILABLE"
+    if codes <= _EXECUTION_DEFERRED_DEBT_CODES:
+        return "DEFERRED"
+    return "UNSCORED"
+
+
+def _model_repair_disposition(status: str) -> str:
+    return {
+        "READY": "NOT_REQUIRED",
+        "MEASURED": "NOT_REQUIRED",
+        "UNAVAILABLE": "EXCLUDED_UNAVAILABLE",
+        "DEFERRED": "EXCLUDED_DEFERRED",
+        "UNSCORED": "ELIGIBLE_UNSCORED",
+    }.get(status, "ELIGIBLE_UNSCORED")
 
 
 def _index_control_path(
@@ -2567,9 +3690,13 @@ def _workspace_index_row(
             "source_snapshot_digest": "",
             "source_input_set_digest": "",
             "workspace_input_set_digest": "",
+            "launch_debt": {},
+            "launch_debt_digest": "",
             "issue_codes": ["FUZZ_WORKSPACE_AUTHORITY_MISSING"],
             "issue_count": 1,
             "issues_truncated": False,
+            "model_repair_disposition": "ELIGIBLE_UNSCORED",
+            "proof_authority": "NONE",
         }
         row["row_digest"] = _index_row_digest(row)
         return row
@@ -2598,16 +3725,29 @@ def _workspace_index_row(
     active_inputs = denominator_map.get("active")
     all_map = all_inputs if isinstance(all_inputs, Mapping) else {}
     active_map = active_inputs if isinstance(active_inputs, Mapping) else {}
-    issue_codes, issue_count = _index_issue_codes(authority_issues)
+    launch_debt, debt_issues = _bound_launch_debt(authority, job)
+    launch_debt_rows = launch_debt.get("issues")
+    launch_debt_rows = (
+        launch_debt_rows if isinstance(launch_debt_rows, list) else []
+    )
+    combined_issues: list[object] = [
+        *authority_issues,
+        *debt_issues,
+        *launch_debt_rows,
+    ]
+    issue_codes, issue_count = _index_issue_codes(combined_issues)
+    status = _effective_launch_status(
+        requested_status=str(job.get("fuzz_workspace_status") or "").strip().upper(),
+        authority_ready=str(authority.get("status") or "") == "READY",
+        authority_issues=authority_issues,
+        launch_debt=launch_debt,
+        debt_issues=debt_issues,
+    )
     row = {
         "job_id": job_id,
         "role": role,
         "output": output,
-        "status": (
-            "READY"
-            if str(authority.get("status") or "") == "READY" and not authority_issues
-            else "UNSCORED"
-        ),
+        "status": status,
         "authority_path": authority_relative,
         "authority_digest": str(authority.get("payload_digest") or ""),
         "result_path": result_relative,
@@ -2615,9 +3755,15 @@ def _workspace_index_row(
         "source_snapshot_digest": str(authority.get("source_snapshot_digest") or ""),
         "source_input_set_digest": str(all_map.get("set_digest") or ""),
         "workspace_input_set_digest": str(active_map.get("set_digest") or ""),
+        "launch_debt": launch_debt,
+        "launch_debt_digest": str(launch_debt.get("payload_digest") or ""),
         "issue_codes": issue_codes,
         "issue_count": issue_count,
         "issues_truncated": issue_count > len(issue_codes),
+        "model_repair_disposition": _model_repair_disposition(status),
+        # A launch denominator is never execution proof.  Only a validated
+        # terminal result with a campaign receipt can mint proof authority.
+        "proof_authority": "NONE",
     }
     row["row_digest"] = _index_row_digest(row)
     return row
@@ -2678,9 +3824,33 @@ def write_fuzz_workspace_index(
     """Write the single DRIVER-owned fuzz launch denominator compare-only."""
 
     root = Path(scratchpad)
+    replay_jobs: Sequence[Mapping[str, object]] = jobs
+    index_path = root / WORKSPACE_INDEX_FILE
+    if index_path.is_file():
+        # Debt is intentionally monotonic after launch.  Recompute against the
+        # immutable debt snapshot already bound by the index, while retaining
+        # all current job identity/status checks.
+        prior = _read_json(index_path)
+        prior_rows = prior.get("rows")
+        if isinstance(prior_rows, list):
+            snapshots = {
+                (
+                    str(row.get("job_id") or ""),
+                    str(row.get("output") or ""),
+                ): row.get("launch_debt")
+                for row in prior_rows
+                if isinstance(row, Mapping)
+            }
+            replay_jobs = tuple({
+                **dict(job),
+                "fuzz_launch_debt": snapshots.get((
+                    str(job.get("agent_id") or job.get("job_id") or ""),
+                    str(job.get("output") or ""),
+                )),
+            } for job in jobs)
     payload = _workspace_index_payload(
         root,
-        jobs,
+        replay_jobs,
         run_id=run_id,
         pipeline=pipeline,
         mode=mode,
@@ -2688,7 +3858,7 @@ def write_fuzz_workspace_index(
         backend=backend,
     )
     _compare_only_json(
-        root / WORKSPACE_INDEX_FILE,
+        index_path,
         payload,
         code="WORKSPACE_INDEX_DRIFT",
     )
@@ -2729,6 +3899,8 @@ def validate_fuzz_workspace_index(path: Path) -> list[str]:
                 "fuzz_authority_path": (
                     str(root / authority_relative) if authority_relative else ""
                 ),
+                "fuzz_workspace_status": str(row.get("status") or ""),
+                "fuzz_launch_debt": row.get("launch_debt"),
             })
         expected = _workspace_index_payload(
             root,
@@ -2812,6 +3984,47 @@ def _result_index_payload(
         if isinstance(result_issues, list):
             validation_issues.extend(result_issues)
         issue_codes, issue_count = _index_issue_codes(validation_issues)
+        source_status = str(source_row.get("status") or "UNSCORED")
+        derived_status = (
+            str(result.get("status") or "UNSCORED")
+            if not validation_issues
+            else "UNSCORED"
+        )
+        # A valid terminalization of a launch-time platform/tool absence stays
+        # visible as typed absence.  It is never upgraded to MEASURED and is
+        # not routed to a model as though prose could repair the substrate.
+        if (
+            source_status in {"UNAVAILABLE", "DEFERRED"}
+            and str(result.get("status") or "") == "UNSCORED"
+            and str(result.get("proof_authority") or "NONE") == "NONE"
+            and int(result.get("command_count") or 0) == 0
+            and str(result.get("campaign_execution_status") or "NOT_EXECUTED")
+            == "NOT_EXECUTED"
+            and not any(
+                str(issue).startswith((
+                    "RESULT_", "AUTHORITY_", "WORKSPACE_", "SOURCE_",
+                    "COMMAND_RECEIPT_",
+                ))
+                for issue in validation_issues
+            )
+        ):
+            derived_status = source_status
+        campaign_rows = result.get("campaign_commands")
+        campaign_rows = campaign_rows if isinstance(campaign_rows, list) else []
+        violation_rows = [
+            item for item in campaign_rows
+            if isinstance(item, Mapping)
+            and item.get("semantic_outcome") == "VIOLATION_OBSERVED"
+        ]
+        violation_ids = sorted({
+            str(identity)
+            for item in violation_rows
+            for identity in (
+                item.get("violation_ids")
+                if isinstance(item.get("violation_ids"), list) else []
+            )
+            if str(identity).strip()
+        })[:64]
         row: dict[str, object] = {
             "job_id": str(source_row.get("job_id") or ""),
             "role": str(source_row.get("role") or ""),
@@ -2822,17 +4035,24 @@ def _result_index_payload(
             "authority_digest": str(source_row.get("authority_digest") or ""),
             "result_path": result_relative,
             "result_digest": str(result.get("payload_digest") or ""),
-            "status": (
-                str(result.get("status") or "UNSCORED")
-                if not validation_issues
-                else "UNSCORED"
-            ),
+            "status": derived_status,
             "campaign_execution_status": str(
                 result.get("campaign_execution_status") or "NOT_EXECUTED"
             ),
             "command_count": int(result.get("command_count") or 0),
             "campaign_command_count": int(result.get("campaign_command_count") or 0),
-            "proof_authority": str(result.get("proof_authority") or "NONE"),
+            "violation_observation_count": sum(
+                int(item.get("violation_count") or 0) for item in violation_rows
+            ),
+            "violation_ids": violation_ids,
+            "proof_authority": (
+                "NONE"
+                if derived_status in {"UNAVAILABLE", "DEFERRED", "UNSCORED"}
+                else str(result.get("proof_authority") or "NONE")
+            ),
+            "model_repair_disposition": _model_repair_disposition(
+                derived_status
+            ),
             "issue_codes": issue_codes,
             "issue_count": issue_count,
             "issues_truncated": issue_count > len(issue_codes),
@@ -2926,12 +4146,15 @@ if __name__ == "__main__":
 
 __all__ = [
     "AUTHORITY_SCHEMA", "COMMAND_SCHEMA", "DEBT_SCHEMA", "RESULT_SCHEMA",
+    "EXECUTION_CAPABILITY_SCHEMA", "APPLE_CONTAINER_PROCESS_POLICY",
     "WORKSPACE_INDEX_SCHEMA", "RESULT_INDEX_SCHEMA",
     "WORKSPACE_INDEX_FILE", "RESULT_INDEX_FILE",
     "FuzzWorkspaceError", "finalize_fuzz_workspace",
+    "fuzz_execution_capability",
     "mark_fuzz_workspace_unscored", "materialize_fuzz_workspace",
     "payload_digest", "record_set_digest",
-    "run_recorded_command", "validate_fuzz_workspace_authority",
+    "run_prepared_apple_container_campaign", "run_recorded_command",
+    "validate_fuzz_workspace_authority",
     "validate_fuzz_workspace_result", "write_fuzz_workspace_index",
     "validate_fuzz_workspace_index", "write_fuzz_workspace_result_index",
     "validate_fuzz_workspace_result_index", "resolve_fuzz_workspace_index_row",

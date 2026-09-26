@@ -101,6 +101,27 @@ def test_p61_candidates_payload_round_trip(tmp_path):
     assert len(rows) == 3
 
 
+def test_p61_exact_semantic_replay_preserves_physical_identity(
+    tmp_path, monkeypatch,
+):
+    """Wall-clock metadata cannot replace an unchanged report denominator."""
+
+    import report_index_machinery as machinery
+
+    _seed_minimal_scratchpad(tmp_path)
+    clock = {"value": "2026-01-01T00:00:00"}
+    monkeypatch.setattr(machinery.time, "strftime", lambda _fmt: clock["value"])
+    machinery.build_report_index_candidates_json(tmp_path)
+    path = tmp_path / "report_index_candidates.json"
+    before = path.stat()
+    clock["value"] = "2099-12-31T23:59:59"
+    machinery.build_report_index_candidates_json(tmp_path)
+    after = path.stat()
+    assert (after.st_dev, after.st_ino, after.st_mtime_ns) == (
+        before.st_dev, before.st_ino, before.st_mtime_ns,
+    )
+
+
 def test_p61_candidates_preserve_tier_for_unresolved_proposal(tmp_path):
     """HH-02 remains High until separate typed adjudication authorizes change."""
     _seed_minimal_scratchpad(tmp_path)

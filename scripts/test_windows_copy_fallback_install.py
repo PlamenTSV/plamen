@@ -549,7 +549,11 @@ def test_claude_copy_install_includes_verification_policy_and_uninstalls(
         lambda *_a, **_k: {"missing": [], "mismatched": []},
     )
     monkeypatch.setattr(m, "_render_claude_config_updates", lambda *_a, **_k: [])
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory() as temporary_root:
+        # macOS exposes TemporaryDirectory through the `/var` -> `/private/var`
+        # compatibility symlink. The committed-reader fixture deliberately
+        # rejects symlinked ancestors, so use its canonical admitted spelling.
+        root = os.path.realpath(temporary_root)
         plamen_home = os.path.join(root, ".plamen")
         claude_home = os.path.join(root, ".claude")
         codex_home = os.path.join(root, ".codex-not-installed")
@@ -639,7 +643,8 @@ def test_claude_install_uses_runtime_denominator_for_generic_nested_rule(
         lambda *_a, **_k: {"missing": [], "mismatched": []},
     )
     monkeypatch.setattr(m, "_render_claude_config_updates", lambda *_a, **_k: [])
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory() as temporary_root:
+        root = os.path.realpath(temporary_root)
         plamen_home = os.path.join(root, ".plamen")
         claude_home = os.path.join(root, ".claude")
         codex_home = os.path.join(root, ".codex-not-installed")
@@ -799,7 +804,8 @@ def test_doctor_hard_fails_incomplete_claude_verification_policy(
     monkeypatch,
 ) -> None:
     m = _load()
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory() as temporary_root:
+        root = os.path.realpath(temporary_root)
         plamen_home = os.path.join(root, ".plamen")
         claude_home = os.path.join(root, ".claude")
         policy_dir = os.path.join(claude_home, "verification_policy")
@@ -812,7 +818,7 @@ def test_doctor_hard_fails_incomplete_claude_verification_policy(
             "custom-mcp/farofino-mcp",
         ):
             path = os.path.join(plamen_home, submodule)
-            os.makedirs(path)
+            os.makedirs(path, exist_ok=True)
             with open(os.path.join(path, "README"), "w", encoding="utf-8") as f:
                 f.write("fixture\n")
 

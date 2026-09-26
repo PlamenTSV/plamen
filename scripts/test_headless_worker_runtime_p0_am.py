@@ -43,6 +43,14 @@ STDOUT_LIMIT = 16 * 1024 * 1024
 WINDOWS_AUDIT_SCRATCHPAD = (
     r"D:\audit-root\example-protocol\contracts\.scratchpad"
 )
+_WINDOWS_LEGACY_MODEL_EXECUTION_ONLY = pytest.mark.skipif(
+    os.name != "nt",
+    reason=(
+        "legacy Codex auth-home / Claude materialization fixture is "
+        "Windows-qualified; positive POSIX model execution requires an "
+        "admitted Linux boundary plus authenticated outer-supervisor authority"
+    ),
+)
 
 
 @pytest.fixture(scope="module")
@@ -54,6 +62,7 @@ def _test_provider_executable(
     )
 
 
+@_WINDOWS_LEGACY_MODEL_EXECUTION_ONLY
 def test_codex_phaseio_append_composes_fragment_and_preserves_preimage(
     tmp_path: Path,
 ) -> None:
@@ -449,7 +458,12 @@ def test_claude_workplan_rejects_codex_auth_before_provider_attachment(
 
     with pytest.raises(
         runtime.HeadlessWorkerRuntimeError,
-        match="Claude WorkPlans cannot carry Codex authentication material",
+        match=(
+            "Claude WorkPlans cannot carry Codex authentication material"
+            if os.name == "nt"
+            else "POSIX Codex authentication must come from the authenticated "
+            "outer-supervisor backend authority"
+        ),
     ):
         runtime.prepare_headless_worker(
             scratchpad=tmp_path,
@@ -469,6 +483,7 @@ def test_claude_workplan_rejects_codex_auth_before_provider_attachment(
         )
 
 
+@_WINDOWS_LEGACY_MODEL_EXECUTION_ONLY
 def test_codex_runtime_home_with_long_cache_paths_is_revoked(
     tmp_path: Path,
 ) -> None:
@@ -524,6 +539,7 @@ with open(os.path.join(native, 'cache.bin'), 'wb') as stream:
 
 
 @pytest.mark.parametrize("backend", ("claude", "codex"))
+@_WINDOWS_LEGACY_MODEL_EXECUTION_ONLY
 def test_backend_neutral_headless_worker_stages_then_phaseio_publishes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -642,6 +658,7 @@ def test_backend_neutral_headless_worker_stages_then_phaseio_publishes(
     )
 
 
+@_WINDOWS_LEGACY_MODEL_EXECUTION_ONLY
 def test_headless_worker_failure_leaves_canonical_absent_and_durable_debt(
     tmp_path: Path,
 ) -> None:
@@ -689,6 +706,7 @@ def test_headless_worker_failure_leaves_canonical_absent_and_durable_debt(
     assert unit["semantic_status"] == "INPUTS_BOUND"
 
 
+@_WINDOWS_LEGACY_MODEL_EXECUTION_ONLY
 def test_headless_worker_nonzero_without_runtime_state_transition_is_lifecycle_debt(
     tmp_path: Path,
 ) -> None:
@@ -768,6 +786,7 @@ def test_headless_worker_nonzero_without_runtime_state_transition_is_lifecycle_d
     assert unit["artifacts"] == {}
 
 
+@_WINDOWS_LEGACY_MODEL_EXECUTION_ONLY
 def test_headless_worker_rejects_foreign_staged_artifact_without_publication(
     tmp_path: Path,
 ) -> None:
@@ -795,6 +814,7 @@ def test_headless_worker_rejects_foreign_staged_artifact_without_publication(
     assert not (tmp_path / "depth_role_1_findings.md").exists()
 
 
+@_WINDOWS_LEGACY_MODEL_EXECUTION_ONLY
 def test_staged_semantic_gate_rejects_before_canonical_publication(
     tmp_path: Path,
 ) -> None:
@@ -844,6 +864,7 @@ def test_staged_semantic_gate_rejects_before_canonical_publication(
     assert unit["artifacts"] == {}
 
 
+@_WINDOWS_LEGACY_MODEL_EXECUTION_ONLY
 def test_recon_selection_gate_rejects_invented_id_before_transaction_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -930,6 +951,7 @@ def test_recon_selection_gate_rejects_invented_id_before_transaction_commit(
     assert unit["artifacts"] == {}
 
 
+@_WINDOWS_LEGACY_MODEL_EXECUTION_ONLY
 def test_retry_attempt_paths_share_one_staged_gate_and_both_incorporate(
     tmp_path: Path,
 ) -> None:
@@ -1039,6 +1061,7 @@ def test_transaction_launch_inputs_support_extended_length_scratchpad_paths(
     assert (root / "depth_role_1_findings.md").is_file()
 
 
+@_WINDOWS_LEGACY_MODEL_EXECUTION_ONLY
 def test_claude_windows_backslash_staged_gate_is_retry_stable_and_tamper_safe(
     tmp_path: Path,
 ) -> None:
@@ -1222,6 +1245,7 @@ def test_staged_gate_rejects_context_bound_to_a_different_attempt(
     assert not (tmp_path / "depth_role_1_findings.md").exists()
 
 
+@_WINDOWS_LEGACY_MODEL_EXECUTION_ONLY
 def test_prompt_and_backend_are_bound_but_logical_assignment_is_equal(
     tmp_path: Path,
 ) -> None:
@@ -1296,6 +1320,7 @@ def test_prompt_and_backend_are_bound_but_logical_assignment_is_equal(
     ).hexdigest()
 
 
+@_WINDOWS_LEGACY_MODEL_EXECUTION_ONLY
 def test_headless_incorporation_binds_produced_conditional_receipt(
     tmp_path: Path,
 ) -> None:

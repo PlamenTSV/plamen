@@ -1,12 +1,17 @@
 """Exact post-depth security-obligation lifecycle authority fixtures."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import os
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import pytest
 
+import plamen_driver as D
 import security_obligation_authority as SO
 import security_obligation_lifecycle as L
 from artifact_ledger import (
@@ -49,6 +54,96 @@ from verifier_work_roster import (
 
 RUN_ID = "12345678-1234-4234-9234-123456789abc"
 SNAPSHOT = "a" * 64
+
+
+def _genuine_compat_model_commit(
+    *,
+    root: Path,
+    contract: PhaseIOContract,
+    launch: LaunchSpec,
+    spec: VerifierLaunchSpec,
+    output_bytes: dict[Path, bytes],
+) -> tuple[dict, dict]:
+    """Run harmless real child and return its production MODEL authority."""
+
+    if os.name != "posix":
+        pytest.skip("real-child fixture requires the POSIX compatibility runtime")
+    import posix_v2_compat_runtime as compat
+
+    encoded = {
+        path.name: base64.b64encode(raw).decode("ascii")
+        for path, raw in output_bytes.items()
+    }
+    binary = root.parent / f"fixture-codex-{contract.work_unit_id}"
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        "import base64,json,re,sys\n"
+        "from pathlib import Path\n"
+        "if sys.argv[1:] == ['--version']:\n"
+        " print('codex-cli lifecycle-fixture'); raise SystemExit(0)\n"
+        "prompt=sys.stdin.buffer.read().decode('utf-8')\n"
+        "sys.stderr.write('OpenAI Codex v0.test\\n--------\\nworkdir: /fixture\\nmodel: gpt-5.4\\nprovider: openai\\n--------\\nuser\\n')\n"
+        "blocks=re.findall(r'```json\\n(.*?)\\n```',prompt,re.S)\n"
+        "routes=json.loads(blocks[-1])['output_routes']\n"
+        f"payloads={encoded!r}\n"
+        "for route in routes:\n"
+        " target=Path(route['path']); target.parent.mkdir(parents=True,exist_ok=True)\n"
+        " target.write_bytes(base64.b64decode(payloads[Path(route['canonical_path']).name]))\n"
+        "Path(sys.argv[sys.argv.index('-o')+1]).write_text('complete\\n')\n"
+        "print(json.dumps({'type':'turn.completed'},sort_keys=True))\n",
+        encoding="utf-8",
+    )
+    binary.chmod(0o755)
+    config = {
+        "pipeline": "sc",
+        "mode": "thorough",
+        "language": "evm",
+        "cli_backend": "codex",
+        "project_root": str(root.parent.resolve()),
+        "scratchpad": str(root.resolve()),
+        "_run_id": RUN_ID,
+        "_audit_snapshot": {"snapshot_digest": SNAPSHOT},
+    }
+    session = compat.issue_posix_v2_compat_session_for_installed_front(
+        run_id=RUN_ID,
+        project_root=root.parent,
+        scratchpad=root,
+    )
+    try:
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(
+                D,
+                "_POSIX_COMPAT_V2_PROCESS_MARKER",
+                D._POSIX_COMPAT_V2_MARKER_TOKEN,
+            )
+            monkeypatch.setattr(D, "_POSIX_COMPAT_V2_SESSION_AUTHORITY", session)
+            monkeypatch.setattr(compat.shutil, "which", lambda _name: str(binary))
+            monkeypatch.setattr(
+                compat,
+                "_load_ambient_codex_auth",
+                lambda: ("PRIVATE_AUTH_JSON_COPY", b'{"tokens":{}}\n', "c" * 64),
+            )
+            rc, committed = D._execute_or_replay_dynamic_verifier_model(
+                spec,
+                prompt_path=(
+                    root / "_verifier_runtime_units"
+                    / spec.work_unit_id / "prompt.md"
+                ),
+                log_path=(
+                    root / "_verifier_runtime_units"
+                    / spec.work_unit_id / "stdio.log"
+                ),
+                scratchpad=root,
+                phase=SimpleNamespace(name=contract.phase, needs_mcp=False),
+                config=config,
+                execution_config=config,
+                model_io_contract=contract,
+                model_io_launch=launch,
+            )
+        assert rc == 0 and committed is not None
+        return committed
+    finally:
+        session.close()
 
 
 def _sha(raw: bytes) -> str:
@@ -197,9 +292,9 @@ def _write_runtime(root: Path, items: list[QueueWorkItem], *, verdict: str) -> N
         plan.to_json() + "\n", encoding="utf-8"
     )
     policy = build_verifier_runtime_policy(
-        backend="claude",
-        model="claude-opus-4-8",
-        transport="pty",
+        backend="codex",
+        model="gpt-5.4",
+        transport="exec",
         timeout_seconds=300,
         max_concurrency=2,
         source_root=str(root.parent.resolve()),
@@ -220,7 +315,12 @@ def _write_runtime(root: Path, items: list[QueueWorkItem], *, verdict: str) -> N
         unit_dir = root / "_verifier_runtime_units" / unit.work_unit_id
         unit_dir.mkdir(parents=True, exist_ok=True)
         prompt = f"fixture prompt for {unit.work_unit_id}\n".encode()
-        spec = build_verifier_launch_spec(roster, unit.work_unit_id, prompt_bytes=prompt)
+        spec = build_verifier_launch_spec(
+            roster,
+            unit.work_unit_id,
+            prompt_bytes=prompt,
+            codex_executable="codex",
+        )
         (unit_dir / "prompt.md").write_bytes(prompt)
         (unit_dir / "launch_spec.json").write_text(
             spec.to_json() + "\n", encoding="utf-8"
@@ -306,7 +406,7 @@ def _write_runtime(root: Path, items: list[QueueWorkItem], *, verdict: str) -> N
             "pipeline": "sc",
             "mode": "thorough",
             "ecosystem": "evm",
-            "backend": "claude",
+            "backend": "codex",
             "phase": shard_id,
         }
         prelaunch_contract = resolve_phase_io_contract(
@@ -325,7 +425,7 @@ def _write_runtime(root: Path, items: list[QueueWorkItem], *, verdict: str) -> N
             pipeline="sc",
             mode="thorough",
             ecosystem="evm",
-            backend="claude",
+            backend=prelaunch_contract.backend,
             model="driver",
             timeout_s=300,
             exec_mode="python",
@@ -376,10 +476,10 @@ def _write_runtime(root: Path, items: list[QueueWorkItem], *, verdict: str) -> N
             pipeline="sc",
             mode="thorough",
             ecosystem="evm",
-            backend="claude",
-            model="claude-opus-4-8",
+            backend="codex",
+            model="gpt-5.4",
             timeout_s=300,
-            exec_mode="pty",
+            exec_mode="exec",
             tool_policy=("filesystem", "shell", "foreground-only"),
         )
         # Preserve fixture bytes while replaying the production ordering: the
@@ -393,15 +493,49 @@ def _write_runtime(root: Path, items: list[QueueWorkItem], *, verdict: str) -> N
         record_work_unit_inputs(
             root, root.parent, model_contract, model_launch, run_id=RUN_ID
         )
-        for path, raw in model_output_bytes.items():
-            path.write_bytes(raw)
-        record_work_unit_artifacts(
-            root,
-            root.parent,
-            model_contract,
-            model_launch,
-            run_id=RUN_ID,
-            actor="MODEL",
+        replay = _genuine_compat_model_commit(
+            root=root,
+            contract=model_contract,
+            launch=model_launch,
+            spec=spec,
+            output_bytes=model_output_bytes,
+        )
+        execution_authority, _plan = replay
+        _json(
+            gate,
+            {
+                "schema_version": "plamen.verifier_unit_gate_receipt.v2",
+                "state": "CLEAN",
+                "work_unit_id": unit.work_unit_id,
+                "work_unit_resume_digest": unit.resume_digest,
+                "roster_digest": roster.digest,
+                "launch_spec_digest": spec.digest,
+                "method_dispatch_id": dispatch["dispatch_id"],
+                "method_dispatch_sha256": _sha(
+                    (unit_dir / "method_dispatch.json").read_bytes()
+                ),
+                "ordered_work_item_ids": list(unit.ordered_work_item_ids),
+                "operator_receipt_digests": operator_digests,
+                "model_execution_authority_digest": execution_authority[
+                    "authority_digest"
+                ],
+                "output_sha256": {
+                    name: _sha((root / name).read_bytes())
+                    for name in unit.expected_output_files
+                },
+            },
+        )
+        unit_receipt = VerifierUnitReceipt.completed_for(
+            unit,
+            launch_spec_digest=spec.digest,
+            output_receipt_digests=[
+                _sha((root / f"verify_{work_id}.receipt.json").read_bytes())
+                for work_id in unit.ordered_work_item_ids
+            ],
+            gate_receipt_digests=[_sha(gate.read_bytes())],
+        )
+        (unit_dir / "unit_receipt.json").write_text(
+            unit_receipt.to_json() + "\n", encoding="utf-8"
         )
         control_contract = resolve_phase_io_contract(
             **common,
@@ -426,7 +560,7 @@ def _write_runtime(root: Path, items: list[QueueWorkItem], *, verdict: str) -> N
             pipeline="sc",
             mode="thorough",
             ecosystem="evm",
-            backend="claude",
+            backend=control_contract.backend,
             model="driver",
             timeout_s=300,
             exec_mode="python",
@@ -746,7 +880,7 @@ def test_missing_selected_phaseio_ledger_reopens_verification_debt(
     row = L.build_security_obligation_lifecycle(root)["rows"][0]
 
     assert row["state"] == L.VERIFICATION_DEBT
-    assert "CURRENT_TYPED_VERIFIER_COMPLETION_AUTHORITY_INVALID" in row["debt_reasons"]
+    assert "TYPED_VERIFIER_GATE_AUTHORITY_INVALID" in row["debt_reasons"]
 
 
 @pytest.mark.parametrize("semantic_leaf", ["launch_spec.json", "method_dispatch.json"])

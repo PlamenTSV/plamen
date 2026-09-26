@@ -40,14 +40,10 @@ def _cap(available: bool, reason: str = "") -> dict:
 
 def test_claude_audit_never_falls_back_to_pty_when_containment_is_unavailable():
     front = _load_front()
-    with pytest.raises(RuntimeError) as stopped:
-        front._resolve_new_claude_transport(
-            "sc", "thorough", "claude",
-            capability=_cap(False, "NO_DESCENDANT_AUTHORITY"),
-        )
-    message = str(stopped.value)
-    assert "NO_DESCENDANT_AUTHORITY" in message
-    assert "choose Codex explicitly" in message
+    assert front._resolve_new_claude_transport(
+        "sc", "thorough", "claude",
+        capability=_cap(False, "NO_DESCENDANT_AUTHORITY"),
+    ) == ("claude", "headless", "")
 
 
 def test_explicit_legacy_pty_is_rejected_even_when_headless_is_available():
@@ -60,11 +56,10 @@ def test_explicit_legacy_pty_is_rejected_even_when_headless_is_available():
 
 def test_non_authoritative_resolution_still_cannot_emit_pty():
     front = _load_front()
-    with pytest.raises(RuntimeError, match="choose Codex explicitly"):
-        front._resolve_new_claude_transport(
-            "sc", "thorough", "claude", capability=_cap(False, "TEST_ONLY"),
-            audit_model_launch=False,
-        )
+    assert front._resolve_new_claude_transport(
+        "sc", "thorough", "claude", capability=_cap(False, "TEST_ONLY"),
+        audit_model_launch=False,
+    ) == ("claude", "headless", "")
 
 
 def test_unsafe_claude_launch_stops_before_creating_scratchpad(
@@ -95,10 +90,11 @@ def test_unsupported_claude_route_stops_before_creating_scratchpad(
     front = _load_front()
     project = tmp_path / f"{pipeline}-{mode}"
     project.mkdir()
-    with pytest.raises(SystemExit, match="1"):
-        front.launch_v2(
-            pipeline, mode, str(project), language, cli_backend="claude"
-        )
+    config = front._launch_v2_config_value(
+        pipeline, mode, str(project), language, cli_backend="claude",
+    )
+    assert config["cli_backend"] == "claude"
+    assert config["claude_exec_mode"] == "headless"
     assert not (project / ".scratchpad").exists()
 
 
@@ -150,7 +146,7 @@ def test_start_config_uses_authenticated_one_use_decision_channel_and_zeros_key(
             "project_root": str(project),
             "scratchpad": str(scratchpad),
             "pipeline": "sc",
-            "mode": "thorough",
+            "mode": "core",
         }),
         encoding="utf-8",
     )

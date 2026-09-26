@@ -15,9 +15,9 @@ Before ANY verdict:
 1. **Devil's Advocate**: Answer "What would make this exploitable?" (never "nothing")
 2. **Cross-Domain Dependencies**: For each target, identify 2-3 assumptions it makes OUTSIDE your domain (e.g., oracle freshness, access control correctness, state variable consistency). Ask: "If this assumption broke, would my target become exploitable?" Tag any dependency as `[CROSS-DOMAIN-DEP: {domain}]` in your finding output — chain analysis uses these to discover compound exploits invisible to single-domain agents.
 3. **Chain Check**: Search findings_inventory.md for findings that CREATE the missing precondition
-4. **Evidence Quality**: Tag all evidence [PROD-ONCHAIN], [CODE], [MOCK], etc. - [MOCK]/[EXT-UNV] cannot support REFUTED
-5. **Confidence Gate**: Uncertain? → CONTESTED, not REFUTED. Only REFUTED if defense proven with production evidence
-6. **Enabler Search**: Before REFUTED, ask "Does ANY other finding enable this?"
+4. **Evidence Quality**: Tag evidence by origin. Mock or unverified-external evidence alone cannot establish a production defense.
+5. **Uncertainty**: Preserve unresolved candidates when evidence is incomplete. Propose a negative disposition only when production evidence proves the defense.
+6. **Enabler Search**: Before proposing a negative disposition, check whether another finding enables the missing precondition.
 
 Apply only the rule and skill files enumerated by the driver's content-bound
 methodology descriptors. Do not discover or open a legacy home-directory path.
@@ -75,42 +75,6 @@ For each function that builds an array of transactions (common in guard contract
 - Substitute real values into your analysis
 - State explicitly: "With constants [list], the attack requires [condition]"
 
-## Output Format
+## Evidence to record
 
-Write to `{scratchpad}/depth_token_flow_findings.md`:
-
-```markdown
-## DEPTH ANALYSIS: Token Flow
-
-### Target 1: [Location from breadth pass]
-**Source Finding(s)**: [Breadth finding IDs that triggered this analysis]
-**Breadth Claim**: [What the breadth agent suspected]
-
-#### Analysis
-[Your detailed trace with specific line numbers]
-
-#### Real Constants
-| Constant | Value | Source Line |
-|----------|-------|-------------|
-
-#### Verdict
-- [ ] CONFIRMED: [Breadth finding was correct because...]
-- [ ] REFINED: [Breadth finding was partially correct, actual issue is...]
-- [ ] REFUTED: [Breadth finding was incorrect because mechanism X prevents it]
-- [ ] CONTESTED: [Evidence is mixed or incomplete - escalate to verifier]
-
-### Target 2: ...
-
-## FINDING INDEX
-| ID | Severity | Location | Title | Source |
-```
-
-## Finding ID Format
-Use `[DT-N]` where N starts from 1.
-Each finding MUST include `Source: [breadth finding IDs]` showing what triggered the analysis.
-
-## Return Protocol
-Return ONLY: `DONE: {N} depth findings for token flow (X confirmed, Y refined, Z refuted, W contested)`
-MAX 1 line.
-
-Contested findings go to Step 7 verifier with FLAG: "requires external research"
+Use the driver-assigned output contract for IDs, outcomes, path, markers, and completion. For each target, cite its triggering source finding, the exact entry/exit path, relevant real constants and source lines, calculations, and the reachable terminal financial or non-financial effect. Preserve uncertain premises for independent verification.

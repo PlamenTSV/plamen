@@ -211,6 +211,31 @@ def _bound_execution(
     return asdict(result), test_path
 
 
+def _append_duration_only_execution(
+    scratchpad: Path,
+    result: dict[str, object],
+    *,
+    duration_s: float,
+) -> Path:
+    rerun = dict(result)
+    rerun["duration_s"] = duration_s
+    manifest = scratchpad / "mechanical_verify_manifest.json"
+    successor = scratchpad / (
+        f"verify_{result['finding_id']}.mechanical_successor.receipt.json"
+    )
+    authoritative = MV._authoritative_successor_result(manifest, rerun)
+    assert authoritative == result
+    return MV._write_exact_execution_evidence(
+        scratchpad,
+        executed_result=rerun,
+        authoritative_result=authoritative,
+        manifest_path=manifest,
+        successor_receipt_path=successor,
+        run_identity=RUN_ID,
+        driver_identity=DRIVER_ID,
+    )
+
+
 def _rich_record(
     scratchpad: Path,
     candidate_id: str,
@@ -431,6 +456,76 @@ def test_materialization_is_byte_idempotent(tmp_path: Path):
         for path in scratch.glob("verify_H-71.execution_scope_*.json")
     }
     assert after == before
+
+
+def test_duration_only_execution_replay_preserves_canonical_scope_bytes(
+    tmp_path: Path,
+):
+    project = tmp_path / "project"
+    scratch = tmp_path / "scratch"
+    result, _oracle = _bound_execution(scratch, project)
+    initial = materialize_execution_scope_assessments(
+        scratch, build_root=project
+    )
+    before = {
+        path.name: path.read_bytes()
+        for path in scratch.glob("verify_H-71.execution_scope_*.json")
+    }
+
+    _append_duration_only_execution(scratch, result, duration_s=9.5)
+    replay = materialize_execution_scope_assessments(
+        scratch, build_root=project
+    )
+    after = {
+        path.name: path.read_bytes()
+        for path in scratch.glob("verify_H-71.execution_scope_*.json")
+    }
+
+    assert initial["status"] == "CLEAN"
+    assert replay["status"] == "CLEAN"
+    assert after == before
+    assert len(list((scratch / "mechanical_execution_evidence").glob("*.json"))) == 2
+    assert load_execution_scope_assessment(scratch, "H-71")["status"] == "VALID_LIMITED"
+
+
+@pytest.mark.parametrize("mutation", ("missing", "tampered"))
+def test_duration_telemetry_cannot_replace_canonical_execution_evidence(
+    tmp_path: Path,
+    mutation: str,
+):
+    project = tmp_path / "project"
+    scratch = tmp_path / "scratch"
+    result, _oracle = _bound_execution(scratch, project)
+    canonical = next((scratch / "mechanical_execution_evidence").glob("*.json"))
+    initial = materialize_execution_scope_assessments(
+        scratch, build_root=project
+    )
+    frozen = {
+        path.name: path.read_bytes()
+        for path in scratch.glob("verify_H-71.execution_scope_*.json")
+    }
+    _append_duration_only_execution(scratch, result, duration_s=9.5)
+
+    if mutation == "missing":
+        canonical.unlink()
+    else:
+        canonical.write_bytes(canonical.read_bytes() + b"\n")
+
+    replay = materialize_execution_scope_assessments(
+        scratch, build_root=project
+    )
+
+    assert initial["status"] == "CLEAN"
+    assert replay["status"] == "DEGRADED"
+    assert any(
+        "established runtime source disagrees with current authority" in issue
+        for issue in replay["issues"]
+    )
+    assert {
+        path.name: path.read_bytes()
+        for path in scratch.glob("verify_H-71.execution_scope_*.json")
+    } == frozen
+    assert load_execution_scope_assessment(scratch, "H-71")["status"] == "INVALID"
 
 
 def test_resume_cannot_launder_post_execution_oracle_drift(tmp_path: Path):

@@ -40,6 +40,19 @@ def test_resolves_to_prompt_file():
     assert resolved.name == "phase4b7-enumgap-exploration.md"
 
 
+def test_clear_evidence_contract_requires_resolvable_project_relative_locus():
+    prompt = (
+        SCRIPTS_DIR.parent
+        / "prompts"
+        / "shared"
+        / "v2"
+        / "phase4b7-enumgap-exploration.md"
+    ).read_text(encoding="utf-8")
+    assert "exact project-root-relative source locus" in prompt
+    assert "A bare basename" in prompt
+    assert "do not shorten it" in prompt
+
+
 def test_phase_entry_present_both_pipelines_soft():
     from plamen_types import SC_PHASES, L1_PHASES
     for label, phases in (("SC", SC_PHASES), ("L1", L1_PHASES)):

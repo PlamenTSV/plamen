@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import sys
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -50,6 +51,32 @@ from verifier_work_roster import (  # noqa: E402
 
 
 NORMATIVE_SENTINEL = "PRIVATE_NORMATIVE_SENTINEL_DO_NOT_INLINE"
+
+
+def test_runtime_manifest_preserves_typed_membership_across_queue_sort(
+    tmp_path: Path,
+) -> None:
+    from test_verifier_output_receipt_runtime_p0_aj import _row
+
+    scratchpad = tmp_path / ".scratchpad"
+    scratchpad.mkdir()
+    rows = [_row(index, work_id) for index, work_id in enumerate(
+        ("H-02", "H-03", "H-04", "H-694"), 1
+    )]
+    D._write_queue_subset_manifest(scratchpad / "verification_queue.md", rows)
+    unit = SimpleNamespace(ordered_work_item_ids=("H-694", "H-02", "H-03", "H-04"))
+    manifest = scratchpad / "runtime_manifest.md"
+
+    D._materialize_dynamic_verifier_manifest(scratchpad, unit, manifest)
+
+    assert sorted(item.work_item_id for item in D._read_typed_queue_work_items(manifest)) == sorted(
+        unit.ordered_work_item_ids
+    )
+    with pytest.raises(ValueError, match="missing from canonical queue"):
+        D._materialize_dynamic_verifier_manifest(
+            scratchpad, SimpleNamespace(ordered_work_item_ids=("H-02", "H-999")),
+            manifest,
+        )
 
 
 def _application_for(work: dict) -> dict:

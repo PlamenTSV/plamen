@@ -34,12 +34,19 @@ import pytest
 import axis_disposition as AXIS
 import enumeration_gate as ENUMERATION
 import plamen_driver as DRIVER
-from artifact_ledger import read_artifact_ledger
+from artifact_ledger import (
+    active_committed_work_unit_authority_issues,
+    read_artifact_ledger,
+    record_work_unit_artifacts,
+    record_work_unit_inputs,
+)
+from phase_io_contracts import LaunchSpec, resolve_phase_io_contract
 from plamen_types import L1_PHASES, SC_PHASES, Phase
 from test_axis_population_provider_p0_i import (
     _project as _population_project,
     _write_graph,
 )
+from test_axis_disposition_v2_core_red import _axis_ci
 
 
 RUN_ID = "a1f92547-9973-4e98-8b0b-1efcb2b3b2b2"
@@ -110,6 +117,80 @@ def _write_json(path: Path, value: object) -> None:
     path.write_bytes(_canonical(value))
 
 
+def _commit_canonical_predecessor(
+    project: Path,
+    scratchpad: Path,
+    *,
+    backend: str,
+) -> None:
+    """Give the fixture triplet the same coupled authority production has."""
+
+    manifest = scratchpad / "inventory_floor_source_manifest.json"
+    manifest.write_text('{"schema_version":"fixture"}\n', encoding="utf-8")
+    canonical_bytes = {
+        name: (scratchpad / name).read_bytes()
+        for name in (
+            "findings_inventory.md",
+            "finding_records.json",
+            "_id_ledger.json",
+        )
+    }
+    for name in canonical_bytes:
+        (scratchpad / name).unlink()
+    contract = resolve_phase_io_contract(
+        pipeline="sc",
+        mode="thorough",
+        ecosystem="evm",
+        backend=backend,
+        phase="inventory",
+        work_unit_id="late_recall_floor",
+        exact_inputs=(manifest.name,),
+        exact_outputs=(
+            "findings_inventory.md",
+            "finding_records.json",
+            "_id_ledger.json",
+            "inventory_floor_receipt.json",
+        ),
+    )
+    launch = LaunchSpec(
+        work_unit_key=contract.key,
+        pipeline=contract.pipeline,
+        mode=contract.mode,
+        ecosystem=contract.ecosystem,
+        backend=contract.backend,
+        model="driver",
+        timeout_s=120,
+        exec_mode="python",
+        tool_policy=(),
+    )
+    record_work_unit_inputs(
+        scratchpad, project, contract, launch, run_id=RUN_ID
+    )
+    for name, raw in canonical_bytes.items():
+        (scratchpad / name).write_bytes(raw)
+    (scratchpad / "inventory_floor_receipt.json").write_text(
+        '{"schema_version":"plamen.inventory_floor_receipt.v1"}\n',
+        encoding="utf-8",
+    )
+    record_work_unit_artifacts(
+        scratchpad,
+        project,
+        contract,
+        launch,
+        run_id=RUN_ID,
+        actor="DRIVER",
+    )
+    authority_issues = active_committed_work_unit_authority_issues(
+        read_artifact_ledger(scratchpad),
+        work_unit_key=contract.key,
+        run_id=RUN_ID,
+        expected_artifact_identities=tuple(
+            output.identity for output in contract.outputs
+        ),
+    )
+    assert authority_issues == []
+
+
 def _one_item_authority(
     tmp_path: Path,
     *,
@@ -151,9 +232,17 @@ def _one_item_authority(
         scratchpad / "axis_execution_evidence_authority.json",
         evidence,
     )
-    (scratchpad / "findings_inventory.md").write_text(
+    inventory = scratchpad / "findings_inventory.md"
+    inventory.write_text(
         "# Findings Inventory\n\nNo candidates yet.\n",
         encoding="utf-8",
+    )
+    (scratchpad / "finding_records.json").write_bytes(
+        DRIVER.derive_preverify_finding_records_bytes(inventory.read_bytes())
+    )
+    _write_json(
+        scratchpad / "_id_ledger.json",
+        {"schema_version": "plamen.id_ledger.v1", "allocations": []},
     )
     return project, scratchpad, _config(project, backend=backend), worklist, evidence
 
@@ -175,6 +264,41 @@ def _sidecar(
             "sidecar_digest": _sha(_canonical(unsigned)),
         }
     )
+
+
+def test_axis_model_and_repair_prompts_delegate_machine_identity_to_driver(
+    tmp_path: Path,
+) -> None:
+    project, scratchpad, config, worklist, _evidence = (
+        _one_item_authority(tmp_path, backend="codex")
+    )
+    base_prompt = DRIVER._compile_axis_coverage_model_prompt(
+        "bounded axis model prompt",
+        _axis_phase(),
+        scratchpad,
+        config,
+    )
+    repair_prompt = DRIVER._axis_repair_prompt(
+        worklist=worklist,
+        plan={
+            "retained_work_item_ids": [
+                item["work_item_id"] for item in worklist["items"]
+            ],
+            "plan_digest": "d" * 64,
+        },
+        root=scratchpad,
+        project_root=project,
+    )
+
+    for prompt in (base_prompt, repair_prompt):
+        assert "Driver-owned identity projection" in prompt
+        assert "Do not copy or compute" in prompt
+        assert "source or\nreceipt hashes" in prompt
+        assert "Write only the model-owned `items` array" in prompt
+        assert '`{"kind":"SOURCE_LOCUS"}`' in prompt
+        assert "A CLEAR invariant contains only `ci_id`, `shape`, `assertion`" in prompt
+        assert "jq -cjS" not in prompt
+        assert "NEVER recompute" not in prompt
 
 
 def _source_clear(item: Mapping[str, Any]) -> dict[str, str]:
@@ -279,6 +403,11 @@ def _finalize(
     scratchpad: Path,
 ) -> list[str]:
     _assert_driver_surface()
+    _commit_canonical_predecessor(
+        Path(config["project_root"]),
+        scratchpad,
+        backend=str(config["cli_backend"]),
+    )
     result = DRIVER._finalize_axis_coverage_boundary(
         phase=phase,
         config=config,
@@ -740,6 +869,7 @@ def test_clear_path_commits_model_then_finalizes_without_repair_worker(
     policy_path = Path(str(boundary["policy_path"]))
     for index, name in enumerate(_BASE_OUTPUTS, 1):
         event = {
+            "hook_event_name": "PreToolUse",
             "session_id": "axis-fixture",
             "tool_use_id": f"write-{index}",
             "cwd": str(project),
@@ -753,7 +883,7 @@ def test_clear_path_commits_model_then_finalizes_without_repair_worker(
             policy_path,
             json.dumps(event).encode("utf-8"),
         )
-        assert code == 0
+        assert code == 0, decision
         assert (
             decision["hookSpecificOutput"]["permissionDecision"] == "allow"
         )
@@ -769,10 +899,13 @@ def test_clear_path_commits_model_then_finalizes_without_repair_worker(
             [
                 {
                     "work_item_id": row["work_item_id"],
-                    "disposition": "CLEAR",
-                    "action_id": "",
-                    "evidence": [_source_clear(row)],
-                    "rationale": "the exact current source guard closes this cell",
+                        "disposition": "CLEAR",
+                        "action_id": "",
+                        "evidence": [_source_clear(row)],
+                        "invariant_commitment": _axis_ci(
+                            row, [_source_clear(row)]
+                        ),
+                        "rationale": "the exact current source guard closes this cell",
                 }
                 for row in worklist["items"]
             ],

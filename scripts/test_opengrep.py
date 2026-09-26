@@ -420,23 +420,21 @@ def test_opengrep_rules_follow_selected_runtime_not_hostile_home(
 
 
 def test_ensure_rules_skip_if_present(tmp_path):
-    """Release-pinned, pre-populated rule submodules are accepted read-only."""
+    """Portable manifest replay accepts installed trees without Git metadata."""
     with mock.patch("recon_prepass._OPENGREP_RULES_BASE", tmp_path):
+        expected = {}
         for name in ("opengrep-rules", "decurity-rules", "aptos-move-rules"):
             d = tmp_path / name
             d.mkdir()
-            (d / ".git").mkdir()
             (d / "rules.yaml").write_text("rules: []", encoding="utf-8")
-
-        def revision_probe(cmd, *_args, **_kwargs):
-            name = Path(cmd[2]).name
-            return 0, __import__("recon_prepass")._OPENGREP_RULE_REVISIONS[name]
+            expected[name] = d
 
         with mock.patch(
-            "recon_prepass._run_hardened", side_effect=revision_probe,
-        ) as mock_run:
+            "recon_prepass._validate_installed_rule_authority",
+            return_value=expected,
+        ) as validate:
             result = _ensure_opengrep_rules()
-        assert mock_run.call_count == 3
+        validate.assert_called_once_with(tmp_path)
         assert "opengrep-rules" in result
         assert "decurity-rules" in result
         assert "aptos-move-rules" in result
@@ -445,9 +443,15 @@ def test_ensure_rules_skip_if_present(tmp_path):
 def test_ensure_rules_reports_missing_without_runtime_materialization(tmp_path):
     """Missing rule submodules are coverage debt; audit-time repair is forbidden."""
     with mock.patch("recon_prepass._OPENGREP_RULES_BASE", tmp_path):
-        with mock.patch("recon_prepass._run_hardened") as mock_run:
+        authority_error = __import__(
+            "recon_prepass"
+        )._OpenGrepRuleAuthorityError("manifest missing")
+        with mock.patch(
+            "recon_prepass._validate_installed_rule_authority",
+            side_effect=authority_error,
+        ) as validate:
             result = _ensure_opengrep_rules()
-        mock_run.assert_not_called()
+        validate.assert_called_once_with(tmp_path)
         assert result == {}
         failures = __import__("recon_prepass")._OPENGREP_RULE_FAILURES
         assert set(failures) == {

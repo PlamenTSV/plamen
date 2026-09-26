@@ -29,6 +29,8 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
+from portable_path_contract import assert_lexically_bounded_relative_path
+
 
 TRUST_AUTHORITY_FILE = "trust_evidence_authority.json"
 TRUST_AUTHORITY_SCHEMA = "plamen.trust_evidence_authority.v1"
@@ -137,13 +139,20 @@ def _safe_relative(root: Path, value: object) -> Path | None:
     raw = str(value or "").strip()
     if not raw:
         return None
+    try:
+        assert_lexically_bounded_relative_path(raw, label="trust evidence path")
+    except ValueError:
+        return None
     rel = Path(raw)
     if rel.is_absolute() or any(
         part in {"", ".", ".."} or ":" in part for part in rel.parts
     ):
         return None
-    base = root.resolve()
-    candidate = (base / rel).resolve()
+    try:
+        base = root.resolve()
+        candidate = (base / rel).resolve()
+    except OSError:
+        return None
     try:
         if os.path.commonpath((str(base), str(candidate))) != str(base):
             return None

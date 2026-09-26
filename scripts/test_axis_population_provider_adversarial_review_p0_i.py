@@ -169,6 +169,97 @@ def test_graph_subset_cannot_certify_exact_zero_over_production_source(
     )
 
 
+def test_solidity_declaration_only_functions_are_not_executable_omissions(
+    tmp_path: Path,
+) -> None:
+    _project(
+        tmp_path,
+        source=(
+            "interface IUnit {\n"
+            "  function interfaceOnly() external;\n"
+            "}\n"
+            "abstract contract Unit {\n"
+            "  function abstractOnly() external virtual;\n"
+            "  function implemented() public pure returns (uint256) {\n"
+            "    return 1;\n"
+            "  }\n"
+            "}\n"
+        ),
+    )
+    scratchpad = tmp_path / "project" / ".scratchpad"
+    _write_graph(
+        scratchpad,
+        {
+            "Unit.implemented()": {
+                "bare": "implemented",
+                "loc": "contracts/Unit.sol:L6",
+                "callers": [],
+            }
+        },
+    )
+
+    result = E.compute_axis_population(
+        scratchpad,
+        run_id="RUN-DECLARATION-ONLY-SOLIDITY",
+    )
+
+    assert result["denominator_status"] == "EXACT"
+    assert not any(
+        name in row.casefold()
+        for row in result["debt"]
+        for name in ("interfaceonly", "abstractonly")
+    )
+
+
+def test_solidity_body_bearing_function_remains_in_source_universe(
+    tmp_path: Path,
+) -> None:
+    _project(
+        tmp_path,
+        source=(
+            "interface IUnit {\n"
+            "  function interfaceOnly() external;\n"
+            "}\n"
+            "abstract contract Unit {\n"
+            "  function abstractOnly() external virtual;\n"
+            "  function implemented() public pure returns (uint256) {\n"
+            "    return 1;\n"
+            "  }\n"
+            "  function omittedConcrete() public pure returns (uint256) {\n"
+            "    return 2;\n"
+            "  }\n"
+            "}\n"
+        ),
+    )
+    scratchpad = tmp_path / "project" / ".scratchpad"
+    _write_graph(
+        scratchpad,
+        {
+            "Unit.implemented()": {
+                "bare": "implemented",
+                "loc": "contracts/Unit.sol:L6",
+                "callers": [],
+            }
+        },
+    )
+
+    result = E.compute_axis_population(
+        scratchpad,
+        run_id="RUN-OMITTED-CONCRETE-SOLIDITY",
+    )
+
+    assert result["denominator_status"] == "DEGRADED"
+    assert any(
+        "omittedconcrete@contracts/unit.sol:l9" in row.casefold()
+        for row in result["debt"]
+    )
+    assert not any(
+        name in row.casefold()
+        for row in result["debt"]
+        for name in ("interfaceonly", "abstractonly")
+    )
+
+
 def test_stale_cap_receipt_from_prior_run_cannot_authorize_current_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

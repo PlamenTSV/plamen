@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.plamen.audit.broker.v2</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PLAMEN_GENERATION_SERVICE_ABSOLUTE_PATH__</string>
+  </array>
+  <key>MachServices</key>
+  <dict>
+    <key>com.plamen.audit.broker.v2</key>
+    <true/>
+  </dict>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>AbandonProcessGroup</key>
+  <false/>
+</dict>
+</plist>

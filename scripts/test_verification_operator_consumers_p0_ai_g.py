@@ -561,13 +561,26 @@ def test_operator_summary_cannot_bypass_recovery_execution_authority(
 
 
 def test_primary_operator_denominator_is_current_exact_and_missing_is_debt(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
+    monkeypatch,
+    request: pytest.FixtureRequest,
 ) -> None:
-    from test_dynamic_verifier_runtime_integration_p0_ak import (
-        _bind_sc_shared_context_producer, _ignore_poc_gate, _proposal_bytes,
-        _setup_plan, _verify_bytes, _write_operator_application,
-    )
+    import test_dynamic_verifier_runtime_integration_p0_ak as runtime_fixture
     from verifier_work_roster import build_verifier_runtime_policy, build_verifier_work_roster
+
+    # Some legacy test modules deliberately evict and reimport plamen_driver.
+    # This module retains its collection-time DRIVER reference, while this
+    # fixture module is imported lazily. Bind the borrowed helper to the exact
+    # driver object exercised below so it cannot patch a different generation.
+    monkeypatch.setattr(runtime_fixture, "D", DRIVER)
+    _activate_genuine_dynamic_compat = (
+        runtime_fixture._activate_genuine_dynamic_compat
+    )
+    _bind_sc_shared_context_producer = (
+        runtime_fixture._bind_sc_shared_context_producer
+    )
+    _ignore_poc_gate = runtime_fixture._ignore_poc_gate
+    _setup_plan = runtime_fixture._setup_plan
 
     scratchpad, phase_name, items, plan = _setup_plan(
         tmp_path, "sc", finding_ids=("H-01",)
@@ -576,7 +589,7 @@ def test_primary_operator_denominator_is_current_exact_and_missing_is_debt(
     roster = build_verifier_work_roster(
         plan, pipeline="sc", ecosystem="evm", mode="thorough",
         runtime_policy=build_verifier_runtime_policy(
-            backend="claude", model="sonnet", transport="pty",
+            backend="codex", model="gpt-5.4", transport="exec",
             timeout_seconds=60, source_root=str(tmp_path.resolve()),
         ),
         method_registry_digest="1" * 64, context_packet_digest="2" * 64,
@@ -585,30 +598,30 @@ def test_primary_operator_denominator_is_current_exact_and_missing_is_debt(
         roster.to_json(), encoding="utf-8"
     )
     unit = roster.work_units[0]
-
-    def fake_execute(spec, **_kwargs):
-        item = items[0]
-        (scratchpad / item.expected_output_file).write_bytes(_verify_bytes(item.work_item_id))
-        (scratchpad / f"verify_{item.work_item_id}.severity_proposal.json").write_bytes(
-            _proposal_bytes(item)
-        )
-        _write_operator_application(scratchpad, unit.work_unit_id, item.work_item_id)
-        return 0
-
-    monkeypatch.setattr(DRIVER, "_execute_dynamic_verifier_launch", fake_execute)
     _ignore_poc_gate(monkeypatch)
     config = {
         "pipeline": "sc", "mode": "thorough", "language": "evm",
-        "cli_backend": "claude", "claude_exec_mode": "pty",
+        "cli_backend": "codex",
         "project_root": str(tmp_path.resolve()), "scratchpad": str(scratchpad),
         "_run_id": str(uuid.uuid4()),
+        "_audit_snapshot": {"snapshot_digest": "a" * 64},
     }
     _bind_sc_shared_context_producer(
         scratchpad,
         tmp_path,
         items,
         run_id=config["_run_id"],
+        backend="codex",
     )
+    session, _counter, _argv_log = _activate_genuine_dynamic_compat(
+        monkeypatch,
+        project=tmp_path,
+        scratchpad=scratchpad,
+        run_id=config["_run_id"],
+        items=items,
+    )
+    request.addfinalizer(session.close)
+    assert DRIVER._posix_v2_compat_process_active()
     assert DRIVER._run_dynamic_verifier_unit(
         phase, scratchpad, config, roster, unit
     ) == []

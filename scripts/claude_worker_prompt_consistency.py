@@ -30,7 +30,14 @@ _PATH_TOKEN_RE = re.compile(
     rf"((?:[A-Za-z]:[\\/]|~[/\\]|\.{{1,2}}[/\\]|"
     rf"(?:scratchpad|project):)[^\s,;|<>]+)|"
     rf"((?<![A-Za-z0-9_:])/(?!/)[^\s,;|<>`\"']+)|"
-    rf"([A-Za-z0-9_.@+-]+(?:[/\\][A-Za-z0-9_.@+ -]+)*\."
+    # The filename alternatives admit FAMILY metacharacters (`*`, `?`, and a
+    # `<...>` / `{...}` placeholder segment).  Without them a methodology token
+    # such as `depth_*_findings.md` was split into the fragment
+    # `_findings.md` -- an artifact-shaped token nobody registered -- and the
+    # read directive was denied; `verify_<ID>.md` produced no token at all and
+    # was silently unchecked.  A family still has to NAME a registered member
+    # to pass, and write authority stays exact.
+    rf"([A-Za-z0-9_.@+*?<>{{}}-]+(?:[/\\][A-Za-z0-9_.@+*?<>{{}} -]+)*\."
     rf"(?:{_ARTIFACT_SUFFIX_PATTERN}))",
     re.IGNORECASE,
 )
@@ -120,6 +127,32 @@ _ADDITIONAL_OUTPUT_RE = re.compile(
     r"(?i)\b(?:additional|another|alternate|other|extra|secondary)\s+"
     r"(?:output|artifact|file)s?\b"
 )
+# A PROHIBITION is not a declaration of intent. The driver's own output
+# contract reads "Write exactly <path> and no other artifact." -- which the
+# bare pattern above matches on "other artifact", so the guard refused to
+# launch the worker it had just correctly constrained. Observed live in DODO
+# run34: `ALTERNATE_OUTPUT_WRITE@637:additional output` blocked the breadth
+# methodology-repair worker. Only flag an additional-output phrase when it is
+# NOT governed by a negation in the same clause.
+_ADDITIONAL_OUTPUT_NEGATION_RE = re.compile(
+    r"(?ix)\b(?:"
+    r"no|not|never|without|excluding|except|forbidden|prohibited|"
+    r"do\s+not|don't|must\s+not|cannot|can't|may\s+not|refrain\s+from|"
+    r"avoid|omit"
+    r")\b"
+)
+
+
+def _declares_additional_output(clause: str) -> bool:
+    """True only when the clause ASSERTS an additional output, not forbids one."""
+
+    match = _ADDITIONAL_OUTPUT_RE.search(clause or "")
+    if match is None:
+        return False
+    # Look only at the text leading up to the phrase: "and no other artifact"
+    # negates, while "write another artifact, and no excuses" does not.
+    preceding = clause[: match.start()]
+    return _ADDITIONAL_OUTPUT_NEGATION_RE.search(preceding) is None
 _EXAMPLE_OR_COMMENT_PREFIX_RE = re.compile(
     r"(?ix)^\s*(?:(?:bad|good|negative|positive|illustrative)\s+)?"
     r"(?:example|illustration|comment|note)\s*(?:only\s*)?(?::|[-–—])\s*"
@@ -227,6 +260,53 @@ def _resolve_identity(
     return _slash_norm(text)
 
 
+def _family_regex_source(raw: str) -> str | None:
+    """Translate a family token's BASENAME into an anchored regex source.
+
+    `*`, `?` and a `<...>` / `{...}` placeholder each stand for one path
+    segment's worth of characters and never cross a `/`.
+    """
+
+    basename = raw.rsplit("/", 1)[-1]
+    if not basename:
+        return None
+    out: list[str] = []
+    index = 0
+    saw_wildcard = False
+    while index < len(basename):
+        char = basename[index]
+        if char in "<{":
+            closer = ">" if char == "<" else "}"
+            end = basename.find(closer, index + 1)
+            if end == -1:
+                return None
+            out.append(r"[^/]+")
+            saw_wildcard = True
+            index = end + 1
+            continue
+        if char == "*":
+            out.append(r"[^/]*")
+            saw_wildcard = True
+        elif char == "?":
+            out.append(r"[^/]")
+            saw_wildcard = True
+        elif char == "[":
+            end = basename.find("]", index + 1)
+            if end == -1:
+                return None
+            body = basename[index + 1:end]
+            if not body:
+                return None
+            out.append("[" + body.replace("\\", "\\\\") + "]")
+            saw_wildcard = True
+            index = end + 1
+            continue
+        else:
+            out.append(re.escape(char))
+        index += 1
+    return "".join(out) if saw_wildcard else None
+
+
 @dataclass(frozen=True, slots=True)
 class _PathAuthority:
     exact: frozenset[str]
@@ -243,7 +323,80 @@ class _PathAuthority:
         # only when that basename identifies exactly one registered path.
         raw = _slash_norm(token)
         basename = raw.casefold() if self.case_insensitive else raw
-        return "/" not in raw and basename in self.unique_basenames
+        if "/" not in raw and basename in self.unique_basenames:
+            return True
+        if self._unique_relative_suffix(raw):
+            return True
+        return self._family_matches(
+            token, project_root=project_root, scratchpad_root=scratchpad_root
+        )
+
+    def _unique_relative_suffix(self, raw: str) -> bool:
+        """Admit a relative path that names exactly one registered artifact.
+
+        A bare relative token resolves against PROJECT_ROOT, so a registered
+        SCRATCHPAD artifact inside a subdirectory -- `body_manifests/
+        report_medium.json`, `report_evidence_manifests/report_medium.json`,
+        `scip/call_graph_consensus.md` -- could never be named the way the
+        methodology writes it, and the launch was denied for reading its own
+        registered input.  This is the same unambiguity rule the bare-basename
+        convenience already uses, extended to a relative suffix: exactly one
+        registered identity may end with it.
+        """
+
+        if not raw or "/" not in raw or raw.startswith("/"):
+            return False
+        if re.match(r"^[A-Za-z]:[\\/]", raw) or raw.startswith(".."):
+            return False
+        suffix = "/" + (raw.casefold() if self.case_insensitive else raw)
+        matches = [
+            member for member in self.exact
+            if (member.casefold() if self.case_insensitive else member).endswith(
+                suffix
+            )
+        ]
+        return len(matches) == 1
+
+    def _family_matches(
+        self, token: str, *, project_root: str, scratchpad_root: str
+    ) -> bool:
+        """A family token is satisfied by any registered member it names.
+
+        Methodology prose legitimately names a SET of artifacts -- `verify_*.md`,
+        `depth_*_findings.md`, `verify_<ID>.md` -- and no such token can ever
+        equal a registered identity, so every read directive carrying one was
+        denied and the phase never launched.  A family never satisfies a WRITE
+        directive (write authority stays exact) and the runtime's per-file read
+        authority is unchanged, so accepting the directive widens nothing.
+        """
+
+        raw = _slash_norm(_strip_token(token))
+        if not raw or not any(ch in raw for ch in "*?[<{"):
+            return False
+        pattern_source = _family_regex_source(raw)
+        if pattern_source is None:
+            return False
+        flags = re.IGNORECASE if self.case_insensitive else 0
+        try:
+            pattern = re.compile(pattern_source, flags)
+        except re.error:
+            return False
+        if "/" in raw:
+            directory = raw.rsplit("/", 1)[0] + "/"
+            resolved_dir = _resolve_identity(
+                directory, project_root=project_root,
+                scratchpad_root=scratchpad_root,
+            ).rstrip("/")
+            candidates = [
+                member for member in self.exact
+                if member.rsplit("/", 1)[0] == resolved_dir
+            ]
+        else:
+            candidates = list(self.exact)
+        return any(
+            pattern.fullmatch(member.rsplit("/", 1)[-1]) is not None
+            for member in candidates
+        )
 
 
 def _contains_exact_project_artifact(
@@ -383,9 +536,48 @@ def _path_tokens(line: str, *, known_paths: tuple[str, ...] = ()) -> tuple[str, 
             continue
         token = next((group for group in match.groups() if group is not None), "")
         token = _strip_token(token)
-        if token:
-            result.append(token)
+        if not token:
+            continue
+        members = _list_span_members(token)
+        if members:
+            # One quoted/backticked span may enumerate SEVERAL artifacts --
+            # the driver composes write directives as
+            # `` `a.md, b.md, c.md` ``.  Taken whole it can never equal a
+            # registered identity, so the directive was denied and the phase
+            # never launched.  Split only when the interior is exactly a
+            # separated list of path tokens; anything else stays one span.
+            result.extend(members)
+            continue
+        result.append(token)
     return tuple(dict.fromkeys(result))
+
+
+_LIST_RESIDUE_RE = re.compile(r"^[\s,;]*(?:\band\b)?[\s,;]*$")
+
+
+def _list_span_members(token: str) -> tuple[str, ...]:
+    """Return the path tokens a span enumerates, or () when it is not a list."""
+
+    if not token or "," not in token and ";" not in token:
+        return ()
+    members: list[str] = []
+    residue: list[str] = []
+    cursor = 0
+    for match in _PATH_TOKEN_RE.finditer(token):
+        start, end = match.span()
+        residue.append(token[cursor:start])
+        cursor = end
+        member = _strip_token(
+            next((group for group in match.groups() if group is not None), "")
+        )
+        if member:
+            members.append(member)
+    residue.append(token[cursor:])
+    if len(members) < 2:
+        return ()
+    if not all(_LIST_RESIDUE_RE.fullmatch(part) for part in residue):
+        return ()
+    return tuple(dict.fromkeys(members))
 
 
 def _clean_model_visible_clause(value: str) -> str:
@@ -481,6 +673,15 @@ def _list_heading_mode(line: str, verb: str | None, tokens: tuple[str, ...]) -> 
     return None
 
 
+_QUOTED_TOKEN_RE = re.compile(r"`[^`\n]*`|\"[^\"\n]*\"|'[^'\n]*'")
+
+
+def _without_quoted_tokens(clause: str) -> str:
+    """Blank backticked/quoted spans so path segments cannot read as tool names."""
+
+    return _QUOTED_TOKEN_RE.sub(" ", clause)
+
+
 def _looks_like_artifact(token: str) -> bool:
     token = _strip_token(token)
     return re.search(rf"(?i)\.(?:{_ARTIFACT_SUFFIX_PATTERN})$", token) is not None
@@ -489,6 +690,32 @@ def _looks_like_artifact(token: str) -> bool:
 def _line_excerpt(line: str) -> str:
     compact = " ".join(line.strip().split())
     return compact[:500]
+
+
+_PATTERN_GOVERNORS = (
+    "for", "matching", "containing", "named", "titled", "called",
+    "with", "mentioning", "referencing",
+)
+_PATTERN_GOVERNOR_RE = re.compile(
+    r"(?i)\b(?:" + "|".join(_PATTERN_GOVERNORS) + r")\s+(?:the\s+|any\s+|all\s+)?"
+    r"(?:[`\"']|\()?\s*$"
+)
+
+
+def _is_pattern_governed(clause: str, token: str) -> bool:
+    """True when this token is what the directive searches FOR, not WHERE."""
+
+    text = str(clause or "")
+    needle = _strip_token(token)
+    if not needle:
+        return False
+    for candidate in (token, needle):
+        start = text.find(candidate)
+        while start != -1:
+            if _PATTERN_GOVERNOR_RE.search(text[:start]):
+                return True
+            start = text.find(candidate, start + 1)
+    return False
 
 
 def _target_is_safe_root(
@@ -650,12 +877,28 @@ def validate_claude_worker_prompt_consistency(
                     add("UNSAFE_SCRATCHPAD_SEARCH_DIRECTIVE", number, "scratchpad", clause)
                 for token in tokens:
                     if _looks_like_artifact(token):
+                        # A unit may read back its own registered output (the
+                        # driver composes "Read each graph projection before
+                        # completing `depth_<x>_findings.md`"); the write
+                        # authority already covers that path.  DODO run46:
+                        # every core depth worker was denied on exactly this
+                        # sentence and depth could not launch.
                         if not input_authority.contains(
+                            token, project_root=project, scratchpad_root=scratchpad
+                        ) and not output_authority.contains(
                             token, project_root=project, scratchpad_root=scratchpad
                         ):
                             add("UNREGISTERED_ARTIFACT_READ", number, token, clause)
                         continue
                     bare_target = _strip_token(token)
+                    if _is_pattern_governed(clause, token):
+                        # `Search <root> for <PATTERN>` -- a token governed by
+                        # for/matching/containing/named/... is what the worker
+                        # is looking FOR, never where it looks.  Treating the
+                        # pattern as a search root denied the chain worker for
+                        # following its own methodology
+                        # (`... for [CROSS-DOMAIN-DEP: {domain}] tags`).
+                        continue
                     if _PROJECT_ROOT_RE.fullmatch(bare_target):
                         continue
                     if _SCRATCHPAD_ROOT_RE.fullmatch(bare_target):
@@ -692,8 +935,18 @@ def validate_claude_worker_prompt_consistency(
                     project_tokens = prior_clause_tokens
                     project_location = True
                 for token in tokens:
-                    if _looks_like_artifact(token) and not input_authority.contains(
-                        token, project_root=project, scratchpad_root=scratchpad
+                    if (
+                        _looks_like_artifact(token)
+                        and not input_authority.contains(
+                            token, project_root=project, scratchpad_root=scratchpad
+                        )
+                        # A unit's own registered output is within its write
+                        # authority; reading it back is not an unregistered
+                        # read (DODO run46 depth: "Read ... before completing
+                        # `depth_<x>_findings.md`" denied every core worker).
+                        and not output_authority.contains(
+                            token, project_root=project, scratchpad_root=scratchpad
+                        )
                     ):
                         add("UNREGISTERED_ARTIFACT_READ", number, token, clause)
                 if project_location:
@@ -715,7 +968,7 @@ def validate_claude_worker_prompt_consistency(
                             )
 
             if write_directive:
-                if _ADDITIONAL_OUTPUT_RE.search(clause):
+                if _declares_additional_output(clause):
                     add("ALTERNATE_OUTPUT_WRITE", number, "additional output", clause)
                 for token in tokens:
                     if _looks_like_artifact(token) and not output_authority.contains(
@@ -724,7 +977,11 @@ def validate_claude_worker_prompt_consistency(
                         add("UNREGISTERED_OUTPUT_WRITE", number, token, clause)
 
             if verb and not negated and verb in _TOOL_ACTION_VERBS:
-                if _COORDINATOR_RE.search(clause):
+                # `agents` inside a quoted methodology path (for example
+                # `~/.plamen/agents/skills/evm/x/SKILL.md` in "Read and
+                # EXECUTE <skill>") names a directory, not the Agent tool.
+                # DODO run46: every injected skill line tripped this rule.
+                if _COORDINATOR_RE.search(_without_quoted_tokens(clause)):
                     required = (
                         "Task" if re.search(r"(?i)\bTask\s+tool\b", clause) else "Agent"
                     )

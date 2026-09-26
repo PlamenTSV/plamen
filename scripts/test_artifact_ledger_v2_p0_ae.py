@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import ast
+from contextlib import contextmanager
 import json
 import hashlib
 import multiprocessing
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import threading
 
 import pytest
 
 import artifact_ledger as AL
+import verify_queue_phaseio_authority as VQ
 
 from artifact_ledger import (
     ArtifactLedgerError,
@@ -53,6 +57,129 @@ def _launch(contract, *, exec_mode="python", model="driver"):
         timeout_s=30,
         exec_mode=exec_mode,
     )
+
+
+def _independent_driver_contract(unit: str) -> PhaseIOContract:
+    key = f"sc/thorough/evm/claude/depth/{unit}"
+    return PhaseIOContract(
+        **BASE,
+        phase="depth",
+        work_unit_id=unit,
+        outputs=(
+            ArtifactSpec(
+                root="scratchpad",
+                path=f"{unit}.md",
+                owner_key=key,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="REPLACE",
+            ),
+        ),
+        model_invoked=False,
+    )
+
+
+def test_committed_conditional_absence_replays_as_active_and_historical(
+    tmp_path: Path,
+) -> None:
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    key = "sc/thorough/evm/claude/depth/conditional_absence"
+    identity = "scratchpad:conditional_absence.json"
+    contract = PhaseIOContract(
+        **BASE,
+        phase="depth",
+        work_unit_id="conditional_absence",
+        outputs=(
+            ArtifactSpec(
+                root="scratchpad",
+                path="conditional_absence.json",
+                owner_key=key,
+                artifact_class="CONDITIONAL",
+                writer="DRIVER",
+                write_mode="REPLACE",
+                condition_id="findings_present",
+            ),
+        ),
+        model_invoked=False,
+    )
+    launch = _launch(contract)
+    run_id = "run-conditional-absence"
+    record_work_unit_inputs(sp, tmp_path, contract, launch, run_id=run_id)
+    receipt = ConditionalOutputReceipt(
+        work_unit_key=key,
+        contract_digest=contract.digest,
+        artifact_identity=identity,
+        condition_id="findings_present",
+        state="NOT_TRIGGERED",
+        expected_denominator=0,
+    )
+    record_work_unit_artifacts(
+        sp,
+        tmp_path,
+        contract,
+        launch,
+        run_id=run_id,
+        conditional_receipts={identity: receipt},
+    )
+    ledger = read_artifact_ledger(sp)
+    record = ledger["work_units"][key]["artifacts"][identity]
+    assert {
+        "status": record["status"],
+        "authority_level": record["authority_level"],
+        "sha256": record["sha256"],
+        "size": record["size"],
+    } == {
+        "status": "MISSING",
+        "authority_level": "NONE",
+        "sha256": "",
+        "size": 0,
+    }
+    assert AL.active_committed_work_unit_authority_issues(
+        ledger,
+        work_unit_key=key,
+        run_id=run_id,
+        expected_artifact_identities=(identity,),
+    ) == []
+    assert AL.stored_committed_work_unit_authority_issues(
+        ledger,
+        work_unit_key=key,
+        run_id=run_id,
+        expected_artifact_identities=(identity,),
+    ) == []
+
+    mutations = (
+        ("status", "ACTIVE"),
+        ("authority_level", "ACTIVE_AUTHORITY"),
+        ("sha256", "0" * 64),
+        ("size", 1),
+        ("receipt_version", "plamen.conditional_output.v999"),
+        ("work_unit_key", key + ".forged"),
+        ("contract_digest", "0" * 64),
+        ("artifact_identity", "scratchpad:forged.json"),
+        ("condition_id", "forged"),
+        ("state", "PRODUCED"),
+        ("expected_denominator", 1),
+    )
+    for field, value in mutations:
+        forged = json.loads(json.dumps(ledger))
+        forged_record = forged["work_units"][key]["artifacts"][identity]
+        if field in {"status", "authority_level", "sha256", "size"}:
+            forged_record[field] = value
+        else:
+            forged_record["conditional_receipt"][field] = value
+        assert AL.active_committed_work_unit_authority_issues(
+            forged,
+            work_unit_key=key,
+            run_id=run_id,
+            expected_artifact_identities=(identity,),
+        )
+        assert AL.stored_committed_work_unit_authority_issues(
+            forged,
+            work_unit_key=key,
+            run_id=run_id,
+            expected_artifact_identities=(identity,),
+        )
 
 
 def _process_commit_worker(
@@ -767,3 +894,333 @@ def test_parallel_worker_records_do_not_lose_sibling_updates(tmp_path: Path):
         key for key in ledger["artifact_bindings"]
         if key.startswith("scratchpad:analysis_worker_")
     ]) == 12
+
+
+@pytest.mark.parametrize(
+    "validator",
+    (validate_work_unit_inputs, validate_work_unit_artifacts),
+    ids=("inputs", "artifacts"),
+)
+def test_top_level_validation_epoch_serializes_disjoint_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    validator,
+):
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+
+    target = _independent_driver_contract("validation_target")
+    sibling = _independent_driver_contract("validation_sibling")
+    target_launch = _launch(target)
+    sibling_launch = _launch(sibling)
+    for contract, launch in (
+        (target, target_launch),
+        (sibling, sibling_launch),
+    ):
+        record_work_unit_inputs(
+            sp, tmp_path, contract, launch, run_id="validation-lock-run"
+        )
+        (sp / f"{contract.work_unit_id}.md").write_text(
+            f"{contract.work_unit_id}\n", encoding="utf-8"
+        )
+    record_work_unit_artifacts(
+        sp,
+        tmp_path,
+        target,
+        target_launch,
+        run_id="validation-lock-run",
+    )
+
+    real_lock = AL._ledger_transaction_lock
+    real_context_init = AL._ArtifactValidationContext.__init__
+    real_finish = AL._ArtifactValidationContext.finish
+    validator_thread_id: list[int] = []
+    writer_thread_id: list[int] = []
+    validator_holds_lock = threading.Event()
+    context_constructed_under_lock = threading.Event()
+    validation_at_finish = threading.Event()
+    lock_held_at_finish = threading.Event()
+    writer_attempted_lock = threading.Event()
+    writer_acquired_lock = threading.Event()
+    writer_was_blocked_at_finish = threading.Event()
+
+    @contextmanager
+    def tracked_lock(scratchpad: Path, *, timeout_s: float = 30.0):
+        is_writer = bool(
+            writer_thread_id
+            and threading.get_ident() == writer_thread_id[0]
+        )
+        if is_writer:
+            writer_attempted_lock.set()
+        with real_lock(scratchpad, timeout_s=timeout_s):
+            if is_writer:
+                writer_acquired_lock.set()
+            is_validator = bool(
+                validator_thread_id
+                and threading.get_ident() == validator_thread_id[0]
+            )
+            if is_validator:
+                validator_holds_lock.set()
+            try:
+                yield
+            finally:
+                if is_validator:
+                    validator_holds_lock.clear()
+
+    def tracked_context_init(context, *args, **kwargs):
+        if (
+            validator_thread_id
+            and threading.get_ident() == validator_thread_id[0]
+            and validator_holds_lock.is_set()
+        ):
+            context_constructed_under_lock.set()
+        real_context_init(context, *args, **kwargs)
+
+    def tracked_finish(context):
+        if (
+            validator_thread_id
+            and threading.get_ident() == validator_thread_id[0]
+        ):
+            if validator_holds_lock.is_set():
+                lock_held_at_finish.set()
+            validation_at_finish.set()
+            assert writer_attempted_lock.wait(5)
+            if not writer_acquired_lock.is_set():
+                writer_was_blocked_at_finish.set()
+        return real_finish(context)
+
+    monkeypatch.setattr(AL, "_ledger_transaction_lock", tracked_lock)
+    monkeypatch.setattr(
+        AL._ArtifactValidationContext, "__init__", tracked_context_init
+    )
+    monkeypatch.setattr(
+        AL._ArtifactValidationContext, "finish", tracked_finish
+    )
+
+    def run_validation() -> list[str]:
+        validator_thread_id.append(threading.get_ident())
+        return validator(
+            sp,
+            tmp_path,
+            target,
+            target_launch,
+            run_id="validation-lock-run",
+        )
+
+    def run_writer():
+        writer_thread_id.append(threading.get_ident())
+        return record_work_unit_artifacts(
+            sp,
+            tmp_path,
+            sibling,
+            sibling_launch,
+            run_id="validation-lock-run",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        validation_future = pool.submit(run_validation)
+        assert validation_at_finish.wait(5)
+        writer_future = pool.submit(run_writer)
+        assert writer_attempted_lock.wait(5)
+        validation_issues = validation_future.result(timeout=10)
+        sibling_unit = writer_future.result(timeout=10)
+
+    assert context_constructed_under_lock.is_set()
+    assert lock_held_at_finish.is_set()
+    assert writer_was_blocked_at_finish.is_set()
+    assert writer_acquired_lock.is_set()
+    assert validation_issues == []
+    assert sibling_unit["semantic_status"] == "ACTIVE"
+    for contract, launch in (
+        (target, target_launch),
+        (sibling, sibling_launch),
+    ):
+        assert validate_work_unit_inputs(
+            sp, tmp_path, contract, launch, run_id="validation-lock-run"
+        ) == []
+        assert validate_work_unit_artifacts(
+            sp, tmp_path, contract, launch, run_id="validation-lock-run"
+        ) == []
+
+
+def test_verify_queue_shared_epoch_serializes_disjoint_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    sibling = _independent_driver_contract("verify_queue_sibling")
+    sibling_launch = _launch(sibling)
+    record_work_unit_inputs(
+        sp,
+        tmp_path,
+        sibling,
+        sibling_launch,
+        run_id="external-validation-lock-run",
+    )
+    (sp / "verify_queue_sibling.md").write_text(
+        "verify queue sibling\n", encoding="utf-8"
+    )
+
+    real_lock = AL._ledger_transaction_lock
+    writer_thread_id: list[int] = []
+    validation_inside_epoch = threading.Event()
+    writer_attempted_lock = threading.Event()
+    writer_acquired_lock = threading.Event()
+    writer_was_blocked = threading.Event()
+
+    @contextmanager
+    def tracked_lock(scratchpad: Path, *, timeout_s: float = 30.0):
+        is_writer = bool(
+            writer_thread_id
+            and threading.get_ident() == writer_thread_id[0]
+        )
+        if is_writer:
+            writer_attempted_lock.set()
+        with real_lock(scratchpad, timeout_s=timeout_s):
+            if is_writer:
+                writer_acquired_lock.set()
+            yield
+
+    def synchronized_edge_validation(**_kwargs):
+        validation_inside_epoch.set()
+        assert writer_attempted_lock.wait(5)
+        if not writer_acquired_lock.is_set():
+            writer_was_blocked.set()
+        return []
+
+    monkeypatch.setattr(AL, "_ledger_transaction_lock", tracked_lock)
+    monkeypatch.setattr(VQ, "_validate_plan_digest", lambda _plan: None)
+    monkeypatch.setattr(VQ, "_transaction_units", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        VQ, "_transaction_edge_issues", synchronized_edge_validation
+    )
+    plan = {
+        "schema_version": "plamen.verify_queue_transaction_plan.v1",
+        "plan_digest": "test-plan",
+    }
+
+    def run_writer():
+        writer_thread_id.append(threading.get_ident())
+        return record_work_unit_artifacts(
+            sp,
+            tmp_path,
+            sibling,
+            sibling_launch,
+            run_id="external-validation-lock-run",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        validation_future = pool.submit(
+            VQ.validate_transaction_authority,
+            scratchpad=sp,
+            project_root=tmp_path,
+            plan=plan,
+            run_id="external-validation-lock-run",
+            require_parent_commit=False,
+        )
+        assert validation_inside_epoch.wait(5)
+        writer_future = pool.submit(run_writer)
+        assert writer_attempted_lock.wait(5)
+        validation_issues = validation_future.result(timeout=10)
+        sibling_unit = writer_future.result(timeout=10)
+
+    assert writer_was_blocked.is_set()
+    assert writer_acquired_lock.is_set()
+    assert validation_issues == []
+    assert sibling_unit["semantic_status"] == "ACTIVE"
+    assert validate_work_unit_artifacts(
+        sp,
+        tmp_path,
+        sibling,
+        sibling_launch,
+        run_id="external-validation-lock-run",
+    ) == []
+
+
+def test_production_validation_context_constructor_census():
+    scripts = Path(__file__).parent
+    module_names = (
+        "artifact_ledger.py",
+        "plamen_driver.py",
+        "verify_queue_phaseio_authority.py",
+        "severity_initial_source.py",
+        "report_empty_tier.py",
+    )
+    owners_by_module: dict[str, set[str]] = {}
+    for module_name in module_names:
+        tree = ast.parse(
+            (scripts / module_name).read_text(encoding="utf-8"),
+            filename=module_name,
+        )
+        parents = {
+            child: node
+            for node in ast.walk(tree)
+            for child in ast.iter_child_nodes(node)
+        }
+        owners: set[str] = set()
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "_ArtifactValidationContext"
+            ):
+                continue
+            parent = parents.get(node)
+            while parent is not None and not isinstance(
+                parent, (ast.FunctionDef, ast.AsyncFunctionDef)
+            ):
+                parent = parents.get(parent)
+            owners.add(parent.name if parent is not None else "<module>")
+        owners_by_module[module_name] = owners
+
+    assert owners_by_module == {
+        "artifact_ledger.py": {
+            "_artifact_validation_epoch",
+            "_record_work_unit_artifacts_unlocked",
+            "record_work_unit_artifacts",
+            "record_work_unit_inputs",
+        },
+        "plamen_driver.py": set(),
+        "verify_queue_phaseio_authority.py": set(),
+        "severity_initial_source.py": set(),
+        "report_empty_tier.py": set(),
+    }
+
+
+def test_unlocked_injected_validation_context_fails_closed(tmp_path: Path):
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    contract = _independent_driver_contract("unlocked_context")
+    launch = _launch(contract)
+    record_work_unit_inputs(
+        sp, tmp_path, contract, launch, run_id="unlocked-context-run"
+    )
+    (sp / "unlocked_context.md").write_text(
+        "unlocked context\n", encoding="utf-8"
+    )
+    record_work_unit_artifacts(
+        sp, tmp_path, contract, launch, run_id="unlocked-context-run"
+    )
+    context = AL._ArtifactValidationContext(sp, tmp_path)
+
+    expected = [
+        "artifact validation context does not own ledger transaction lock"
+    ]
+    assert validate_work_unit_inputs(
+        sp,
+        tmp_path,
+        contract,
+        launch,
+        run_id="unlocked-context-run",
+        _validation_context=context,
+    ) == expected
+    assert validate_work_unit_artifacts(
+        sp,
+        tmp_path,
+        contract,
+        launch,
+        run_id="unlocked-context-run",
+        _validation_context=context,
+    ) == expected
+    assert context.finish() == []

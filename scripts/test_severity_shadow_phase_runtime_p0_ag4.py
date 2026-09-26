@@ -28,6 +28,9 @@ from test_severity_adjudication_work_p0_ag3 import (
     _decision,
     _write_state,
 )
+from test_severity_empty_source import _publish_queue, _queue_bytes
+from test_queue_work_item_p0_aj import _item
+from test_support_startup_permit import durable_startup_permit
 
 
 CANDIDATE_ID = "H-LIVE-PHASE"
@@ -203,6 +206,9 @@ def _run_live(
     monkeypatch.setattr(D, "plamen_home", lambda: home)
     calls = _install_fake_process_launch(monkeypatch, behavior=behavior)
     config = _config(tmp_path, pipeline=pipeline, mode=mode)
+    config["_auxiliary_writable_root_startup_binding"] = durable_startup_permit(
+        scratchpad, run_id=RUN_ID
+    )
     reconciliation, issues = _handler()(
         _phase(pipeline), config, scratchpad
     )
@@ -304,22 +310,15 @@ def test_canonical_empty_verification_queue_bootstraps_empty_shadow_ledger(
 ) -> None:
     """A legitimate zero denominator must not become runtime debt.
 
-    The verifier empty-queue short circuit predates the typed severity ledger,
-    so it has no per-candidate producer invocation from which to create that
-    ledger.  This is the only missing-ledger state the live observer may
-    synthesize, and it must remain a zero-row/no-worker transaction.
+    The focused producer below publishes canonical queue bytes through the
+    exact pipeline-specific T9 DRIVER output contract.  It proves the severity
+    consumer boundary, not the complete T0--T9 ancestry; the Core integration
+    fixture owns that larger proof.  The resulting severity source must remain
+    a zero-row/no-worker transaction.
     """
 
     scratchpad = tmp_path / f"scratch-empty-queue-{pipeline}"
     scratchpad.mkdir(parents=True)
-    (scratchpad / "verification_queue.md").write_text(
-        "# Verification Queue\n\n"
-        "| Finding ID | Severity | Status |\n"
-        "|---|---|---|\n\n"
-        "Total: 0 findings\n\n"
-        "Reason: fixture-confirmed zero denominator.\n",
-        encoding="utf-8",
-    )
     home = _methodology_home(tmp_path)
     monkeypatch.setattr(D, "plamen_home", lambda: home)
 
@@ -333,6 +332,14 @@ def test_canonical_empty_verification_queue_bootstraps_empty_shadow_ledger(
         raising=False,
     )
     config = _config(tmp_path, pipeline=pipeline)
+    config["cli_backend"] = "codex"
+    config["scratchpad"] = str(scratchpad)
+    _publish_queue(
+        Path(config["project_root"]),
+        scratchpad,
+        pipeline=pipeline,
+        run_id=RUN_ID,
+    )
     reconciliation, issues = _handler()(
         _phase(pipeline), config, scratchpad
     )
@@ -350,27 +357,55 @@ def test_canonical_empty_verification_queue_bootstraps_empty_shadow_ledger(
     assert plan["zero_row_no_launch"] is True
 
 
+def test_raw_unowned_total_zero_queue_cannot_bootstrap_shadow_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scratchpad = tmp_path / "scratch-unowned-empty-queue-sc"
+    scratchpad.mkdir(parents=True)
+    (scratchpad / "verification_queue.md").write_text(
+        "# Verification Queue\n\n"
+        "| Finding ID | Severity | Status |\n"
+        "|---|---|---|\n\n"
+        "Total: 0 findings\n",
+        encoding="utf-8",
+    )
+    home = _methodology_home(tmp_path)
+    monkeypatch.setattr(D, "plamen_home", lambda: home)
+    config = _config(tmp_path, pipeline="sc")
+    config["cli_backend"] = "codex"
+    config["scratchpad"] = str(scratchpad)
+
+    with pytest.raises(Exception, match="queue|producer|input|severity"):
+        _handler()(_phase("sc"), config, scratchpad)
+    assert not (scratchpad / W.SOURCE_LEDGER_NAME).exists()
+
+
 def test_missing_shadow_ledger_with_nonempty_queue_is_visible_debt_not_forged_empty(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scratchpad = tmp_path / "scratch-missing-ledger-nonempty"
     scratchpad.mkdir(parents=True)
-    (scratchpad / "verification_queue.md").write_text(
-        "# Verification Queue\n\n"
-        "| Finding ID | Severity | Status |\n"
-        "|---|---|---|\n"
-        "| H-NONEMPTY | High | ACTIVE |\n\n"
-        "Total: 1 findings\n",
-        encoding="utf-8",
+    item = _item(
+        "H-NONEMPTY",
+        candidate_identity="INV-NONEMPTY",
+        aliases=("INV-NONEMPTY",),
     )
+    for relative, raw in _queue_bytes((item,)).items():
+        (scratchpad / relative).write_bytes(raw)
     home = _methodology_home(tmp_path)
     monkeypatch.setattr(D, "plamen_home", lambda: home)
     config = _config(tmp_path, pipeline="sc")
+    config["cli_backend"] = "codex"
+    config["scratchpad"] = str(scratchpad)
 
     with pytest.raises(
         Exception,
-        match="severity ledger|unreadable|No such file|missing adjudication artifact",
+        match=(
+            "severity ledger|severity source|unreadable|No such file|"
+            "missing adjudication artifact"
+        ),
     ):
         _handler()(_phase("sc"), config, scratchpad)
 

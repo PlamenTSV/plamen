@@ -12,7 +12,7 @@ import os
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from verification_operator_consumers import (
     ConsumerAuthorityError,
@@ -51,6 +51,7 @@ from candidate_negative_authority import (
     validate_candidate_negative_ledger,
 )
 from artifact_ledger import (
+    ArtifactLedgerError,
     active_committed_work_unit_authority_issues,
     read_artifact_ledger,
 )
@@ -60,6 +61,26 @@ from axis_promotion_lineage import (
 )
 import axis_disposition as axis_authority
 import axis_canonical_prior as axis_prior_authority
+from program_facts_types import (
+    PROGRAM_FACTS_CONSUMER_ACTIVATION,
+    ProgramFactsTypeError,
+    derive_program_facts_reuse_key,
+    strict_json_loads,
+    validate_program_facts_debt,
+    validate_program_facts_payload_shape,
+    validate_program_facts_receipt,
+)
+from graph_application_authority import (
+    AUTHORITY_ARTIFACT as GRAPH_APPLICATION_AUTHORITY_FILE,
+    OBSERVATIONS_ARTIFACT as GRAPH_APPLICATION_OBSERVATIONS_FILE,
+    RECONCILIATION_ARTIFACT as GRAPH_APPLICATION_RECONCILIATION_FILE,
+    GraphApplicationAuthorityError,
+    integration_contract as graph_application_integration_contract,
+    load_graph_application_authority_bytes,
+    load_graph_application_observations_bytes,
+    load_graph_application_reconciliation_bytes,
+    validate_graph_application_assurance_phaseio,
+)
 
 
 START_MARKER = "<!-- PLAMEN:ASSURANCE-LIMITATIONS:START -->"
@@ -158,6 +179,37 @@ _AXIS_ACTIVATION_FILES = tuple(
     }
 )
 
+_PROGRAM_FACTS_V1_FILES = (
+    "mechanical_program_facts.v1.json",
+    "mechanical_program_facts_receipt.v1.json",
+    "mechanical_program_facts_debt.v1.json",
+)
+_PROGRAM_FACTS_V2_FILES = (
+    "mechanical_program_facts.v2.json",
+    "mechanical_program_facts_receipt.v2.json",
+    "mechanical_program_facts_debt.v2.json",
+)
+_PROGRAM_FACTS_RUNTIME_DEBT_FILE = "_program_facts_stage2_runtime_debt.json"
+_PROGRAM_FACTS_RUNTIME_DEBT_ID = "PROGRAM-FACTS-STAGE2-EMIT-ONLY"
+_PROGRAM_FACTS_ACTIVATION_SENTINELS = (
+    "evm_analysis_workspace_receipt.v1.json",
+    "_program_facts_inputs/checkpoint_capture.v1.json",
+)
+_GRAPH_APPLICATION_FILES = (
+    GRAPH_APPLICATION_AUTHORITY_FILE,
+    GRAPH_APPLICATION_OBSERVATIONS_FILE,
+    GRAPH_APPLICATION_RECONCILIATION_FILE,
+)
+_INACTIVE_SHADOW_GATE_CLASSES = frozenset(
+    {
+        "PROGRAM_FACTS_AUTHORITY",
+        "PROGRAM_FACTS_COVERAGE",
+        "PROGRAM_FACTS_RUNTIME",
+        "GRAPH_APPLICATION_AUTHORITY",
+        "GRAPH_APPLICATION_OUTCOME",
+    }
+)
+
 
 def _canonical_json(payload: Any) -> bytes:
     return (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode(
@@ -183,6 +235,56 @@ def _atomic_write_if_changed(path: Path, data: bytes) -> None:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _shadow_diagnostic_rows(
+    rows: tuple[dict[str, Any], ...] | list[dict[str, Any]],
+    *,
+    consumer_activation: bool,
+    subsystem: str,
+) -> tuple[dict[str, Any], ...]:
+    """Bind shadow diagnostics to an explicit consumer-activation contract.
+
+    The rows stay losslessly visible and retain their true potential assurance
+    impact.  While the consumer is inactive they describe the staged subsystem,
+    not a missing obligation from the active audit pipeline.
+    """
+
+    state = "ACTIVE_CONSUMER" if consumer_activation else "INACTIVE_SHADOW"
+    projected: list[dict[str, Any]] = []
+    for raw in rows:
+        row = dict(raw)
+        row["consumer_activation"] = bool(consumer_activation)
+        row["activation_state"] = state
+        row["terminal_success_blocking"] = bool(consumer_activation)
+        if not consumer_activation:
+            row["message"] = (
+                f"{subsystem} is an inactive shadow diagnostic; active audit "
+                "coverage and terminal success are unchanged. "
+                + str(row.get("message") or "")
+            ).strip()
+        projected.append(row)
+    return tuple(projected)
+
+
+def _row_blocks_terminal_success(row: Mapping[str, Any]) -> bool:
+    """Return whether one row can deny a clean terminal audit claim.
+
+    Only the two explicitly staged subsystems may publish a nonblocking row,
+    and only while they bind the closed inactive-consumer state.  This keeps an
+    arbitrary supplemental producer from clearing its own real audit debt.
+    """
+
+    if row.get("assurance_impact") == ENRICHMENT_ONLY:
+        return False
+    if (
+        row.get("gate_class") in _INACTIVE_SHADOW_GATE_CLASSES
+        and row.get("consumer_activation") is False
+        and row.get("activation_state") == "INACTIVE_SHADOW"
+        and row.get("terminal_success_blocking") is False
+    ):
+        return False
+    return True
 
 
 def _load_late_delivery_rows(root: Path) -> dict[str, dict[str, Any]]:
@@ -371,7 +473,7 @@ def build_assurance_manifest(
         "row_count": len(rows),
         "impact_counts": {key: counts[key] for key in sorted(counts)},
         "clean_full_audit_claim_allowed": not any(
-            row["assurance_impact"] != ENRICHMENT_ONLY for row in rows
+            _row_blocks_terminal_success(row) for row in rows
         ),
         "rows": rows,
     }
@@ -2220,15 +2322,110 @@ def _axis_disposition_assurance_rows(
 def _toolchain_coverage_assurance_rows(
     scratchpad: Path,
 ) -> tuple[dict[str, Any], ...]:
-    """Replay deterministic tool debt into delivered assurance limitations."""
+    """Replay the tool ledger and require its exact unresolved-debt projection."""
 
-    path = Path(scratchpad) / "toolchain_coverage_debt.json"
-    if not path.is_file():
+    root = Path(scratchpad)
+    path = root / "toolchain_coverage_debt.json"
+    ledger_path = root / "tool_coverage_ledger.json"
+    if not os.path.lexists(path) and not os.path.lexists(ledger_path):
         return ()
     try:
-        payload = json.loads(
-            path.read_text(encoding="utf-8", errors="strict")
-        )
+        if not os.path.lexists(ledger_path):
+            raise ValueError("tool coverage ledger is absent")
+        if ledger_path.is_symlink() or path.is_symlink():
+            raise ValueError("tool coverage authority contains a symlink")
+        ledger = _axis_json(ledger_path, label="tool coverage ledger")
+        if set(ledger) != {
+            "schema",
+            "schema_version",
+            "capabilities",
+            "ledger_sha256",
+        }:
+            raise ValueError("tool coverage ledger fields drifted")
+        if (
+            ledger.get("schema") != "plamen.tool-coverage-ledger"
+            or ledger.get("schema_version") != 1
+            or not isinstance(ledger.get("capabilities"), dict)
+        ):
+            raise ValueError("tool coverage ledger schema drifted")
+        unsigned_ledger = {
+            key: value for key, value in ledger.items()
+            if key != "ledger_sha256"
+        }
+        if ledger.get("ledger_sha256") != hashlib.sha256(
+            _canonical_json(unsigned_ledger)
+        ).hexdigest():
+            raise ValueError("tool coverage ledger digest mismatch")
+
+        derived_rows: list[dict[str, Any]] = []
+        record_fields = {
+            "capability_id",
+            "tool",
+            "state",
+            "reason",
+            "finding_count",
+            "schema_validated",
+            "artifacts",
+            "provider_ref",
+        }
+        for capability_key in sorted(ledger["capabilities"]):
+            raw = ledger["capabilities"][capability_key]
+            if not isinstance(raw, dict) or set(raw) != record_fields:
+                raise ValueError("tool coverage outcome fields drifted")
+            capability = raw.get("capability_id")
+            tool = raw.get("tool")
+            state = raw.get("state")
+            reason = raw.get("reason")
+            provider_ref = raw.get("provider_ref")
+            artifacts = raw.get("artifacts")
+            if (
+                capability != capability_key
+                or not isinstance(capability, str)
+                or re.fullmatch(r"[a-z0-9][a-z0-9_.:-]{0,127}", capability)
+                is None
+                or not isinstance(tool, str)
+                or not tool.strip()
+                or state not in {"SUCCEEDED", "SKIPPED", "UNAVAILABLE", "FAILED"}
+                or not isinstance(reason, str)
+                or not reason.strip()
+                or not isinstance(raw.get("schema_validated"), bool)
+                or not isinstance(artifacts, list)
+                or not all(isinstance(item, str) and item for item in artifacts)
+                or not isinstance(provider_ref, str)
+            ):
+                raise ValueError("tool coverage outcome is malformed")
+            if state == "SUCCEEDED":
+                finding_count = raw.get("finding_count")
+                if (
+                    isinstance(finding_count, bool)
+                    or not isinstance(finding_count, int)
+                    or finding_count < 0
+                    or raw["schema_validated"] is not True
+                ):
+                    raise ValueError("tool success outcome is deceptive")
+            elif raw.get("finding_count") is not None:
+                raise ValueError("tool debt outcome claims a finding count")
+            if state != "SUCCEEDED":
+                derived_rows.append(
+                    {
+                        "capability_id": capability,
+                        "tool": tool,
+                        "state": state,
+                        "reason": reason,
+                        "provider_ref_sha256": (
+                            hashlib.sha256(provider_ref.encode("utf-8")).hexdigest()
+                            if provider_ref else None
+                        ),
+                    }
+                )
+
+        if not derived_rows:
+            if os.path.lexists(path):
+                raise ValueError("stale toolchain debt exists for a clean ledger")
+            return ()
+        if not os.path.lexists(path):
+            raise ValueError("unresolved tool outcomes lack delivered debt")
+        payload = _axis_json(path, label="toolchain coverage debt")
         expected = {
             "schema_version",
             "phase",
@@ -2250,9 +2447,25 @@ def _toolchain_coverage_assurance_rows(
             or payload.get("unresolved_count") != len(rows)
             or payload.get("debt_sha256")
             != hashlib.sha256(_canonical_json(unsigned)).hexdigest()
+            or rows != derived_rows
         ):
             raise ValueError("toolchain coverage debt schema drifted")
         phase = str(payload.get("phase") or "breadth")
+        provenance = {
+            "schema_version": "plamen.toolchain_coverage_assurance_source.v1",
+            "ledger": {
+                "path": ledger_path.name,
+                "full_file_sha256": hashlib.sha256(
+                    ledger_path.read_bytes()
+                ).hexdigest(),
+                "document_sha256": ledger["ledger_sha256"],
+            },
+            "debt": {
+                "path": path.name,
+                "full_file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "document_sha256": payload["debt_sha256"],
+            },
+        }
         projected: list[dict[str, Any]] = []
         for raw in rows:
             if not isinstance(raw, dict):
@@ -2272,6 +2485,7 @@ def _toolchain_coverage_assurance_rows(
                         "state": state,
                         "reason": reason,
                         "debt_sha256": payload["debt_sha256"],
+                        "ledger_sha256": ledger["ledger_sha256"],
                     }
                 )
             ).hexdigest()
@@ -2289,6 +2503,7 @@ def _toolchain_coverage_assurance_rows(
                         f"coverage remains unresolved. {reason}"
                     ),
                     "failure_instance_id": failure_id,
+                    "source_authority": provenance,
                 }
             )
         return tuple(projected)
@@ -2299,8 +2514,17 @@ def _toolchain_coverage_assurance_rows(
         TypeError,
         ValueError,
     ) as exc:
+        fingerprints = _program_facts_file_fingerprints(
+            root,
+            ("tool_coverage_ledger.json", "toolchain_coverage_debt.json"),
+        )
         failure_id = hashlib.sha256(
-            f"{type(exc).__name__}:{exc}".encode("utf-8")
+            _canonical_json(
+                {
+                    "error": f"{type(exc).__name__}:{exc}",
+                    "files": fingerprints,
+                }
+            )
         ).hexdigest()
         return (
             {
@@ -2317,8 +2541,836 @@ def _toolchain_coverage_assurance_rows(
                     f"{type(exc).__name__}: {exc}"
                 ),
                 "failure_instance_id": failure_id,
+                "source_authority": {
+                    "schema_version": (
+                        "plamen.toolchain_coverage_assurance_source.v1"
+                    ),
+                    "files": fingerprints,
+                },
             },
         )
+
+
+def _program_facts_file_fingerprints(
+    root: Path,
+    names: tuple[str, ...],
+) -> dict[str, dict[str, Any]]:
+    """Return stable diagnostics without treating a candidate digest as trust."""
+
+    result: dict[str, dict[str, Any]] = {}
+    for name in names:
+        path = Path(root) / name
+        if not os.path.lexists(path):
+            result[name] = {"state": "ABSENT"}
+            continue
+        if path.is_symlink():
+            result[name] = {"state": "SYMLINK_REJECTED"}
+            continue
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            result[name] = {
+                "state": "UNREADABLE",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            continue
+        result[name] = {
+            "state": "PRESENT",
+            "size": len(raw),
+            "full_file_sha256": hashlib.sha256(raw).hexdigest(),
+        }
+    return result
+
+
+def _read_program_facts_json(root: Path, name: str) -> tuple[dict[str, Any], bytes]:
+    path = Path(root) / name
+    if path.is_symlink():
+        raise ValueError(f"{name} is a symlink")
+    raw = path.read_bytes()
+    value = strict_json_loads(
+        raw,
+        require_final_lf=True,
+        require_canonical=True,
+    )
+    if type(value) is not dict:
+        raise ValueError(f"{name} must contain one canonical object")
+    return value, raw
+
+
+def _program_facts_invalid_row(
+    *,
+    gate_id: str,
+    message: str,
+    evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    normalized_evidence = json.loads(_canonical_json(dict(evidence)))
+    failure_id = hashlib.sha256(
+        _canonical_json(
+            {
+                "gate_id": gate_id,
+                "message": message,
+                "evidence": normalized_evidence,
+            }
+        )
+    ).hexdigest()
+    return {
+        "phase": "recon",
+        "work_unit_id": "program_facts_bake",
+        "state": "COMPLETED_WITH_DEBT",
+        "assurance_impact": DISCOVERY_RECALL,
+        "gate_id": gate_id,
+        "gate_class": "PROGRAM_FACTS_AUTHORITY",
+        "affected_identities": ["program-facts"],
+        "message": message,
+        "failure_instance_id": failure_id,
+        "source_authority": normalized_evidence,
+    }
+
+
+def _validate_program_facts_v1_projection_bundle(
+    root: Path,
+    *,
+    run_id: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Replay the v1 public trio deeply enough to authorize debt projection.
+
+    This is not Program Facts production/reuse authority.  The production
+    loader additionally replays source bytes, the ArtifactLedger and PhaseIO.
+    Here we independently prove that the exact public files are canonical,
+    self-digested, mutually bound, and unable to conceal non-full coverage.
+    """
+
+    payload, payload_raw = _read_program_facts_json(
+        root, _PROGRAM_FACTS_V1_FILES[0]
+    )
+    receipt, receipt_raw = _read_program_facts_json(
+        root, _PROGRAM_FACTS_V1_FILES[1]
+    )
+    debt, debt_raw = _read_program_facts_json(root, _PROGRAM_FACTS_V1_FILES[2])
+
+    payload = validate_program_facts_payload_shape(payload)
+    debt = validate_program_facts_debt(debt)
+    receipt = validate_program_facts_receipt(receipt)
+    if receipt["run_id"] != run_id:
+        raise ValueError("Program Facts receipt belongs to another run")
+    if (
+        payload["snapshot_ref"]["snapshot_digest"] != debt["snapshot_digest"]
+        or payload["snapshot_ref"]["source_manifest_digest"]
+        != debt["source_manifest_digest"]
+        or receipt["audit_snapshot"]["snapshot_digest"]
+        != payload["snapshot_ref"]["snapshot_digest"]
+        or receipt["audit_snapshot"]["source_scope_digest"]
+        != payload["snapshot_ref"]["source_scope_digest"]
+        or receipt["source_manifest"]["manifest_digest"]
+        != payload["snapshot_ref"]["source_manifest_digest"]
+        or receipt["source_manifest"]["eligible_files"]
+        != payload["source_files"]
+    ):
+        raise ValueError("Program Facts bundle parent identities diverge")
+
+    artifact_inputs = {
+        "facts": (
+            _PROGRAM_FACTS_V1_FILES[0],
+            payload["payload_sha256"],
+            payload_raw,
+        ),
+        "debt": (
+            _PROGRAM_FACTS_V1_FILES[2],
+            debt["debt_sha256"],
+            debt_raw,
+        ),
+    }
+    for kind, (name, document_sha256, raw) in artifact_inputs.items():
+        binding = receipt["artifacts"][kind]
+        if (
+            binding["path"] != name
+            or binding["document_sha256"] != document_sha256
+            or binding["file_sha256"] != hashlib.sha256(raw).hexdigest()
+            or binding["size"] != len(raw)
+        ):
+            raise ValueError(f"Program Facts {kind} artifact binding mismatch")
+
+    debt_by_id = {row["debt_id"]: row for row in debt["debts"]}
+    referenced: set[str] = set()
+    for coverage in payload["coverage"]:
+        unresolved = set(coverage["unresolved_debt_ids"])
+        if not unresolved <= set(debt_by_id):
+            raise ValueError("Program Facts coverage has dangling debt")
+        for debt_id in unresolved:
+            row = debt_by_id[debt_id]
+            if row["capability_id"] and row["capability_id"] != coverage[
+                "capability_id"
+            ]:
+                raise ValueError("Program Facts coverage/debt capability mismatch")
+            if row["build_variant_id"] and row["build_variant_id"] != coverage[
+                "build_variant_id"
+            ]:
+                raise ValueError("Program Facts coverage/debt build mismatch")
+        referenced.update(unresolved)
+    for excluded in receipt["source_manifest"]["excluded_files"]:
+        matches = [
+            row["debt_id"]
+            for row in debt["debts"]
+            if row["reason"] == "SOURCE_EXCLUDED"
+            and excluded["identity"] in row["scope_ids"]
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                "Program Facts source exclusion lacks exact debt authority"
+            )
+        referenced.add(matches[0])
+    if referenced != set(debt_by_id):
+        raise ValueError("Program Facts debt accounting is not total")
+
+    status = receipt["status"]
+    coverage_states = {row["status"] for row in payload["coverage"]}
+    has_debt = bool(debt_by_id)
+    if status in {"WRITTEN", "REUSED"}:
+        if coverage_states - {"FULL"} or has_debt:
+            raise ValueError("successful Program Facts receipt conceals debt")
+    elif status == "DEGRADED":
+        if not has_debt:
+            raise ValueError("degraded Program Facts receipt has no debt")
+    elif status == "UNAVAILABLE":
+        if (
+            payload["nodes"]
+            or payload["occurrences"]
+            or payload["facts"]
+            or not has_debt
+            or (coverage_states and not coverage_states <= {"UNSUPPORTED", "UNKNOWN"})
+        ):
+            raise ValueError("unavailable Program Facts receipt is deceptive")
+    elif status == "FAILED":
+        if payload["nodes"] or payload["occurrences"] or payload["facts"] or not has_debt:
+            raise ValueError("failed Program Facts receipt is deceptive")
+    elif status == "STALE":
+        if not any(
+            row["reason"] == "STALE_SNAPSHOT" and row["blocks_reuse"]
+            for row in debt["debts"]
+        ):
+            raise ValueError("stale Program Facts receipt omits blocking debt")
+    if receipt["reuse_key"] != derive_program_facts_reuse_key(
+        payload=payload,
+        receipt=receipt,
+    ):
+        raise ValueError("Program Facts receipt reuse key mismatch")
+
+    provenance = {
+        "schema_version": "plamen.program_facts_assurance_source.v1",
+        "public_version": 1,
+        "status": status,
+        "payload": {
+            "path": _PROGRAM_FACTS_V1_FILES[0],
+            "full_file_sha256": hashlib.sha256(payload_raw).hexdigest(),
+            "document_sha256": payload["payload_sha256"],
+        },
+        "receipt": {
+            "path": _PROGRAM_FACTS_V1_FILES[1],
+            "full_file_sha256": hashlib.sha256(receipt_raw).hexdigest(),
+            "document_sha256": receipt["receipt_sha256"],
+        },
+        "debt": {
+            "path": _PROGRAM_FACTS_V1_FILES[2],
+            "full_file_sha256": hashlib.sha256(debt_raw).hexdigest(),
+            "document_sha256": debt["debt_sha256"],
+        },
+        "snapshot_digest": debt["snapshot_digest"],
+        "source_manifest_digest": debt["source_manifest_digest"],
+        "phase_io": dict(receipt["phase_io"]),
+    }
+    return payload, receipt, debt, provenance
+
+
+def _program_facts_v1_assurance_rows(
+    root: Path,
+    *,
+    run_id: str,
+) -> tuple[dict[str, Any], ...]:
+    try:
+        _payload, receipt, debt, provenance = (
+            _validate_program_facts_v1_projection_bundle(root, run_id=run_id)
+        )
+    except (
+        KeyError,
+        OSError,
+        ProgramFactsTypeError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+    ) as exc:
+        fingerprints = _program_facts_file_fingerprints(
+            root, _PROGRAM_FACTS_V1_FILES
+        )
+        return (
+            _program_facts_invalid_row(
+                gate_id="program_facts.v1-authority-replay",
+                message=(
+                    "Program Facts v1 authority is missing, stale, tampered, or "
+                    "internally inconsistent; no clean graph/fact coverage is "
+                    f"authorized. {type(exc).__name__}: {exc}"
+                ),
+                evidence={
+                    "public_version": 1,
+                    "files": fingerprints,
+                    "run_id": run_id,
+                },
+            ),
+        )
+
+    projected: list[dict[str, Any]] = []
+    for raw in debt["debts"]:
+        affected = sorted(
+            {
+                raw["debt_id"],
+                *raw["scope_ids"],
+                raw["provider_id"],
+                raw["capability_id"],
+                raw["build_variant_id"],
+            }
+            - {""}
+        )
+        source_authority = {
+            **provenance,
+            "debt_id": raw["debt_id"],
+            "evidence_refs": list(raw["evidence_refs"]),
+        }
+        failure_id = hashlib.sha256(
+            _canonical_json(
+                {
+                    "source_authority": source_authority,
+                    "debt_row": raw,
+                }
+            )
+        ).hexdigest()
+        projected.append(
+            {
+                "phase": "recon",
+                "work_unit_id": "program_facts_bake",
+                "state": "COMPLETED_WITH_DEBT",
+                "assurance_impact": DISCOVERY_RECALL,
+                "gate_id": f"program_facts.{raw['reason'].casefold()}",
+                "gate_class": "PROGRAM_FACTS_COVERAGE",
+                "affected_identities": affected,
+                "message": (
+                    f"Program Facts {receipt['status']} debt {raw['reason']}: "
+                    f"{str(raw['explanation']).strip()} No negative inference "
+                    "or clean graph-coverage claim is authorized."
+                ),
+                "failure_instance_id": failure_id,
+                "source_authority": source_authority,
+            }
+        )
+    return tuple(projected)
+
+
+def _program_facts_runtime_assurance_rows(
+    root: Path,
+    *,
+    run_id: str,
+    checkpoint_runtime_debts: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    path = Path(root) / _PROGRAM_FACTS_RUNTIME_DEBT_FILE
+    expected = checkpoint_runtime_debts.get(_PROGRAM_FACTS_RUNTIME_DEBT_ID)
+    present = os.path.lexists(path)
+    if expected is None and not present:
+        return ()
+    evidence: dict[str, Any] = {
+        "schema_version": "plamen.program_facts_runtime_assurance_source.v1",
+        "path": _PROGRAM_FACTS_RUNTIME_DEBT_FILE,
+        "checkpoint_debt_id": _PROGRAM_FACTS_RUNTIME_DEBT_ID,
+        "checkpoint_receipt_sha256": expected,
+    }
+    try:
+        if expected is not None and (
+            not isinstance(expected, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected) is None
+        ):
+            raise ValueError(
+                "legacy checkpoint runtime-debt binding is malformed"
+            )
+        payload, raw = _read_program_facts_json(
+            root, _PROGRAM_FACTS_RUNTIME_DEBT_FILE
+        )
+        evidence.update(
+            {
+                "full_file_sha256": hashlib.sha256(raw).hexdigest(),
+                "size": len(raw),
+            }
+        )
+        if (
+            expected is not None
+            and hashlib.sha256(raw).hexdigest() != expected
+        ):
+            raise ValueError(
+                "runtime diagnostic bytes differ from legacy checkpoint binding"
+            )
+        if set(payload) != {
+            "schema_version",
+            "run_id",
+            "debt_id",
+            "issue",
+            "consumer_activation",
+        }:
+            raise ValueError("runtime-debt fields are not exact")
+        if (
+            payload["schema_version"]
+            != "plamen.program_facts_stage2_runtime_debt.v1"
+            or payload["run_id"] != run_id
+            or payload["debt_id"] != _PROGRAM_FACTS_RUNTIME_DEBT_ID
+            or not isinstance(payload["issue"], str)
+            or not payload["issue"].strip()
+            or payload["consumer_activation"] is not False
+        ):
+            raise ValueError("runtime-debt authority does not match this run")
+    except (
+        KeyError,
+        OSError,
+        ProgramFactsTypeError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+    ) as exc:
+        evidence["files"] = _program_facts_file_fingerprints(
+            root, (_PROGRAM_FACTS_RUNTIME_DEBT_FILE,)
+        )
+        return (
+            _program_facts_invalid_row(
+                gate_id="program_facts.runtime-debt-replay",
+                message=(
+                    "Program Facts runtime debt is missing, stale, or tampered; "
+                    "consumer activation and clean fact coverage remain denied. "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                evidence=evidence,
+            ),
+        )
+    failure_id = hashlib.sha256(
+        _canonical_json({"source_authority": evidence, "payload": payload})
+    ).hexdigest()
+    return (
+        {
+            "phase": "recon",
+            "work_unit_id": "program_facts_stage2_runtime",
+            "state": "COMPLETED_WITH_DEBT",
+            "assurance_impact": DISCOVERY_RECALL,
+            "gate_id": "program_facts.stage2-runtime",
+            "gate_class": "PROGRAM_FACTS_RUNTIME",
+            "affected_identities": [_PROGRAM_FACTS_RUNTIME_DEBT_ID],
+            "message": (
+                "Program Facts runtime failed before a valid emit-only "
+                f"publication; consumer activation remains denied. {payload['issue']}"
+            ),
+            "failure_instance_id": failure_id,
+            "source_authority": evidence,
+        },
+    )
+
+
+def _program_facts_assurance_rows(
+    scratchpad: Path,
+    *,
+    run_id: str,
+    checkpoint_runtime_debts: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    root = Path(scratchpad)
+    v1_present = {
+        name for name in _PROGRAM_FACTS_V1_FILES
+        if os.path.lexists(root / name)
+    }
+    v2_present = {
+        name for name in _PROGRAM_FACTS_V2_FILES
+        if os.path.lexists(root / name)
+    }
+    activated = bool(
+        v1_present
+        or v2_present
+        or any(os.path.lexists(root / name) for name in _PROGRAM_FACTS_ACTIVATION_SENTINELS)
+        or os.path.lexists(root / _PROGRAM_FACTS_RUNTIME_DEBT_FILE)
+        or _PROGRAM_FACTS_RUNTIME_DEBT_ID in checkpoint_runtime_debts
+    )
+    if not activated:
+        return ()
+    rows: list[dict[str, Any]] = []
+    if v1_present and v2_present:
+        rows.append(
+            _program_facts_invalid_row(
+                gate_id="program_facts.public-version-ambiguity",
+                message=(
+                    "Program Facts v1 and v2 public bundles coexist; no active "
+                    "generation or clean coverage claim is authorized."
+                ),
+                evidence={
+                    "v1_files": _program_facts_file_fingerprints(
+                        root, _PROGRAM_FACTS_V1_FILES
+                    ),
+                    "v2_files": _program_facts_file_fingerprints(
+                        root, _PROGRAM_FACTS_V2_FILES
+                    ),
+                    "run_id": run_id,
+                },
+            )
+        )
+    elif v1_present:
+        rows.extend(_program_facts_v1_assurance_rows(root, run_id=run_id))
+    elif v2_present:
+        rows.append(
+            _program_facts_invalid_row(
+                gate_id="program_facts.v2-assurance-replay-unavailable",
+                message=(
+                    "Program Facts v2 public bytes exist without the frozen "
+                    "assurance replay adapter; clean coverage is denied."
+                ),
+                evidence={
+                    "public_version": 2,
+                    "files": _program_facts_file_fingerprints(
+                        root, _PROGRAM_FACTS_V2_FILES
+                    ),
+                    "run_id": run_id,
+                },
+            )
+        )
+    elif not os.path.lexists(root / _PROGRAM_FACTS_RUNTIME_DEBT_FILE):
+        rows.append(
+            _program_facts_invalid_row(
+                gate_id="program_facts.public-bundle-missing",
+                message=(
+                    "Program Facts was activated but its exact public bundle "
+                    "is absent; clean graph/fact coverage is denied."
+                ),
+                evidence={
+                    "activation_sentinels": _program_facts_file_fingerprints(
+                        root, _PROGRAM_FACTS_ACTIVATION_SENTINELS
+                    ),
+                    "run_id": run_id,
+                },
+            )
+        )
+    rows.extend(
+        _program_facts_runtime_assurance_rows(
+            root,
+            run_id=run_id,
+            checkpoint_runtime_debts=checkpoint_runtime_debts,
+        )
+    )
+    return _shadow_diagnostic_rows(
+        rows,
+        consumer_activation=PROGRAM_FACTS_CONSUMER_ACTIVATION,
+        subsystem="Program Facts",
+    )
+
+
+def _read_graph_application_identity(
+    root: Path,
+    identity: object,
+) -> tuple[str, bytes]:
+    """Read one scratchpad identity without following an injected symlink."""
+
+    text = str(identity or "")
+    if not text.startswith("scratchpad:"):
+        raise ValueError("graph application identity is not scratchpad-rooted")
+    relative = text.split(":", 1)[1].replace("\\", "/")
+    path = Path(relative)
+    if (
+        not relative
+        or path.is_absolute()
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ValueError("graph application identity is not a safe relative path")
+    candidate = Path(root) / path
+    current = Path(root)
+    for part in path.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"graph application source is a symlink: {relative}")
+    if not candidate.is_file():
+        raise ValueError(f"graph application source is absent: {relative}")
+    raw = candidate.read_bytes()
+    if not raw or len(raw) > 64 * 1024 * 1024:
+        raise ValueError(f"graph application source size is invalid: {relative}")
+    return relative, raw
+
+
+def _graph_application_file_fingerprints(
+    root: Path,
+) -> dict[str, dict[str, Any]]:
+    contract = graph_application_integration_contract()
+    identities = [
+        *_GRAPH_APPLICATION_FILES,
+        *(
+            str(value).split(":", 1)[1]
+            for value in contract["required_parent_artifacts"]
+        ),
+        *(
+            str(value).split(":", 1)[1]
+            for value in contract["optional_parent_artifacts"]
+        ),
+    ]
+    return _program_facts_file_fingerprints(root, tuple(identities))
+
+
+def _graph_application_invalid_row(
+    root: Path,
+    *,
+    run_id: str,
+    exc: BaseException,
+) -> dict[str, Any]:
+    evidence = {
+        "schema_version": "plamen.graph_application_assurance_source.v1",
+        "run_id": run_id,
+        "files": _graph_application_file_fingerprints(root),
+        "error": f"{type(exc).__name__}: {exc}",
+    }
+    failure_id = hashlib.sha256(_canonical_json(evidence)).hexdigest()
+    return {
+        "phase": "chain",
+        "work_unit_id": "graph_application_reconciliation",
+        "state": "COMPLETED_WITH_DEBT",
+        "assurance_impact": DISCOVERY_RECALL,
+        "gate_id": "graph_application.authority-replay",
+        "gate_class": "GRAPH_APPLICATION_AUTHORITY",
+        "affected_identities": ["graph-application-authority"],
+        "message": (
+            "Graph availability/application authority is missing, stale, "
+            "tampered, or internally inconsistent; no clean graph-consumption "
+            f"claim is authorized. {type(exc).__name__}: {exc}"
+        ),
+        "failure_instance_id": failure_id,
+        "source_authority": evidence,
+    }
+
+
+def _graph_application_assurance_rows(
+    scratchpad: Path,
+    *,
+    run_id: str,
+) -> tuple[dict[str, Any], ...]:
+    """Replay graph application and surface every exact reconciliation debt."""
+
+    root = Path(scratchpad)
+    contract = graph_application_integration_contract()
+    consumer_activation = contract.get("consumer_activation") is True
+
+    def finish(rows: tuple[dict[str, Any], ...]) -> tuple[dict[str, Any], ...]:
+        return _shadow_diagnostic_rows(
+            rows,
+            consumer_activation=consumer_activation,
+            subsystem="Graph application",
+        )
+    required_identities = tuple(contract["required_parent_artifacts"])
+    required_names = tuple(
+        str(identity).split(":", 1)[1] for identity in required_identities
+    )
+    control_present = {
+        name for name in _GRAPH_APPLICATION_FILES if os.path.lexists(root / name)
+    }
+    # The shared workspace is also a Program Facts sentinel and is not by
+    # itself evidence that graph production started.  Any graph/handoff input,
+    # however, activates the trio requirement so a partial producer failure
+    # cannot disappear from the final report.
+    source_activated = any(
+        os.path.lexists(root / name)
+        for name in required_names
+        if name != "evm_analysis_workspace_receipt.v1.json"
+    )
+    if not control_present and not source_activated:
+        return ()
+
+    try:
+        if control_present != set(_GRAPH_APPLICATION_FILES):
+            raise ValueError("graph application control trio is partial or absent")
+        control_raw: dict[str, bytes] = {}
+        for name in _GRAPH_APPLICATION_FILES:
+            path = root / name
+            if path.is_symlink():
+                raise ValueError(f"graph application control is a symlink: {name}")
+            control_raw[name] = path.read_bytes()
+
+        authority = load_graph_application_authority_bytes(
+            control_raw[GRAPH_APPLICATION_AUTHORITY_FILE],
+            expected_run_id=run_id,
+        )
+
+        roster_binding = authority["consumer_roster"]
+        provider_manifest = authority["graph_generation"]["provider_manifest"]
+        if provider_manifest["state"] != "BOUND":
+            raise ValueError(
+                "graph provider-generation artifact is not committed/bound"
+            )
+        source_bindings = {
+            roster_binding["artifact_identity"]:
+                roster_binding["artifact_sha256"],
+            roster_binding["scheduler_artifact_identity"]:
+                roster_binding["scheduler_artifact_sha256"],
+            authority["workspace"]["artifact_identity"]:
+                authority["workspace"]["artifact_sha256"],
+            authority["graph_generation"]["mechanical_graph"]["artifact_identity"]:
+                authority["graph_generation"]["mechanical_graph"]["artifact_sha256"],
+            authority["graph_generation"]["depth_handoff"]["artifact_identity"]:
+                authority["graph_generation"]["depth_handoff"]["artifact_sha256"],
+            authority["graph_generation"]["depth_handoff"][
+                "depth_candidates_artifact_identity"
+            ]: authority["graph_generation"]["depth_handoff"][
+                "depth_candidates_sha256"
+            ],
+            provider_manifest["artifact_identity"]:
+                provider_manifest["artifact_sha256"],
+        }
+        if set(source_bindings) != set(required_identities):
+            raise ValueError("graph application required-parent roster differs")
+        source_provenance: list[dict[str, Any]] = []
+        for identity in sorted(source_bindings):
+            relative, raw = _read_graph_application_identity(root, identity)
+            digest = hashlib.sha256(raw).hexdigest()
+            if digest != source_bindings[identity]:
+                raise ValueError(f"graph application source bytes changed: {relative}")
+            source_provenance.append(
+                {
+                    "artifact_identity": identity,
+                    "artifact_sha256": digest,
+                    "size": len(raw),
+                }
+            )
+
+        observations = load_graph_application_observations_bytes(
+            control_raw[GRAPH_APPLICATION_OBSERVATIONS_FILE],
+            authority=authority,
+        )
+        evidence_sha256: dict[str, str] = {}
+        evidence_provenance: list[dict[str, Any]] = []
+        for binding in observations["evidence_artifacts"]:
+            identity = binding["artifact_identity"]
+            relative, raw = _read_graph_application_identity(root, identity)
+            digest = hashlib.sha256(raw).hexdigest()
+            if digest != binding["artifact_sha256"]:
+                raise ValueError(f"graph observation evidence changed: {relative}")
+            evidence_sha256[identity] = digest
+            evidence_provenance.append(
+                {
+                    "artifact_identity": identity,
+                    "artifact_sha256": digest,
+                    "size": len(raw),
+                }
+            )
+        observations = load_graph_application_observations_bytes(
+            control_raw[GRAPH_APPLICATION_OBSERVATIONS_FILE],
+            authority=authority,
+            expected_evidence_artifact_sha256=evidence_sha256,
+        )
+        validate_graph_application_assurance_phaseio(
+            read_artifact_ledger(root),
+            run_id=run_id,
+            authority=authority,
+            observations=observations,
+            control_artifact_sha256={
+                f"scratchpad:{name}": hashlib.sha256(raw).hexdigest()
+                for name, raw in control_raw.items()
+            },
+        )
+        reconciliation = load_graph_application_reconciliation_bytes(
+            control_raw[GRAPH_APPLICATION_RECONCILIATION_FILE],
+            authority=authority,
+            observations=observations,
+        )
+        if reconciliation["state"] == "COMPLETE":
+            if reconciliation["debts"]:
+                raise ValueError("COMPLETE graph reconciliation contains debt")
+            return ()
+        if not reconciliation["debts"]:
+            raise ValueError("non-COMPLETE graph reconciliation omits typed debt")
+
+        control_provenance = {
+            name: {
+                "full_file_sha256": hashlib.sha256(raw).hexdigest(),
+                "size": len(raw),
+            }
+            for name, raw in sorted(control_raw.items())
+        }
+        base_provenance = {
+            "schema_version": "plamen.graph_application_assurance_source.v1",
+            "run_id": authority["run_id"],
+            "snapshot_sha256": authority["snapshot_sha256"],
+            "workspace_reference_sha256": authority["workspace"][
+                "reference_sha256"
+            ],
+            "generation_sha256": authority["graph_generation"][
+                "generation_sha256"
+            ],
+            "full_availability_sha256": authority[
+                "full_availability_sha256"
+            ],
+            "element_denominator_sha256": authority[
+                "element_denominator_sha256"
+            ],
+            "consumer_denominator_sha256": authority[
+                "consumer_denominator_sha256"
+            ],
+            "authority_sha256": authority["authority_sha256"],
+            "observations_sha256": observations["observations_sha256"],
+            "reconciliation_sha256": reconciliation[
+                "reconciliation_sha256"
+            ],
+            "required_pair_count": reconciliation["required_pair_count"],
+            "reconciled_pair_count": reconciliation["reconciled_pair_count"],
+            "controls": control_provenance,
+            "sources": source_provenance,
+            "evidence_artifacts": evidence_provenance,
+        }
+        consumers = {
+            row["consumer_id"]: row for row in authority["consumers"]
+        }
+        projected: list[dict[str, Any]] = []
+        for ordinal, debt in enumerate(reconciliation["debts"]):
+            code = debt["code"]
+            subject = debt["subject"]
+            consumer_id = subject.split(":", 1)[0]
+            consumer = consumers.get(consumer_id)
+            phase = str(consumer["phase"] if consumer else "chain")
+            source_authority = {
+                **base_provenance,
+                "debt_ordinal": ordinal,
+                "debt": dict(debt),
+            }
+            failure_id = hashlib.sha256(
+                _canonical_json(source_authority)
+            ).hexdigest()
+            projected.append(
+                {
+                    "phase": phase,
+                    "work_unit_id": consumer_id if consumer else (
+                        "graph_application_reconciliation"
+                    ),
+                    "state": "COMPLETED_WITH_DEBT",
+                    "assurance_impact": DISCOVERY_RECALL,
+                    "gate_id": (
+                        "graph_application."
+                        + re.sub(r"[^a-z0-9_.-]+", "-", code.casefold())
+                    ),
+                    "gate_class": "GRAPH_APPLICATION_OUTCOME",
+                    "affected_identities": sorted(
+                        {subject, consumer_id} - {""}
+                    ),
+                    "message": (
+                        f"Graph application debt {code} for {subject}: "
+                        f"{debt['reason']} No clean graph-consumption or "
+                        "application outcome is authorized."
+                    ),
+                    "failure_instance_id": failure_id,
+                    "source_authority": source_authority,
+                }
+            )
+        return finish(tuple(projected))
+    except (
+        GraphApplicationAuthorityError,
+        ArtifactLedgerError,
+        KeyError,
+        OSError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+    ) as exc:
+        return finish((
+            _graph_application_invalid_row(root, run_id=run_id, exc=exc),
+        ))
 
 
 def _supplemental_assurance_rows(
@@ -2326,8 +3378,20 @@ def _supplemental_assurance_rows(
     *,
     project_root: Path,
     run_id: str,
+    checkpoint_runtime_debts: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], ...]:
+    runtime_debts = (
+        checkpoint_runtime_debts
+        if isinstance(checkpoint_runtime_debts, Mapping)
+        else {}
+    )
     rows = (
+        *_program_facts_assurance_rows(
+            scratchpad,
+            run_id=run_id,
+            checkpoint_runtime_debts=runtime_debts,
+        ),
+        *_graph_application_assurance_rows(scratchpad, run_id=run_id),
         *_toolchain_coverage_assurance_rows(scratchpad),
         *_verification_operator_assurance_rows(scratchpad, run_id=run_id),
         *_inventory_reconciliation_assurance_rows(scratchpad),
@@ -2370,6 +3434,9 @@ def build_current_assurance_manifest(
             Path(scratchpad),
             project_root=Path(project_root),
             run_id=run_id,
+            checkpoint_runtime_debts=(
+                getattr(checkpoint, "runtime_debts", {}) or {}
+            ),
         ),
     )
 
@@ -2525,6 +3592,25 @@ def assurance_projection_input_paths(scratchpad: Path) -> tuple[str, ...]:
         paths.add(candidate.as_posix())
 
     for name in (
+        *_PROGRAM_FACTS_V1_FILES,
+        *_PROGRAM_FACTS_V2_FILES,
+        *_PROGRAM_FACTS_ACTIVATION_SENTINELS,
+        _PROGRAM_FACTS_RUNTIME_DEBT_FILE,
+        *_GRAPH_APPLICATION_FILES,
+        *(
+            str(identity).split(":", 1)[1]
+            for identity in graph_application_integration_contract()[
+                "required_parent_artifacts"
+            ]
+        ),
+        *(
+            str(identity).split(":", 1)[1]
+            for identity in graph_application_integration_contract()[
+                "optional_parent_artifacts"
+            ]
+        ),
+        "tool_coverage_ledger.json",
+        "tool_coverage_ledger.md",
         "toolchain_coverage_debt.json",
         "report_semantic_toolchain_coverage.md",
         "post_verify_late_delivery.json",
@@ -2551,6 +3637,24 @@ def assurance_projection_input_paths(scratchpad: Path) -> tuple[str, ...]:
 
     for debt_path in sorted(root.glob("trust_evidence_debt_*.json")):
         add(debt_path.name)
+
+    graph_observations_path = root / GRAPH_APPLICATION_OBSERVATIONS_FILE
+    if graph_observations_path.is_file() and not graph_observations_path.is_symlink():
+        try:
+            observations = strict_json_loads(
+                graph_observations_path.read_bytes(),
+                require_final_lf=True,
+                require_canonical=True,
+            )
+            if isinstance(observations, dict):
+                for row in observations.get("evidence_artifacts", []):
+                    if not isinstance(row, dict):
+                        continue
+                    identity = str(row.get("artifact_identity") or "")
+                    if identity.startswith("scratchpad:"):
+                        add(identity.split(":", 1)[1])
+        except (OSError, ProgramFactsTypeError, TypeError, UnicodeError, ValueError):
+            pass
 
     provider_receipt_path = root / TRUST_PROVIDER_RECEIPT_FILE
     if provider_receipt_path.is_file():
@@ -2664,9 +3768,9 @@ def render_assurance_section(manifest: dict[str, Any]) -> str:
         START_MARKER,
         SECTION_HEADING,
         "",
-        "The driver recorded unresolved audit work. These rows are assurance "
-        "limitations, not vulnerability findings, and they do not authorize "
-        "a negative disposition.",
+        "The driver recorded unresolved audit work or nonterminal shadow "
+        "diagnostics. These rows are assurance limitations, not vulnerability "
+        "findings, and they do not authorize a negative disposition.",
         "",
         (
             f"The lossless authority is `assurance_limitations.json` "

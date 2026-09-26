@@ -1,0 +1,134 @@
+{
+  "schema": "plamen.validator-conformance-checkpoint.v1",
+  "date": "2026-09-21",
+  "scope": "Generic artifact normalization, lifecycle parsing, and synthetic worker-boundary tests. Not full-suite or audit E2E certification.",
+  "interpreter": "CPython 3.12",
+  "passing_suites": [
+    {
+      "file": "scripts/test_artifact_surface_conformance.py",
+      "passed": 209,
+      "failed": 0,
+      "exit_code": 0
+    },
+    {
+      "file": "scripts/test_artifact_surface.py",
+      "passed": 262,
+      "failed": 0,
+      "exit_code": 0
+    },
+    {
+      "file": "scripts/test_representation_purge_parsers.py",
+      "passed": 103,
+      "failed": 0,
+      "exit_code": 0
+    },
+    {
+      "file": "scripts/test_representation_bound_gates_p0_am.py",
+      "passed": 173,
+      "failed": 0,
+      "exit_code": 0
+    },
+    {
+      "file": "scripts/test_representation_tolerant_driver_gates.py",
+      "passed": 66,
+      "failed": 0,
+      "exit_code": 0
+    },
+    {
+      "file": "scripts/test_candidate_negative_representation_purge_p0.py",
+      "passed": 134,
+      "failed": 0,
+      "exit_code": 0
+    },
+    {
+      "file": "scripts/test_security_obligation_representation_purge.py",
+      "passed": 62,
+      "failed": 0,
+      "exit_code": 0
+    },
+    {
+      "file": "scripts/test_artifact_markers.py",
+      "passed": 14,
+      "failed": 0,
+      "exit_code": 0
+    },
+    {
+      "file": "scripts/test_ship_8_18_artifact_classification.py",
+      "passed": 10,
+      "failed": 0,
+      "exit_code": 0
+    },
+    {
+      "file": "scripts/test_t2_4_6_parity_robustness.py",
+      "passed": 5,
+      "failed": 0,
+      "exit_code": 0
+    },
+    {
+      "file": "scripts/test_codex_depth_marker_backend_aware.py",
+      "passed": 9,
+      "failed": 0,
+      "exit_code": 0
+    },
+    {
+      "file": "scripts/test_markdown_table_escaped_pipes.py",
+      "passed": 10,
+      "failed": 0,
+      "exit_code": 0
+    },
+    {
+      "file": "scripts/test_markdown_heading_section_boundaries_r8.py",
+      "passed": 38,
+      "failed": 0,
+      "exit_code": 0
+    },
+    {
+      "file": "scripts/test_attention_repair_markdown_cells.py",
+      "passed": 1,
+      "failed": 0,
+      "exit_code": 0
+    },
+    {
+      "file": "scripts/test_recon_worker_pool.py",
+      "passed": 85,
+      "failed": 0,
+      "exit_code": 0
+    }
+  ],
+  "passing_suite_total": 1181,
+  "adjacent_suites": [
+    {
+      "file": "scripts/test_worker_prelaunch_matrix.py",
+      "passed": 42,
+      "failed": 2,
+      "baseline_passed": 42,
+      "baseline_failed": 2,
+      "test_files_byte_identical": true
+    },
+    {
+      "file": "scripts/test_recon_canonical_prepass_handoff.py",
+      "passed": 6,
+      "failed": 3,
+      "baseline_passed": 6,
+      "baseline_failed": 3,
+      "test_files_byte_identical": true,
+      "diagnostic_note": "Same failing tests; canonical projection diagnostic changed from exact-heading rejection to missing-table rejection."
+    }
+  ],
+  "codex_smoke": {
+    "cli_version": "0.154.0",
+    "model": "gpt-5.6-terra",
+    "sandbox": "read-only",
+    "ignore_user_config": true,
+    "ephemeral": true,
+    "tools_used": 0,
+    "exit_code": 0,
+    "structured_result": {
+      "status": "COMPLETE",
+      "markdown": "Severity:High\nVerdict:OPEN"
+    },
+    "shared_field_reader": "PASS"
+  },
+  "runtime_install_performed": false,
+  "audit_launched": false
+}

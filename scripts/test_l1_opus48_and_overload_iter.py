@@ -72,7 +72,7 @@ def test_codex_thorough_reasoning_promotions_match_claude_tiers():
         ("skeptic", "sc"),
         ("sc_verify_high_b", "sc"),
         ("chain_agent2", "sc"),
-        ("inventory_chunk_a", "sc"),
+        ("inventory", "sc"),          # the MERGE; chunks are transcription shards, unpromoted
         ("report_body_writer_high", "sc"),
         ("verify_high_b", "l1"),
     )

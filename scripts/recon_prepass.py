@@ -15,6 +15,7 @@ import logging
 import hashlib
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -69,13 +70,17 @@ from tool_coverage_ledger import (
     ToolOutcomeState,
     ToolCoverageLedgerError,
     bind_succeeded_tool_outcome,
+    build_external_tool_execution_receipt,
     build_context_bound_tool_outcome_envelope,
+    build_snapshot_execution_tool_outcome_envelope,
     build_tool_execution_context,
     load_toolchain_governance,
     record_tool_outcome,
 )
+import owned_process_runner as _owned_process_authority
 from owned_process_runner import (
     OwnedProcessRunnerError,
+    resolve_owned_process_command,
     run_owned_process as _run_owned_process_direct,
     run_owned_process_isolated as _run_owned_process_isolated,
 )
@@ -107,6 +112,37 @@ from artifact_ledger import (
     write_artifact_ledger,
 )
 from phase_io_contracts import LaunchSpec, resolve_phase_io_contract
+from opengrep_rule_authority import (
+    OPENGREP_RULE_REVISIONS as _OPENGREP_RULE_REVISIONS,
+    OpenGrepRuleAuthorityError as _OpenGrepRuleAuthorityError,
+    validate_installed_rule_authority as _validate_installed_rule_authority,
+)
+from evm_analysis_workspace_authority import (
+    capture_evm_build_root_resolver_authority,
+    EVMAnalysisWorkspaceAuthorityError,
+    WORKSPACE_RECEIPT_PATH,
+    execute_session_bound_evm_tool,
+    load_evm_analysis_workspace_authority,
+    require_custodied_workspace_tool_for_execution,
+    replay_evm_analysis_workspace_execution_closure,
+    workspace_public_reference,
+)
+from static_analysis_compat_execution import (
+    StaticAnalysisCompatExecutionError,
+    execute_compat_static_analysis,
+    resolve_compat_foundry_solc,
+)
+from opengrep_observational_authority import (
+    FILENAME as _OPENGREP_OBSERVATIONAL_RECEIPT,
+    OpenGrepObservationalAuthorityError as _OpenGrepObservationalAuthorityError,
+    write_receipt as _write_opengrep_observational_receipt,
+)
+from js_lock_authority import (
+    JSLockAuthorityError as _JSLockAuthorityError,
+    KNOWN_UNSUPPORTED_LOCKFILES as _KNOWN_UNSUPPORTED_JS_LOCKFILES,
+    SUPPORTED_LOCKFILES as _SUPPORTED_JS_LOCKFILES,
+    select_js_lock_authority as _select_exact_js_lock_authority,
+)
 
 # Module logger. `_scip_to_graph_artifacts` emits a log.warning on the
 # large-index (>callee-node-cap) PARTIAL path; without this module-level logger
@@ -387,9 +423,11 @@ _CONTRACT_MARKERS = ("#[program]", "#[contract]", "#[contractimpl]", "contractim
 # Language dispatch — per-lang regex adapters; see LANG_DISPATCH below.
 
 def _evm_state_rows(text, f, proj):
+    relative = _rel(f, proj)
     return [
-        f"| `{_rel(f, proj)}` | `{m.group(2)}` | `{m.group(1).strip()}` | {_line_of(text, m.start())} |"
-        for m in _EVM_STATE_RE.finditer(text)
+        f"| `{relative}` | `{row['contract_name']}.{row['bare']}` | "
+        f"`{row['type_text']}` | {str(row['declaration_locus']).rsplit(':L', 1)[-1]} |"
+        for row in _sol_state_declarations(text, source_path=relative)
     ]
 
 def _evm_fn_rows(text, f, proj):
@@ -604,11 +642,27 @@ def _write_interface_parity_findings(scratch: Path, proj: Path) -> str:
     for fd in findings:
         lines += [
             f"### Finding [{fd['id']}]: {fd['title']}",
+            "**Verdict**: UNRESOLVED",
+            "**Step Execution**: ✓1(inherited interface enumerated), "
+            "✓2(implementation external/public surface enumerated), "
+            "✓3(declaration parity compared), ?4(runtime integration "
+            "consequence requires semantic review)",
+            "**Rules Applied**: [R4:✓(candidate retained for adversarial "
+            "review), R5:✓(interface and implementation compared), "
+            "R6:✗(no privileged role), R8:✗(single-step surface check), "
+            "R10:✓(worst-case integration omission considered)]",
             f"**Severity**: {fd['severity']}",
             f"**Location**: {fd['location']}",
             "**Preferred Tag**: [CODE-TRACE]",
             f"**Description**: {fd['description']}",
             f"**Impact**: {fd['impact']}",
+            "**Material Harm** (MANDATORY): Interface-typed integrators "
+            "cannot invoke the omitted external function and may expose an "
+            "incomplete ABI, leaving that integration functionality "
+            "unavailable until they use the implementation ABI.",
+            f"**Evidence**: Mechanical parity trace at `{fd['location']}`: "
+            f"{fd['title']}; the inherited interface declaration set has no "
+            "matching function name.",
             "",
         ]
     _write_text(scratch / "niche_interface_parity_findings.md", "\n".join(lines) + "\n")
@@ -636,6 +690,23 @@ _SOL_INITIALIZER_NAME_RE = re.compile(
     r"(?i)^(re)?initiali[sz]e(_unchained)?$|^__\w*_init(_unchained)?$|^init$"
 )
 _SOL_CONTRACT_DECL_RE = re.compile(r"\b(?:contract|library)\s+([A-Za-z_]\w*)")
+_SOL_STATE_SCOPE_RE = re.compile(
+    r"\b(?:(?:abstract)\s+)?(?P<kind>contract|library|interface)\s+"
+    r"(?P<name>[A-Za-z_]\w*)\b"
+)
+_SOL_BLOCK_MEMBER_RE = re.compile(
+    r"^\s*(?:function\s*(?:[A-Za-z_]\w*\s*)?\(|constructor\s*\(|"
+    r"modifier\s+[A-Za-z_]\w*\b|fallback\s*\(|receive\s*\(|"
+    r"struct\s+[A-Za-z_]\w*\b|enum\s+[A-Za-z_]\w*\b)"
+)
+_SOL_NON_STATE_MEMBER_RE = re.compile(
+    r"^\s*(?:using\b|event\b|error\b|type\b|modifier\b|constructor\b|"
+    r"fallback\b|receive\b|struct\b|enum\b|function\s+[A-Za-z_]\w*\s*\()"
+)
+_SOL_STATE_MODIFIER_RE = re.compile(
+    r"\b(?:public|private|internal|constant|immutable|transient)\b|"
+    r"\boverride(?:\s*\([^)]*\))?"
+)
 
 
 def _sol_find_body(text: str, pos: int) -> Tuple[Optional[int], Optional[int]]:
@@ -670,6 +741,266 @@ def _sol_find_body(text: str, pos: int) -> Tuple[Optional[int], Optional[int]]:
     return None, None
 
 
+def _sol_top_level_assignment(text: str) -> int:
+    """Return the top-level initializer ``=`` in a member declaration.
+
+    Mapping arrows and operators nested in type/array syntax are not state
+    initializers.  ``text`` is already comment/string-masked, so offsets remain
+    stable without treating literal content as grammar.
+    """
+
+    parens = brackets = braces = 0
+    for index, char in enumerate(text):
+        if char == "(":
+            parens += 1
+        elif char == ")":
+            parens = max(0, parens - 1)
+        elif char == "[":
+            brackets += 1
+        elif char == "]":
+            brackets = max(0, brackets - 1)
+        elif char == "{":
+            braces += 1
+        elif char == "}":
+            braces = max(0, braces - 1)
+        elif char == "=" and not (parens or brackets or braces):
+            before = text[index - 1] if index else ""
+            after = text[index + 1] if index + 1 < len(text) else ""
+            if before not in "!<>=+-*/%&|^" and after not in "=>":
+                return index
+    return -1
+
+
+def _sol_has_top_level_comma(text: str) -> bool:
+    """Whether ``text`` contains a comma outside type-expression nesting."""
+
+    parens = brackets = braces = 0
+    for char in text:
+        if char == "(":
+            parens += 1
+        elif char == ")":
+            parens = max(0, parens - 1)
+        elif char == "[":
+            brackets += 1
+        elif char == "]":
+            brackets = max(0, brackets - 1)
+        elif char == "{":
+            braces += 1
+        elif char == "}":
+            braces = max(0, braces - 1)
+        elif char == "," and not (parens or brackets or braces):
+            return True
+    return False
+
+
+def _sol_depth_one_member_statements(
+    masked: str,
+    body_start: int,
+    body_end: int,
+) -> list[tuple[int, int]]:
+    """Return semicolon member spans directly inside one contract/library.
+
+    Function, modifier, struct, and enum bodies are skipped as complete blocks.
+    Braces in a state initializer remain part of its declaration.  This is a
+    bounded lexical projection, not a Solidity parser.
+    """
+
+    rows: list[tuple[int, int]] = []
+    start = body_start + 1
+    index = start
+    limit = max(start, body_end - 1)
+    while index < limit:
+        char = masked[index]
+        if char == ";":
+            rows.append((start, index + 1))
+            start = index + 1
+            index += 1
+            continue
+        if char != "{":
+            index += 1
+            continue
+        prefix = masked[start:index]
+        if not _SOL_BLOCK_MEMBER_RE.match(prefix):
+            nested_end = _sol_find_body(masked, index)
+            if nested_end[1] is None:
+                return rows
+            index = nested_end[1]
+            continue
+        nested_end = _sol_find_body(masked, index)
+        if nested_end[1] is None:
+            return rows
+        index = nested_end[1]
+        start = index
+    return rows
+
+
+def _sol_parse_state_member(
+    original: str,
+    masked: str,
+    *,
+    source_path: str,
+    contract_name: str,
+    start: int,
+    end: int,
+    scope_start: int,
+    scope_end: int,
+) -> Optional[dict[str, Any]]:
+    """Parse one depth-one semicolon member as approximate state authority."""
+
+    statement = masked[start:end].strip()
+    if not statement or not statement.endswith(";"):
+        return None
+    statement = statement[:-1].strip()
+    if not statement or _SOL_NON_STATE_MEMBER_RE.match(statement):
+        return None
+    # Function-typed state variables start with ``function (``, while a normal
+    # function declaration has a name before ``(`` and was rejected above.
+    if statement.startswith("function") and not re.match(r"^function\s*\(", statement):
+        return None
+    assignment = _sol_top_level_assignment(statement)
+    lhs = statement[:assignment].rstrip() if assignment >= 0 else statement
+    # Solidity's stateVariableDeclaration has one identifier immediately before
+    # the optional initializer.  A top-level comma denotes syntax outside this
+    # bounded projection; commas nested in mappings/function types are fine.
+    if _sol_has_top_level_comma(lhs):
+        return None
+    identifiers = list(re.finditer(r"[A-Za-z_]\w*", lhs))
+    if not identifiers:
+        return None
+    name_match = identifiers[-1]
+    bare = name_match.group(0)
+    prefix = lhs[: name_match.start()].strip()
+    if not prefix or bare in {
+        "public", "private", "internal", "constant", "immutable", "transient", "override"
+    }:
+        return None
+    declared_type = re.sub(r"\s+", " ", _SOL_STATE_MODIFIER_RE.sub(" ", prefix)).strip()
+    if not declared_type:
+        return None
+    declaration_start = start + len(masked[start:end]) - len(masked[start:end].lstrip())
+    qualified = f"{source_path}::{contract_name}.{bare}"
+    return {
+        "qualified_name": qualified,
+        "bare": bare,
+        "contract_name": contract_name,
+        "declaration_locus": f"{source_path}:L{_line_of(original, declaration_start)}",
+        "type_text": declared_type,
+        "scope_start": scope_start,
+        "scope_end": scope_end,
+        "confidence": "LEXICAL_CONTRACT_MEMBER_APPROXIMATE",
+        "uncertainty": [
+            "SOURCE_ONLY_NO_TYPE_RESOLUTION",
+            "SOURCE_ONLY_NO_REFERENCE_POLARITY",
+            "SOURCE_ONLY_INHERITED_STATE_RESOLUTION_UNAVAILABLE",
+        ],
+    }
+
+
+def _sol_scope_braces_complete(masked: str, body_start: int, body_end: int) -> bool:
+    """Whether one reported body span closes its own opening brace exactly."""
+
+    if (
+        body_start < 0
+        or body_end <= body_start + 1
+        or body_end > len(masked)
+        or masked[body_start] != "{"
+    ):
+        return False
+    depth = 0
+    for index in range(body_start, body_end):
+        if masked[index] == "{":
+            depth += 1
+        elif masked[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index == body_end - 1
+            if depth < 0:
+                return False
+    return False
+
+
+def _sol_has_malformed_declared_scope(masked: str) -> bool:
+    """Detect a declared Solidity scope that lacks one complete outer body."""
+
+    for match in _SOL_STATE_SCOPE_RE.finditer(masked):
+        body_start, body_end = _sol_find_body(masked, match.end())
+        if (
+            body_start is None
+            or body_end is None
+            or not _sol_scope_braces_complete(masked, body_start, body_end)
+        ):
+            return True
+    return False
+
+
+def _sol_contract_scopes(masked: str) -> list[dict[str, Any]]:
+    """Return complete direct contract/library bodies in source order.
+
+    ``_sol_find_body`` is shared legacy machinery and returns the end of input
+    after an unmatched opening brace.  Requiring an actual closing brace here
+    keeps this lexical adapter from presenting malformed input as a complete
+    contract scope.
+    """
+
+    rows: list[dict[str, Any]] = []
+    for match in _SOL_STATE_SCOPE_RE.finditer(masked):
+        # Interfaces cannot contain state variables and are intentionally not a
+        # state authority.  Their function surface is outside this fallback's
+        # contract/library state-membership claim.
+        if match.group("kind") == "interface":
+            continue
+        body_start, body_end = _sol_find_body(masked, match.end())
+        if (
+            body_start is None
+            or body_end is None
+            or not _sol_scope_braces_complete(masked, body_start, body_end)
+        ):
+            continue
+        rows.append({
+            "kind": match.group("kind"),
+            "name": match.group("name"),
+            "body_start": body_start,
+            "body_end": body_end,
+        })
+    return sorted(rows, key=lambda row: (int(row["body_start"]), str(row["name"])))
+
+
+def _sol_state_declarations(text: str, *, source_path: str = "") -> list[dict[str, Any]]:
+    """Extract contract/library state members without claiming compiler truth.
+
+    The official grammar makes a state-variable declaration a contract-body
+    element whose type may be elementary, mapping, function, identifier-path,
+    or array.  This offset-preserving lexical adapter follows that outer shape,
+    excludes nested bodies, and records its uncertainty on every row.
+    """
+
+    masked = _strip_solidity_comments_and_strings(text)
+    rows: list[dict[str, Any]] = []
+    for scope in _sol_contract_scopes(masked):
+        body_start = int(scope["body_start"])
+        body_end = int(scope["body_end"])
+        for start, end in _sol_depth_one_member_statements(masked, body_start, body_end):
+            row = _sol_parse_state_member(
+                text,
+                masked,
+                source_path=source_path,
+                contract_name=str(scope["name"]),
+                start=start,
+                end=end,
+                scope_start=body_start,
+                scope_end=body_end,
+            )
+            if row is not None:
+                rows.append(row)
+    return sorted(
+        rows,
+        key=lambda row: (
+            str(row["qualified_name"]),
+            str(row["declaration_locus"]),
+        ),
+    )
+
+
 def _sol_fn_spans(text: str) -> List[Tuple[int, int]]:
     """All function body [start, end) char spans in `text`, any visibility."""
     spans: List[Tuple[int, int]] = []
@@ -681,16 +1012,8 @@ def _sol_fn_spans(text: str) -> List[Tuple[int, int]]:
 
 
 def _sol_state_var_names(text: str) -> set:
-    """Contract-level state variable names — `_EVM_STATE_RE` matches restricted
-    to positions OUTSIDE any function body span, so function-local
-    declarations that happen to match the same line-start shape are not
-    mistaken for contract state."""
-    spans = _sol_fn_spans(text)
-
-    def _in_fn(idx: int) -> bool:
-        return any(s <= idx < e for s, e in spans)
-
-    return {m.group(2) for m in _EVM_STATE_RE.finditer(text) if not _in_fn(m.start())}
+    """Bare contract/library state names from the bounded lexical extractor."""
+    return {str(row["bare"]) for row in _sol_state_declarations(text)}
 
 
 def _sol_body_writes_state(body: str, state_vars: set) -> bool:
@@ -805,11 +1128,25 @@ def _write_permissionless_setter_findings(scratch: Path, proj: Path) -> str:
     for fd in findings:
         lines += [
             f"### Finding [{fd['id']}]: {fd['title']}",
+            "**Verdict**: UNRESOLVED",
+            "**Step Execution**: ✓1(external/public surface enumerated), "
+            "✓2(state write detected), ✓3(access-gate scan completed), "
+            "?4(intent and concrete harm require semantic review)",
+            "**Rules Applied**: [R4:✓(candidate retained for adversarial "
+            "review), R5:✗(single function), R6:✓(permissionless caller "
+            "considered), R8:✗(single-call detector), R10:?(semantic harm "
+            "review pending)]",
             f"**Severity**: {fd['severity']}",
             f"**Location**: {fd['location']}",
             "**Preferred Tag**: [CODE-TRACE]",
             f"**Description**: {fd['description']}",
             f"**Impact**: {fd['impact']}",
+            "**Material Harm** (MANDATORY): UNRESOLVED — this lexical "
+            "detector cannot establish who loses what until semantic review "
+            "determines what the written state controls.",
+            f"**Evidence**: At `{fd['location']}`, the external/public function "
+            "writes contract state and the bounded lexical scan found no "
+            "recognized access modifier or leading caller guard.",
             "",
         ]
     _write_text(scratch / "niche_permissionless_setters_findings.md", "\n".join(lines) + "\n")
@@ -838,9 +1175,18 @@ def _write_table_artifact(scratch: Path, proj: Path, lang: str, kind: str) -> st
                 continue
             rows.extend(cfg[kind](text, f, proj))
 
+        if lang == "evm" and kind == "state":
+            method = "contract-member lexical scan"
+            limitation = (
+                "Source-only approximate membership; comments/strings and nested "
+                "bodies are excluded, but compiler type/reference authority is unavailable."
+            )
+        else:
+            method = "regex scan"
+            limitation = "Regex-based heuristic — LLM recon may add/correct entries."
         lines = [f"# {title}", "",
-                 f"Pre-pass: {len(rows)} {kind}(s) identified via regex scan.",
-                 "Regex-based heuristic — LLM recon may add/correct entries.", "",
+                 f"Pre-pass: {len(rows)} {kind}(s) identified via {method}.",
+                 limitation, "",
                  header, sep]
         lines.extend(rows if rows else ["| _(none found)_ | - | - | - |"])
         _write_text(scratch / filename, "\n".join(lines) + "\n")
@@ -849,9 +1195,126 @@ def _write_table_artifact(scratch: Path, proj: Path, lang: str, kind: str) -> st
         _write_text(scratch / filename, f"# {title}\n\n[LLM TO ENRICH] pre-pass failed: {e}\n")
         return "FAILED"
 
+
+_SOL_COMMON_GUARD_NAME_RE = re.compile(
+    r"(?i)^(?:only[A-Z0-9_].*|auth|restricted|nonReentrant|"
+    r"when(?:Not)?Paused|initializer|reinitializer)$"
+)
+
+
+def _write_modifier_application_map(
+    scratch: Path, proj: Path, lang: str,
+) -> str:
+    """Write the deterministic access/modifier input consumed by Depth.
+
+    Solidity declarations expose modifier applications in their function
+    headers, so the pre-pass can establish a useful minimum map without a
+    compiler or model filesystem tools.  Other ecosystems retain an explicit
+    per-function source-review status instead of inventing Solidity modifier
+    semantics.  Recon may enrich these rows, but cannot erase their source
+    locations or absence status.
+    """
+
+    path = scratch / "modifiers.md"
+    try:
+        cfg = LANG_DISPATCH.get(lang)
+        if cfg is None:
+            raise ValueError(f"unknown language: {lang}")
+        rows: list[str] = []
+        for source in _gather_files(proj, lang):
+            original = _read_text(source)
+            if not original:
+                continue
+            relative = _rel(source, proj)
+            if lang != "evm":
+                for row in cfg["fn"](original, source, proj):
+                    cells = [cell.strip().strip("`") for cell in row.strip("|").split("|")]
+                    if len(cells) < 4:
+                        continue
+                    rows.append(
+                        f"| `{cells[1]}` | `{cells[0]}:L{cells[3]}` | "
+                        "source-body guard review required | SOURCE_REVIEW_REQUIRED |"
+                    )
+                continue
+
+            masked = _strip_solidity_comments_and_strings(original)
+            declared_modifiers = set(re.findall(
+                r"\bmodifier\s+([A-Za-z_]\w*)\b", masked
+            ))
+            contracts = list(_SOL_CONTRACT_DECL_RE.finditer(masked))
+            for match in _EVM_FN_RE.finditer(masked):
+                visibility_words = match.group(2) or ""
+                visibility = next((
+                    word for word in ("external", "public", "internal", "private")
+                    if re.search(rf"\b{word}\b", visibility_words)
+                ), "public")
+                if visibility not in {"external", "public"}:
+                    continue
+                body_start, _body_end = _sol_find_body(masked, match.end())
+                declaration_end = body_start
+                if declaration_end is None:
+                    semicolon = masked.find(";", match.end())
+                    declaration_end = semicolon if semicolon >= 0 else match.end()
+                header = masked[match.start():declaration_end]
+                header_tokens = set(re.findall(r"\b[A-Za-z_]\w*\b", header))
+                guards = sorted(
+                    token for token in header_tokens
+                    if token in declared_modifiers
+                    or _SOL_COMMON_GUARD_NAME_RE.fullmatch(token)
+                )
+                if body_start is not None:
+                    body_limit = min(len(masked), body_start + 401)
+                    if _SOL_BODY_GUARD_RE.search(masked[body_start:body_limit]):
+                        guards.append("BODY_ACCESS_GUARD")
+                contract = "?"
+                for candidate in contracts:
+                    if candidate.start() > match.start():
+                        break
+                    contract = candidate.group(1)
+                guard_text = ", ".join(dict.fromkeys(guards)) or "NONE OBSERVED"
+                status = "GUARDED" if guards else "UNGUARDED"
+                rows.append(
+                    f"| `{contract}.{match.group(1)}` | "
+                    f"`{relative}:L{_line_of(original, match.start())}` | "
+                    f"{guard_text} | {status} |"
+                )
+
+        if not rows:
+            rows.append(
+                "| `NO_PUBLIC_FUNCTIONS_IN_SCOPE` | `contract_inventory.md` | "
+                "N/A | NO_FUNCTIONS_IN_SCOPE |"
+            )
+        content = "\n".join((
+            "# Modifier and Guard Application Map",
+            "",
+            "Deterministic recon pre-pass projection. `UNGUARDED` means no "
+            "header modifier or recognized early body access guard was observed; "
+            "it is an analysis obligation, not a vulnerability conclusion.",
+            "",
+            "## Modifier Application Map",
+            "",
+            "| Function | Source Location | Modifier / Guard | Status |",
+            "|---|---|---|---|",
+            *rows,
+            "",
+        ))
+        _write_text(path, content)
+        return "WRITTEN"
+    except Exception as exc:
+        _write_text(
+            path,
+            "# Modifier and Guard Application Map\n\n"
+            "## Modifier Application Map\n\n"
+            "| Function | Source Location | Modifier / Guard | Status |\n"
+            "|---|---|---|---|\n"
+            f"| `PREPASS_FAILURE` | `contract_inventory.md` | `{type(exc).__name__}` | "
+            "SOURCE_REVIEW_REQUIRED |\n",
+        )
+        return "FAILED"
+
 # Build status
 BUILD_SPECS = {
-    "evm_forge":    {"cmd": ["forge", "build", "--no-auto-detect"],    "timeout": 120},
+    "evm_forge":    {"cmd": ["forge@workspace-tool-row", "build", "--no-auto-detect"], "timeout": 120},
     "evm_hardhat":  {"cmd": ["npx", "hardhat", "compile"],             "timeout": 120},
     "solana":       {"cmd": ["cargo", "build", "--release"],           "timeout": 300},
     "soroban":      {"cmd": ["cargo", "build", "--release"],           "timeout": 300},
@@ -952,13 +1415,8 @@ def _graph_implies_compiles(graph_status: Optional[str], lang: str) -> bool:
 
 def _select_build(proj: Path, lang: str) -> Optional[str]:
     if lang == "evm":
-        # Use one canonical resolver for snapshot, build, and Slither.  Audit
-        # scopes are often a source dir or umbrella above the actual project.
-        root = _resolve_evm_build_root(proj)
-        if root is not None and (root / "foundry.toml").is_file() and shutil.which("forge"):
-            return "evm_forge"
-        if root is not None and list(root.glob("hardhat.config.*")) and shutil.which("npx"):
-            return "evm_hardhat"
+        # Production EVM selection is exclusively receipt-driven.  PATH and a
+        # second manifest walk are observations, never execution authority.
         return None
     if lang in ("solana", "soroban") and shutil.which("cargo"):
         return lang
@@ -1123,57 +1581,211 @@ def _is_within(path: Path, root: Path) -> bool:
         return False
 
 
-def _select_js_lock_authority(root: Path) -> tuple[Optional[str], Optional[str]]:
-    """Resolve one immutable JavaScript installer without guessing.
-
-    Multiple package-manager locks are common in stale repositories.  Their
-    dependency graphs need not agree, so filename priority is not an
-    authority.  A valid ``packageManager`` field selects the matching lock;
-    otherwise exactly one lock family must be present.
-    """
-    families: List[str] = []
-    if (root / "pnpm-lock.yaml").is_file():
-        families.append("pnpm")
-    if (root / "yarn.lock").is_file():
-        families.append("yarn")
+def _read_exact_js_authority_bytes(path: Path) -> bytes:
+    linked_before = os.lstat(path)
+    attributes = int(getattr(linked_before, "st_file_attributes", 0) or 0)
     if (
-        (root / "package-lock.json").is_file()
-        or (root / "npm-shrinkwrap.json").is_file()
+        stat.S_ISLNK(linked_before.st_mode)
+        or not stat.S_ISREG(linked_before.st_mode)
+        or bool(attributes & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)))
+        or int(getattr(linked_before, "st_reparse_tag", 0) or 0) != 0
     ):
-        families.append("npm")
-
-    declared = ""
+        raise OSError("JavaScript authority input is a link/reparse point")
+    flags = os.O_RDONLY | int(getattr(os, "O_CLOEXEC", 0))
+    nofollow = int(getattr(os, "O_NOFOLLOW", 0))
+    if nofollow:
+        flags |= nofollow
+    fd = os.open(path, flags)
     try:
-        package = json.loads((root / "package.json").read_text(encoding="utf-8"))
-        raw = package.get("packageManager") if isinstance(package, dict) else ""
-        if isinstance(raw, str):
-            declared = raw.split("@", 1)[0].strip().lower()
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        declared = ""
+        before = os.fstat(fd)
+        if (
+            before.st_dev != linked_before.st_dev
+            or before.st_ino != linked_before.st_ino
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_size > 32 * 1024 * 1024
+        ):
+            raise OSError("JavaScript authority input is not a bounded regular file")
+        chunks: list[bytes] = []
+        remaining = int(before.st_size)
+        while remaining:
+            chunk = os.read(fd, min(1024 * 1024, remaining))
+            if not chunk:
+                raise OSError("JavaScript authority input was truncated during capture")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(fd, 1):
+            raise OSError("JavaScript authority input grew during capture")
+        after = os.fstat(fd)
+        linked_after = os.lstat(path)
+        if (
+            before.st_dev != after.st_dev
+            or before.st_ino != after.st_ino
+            or before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or before.st_ctime_ns != after.st_ctime_ns
+            or after.st_dev != linked_after.st_dev
+            or after.st_ino != linked_after.st_ino
+        ):
+            raise OSError("JavaScript authority input changed during capture")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
 
-    if declared:
-        if declared not in {"npm", "pnpm", "yarn"}:
-            return None, (
-                "UNSUPPORTED_JS_PACKAGE_MANAGER: packageManager declares "
-                f"{declared!r}; no deterministic installer is configured"
-            )
-        if declared not in families:
-            return None, (
-                "JS_PACKAGE_MANAGER_LOCK_MISMATCH: packageManager declares "
-                f"{declared!r} but its immutable lock is absent"
-            )
-        return declared, None
-    if len(families) == 1:
-        return families[0], None
-    if not families:
-        return None, (
-            "NO_IMMUTABLE_JS_LOCK: package.json is present without an "
-            "immutable lock"
-        )
-    return None, (
-        "AMBIGUOUS_JS_LOCKS: multiple package-manager lock families are "
-        f"present ({', '.join(families)}) without a packageManager authority"
+
+def _capture_js_materializer_inputs(root: Path) -> tuple[bytes, dict[str, bytes]]:
+    package_json = _read_exact_js_authority_bytes(root / "package.json")
+    lockfiles: dict[str, bytes] = {}
+    for name in sorted(_SUPPORTED_JS_LOCKFILES | _KNOWN_UNSUPPORTED_JS_LOCKFILES):
+        candidate = root / name
+        if os.path.lexists(candidate):
+            lockfiles[name] = _read_exact_js_authority_bytes(candidate)
+    return package_json, lockfiles
+
+
+def _capture_js_lock_selection(root: Path):
+    """Capture exact bytes and return the pure manifest/lock decision."""
+
+    try:
+        package_json, lockfiles = _capture_js_materializer_inputs(root)
+        selected = _select_exact_js_lock_authority(package_json, lockfiles)
+        return selected, None
+    except _JSLockAuthorityError as exc:
+        return None, f"{exc.code}: {exc}"
+    except OSError as exc:
+        return None, f"JS_LOCK_AUTHORITY_CAPTURE_FAILED: {type(exc).__name__}: {exc}"
+
+
+def _select_js_lock_authority(root: Path) -> tuple[Optional[str], Optional[str]]:
+    """Select the sole manifest-consistent lock, never by filename priority."""
+
+    selected, issue = _capture_js_lock_selection(root)
+    return (selected.family if selected is not None else None), issue
+
+
+def _prepare_native_js_evm_projection(
+    config: dict[str, Any],
+    build_root: Path,
+    *,
+    native_runtime_authority: object,
+) -> str:
+    """Materialize one reviewed Yarn closure into a native analysis workspace."""
+
+    from evm_analysis_workspace_authority import (
+        ANALYSIS_PROJECTION_NATIVE_AUTHORITY_CONFIG,
+        ANALYSIS_PROJECTION_STAGING_RECEIPT_CONFIG,
+        MATERIALIZATION_LINEAGE_STAGING_CONFIG,
     )
+    from js_dependency_materializer_authority import (
+        MAX_CACHE_EXPANDED_BYTES,
+        MAX_DEPENDENCY_ENTRIES,
+        MAX_DEPENDENCY_EXPANDED_BYTES,
+        MAX_PHASE_TIMEOUT_SECONDS,
+        ImmutableJSSourceInputs,
+        PrivateDependencyWorkspaceInputs,
+    )
+    from js_dependency_materializer_runtime import (
+        execute_native_guest_js_and_evm_analysis_projection,
+    )
+
+    package_json, lockfiles = _capture_js_materializer_inputs(build_root)
+    try:
+        selected = _select_exact_js_lock_authority(package_json, lockfiles)
+    except _JSLockAuthorityError as exc:
+        raise BuildContextResolutionError(
+            f"native EVM dependency lock admission failed: {exc.code}: {exc}"
+        ) from exc
+    if selected.family != "yarn" or selected.filename != "yarn.lock":
+        raise BuildContextResolutionError(
+            "native EVM dependency materialization requires the reviewed Yarn lane"
+        )
+    run_id = str(config.get("_run_id") or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id) is None:
+        raise BuildContextResolutionError(
+            "native EVM dependency materialization lacks its bound run identity"
+        )
+    raw_scratchpad = str(config.get("scratchpad") or "").strip()
+    if not raw_scratchpad or not Path(raw_scratchpad).is_absolute():
+        raise BuildContextResolutionError(
+            "native EVM projection requires an absolute scratchpad"
+        )
+    scratchpad = Path(raw_scratchpad).resolve()
+    staging_root = scratchpad / ".evm-analysis-projection-staging"
+    try:
+        staging_root.mkdir(mode=0o700, exist_ok=True)
+        staging_info = staging_root.lstat()
+    except OSError as exc:
+        raise BuildContextResolutionError(
+            "native EVM projection staging root is unavailable"
+        ) from exc
+    if (
+        not stat.S_ISDIR(staging_info.st_mode)
+        or stat.S_ISLNK(staging_info.st_mode)
+        or (os.name != "nt" and int(staging_info.st_mode) & 0o077)
+    ):
+        raise BuildContextResolutionError(
+            "native EVM projection staging root is not private"
+        )
+    private_root = staging_root / f"js-materialization-{run_id}"
+    if os.path.lexists(private_root):
+        for attempt in range(2, 1002):
+            candidate = staging_root / (
+                f"js-materialization-{run_id}-attempt-{attempt:04d}"
+            )
+            if not os.path.lexists(candidate):
+                private_root = candidate
+                break
+        else:
+            raise BuildContextResolutionError(
+                "native EVM projection exhausted its bounded fresh attempts"
+            )
+    projection_root = private_root / "evm-analysis-projection"
+    workspace_path = projection_root / "scratch" / "analysis-workspace"
+
+    source_scope = _audit_snapshot_authority._source_component(config)
+    source_scope_sha256 = str(source_scope.get("digest") or "")
+    source = ImmutableJSSourceInputs(
+        source_root=str(build_root),
+        source_snapshot_sha256=source_scope_sha256,
+        package_json=package_json,
+        lockfiles=tuple(sorted(lockfiles.items())),
+    )
+    workspace = PrivateDependencyWorkspaceInputs(
+        private_root=str(private_root),
+        generation_id=run_id,
+        phase_timeout_seconds=MAX_PHASE_TIMEOUT_SECONDS,
+        max_dependency_entries=MAX_DEPENDENCY_ENTRIES,
+        max_dependency_expanded_bytes=MAX_DEPENDENCY_EXPANDED_BYTES,
+        max_cache_expanded_bytes=MAX_CACHE_EXPANDED_BYTES,
+    )
+    try:
+        result = execute_native_guest_js_and_evm_analysis_projection(
+            source,
+            workspace,
+            repository_root=_plamen_home(),
+            target_os=platform.system(),
+            target_arch=platform.machine(),
+            native_runtime_authority=native_runtime_authority,
+            original_source_scope_sha256=source_scope_sha256,
+        )
+    except Exception as exc:
+        raise BuildContextResolutionError(
+            f"native EVM projection transaction failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    if Path(result.workspace_binding.get("workspace_path", "")) != workspace_path:
+        raise BuildContextResolutionError(
+            "native EVM projection returned a different analysis workspace"
+        )
+    config[ANALYSIS_PROJECTION_STAGING_RECEIPT_CONFIG] = (
+        result.projection_receipt_path
+    )
+    config[MATERIALIZATION_LINEAGE_STAGING_CONFIG] = (
+        result.materialization_lineage_path
+    )
+    config[ANALYSIS_PROJECTION_NATIVE_AUTHORITY_CONFIG] = (
+        result.native_projection_authority
+    )
+    config["_resolved_build_root"] = str(workspace_path)
+    return "authenticated native Yarn dependencies and EVM workspace are ready"
 
 
 def _ancestor_dirs(start: Path, max_ancestors: int = 16) -> List[Path]:
@@ -1986,6 +2598,14 @@ def resolve_snapshot_build_root(config: dict) -> Path:
         "but compiler file-open closure is not hermetically proven"
     )
     config["_resolved_build_root"] = str(root)
+    config["_resolved_source_build_root"] = str(root)
+    if pipeline == "sc" and language == "evm":
+        try:
+            config["_resolved_build_root_authority"] = (
+                capture_evm_build_root_resolver_authority(proj, root)
+            )
+        except EVMAnalysisWorkspaceAuthorityError as exc:
+            raise BuildContextResolutionError(str(exc)) from exc
     config["_resolved_build_context_roots"] = [
         str(path.resolve()) for path in contexts
     ]
@@ -1999,7 +2619,15 @@ def resolve_snapshot_build_root(config: dict) -> Path:
         str(path.resolve()) for path in build_source_files
     ]
     if pipeline == "sc" and language == "evm" and (root / "package.json").is_file():
-        tool, lock_issue = _select_js_lock_authority(root)
+        selection, lock_issue = _capture_js_lock_selection(root)
+        tool = selection.family if selection is not None else None
+        if selection is not None:
+            config["_resolved_js_lock_authority"] = {
+                **selection.binding_dict(),
+                "selection_sha256": selection.selection_sha256,
+            }
+        else:
+            config.pop("_resolved_js_lock_authority", None)
         if lock_issue:
             limitations.append(
                 f"{lock_issue}; mutable dependency resolution is disabled and "
@@ -2092,6 +2720,12 @@ def _run_hardened(
     env: Optional[dict] = None,
     *,
     writable_roots: Sequence[Path] = (),
+    execution_receipt: Optional[Dict[str, Any]] = None,
+    execution_tool: Optional[str] = None,
+    version_command: Optional[Sequence[str]] = None,
+    project_root: Optional[Path] = None,
+    workspace_root: Optional[Path] = None,
+    accepted_returncodes: Sequence[int] = (0,),
 ) -> Tuple[int, str]:
     """Run a bounded command inside the shared exhaustive process scope.
 
@@ -2102,6 +2736,8 @@ def _run_hardened(
     """
 
     argv = [str(value) for value in cmd]
+    if execution_receipt is not None:
+        execution_receipt.clear()
     if not argv:
         return 1, "hardened: empty command"
     # The working directory is an input location, not implicit write
@@ -2111,13 +2747,101 @@ def _run_hardened(
     # dedicated disposable root and route the tool's outputs there.
     writable = tuple(Path(item).resolve(strict=True) for item in writable_roots)
     try:
+        effective_env = (
+            {str(key): str(value) for key, value in os.environ.items()}
+            if env is None
+            else {str(key): str(value) for key, value in env.items()}
+        )
+        resolved_argv = (
+            resolve_owned_process_command(argv, env=effective_env)
+            if execution_receipt is not None
+            else tuple(argv)
+        )
+        provider_before: Optional[Mapping[str, Any]] = None
+        if execution_receipt is not None:
+            if not execution_tool or not version_command:
+                raise ValueError(
+                    "execution receipt requires tool and version command"
+                )
+            provider_before = _capture_command_provider_authority(
+                str(execution_tool),
+                tuple(str(value) for value in version_command),
+                project_root=project_root,
+            )
+        started_at = datetime.now(timezone.utc)
         result = run_owned_process(
-            argv,
+            resolved_argv,
             cwd=cwd,
-            env=env,
+            env=effective_env,
             timeout=timeout,
             writable_roots=writable,
         )
+        finished_at = datetime.now(timezone.utc)
+        if (
+            execution_receipt is not None
+            and int(result.returncode) in {
+                int(value) for value in accepted_returncodes
+            }
+        ):
+            provider_after = _capture_command_provider_authority(
+                str(execution_tool),
+                tuple(str(value) for value in version_command or ()),
+                project_root=project_root,
+            )
+            secret_name = re.compile(
+                r"(?:TOKEN|SECRET|PASS(?:WORD|WD)?|CREDENTIAL|AUTH|COOKIE|SESSION|PRIVATE)",
+                re.IGNORECASE,
+            )
+            environment_bindings = {
+                key: hashlib.sha256(value.encode("utf-8")).hexdigest()
+                for key, value in sorted(effective_env.items())
+                if secret_name.search(key) is None
+            }
+            excluded_secret_key_count = sum(
+                1 for key in effective_env if secret_name.search(key) is not None
+            )
+            runner_path = Path(_owned_process_authority.__file__).resolve()
+            runner_sha256 = hashlib.sha256(runner_path.read_bytes()).hexdigest()
+            receipt = build_external_tool_execution_receipt(
+                execution_tool=str(execution_tool),
+                provider_authority_before=dict(provider_before or {}),
+                provider_authority_after=dict(provider_after),
+                argv=tuple(str(value) for value in result.args),
+                cwd=str(Path(cwd).resolve()) if cwd is not None else str(Path.cwd()),
+                workspace_root=str(
+                    Path(workspace_root or project_root or cwd or Path.cwd()).resolve()
+                ),
+                environment_bindings=environment_bindings,
+                excluded_secret_key_count=excluded_secret_key_count,
+                started_at=started_at.isoformat().replace("+00:00", "Z"),
+                finished_at=finished_at.isoformat().replace("+00:00", "Z"),
+                duration_ms=max(0, int(float(result.duration_s) * 1000)),
+                returncode=int(result.returncode),
+                accepted_returncodes=accepted_returncodes,
+                timed_out=False,
+                stdout=str(result.stdout),
+                stderr=str(result.stderr),
+                stdout_observed_bytes=int(result.stdout_observed_bytes),
+                stderr_observed_bytes=int(result.stderr_observed_bytes),
+                stdout_retained_bytes=int(result.stdout_retained_bytes),
+                stderr_retained_bytes=int(result.stderr_retained_bytes),
+                stdout_sha256=str(result.stdout_sha256),
+                stderr_sha256=str(result.stderr_sha256),
+                stdout_truncated=bool(result.stdout_truncated),
+                stderr_truncated=bool(result.stderr_truncated),
+                process_tree_terminated=bool(result.process_tree_terminated),
+                containment_capability=dict(result.containment_capability),
+                runner_implementation=(
+                    "owned_process_runner.run_owned_process_isolated"
+                    if os.name == "nt"
+                    else "owned_process_runner.run_owned_process"
+                ),
+                runner_sha256=runner_sha256,
+                executable_binding_sha256=str(
+                    result.executable_binding_sha256
+                ),
+            )
+            execution_receipt.update(receipt)
         return result.returncode, result.stdout + result.stderr
     except FileNotFoundError:
         return 127, f"binary not found: {argv[0]}"
@@ -2173,7 +2897,62 @@ def _resolve_foundry_profile_for_recon(root: Path) -> Optional[str]:
     return uniq[0] if len(uniq) == 1 else None
 
 
-def _prepare_evm_build(root: Path) -> str:
+def _foundry_graph_skip_paths(
+    root: Path,
+    *,
+    profile: Optional[str],
+) -> tuple[str, ...]:
+    """Select project-local non-production Solidity units for Forge skip.
+
+    Slither asks Foundry to compile the whole repository. A parser/IR failure
+    in an otherwise unreferenced test or mock used to downgrade the production
+    graph even though that file is outside Plamen's canonical audit scope.
+    Exact relative file filters keep those roots out of the compilation unit;
+    dependency roots remain untouched so imports can still compile. Any
+    project-declared skip filters for the effective profile are preserved.
+    """
+
+    manifest = Path(root) / "foundry.toml"
+    if not manifest.is_file():
+        return ()
+    declared: list[str] = []
+    data = _read_toml(manifest)
+    profiles = data.get("profile")
+    selected = profile or "default"
+    if isinstance(profiles, Mapping):
+        profile_row = profiles.get(selected)
+        if isinstance(profile_row, Mapping):
+            value = profile_row.get("skip")
+            if isinstance(value, str):
+                declared.append(value)
+            elif isinstance(value, list):
+                declared.extend(item for item in value if isinstance(item, str))
+    dependency_roots = _foundry_dependency_roots(root)
+    generated = [
+        _rel(path, root)
+        for path in _iter_files(
+            root,
+            (".sol",),
+            dependency_roots=dependency_roots,
+        )
+        if not _is_production_source_path(path, root)
+    ]
+    rows = tuple(sorted({
+        value.replace("\\", "/").strip()
+        for value in (*declared, *generated)
+        if value and "\x00" not in value
+    }))
+    encoded = json.dumps(
+        rows,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return rows if len(rows) <= 512 and len(encoded) <= 64 * 1024 else ()
+
+
+def _prepare_evm_build(
+    root: Path, *, posix_compat_v2: bool = False,
+) -> str:
     """Best-effort dependency + solc readiness at the resolved Foundry root.
     "Make it real, never mock" — resolve the project's REAL dependencies so
     remappings resolve, never stub them:
@@ -2193,15 +2972,29 @@ def _prepare_evm_build(root: Path) -> str:
     OUTSIDE the advisory try/except so it is never accidentally swallowed —
     it is a deliberate, true circuit breaker. Callers must let it propagate
     (do not silently continue installing dependencies after it fires)."""
+    if type(posix_compat_v2) is not bool:
+        raise TypeError("posix_compat_v2 must be an exact boolean")
+    if posix_compat_v2:
+        # The exact opaque compatibility session does not exist until after
+        # snapshot/run identity has been established. Running a weak scanner,
+        # install, scaffold, or build here would execute target-governed bytes
+        # before that authority exists. Persist this returned debt in the
+        # checkpoint config and let the driver run the strict gate immediately
+        # after session issuance.
+        return (
+            "[DEGRADED:POSIX_V2_COMPAT_PRE_SNAPSHOT_MATERIALIZATION_DEFERRED] "
+            "dependency scanning/materialization and build probes were deferred "
+            "until exact compatibility session issuance; no target subprocess "
+            "was launched before snapshot binding"
+        )
     gate_supply_chain(root)
     notes: List[str] = []
     try:
         # (1) git-submodule (forge) deps
-        if (root / ".gitmodules").exists() and _dir_empty(root / "lib") and shutil.which("git"):
-            rc, _out = _run_forge(["install"], root, 300)
+        if (root / ".gitmodules").exists() and _dir_empty(root / "lib"):
             notes.append(
-                "forge install ok" if rc == 0 else
-                f"[DEGRADED:GIT_DEPENDENCY_INSTALL_FAILED] forge install rc={rc}"
+                "[DEGRADED:FORGE_PRE_SNAPSHOT_AUTHORITY_UNAVAILABLE] "
+                "declared git dependencies were not materialized"
             )
         # (2) Soldeer deps
         try:
@@ -2209,11 +3002,10 @@ def _prepare_evm_build(root: Path) -> str:
         except Exception:
             ftoml = ""
         uses_soldeer = "[dependencies]" in ftoml or (root / "soldeer.lock").exists()
-        if uses_soldeer and _dir_empty(root / "dependencies") and shutil.which("forge"):
-            rc, _out = _run_forge(["soldeer", "install"], root, 300)
+        if uses_soldeer and _dir_empty(root / "dependencies"):
             notes.append(
-                "soldeer install ok" if rc == 0 else
-                f"[DEGRADED:SOLDEER_INSTALL_FAILED] soldeer install rc={rc}"
+                "[DEGRADED:FORGE_PRE_SNAPSHOT_AUTHORITY_UNAVAILABLE] "
+                "Soldeer dependencies were not materialized"
             )
         # (3) npm/yarn/pnpm deps (Hardhat, or Foundry remapping into node_modules)
         if (root / "package.json").exists() and _dir_empty(root / "node_modules"):
@@ -2250,9 +3042,23 @@ def _prepare_evm_build(root: Path) -> str:
         # (4) solc toolchain
         srcs = _production_source_files(root, (".sol",))
         solc = _detect_solc_version(srcs) if srcs else None
-        if solc and shutil.which("svm"):
-            _run_hardened(["svm", "install", solc], root, 180)
-            notes.append(f"svm install {solc}")
+        if solc:
+            svm = shutil.which("svm")
+            if not svm:
+                notes.append(
+                    f"[DEGRADED:SOLC_MATERIALIZER_UNAVAILABLE] exact solc {solc} "
+                    "is required but svm is unavailable"
+                )
+            else:
+                rc, output = _run_hardened([svm, "install", solc], root, 180)
+                notes.append(
+                    f"svm install {solc} ok"
+                    if rc == 0
+                    else (
+                        f"[DEGRADED:SOLC_MATERIALIZATION_FAILED] svm install "
+                        f"{solc} rc={rc}: {_tail(output, 240)}"
+                    )
+                )
         # (5) profile visibility
         prof = _resolve_foundry_profile_for_recon(root)
         if prof:
@@ -2556,86 +3362,10 @@ def _detect_import_libs(source_files: List[Path]) -> List[Tuple[str, str, str, s
     return matched
 
 
-def _run_forge(args: List[str], cwd: Path, timeout: int) -> Tuple[int, str]:
-    """Run a bounded `forge ...` subprocess. Returns (rc, combined_output).
-    Never raises. Delegates to the hang-proof `_run_hardened` so a solc
-    grandchild holding the build pipe can never deadlock the parent."""
-    return _run_hardened(["forge", *args], cwd, timeout)
-
-
-def _bootstrap_evm_foundry_env(
-    proj: Path, source_files: List[Path]
-) -> Tuple[bool, str]:
-    """Best-effort scaffold of a minimal Foundry build env in `proj`.
-
-    Returns (success, reason). NEVER raises. Idempotent: a no-op (returns
-    (False, ...)) when a `foundry.toml` already exists so an existing project
-    is never clobbered. Requires `forge` on PATH and at least one `.sol` file.
-    """
-    try:
-        # Never scaffold when a real Foundry root exists AT or ABOVE the scope
-        # dir. The audit scope is often a source subdir (`.../smart-contracts/src`)
-        # whose real foundry.toml + remappings + lib live one level up; writing a
-        # minimal `src = "."` env into the scope dir SHADOWS the real root (the
-        # observed pollution on a real repo → flat build with empty remappings →
-        # every import fails). Walk up, not just the local dir.
-        existing_root = _resolve_evm_build_root(proj)
-        if existing_root is not None:
-            return False, (f"Foundry root already exists at/above scope "
-                           f"({existing_root}); bootstrap skipped (idempotent)")
-        if not shutil.which("forge"):
-            return False, "forge not on PATH; cannot bootstrap Foundry env"
-        if not source_files:
-            return False, "no Solidity source files to bootstrap against"
-
-        solc = _detect_solc_version(source_files)
-        libs = _detect_import_libs(source_files)
-
-        # 1) Minimal foundry.toml. `src = "."` so flat scope dirs of bare .sol
-        #    files compile without restructuring; libs vendored under lib/.
-        solc_line = f'solc = "{solc}"\n' if solc else ""
-        foundry_toml = (
-            "[profile.default]\n"
-            'src = "."\n'
-            'out = "out"\n'
-            'libs = ["lib"]\n'
-            f"{solc_line}"
-            "auto_detect_remappings = true\n"
-        )
-        try:
-            (proj / "foundry.toml").write_text(foundry_toml, encoding="utf-8")
-        except Exception as e:
-            return False, f"could not write foundry.toml: {e}"
-
-        steps: List[str] = [f"wrote foundry.toml (solc={solc or 'auto'})"]
-
-        # 2) Never guess dependency versions for a manifest-less source bundle.
-        #    A package's latest HEAD may have a different API than the audited
-        #    code. Locked/declared dependencies are materialized by
-        #    `_prepare_evm_build` before snapshot binding on real project roots.
-        detected = ", ".join(sorted({spec[1] for spec in libs})) or "none recognized"
-        steps.append(
-            "unpinned dependency installation skipped "
-            f"(detected import families: {detected})"
-        )
-
-        # 3) Build. Size-scale the bootstrap build budget too (large scaffolded
-        # scopes compile slowly; the hardened wrapper keeps a long ceiling safe).
-        _nf = len(_production_source_files(proj, (".sol",)))
-        _bt = _scale_build_timeout(180, _nf)
-        log.info("[recon] evm bootstrap build: timeout scaled to %ss for %d "
-                 ".sol files", _bt, _nf)
-        rc, out = _run_forge(["build"], proj, timeout=_bt)
-        if rc == 0:
-            steps.append("forge build SUCCESS")
-            return True, "; ".join(steps)
-        steps.append(f"forge build failed (rc={rc}): {_tail(out, 400)}")
-        return False, "; ".join(steps)
-    except Exception as e:  # pragma: no cover - defensive top-level guard
-        return False, f"bootstrap exception: {e}"
-
-
-def prepare_snapshot_bound_inputs(config: dict) -> Dict[str, str]:
+def prepare_snapshot_bound_inputs(
+    config: dict, *, posix_compat_v2: bool = False,
+    native_runtime_authority: object | None = None,
+) -> Dict[str, Any]:
     """Materialize deterministic build inputs before the audit snapshot binds.
 
     The EVM bare-source bootstrap writes ``foundry.toml`` and may install
@@ -2649,8 +3379,19 @@ def prepare_snapshot_bound_inputs(config: dict) -> Dict[str, str]:
     Hardhat projects are never modified, unsupported ecosystems are no-ops, and
     every failure is returned as a status rather than raised.
     """
-    def finish(status: str, reason: str) -> Dict[str, str]:
-        receipt = {"status": status, "reason": reason}
+    def finish(status: str, reason: str) -> Dict[str, Any]:
+        unsigned = {
+            "schema_version": "plamen.evm_input_preparation.v1",
+            "status": status,
+            "reason": reason,
+        }
+        receipt = {
+            **unsigned,
+            "preparation_sha256": hashlib.sha256(json.dumps(
+                unsigned, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")).hexdigest(),
+        }
         # Retain the structured result for the current process and tests.  Any
         # persistent snapshot limitation must be derived read-only by
         # `resolve_snapshot_build_root` on every startup; otherwise a private
@@ -2659,12 +3400,17 @@ def prepare_snapshot_bound_inputs(config: dict) -> Dict[str, str]:
         return receipt
 
     try:
+        if type(posix_compat_v2) is not bool:
+            raise TypeError("posix_compat_v2 must be an exact boolean")
         pipeline = str(config.get("pipeline") or "sc").lower()
         language = str(config.get("language") or "evm").lower()
         if pipeline != "sc" or language != "evm":
             return finish("SKIPPED", "not a bare-source EVM lane")
 
         proj = Path(config["project_root"]).resolve()
+        if posix_compat_v2:
+            note = _prepare_evm_build(proj, posix_compat_v2=True)
+            return finish("DEGRADED", note)
         resolved_root = resolve_snapshot_build_root(config)
         owns_declared_build = (
             (resolved_root / "foundry.toml").exists()
@@ -2672,6 +3418,21 @@ def prepare_snapshot_bound_inputs(config: dict) -> Dict[str, str]:
             or (resolved_root / "package.json").exists()
         )
         if owns_declared_build:
+            if native_runtime_authority is not None:
+                if not (resolved_root / "package.json").is_file():
+                    raise BuildContextResolutionError(
+                        "native EVM projection requires a declared JavaScript package"
+                    )
+                # Source-scope identity deliberately excludes the derived
+                # projection.  Bind PREPARED before computing it so the same
+                # source digest replays once the staging receipt exists.
+                finish("PREPARED", "native EVM projection transaction admitted")
+                note = _prepare_native_js_evm_projection(
+                    config,
+                    resolved_root,
+                    native_runtime_authority=native_runtime_authority,
+                )
+                return finish("PREPARED", note)
             note = _prepare_evm_build(resolved_root)
             # Re-derive the private closure/limitations from disk so a fresh
             # successful or failed materialization has the same snapshot
@@ -2682,9 +3443,6 @@ def prepare_snapshot_bound_inputs(config: dict) -> Dict[str, str]:
                 "DEGRADED" if degraded else "PREPARED",
                 note or "declared dependencies ready",
             )
-        if not shutil.which("forge"):
-            return finish("SKIPPED", "forge not on PATH")
-
         sources = sorted(
             _production_source_files(proj, (".sol",)), key=lambda p: _rel(p, proj)
         )
@@ -2699,56 +3457,139 @@ def prepare_snapshot_bound_inputs(config: dict) -> Dict[str, str]:
                 ),
             )
 
-        manifest = proj / "foundry.toml"
-        existed_before = manifest.exists()
-        ok, reason = _bootstrap_evm_foundry_env(proj, sources)
-        materialized = not existed_before and manifest.exists()
         return finish(
-            "PREPARED" if (ok and materialized) else ("READY" if ok else "DEGRADED"),
-            reason,
+            "DEGRADED",
+            "FORGE_PRE_SNAPSHOT_AUTHORITY_UNAVAILABLE: bare-source Foundry "
+            "bootstrap is disabled until an exact snapshot-bound tool authority exists",
         )
-    except SupplyChainAbortError:
+    except (SupplyChainAbortError, BuildContextResolutionError):
         raise
     except Exception as exc:  # pragma: no cover - defensive startup boundary
         return finish("DEGRADED", f"{type(exc).__name__}: {exc}")
 
 
+def _workspace_tool_debt_message(workspace: Mapping[str, Any], tool: str) -> str:
+    rows = workspace.get("tools") if isinstance(workspace, Mapping) else None
+    matches = [
+        row for row in (rows or [])
+        if isinstance(row, Mapping) and row.get("tool_id") == tool
+    ]
+    reasons = matches[0].get("reason_codes") if len(matches) == 1 else None
+    return ",".join(str(item) for item in (reasons or ["TOOL_ROW_UNADMITTED"]))
+
+
+def _workspace_build_root_path(workspace: Mapping[str, Any]) -> Path:
+    row = workspace.get("build_root") if isinstance(workspace, Mapping) else None
+    raw = row.get("absolute_path") if isinstance(row, Mapping) else None
+    if not isinstance(raw, str) or not os.path.isabs(raw):
+        raise EVMAnalysisWorkspaceAuthorityError(
+            "workspace build root path authority is malformed"
+        )
+    return Path(raw)
+
+
+def _write_forge_workspace_receipt(
+    scratch: Path,
+    workspace: Mapping[str, Any],
+    *,
+    state: str,
+    exit_code: int | None,
+    output: str,
+) -> None:
+    reference = workspace_public_reference(workspace)
+    forge_rows = [
+        dict(row) for row in workspace.get("tools", [])
+        if isinstance(row, Mapping) and row.get("tool_id") == "forge"
+    ]
+    unsigned = {
+        "schema_version": "plamen.forge_build_receipt.v1",
+        "workspace_reference": reference,
+        "forge_tool_row_sha256": (
+            forge_rows[0].get("tool_row_sha256") if len(forge_rows) == 1 else None
+        ),
+        "build_variant_sha256": reference["build_variant_sha256"],
+        "dependency_closure_sha256": reference["dependency_closure_sha256"],
+        "state": state,
+        "exit_code": exit_code,
+        "output_sha256": hashlib.sha256(output.encode("utf-8")).hexdigest(),
+    }
+    receipt = {
+        **unsigned,
+        "receipt_sha256": hashlib.sha256(
+            json.dumps(
+                unsigned, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+    (scratch / "forge_build_receipt.v1.json").write_text(
+        json.dumps(receipt, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _write_build_status(scratch: Path, proj: Path, lang: str,
-                        graph_status: Optional[str] = None) -> str:
+                        graph_status: Optional[str] = None,
+                        workspace_authority: Optional[Mapping[str, Any]] = None) -> str:
     bootstrap_note = ""
     try:
-        key = _select_build(proj, lang)
-        # FIX 2: EVM scope with bare .sol files and no build manifest. If forge
-        # is available, best-effort bootstrap a minimal Foundry env so Slither
-        # and later PoC verification have a compilable harness. Falls through to
-        # the existing grep-fallback SKIPPED status on any failure.
-        if (
-            not key
-            and lang == "evm"
-            and shutil.which("forge")
-            and _resolve_evm_build_root(proj) is None
-            and not list(proj.glob("hardhat.config.*"))
-        ):
-            evm_sources = sorted(
-                _production_source_files(proj, (".sol",)), key=lambda p: _rel(p, proj)
+        if lang == "evm" and isinstance(workspace_authority, Mapping):
+            build_variant = workspace_authority.get("build_variant")
+            build_system = (
+                str(build_variant.get("build_system") or "unresolved")
+                if isinstance(build_variant, Mapping) else "unresolved"
             )
-            if evm_sources and len(evm_sources) <= _MAX_RECON_FORGE_FILES:
-                ok, reason = _bootstrap_evm_foundry_env(proj, evm_sources)
-                if ok:
-                    key = "evm_forge"
-                    bootstrap_note = (
-                        "**Build Env Bootstrap**: SUCCESS — scaffolded a minimal "
-                        f"Foundry env ({reason}).\n\n"
-                    )
-                else:
-                    _write_text(scratch / "build_status.md",
-                                "# Build Status\n\n"
-                                "**Tool**: (none detected for lang=evm)\n\n"
-                                "**Status**: SKIPPED\n\n"
-                                "Build env bootstrap attempted but failed: "
-                                f"{reason}; grep fallback used. LLM recon may "
-                                "re-attempt with a manually configured build.\n")
-                    return "STUB"
+            key = (
+                "evm_forge" if build_system == "foundry"
+                else "evm_hardhat" if build_system == "hardhat"
+                else None
+            )
+        else:
+            key = _select_build(proj, lang)
+        forge_row: Optional[dict[str, Any]] = None
+        if lang == "evm" and key == "evm_hardhat":
+            _write_text(
+                scratch / "build_status.md",
+                "# Build Status\n\n**Tool**: hardhat\n\n"
+                "**Status**: DEGRADED_AUTHORITY_DEBT\n\n"
+                "The workspace consumes the JavaScript lock/runtime identity, "
+                "but no separately admitted Hardhat executable row exists.\n",
+            )
+            _write_text(
+                scratch / "report_semantic_evm_workspace_toolchain.md",
+                "# EVM Workspace Toolchain Debt\n\n"
+                "Hardhat build outcome is UNKNOWN because its executable is "
+                "not an admitted workspace tool row.\n",
+            )
+            return "WRITTEN"
+        if lang == "evm" and key == "evm_forge":
+            if not isinstance(workspace_authority, Mapping):
+                raise EVMAnalysisWorkspaceAuthorityError(
+                    "EVM Forge producer lacks workspace authority"
+                )
+            try:
+                forge_row = require_custodied_workspace_tool_for_execution(
+                    workspace_authority, "forge"
+                )
+            except EVMAnalysisWorkspaceAuthorityError as exc:
+                reason = str(exc)
+                _write_text(
+                    scratch / "build_status.md",
+                    "# Build Status\n\n**Tool**: forge\n\n"
+                    "**Status**: DEGRADED_AUTHORITY_DEBT\n\n"
+                    f"Workspace admission: UNADMITTED ({reason}).\n",
+                )
+                _write_forge_workspace_receipt(
+                    scratch, workspace_authority,
+                    state="UNADMITTED", exit_code=None, output=reason,
+                )
+                _write_text(
+                    scratch / "report_semantic_evm_workspace_toolchain.md",
+                    "# EVM Workspace Toolchain Debt\n\n"
+                    "Forge was not executed because its exact live executable "
+                    f"identity is unadmitted: `{reason}`.\n",
+                )
+                return "WRITTEN"
         if not key:
             _write_text(scratch / "build_status.md",
                         "# Build Status\n\n"
@@ -2788,7 +3629,20 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
 
         build_writable_roots: tuple[Path, ...] = ()
         if key == "evm_forge":
-            root = _resolve_evm_build_root(proj)
+            signed_forge = (
+                forge_row.get("signed_runtime_authority")
+                if isinstance(forge_row, Mapping) else None
+            )
+            resolved_forge = (
+                str(signed_forge.get("resolved_executable") or "")
+                if isinstance(signed_forge, Mapping) else ""
+            )
+            if not resolved_forge:
+                raise EVMAnalysisWorkspaceAuthorityError(
+                    "admitted Forge row lacks a resolved executable"
+                )
+            cmd[0] = resolved_forge
+            root = _workspace_build_root_path(workspace_authority)
             if root is not None and root != proj.resolve():
                 # Real Foundry root found ABOVE the scope dir (audit scope is a
                 # source subdir like `.../smart-contracts/src`). Build the WHOLE
@@ -2805,7 +3659,7 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
                                   "authority reused; no recon-time dependency "
                                   "materialization attempted.\n\n")
                 build_cwd = root
-                cmd = ["forge", "build"]
+                cmd = [resolved_forge, "build"]
                 # Size-scale: whole-project build of a large repo (e.g. ~176
                 # .sol + optimizer, cold cache) blows past a fixed budget.
                 # Count the FULL compile-unit tree incl `lib/` deps — the
@@ -2835,7 +3689,7 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
                                 "Later repair/verification phases must compile explicit affected files.\n")
                     return "WRITTEN"
                 cmd = (
-                    ["forge", "build"]
+                    [resolved_forge, "build"]
                     + [_rel(f, proj) for f in source_files]
                     + ["--threads", "1", "--no-auto-detect"]
                 )
@@ -2846,7 +3700,7 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
                 # scoped whole-project `forge build` rather than mis-signal a broken
                 # build to recon/verification.
                 if sum(len(a) + 1 for a in cmd) > 7000:
-                    cmd = ["forge", "build", "--threads", "1", "--no-auto-detect"]
+                    cmd = [resolved_forge, "build", "--threads", "1", "--no-auto-detect"]
                     # Argv too long → this is now a WHOLE-PROJECT compile. Size
                     # its timeout on the full compile-unit tree (incl deps), not
                     # the scoped production count, or the dependency compile
@@ -2892,7 +3746,7 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
             build_writable_roots = (foundry_output_root,)
 
         if key == "evm_hardhat":
-            root = _resolve_evm_build_root(proj)
+            root = _workspace_build_root_path(workspace_authority)
             if root is None or not list(root.glob("hardhat.config.*")):
                 _write_text(
                     scratch / "build_status.md",
@@ -2992,13 +3846,40 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
                      "compile-unit .sol files", timeout, _nf)
         # Hang-proof: temp-file drain + tree-kill (a forge→solc / cargo→cc
         # grandchild holding the build pipe can no longer wedge the driver).
-        rc, combined = _run_hardened(
-            cmd,
-            build_cwd,
-            timeout,
-            env=build_env,
-            writable_roots=build_writable_roots,
-        )
+        if key == "evm_forge":
+            try:
+                replay_evm_analysis_workspace_execution_closure(
+                    workspace_authority
+                )
+            except EVMAnalysisWorkspaceAuthorityError as exc:
+                rc, combined = _TOOL_EXECUTION_AUTHORITY_DEBT_RC, str(exc)
+            else:
+                rc, combined = _run_hardened(
+                    cmd,
+                    build_cwd,
+                    timeout,
+                    env=build_env,
+                    writable_roots=build_writable_roots,
+                )
+        else:
+            rc, combined = _run_hardened(
+                cmd,
+                build_cwd,
+                timeout,
+                env=build_env,
+                writable_roots=build_writable_roots,
+            )
+        if key == "evm_forge":
+            try:
+                replay_evm_analysis_workspace_execution_closure(
+                    workspace_authority
+                )
+            except EVMAnalysisWorkspaceAuthorityError as exc:
+                rc = _TOOL_EXECUTION_AUTHORITY_DEBT_RC
+                combined = (
+                    "workspace input closure changed during Forge execution: "
+                    + str(exc)
+                )
         # Retry-once on a transient non-timeout build failure. A first attempt
         # that fails for a transient reason (a flake, or a stale incremental
         # cache the first attempt itself invalidated) frequently succeeds on a
@@ -3017,13 +3898,29 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
             log.warning("[recon] %s build attempt 1 FAILED (rc=%s) — retrying "
                         "ONCE (transient flake / self-invalidated cache often "
                         "clears on a clean re-run)", key, rc)
-            rc2, combined2 = _run_hardened(
-                cmd,
-                build_cwd,
-                timeout,
-                env=build_env,
-                writable_roots=build_writable_roots,
-            )
+            if key == "evm_forge":
+                try:
+                    replay_evm_analysis_workspace_execution_closure(
+                        workspace_authority
+                    )
+                except EVMAnalysisWorkspaceAuthorityError as exc:
+                    rc2, combined2 = _TOOL_EXECUTION_AUTHORITY_DEBT_RC, str(exc)
+                else:
+                    rc2, combined2 = _run_hardened(
+                        cmd,
+                        build_cwd,
+                        timeout,
+                        env=build_env,
+                        writable_roots=build_writable_roots,
+                    )
+            else:
+                rc2, combined2 = _run_hardened(
+                    cmd,
+                    build_cwd,
+                    timeout,
+                    env=build_env,
+                    writable_roots=build_writable_roots,
+                )
             if rc2 == 0:
                 log.info("[recon] %s build retry SUCCEEDED (attempt 1 rc=%s was "
                          "transient)", key, rc)
@@ -3071,12 +3968,27 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
                         key, rc)
         else:
             log.info("[recon] %s build SUCCESS in cwd %s", key, build_cwd)
+        public_cmd = cmd
+        public_cwd = str(build_cwd)
+        if key == "evm_forge" and isinstance(workspace_authority, Mapping):
+            public_cmd = ["forge@workspace-tool-row", *cmd[1:]]
+            public_cmd = [
+                value
+                if not os.path.isabs(str(value))
+                else "scratchpad:private-build-output"
+                for value in public_cmd
+            ]
+            public_cwd = str(
+                workspace_public_reference(workspace_authority)["build_root"][
+                    "rooted_alias"
+                ]
+            )
         content = (
             "# Build Status\n\n"
             f"{bootstrap_note}"
             f"**Tool**: {key}\n"
-            f"**Command**: `{' '.join(cmd)}`\n"
-            f"**CWD**: `{build_cwd}`\n"
+            f"**Command**: `{' '.join(public_cmd)}`\n"
+            f"**CWD**: `{public_cwd}`\n"
             f"**Timeout**: {timeout}s\n"
             f"**Exit Code**: "
             f"{'N/A (tool completion authority unavailable)' if authority_debt else rc}\n"
@@ -3085,6 +3997,14 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
             "## stderr (tail)\n```\n" + _tail(se) + "\n```\n"
         )
         _write_text(scratch / "build_status.md", content)
+        if key == "evm_forge" and isinstance(workspace_authority, Mapping):
+            _write_forge_workspace_receipt(
+                scratch,
+                workspace_authority,
+                state="SUCCEEDED" if rc == 0 else status,
+                exit_code=(rc if not authority_debt else None),
+                output=combined,
+            )
         return "WRITTEN"
     except Exception as e:
         _write_text(scratch / "build_status.md",
@@ -3435,6 +4355,7 @@ def _record_precise_graph_outcome(
     authority: Optional[dict] = None,
     context: Optional[dict] = None,
     upstream_outcomes: Iterable[dict] = (),
+    native_execution_evidence: Optional[Mapping[str, Any]] = None,
 ) -> None:
     """Durably record precise-graph success/debt without halting fallback."""
     normalized = str(status or "FAILED:empty provider status")
@@ -3444,7 +4365,46 @@ def _record_precise_graph_outcome(
         isinstance(authority, dict)
         and authority.get("deterministic_provider_authority") is True
     )
-    if completed and authoritative:
+    if completed and isinstance(native_execution_evidence, Mapping):
+        try:
+            envelope = build_snapshot_execution_tool_outcome_envelope(
+                Path(scratch),
+                capability_id=capability_id,
+                tool=tool,
+                evidence=native_execution_evidence,
+                context=context or {},
+                artifacts=_SCIP_GRAPH_ARTIFACT_NAMES,
+            )
+            outcome = ToolOutcome.succeeded(
+                capability_id,
+                tool,
+                0,
+                artifacts=_SCIP_GRAPH_ARTIFACT_NAMES,
+                provider_ref=json.dumps(
+                    envelope,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ),
+            )
+        except (OSError, ToolCoverageLedgerError, TypeError, ValueError) as exc:
+            normalized = (
+                "FAILED:SNAPSHOT_EXECUTION_OUTCOME_AUTHORITY_DEBT:"
+                f"{type(exc).__name__}:{exc}"
+            )
+            outcome = ToolOutcome.debt(
+                capability_id,
+                tool,
+                ToolOutcomeState.FAILED,
+                normalized,
+                provider_ref=hashlib.sha256(
+                    json.dumps(
+                        dict(native_execution_evidence), sort_keys=True,
+                        separators=(",", ":"), ensure_ascii=True,
+                    ).encode("ascii")
+                ).hexdigest(),
+            )
+    elif completed and authoritative:
         try:
             envelope = build_context_bound_tool_outcome_envelope(
                 Path(scratch),
@@ -3990,7 +4950,12 @@ def _slither_state_var_loc(variable, proj: Path) -> str:
         return ""
 
 
-def _bake_evm_slither_graph(scratch: Path, proj: Path) -> str:
+def _bake_evm_slither_graph(
+    scratch: Path,
+    proj: Path,
+    *,
+    workspace_authority: Optional[Mapping[str, Any]] = None,
+) -> str:
     """Run Slither on a Solidity project and emit MECHANICAL graph artifacts.
 
     Produces `_mechanical_graph.json` (gate source) + state_read_map.md /
@@ -3999,11 +4964,20 @@ def _bake_evm_slither_graph(scratch: Path, proj: Path) -> str:
     on anything other than WRITTEN the caller keeps the LLM-derived maps.
     """
     import json
-    authority = _capture_python_provider_authority(
-        "slither", project_root=proj
-    )
-    if authority.get("deterministic_provider_authority") is not True:
-        return "SKIPPED:" + _provider_authority_debt(authority)
+    if not isinstance(workspace_authority, Mapping):
+        return "SKIPPED:TOOLCHAIN_AUTHORITY_DEBT:WORKSPACE_UNBOUND"
+    try:
+        slither_row = require_custodied_workspace_tool_for_execution(
+            workspace_authority, "slither"
+        )
+    except EVMAnalysisWorkspaceAuthorityError as exc:
+        return (
+            "SKIPPED:TOOLCHAIN_AUTHORITY_DEBT:"
+            + str(exc)
+        )
+    authority = slither_row.get("signed_runtime_authority")
+    if not isinstance(authority, Mapping):
+        return "SKIPPED:TOOLCHAIN_AUTHORITY_DEBT:SIGNED_AUTHORITY_UNBOUND"
     try:
         import slither as slither_module  # type: ignore
         from slither import Slither  # type: ignore
@@ -4031,7 +5005,7 @@ def _bake_evm_slither_graph(scratch: Path, proj: Path) -> str:
     # import fails and the precise graph is lost to the approximate fallback).
     # Compilation can still fail for many reasons (solc version, missing deps) —
     # that is a graceful SKIP to the LLM maps, never a halt.
-    slither_target = _resolve_evm_build_root(proj) or proj
+    slither_target = _workspace_build_root_path(workspace_authority)
     # Honor the same single-non-default FOUNDRY_PROFILE the recon build uses so
     # Slither (crytic-compile reads the env) compiles a profile-gated project.
     # Restore the prior env afterward — never leak into other subprocesses.
@@ -4042,8 +5016,11 @@ def _bake_evm_slither_graph(scratch: Path, proj: Path) -> str:
     import io
     import contextlib
     try:
+        replay_evm_analysis_workspace_execution_closure(workspace_authority)
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             sl = Slither(str(slither_target))
+    except EVMAnalysisWorkspaceAuthorityError as exc:
+        return "SKIPPED:TOOLCHAIN_AUTHORITY_DEBT:WORKSPACE_CLOSURE_DRIFT:" + str(exc)
     except Exception as e:
         return f"FAILED:slither compile ({str(e)[:140].replace(chr(10), ' ')})"
     finally:
@@ -4052,6 +5029,10 @@ def _bake_evm_slither_graph(scratch: Path, proj: Path) -> str:
                 os.environ.pop("FOUNDRY_PROFILE", None)
             else:
                 os.environ["FOUNDRY_PROFILE"] = _prev_prof
+    try:
+        replay_evm_analysis_workspace_execution_closure(workspace_authority)
+    except EVMAnalysisWorkspaceAuthorityError as exc:
+        return "SKIPPED:TOOLCHAIN_AUTHORITY_DEBT:WORKSPACE_CLOSURE_DRIFT:" + str(exc)
 
     production_contracts = [
         contract
@@ -4400,12 +5381,890 @@ def _bake_evm_slither_graph(scratch: Path, proj: Path) -> str:
     return "WRITTEN"
 
 
+def _slither_cli_table_rows(
+    section: str, headers: tuple[str, ...]
+) -> list[tuple[str, ...]]:
+    """Decode one PrettyTable from Slither's JSON printer description.
+
+    Slither 0.11.5 accidentally serializes only the modifier table as a JSON
+    element for ``function-summary``.  The complete function table is still in
+    the printer's authenticated ``description``.  This parser accepts only the
+    fixed reviewed column roster and PrettyTable's continuation-row spelling;
+    an ambiguous rendering fails instead of becoming graph authority.
+    """
+
+    current: list[str] | None = None
+    rows: list[tuple[str, ...]] = []
+    active = False
+    header_border_seen = False
+    for raw_line in section.splitlines():
+        line = raw_line.rstrip()
+        if line.startswith("|") and line.endswith("|"):
+            cells = tuple(part.strip() for part in line[1:-1].split("|"))
+            if not active:
+                if cells == headers:
+                    active = True
+                continue
+            if len(cells) != len(headers):
+                raise ValueError("Slither function table column count differs")
+            if cells == headers:
+                raise ValueError("Slither function table header is duplicated")
+            if cells[0]:
+                if current is not None:
+                    rows.append(tuple(current))
+                current = list(cells)
+            elif current is not None:
+                for index, value in enumerate(cells):
+                    if value:
+                        current[index] = (
+                            current[index] + "\n" + value
+                            if current[index] else value
+                        )
+            continue
+        if active and line.startswith("+"):
+            if not header_border_seen:
+                header_border_seen = True
+                continue
+            if current is not None:
+                rows.append(tuple(current))
+                current = None
+            break
+    if current is not None:
+        rows.append(tuple(current))
+    if not active:
+        raise ValueError("Slither function table header is absent")
+    return rows
+
+
+def _slither_cli_list_cell(value: str) -> tuple[str, ...]:
+    """Decode the exact list chunks emitted by FunctionSummary._convert."""
+
+    import ast
+
+    result: list[str] = []
+    for line in value.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            chunk = ast.literal_eval(line)
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError("Slither function table list cell is malformed") from exc
+        if type(chunk) not in {list, tuple} or not all(
+            type(item) is str and item and "\x00" not in item
+            for item in chunk
+        ):
+            raise ValueError("Slither function table list cell is not textual")
+        result.extend(chunk)
+    return tuple(result)
+
+
+def _slither_cli_function_rows(value: object) -> list[dict[str, object]]:
+    """Project fixed function-summary rows from Slither printer JSON."""
+
+    if type(value) is not dict or set(value) != {"success", "error", "results"}:
+        raise ValueError("Slither JSON envelope differs")
+    if value.get("success") is not True or value.get("error") is not None:
+        raise ValueError("Slither JSON reports an unsuccessful analysis")
+    results = value.get("results")
+    if type(results) is not dict or set(results) != {"printers"}:
+        raise ValueError("Slither JSON printer result differs")
+    printers = results.get("printers")
+    if type(printers) is not list or not printers:
+        raise ValueError("Slither JSON has no printer outputs")
+    description = ""
+    for printer in printers:
+        if type(printer) is not dict:
+            raise ValueError("Slither printer output is malformed")
+        candidate = printer.get("description")
+        if type(candidate) is str and "Contract vars:" in candidate:
+            if description:
+                raise ValueError("Slither function-summary output is ambiguous")
+            description = candidate
+    if not description:
+        raise ValueError("Slither function-summary output is absent")
+
+    headings = list(
+        re.finditer(r"(?m)^Contract ([A-Za-z_$][A-Za-z0-9_$]*)\s*$", description)
+    )
+    if not headings:
+        raise ValueError("Slither function-summary contract roster is absent")
+    headers = (
+        "Function", "Visibility", "Modifiers", "Read", "Write",
+        "Internal Calls", "External Calls", "Cyclomatic Complexity",
+    )
+    output: list[dict[str, object]] = []
+    for index, match in enumerate(headings):
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(description)
+        section = description[match.end():end]
+        for cells in _slither_cli_table_rows(section, headers):
+            name = cells[0]
+            bare_match = re.match(r"^([A-Za-z_$][A-Za-z0-9_$]*)", name)
+            if bare_match is None:
+                raise ValueError("Slither function identity is malformed")
+            try:
+                complexity = int(cells[7], 10)
+            except ValueError as exc:
+                raise ValueError("Slither cyclomatic complexity is malformed") from exc
+            if complexity < 0:
+                raise ValueError("Slither cyclomatic complexity is negative")
+            output.append({
+                "contract": match.group(1),
+                "name": name,
+                "bare": bare_match.group(1),
+                "visibility": cells[1],
+                "modifiers": _slither_cli_list_cell(cells[2]),
+                "reads": _slither_cli_list_cell(cells[3]),
+                "writes": _slither_cli_list_cell(cells[4]),
+                "internal_calls": _slither_cli_list_cell(cells[5]),
+                "external_calls": _slither_cli_list_cell(cells[6]),
+                "cyclomatic_complexity": complexity,
+            })
+    if not output:
+        raise ValueError("Slither function-summary has no function rows")
+    return output
+
+
+def _slither_compat_analysis_limitation(stderr: str) -> Optional[str]:
+    """Classify Slither's fail-soft IR debt without claiming clean coverage.
+
+    ``--no-fail`` is an upstream Slither option that preserves successfully
+    analyzed contracts when another contract hits a parser/IR defect.  The
+    retained rows remain useful as additive graph evidence, but the run is
+    explicitly partial whenever Slither reports one of its parse/IR failures.
+    """
+
+    text = str(stderr or "")
+    if any(marker in text for marker in (
+        "Failed to generate IR",
+        "ERROR:SlitherSolcParsing",
+        "ERROR:SlitherException",
+    )):
+        return "SLITHER_FAIL_SOFT_IR_OR_PARSE_DEBT"
+    return None
+
+
+def _bake_evm_slither_native_graph(
+    scratch: Path,
+    proj: Path,
+    *,
+    workspace_authority: Optional[Mapping[str, Any]],
+    session_tool_authority: object | None,
+    native_runtime_authority: object | None,
+    posix_compat_session_authority: object | None = None,
+) -> tuple[str, Optional[dict[str, Any]]]:
+    """Execute managed Slither and project its type-resolved graph.
+
+    Native custody remains the authoritative lane.  Supported POSIX
+    compatibility audits may instead run the exact locally observed managed
+    distribution through the receipt-bound reduced-isolation transport.  That
+    evidence is observational and can add graph obligations, but cannot certify
+    clean or acquire native authority.
+    """
+
+    if not isinstance(workspace_authority, Mapping):
+        return "SKIPPED:TOOLCHAIN_AUTHORITY_DEBT:WORKSPACE_UNBOUND", None
+    native_lane = (
+        session_tool_authority is not None
+        and native_runtime_authority is not None
+    )
+    compat_lane = posix_compat_session_authority is not None
+    if not native_lane and not compat_lane:
+        return "SKIPPED:TOOLCHAIN_AUTHORITY_DEBT:NATIVE_SESSION_UNBOUND", None
+    if native_lane and "slither" not in tuple(
+        getattr(session_tool_authority, "tool_ids", ()) or ()
+    ):
+        return "SKIPPED:TOOLCHAIN_AUTHORITY_DEBT:SLITHER_UNADMITTED", None
+    if not any(proj.rglob("*.sol")):
+        return "SKIPPED:no .sol sources", None
+
+    build_root = _workspace_build_root_path(workspace_authority)
+    state_root = Path(
+        tempfile.mkdtemp(prefix=".slither-state-", dir=Path(scratch).parent)
+    )
+    output_path = Path(scratch) / "slither-printers.json"
+    environment: dict[str, str] = {}
+    auxiliary_executables: dict[str, Path] = {}
+    analysis_limitation: Optional[str] = None
+    profile = _resolve_foundry_profile_for_recon(Path(build_root))
+    if profile:
+        environment["FOUNDRY_PROFILE"] = profile
+    foundry_skip = _foundry_graph_skip_paths(Path(build_root), profile=profile)
+    if foundry_skip:
+        environment["FOUNDRY_SKIP"] = json.dumps(
+            list(foundry_skip),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+    if native_lane:
+        argv = [
+            "slither", "/workspace/project", "--print",
+            "function-summary,vars-and-auth", "--json",
+            "/workspace/scratch/slither-printers.json", "--json-types",
+            "printers", "--fail-none", "--disable-color",
+        ]
+    else:
+        # Keep the environment entry point's bin directory.  Resolving the
+        # venv ``python`` symlink first escapes to the Homebrew interpreter
+        # directory and loses the managed sibling console scripts.
+        managed_slither = Path(sys.executable).parent / "slither"
+        if not managed_slither.is_file():
+            return "SKIPPED:TOOLCHAIN_AUTHORITY_DEBT:MANAGED_SLITHER_UNAVAILABLE", None
+        (Path(scratch) / ".forge-cache").mkdir(mode=0o700, exist_ok=False)
+        (Path(scratch) / ".forge-out").mkdir(mode=0o700, exist_ok=False)
+        # crytic-compile asks Foundry for build-info and then opens the
+        # directory directly.  Foundry does not create this child when the
+        # out root is redirected to an otherwise empty disposable stage.
+        (Path(scratch) / ".forge-out" / "build-info").mkdir(
+            mode=0o700, exist_ok=False
+        )
+        environment.update({
+            "FOUNDRY_CACHE_PATH": os.fspath(Path(scratch) / ".forge-cache"),
+            "FOUNDRY_OUT": os.fspath(Path(scratch) / ".forge-out"),
+            "FOUNDRY_OFFLINE": "true",
+        })
+        selected_solc = resolve_compat_foundry_solc(
+            session_authority=posix_compat_session_authority,
+            build_root=Path(build_root),
+        )
+        environment["FOUNDRY_SOLC"] = os.fspath(selected_solc)
+        auxiliary_executables["solc"] = selected_solc
+        argv = [
+            os.fspath(managed_slither), os.fspath(Path(build_root)), "--print",
+            "function-summary,vars-and-auth", "--json",
+            os.fspath(output_path), "--json-types", "printers", "--fail-none",
+            "--disable-color", "--no-fail",
+        ]
+    try:
+        if native_lane:
+            evidence = execute_session_bound_evm_tool(
+                workspace_authority,
+                "slither",
+                session_tool_authority=session_tool_authority,
+                native_runtime_authority=native_runtime_authority,
+                argv=argv,
+                environment={key: environment[key] for key in sorted(environment)},
+                cwd="/workspace/project",
+                tool_scratch_root=Path(scratch),
+                tool_state_root=state_root,
+                implementation_root=_plamen_home(),
+            )
+            public_evidence = evidence.public_receipt()
+        else:
+            public_evidence = execute_compat_static_analysis(
+                session_authority=posix_compat_session_authority,
+                workspace_authority=workspace_authority,
+                stage=Path(scratch),
+                tool_id="slither",
+                executable=managed_slither,
+                argv=argv,
+                environment={key: environment[key] for key in sorted(environment)},
+                expected_outputs=("slither-printers.json",),
+                timeout_seconds=600.0,
+                policy_inputs={
+                    "graph_artifacts": list(PRECISE_GRAPH_ARTIFACTS),
+                    "projection": "function-summary,vars-and-auth",
+                    "foundry_skip": list(foundry_skip),
+                },
+                auxiliary_executables=auxiliary_executables,
+            )
+            terminal = public_evidence["terminal"]
+            if int(terminal["returncode"]) != 0:
+                detail = str(public_evidence.get("stderr") or "").strip()[-800:]
+                return (
+                    "FAILED:slither compatibility execution exit "
+                    f"{terminal['returncode']}: {detail}",
+                    public_evidence,
+                )
+            analysis_limitation = _slither_compat_analysis_limitation(
+                str(public_evidence.get("stderr") or "")
+            )
+        if not output_path.is_file() or output_path.is_symlink():
+            return "FAILED:slither printer JSON not produced", public_evidence
+        info = output_path.stat()
+        if info.st_nlink != 1 or not 2 <= info.st_size <= 64 * 1024 * 1024:
+            return "FAILED:slither printer JSON identity is unsafe", public_evidence
+        raw = output_path.read_bytes()
+        if len(raw) != info.st_size:
+            return "FAILED:slither printer JSON changed while reading", public_evidence
+        try:
+            printer_value = json.loads(raw)
+            slither_rows = _slither_cli_function_rows(printer_value)
+        except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            return f"FAILED:slither printer projection ({type(exc).__name__})", public_evidence
+        output_path.unlink(missing_ok=True)
+
+        source_status = _bake_evm_source_graph(Path(scratch), proj)
+        if source_status != "WRITTEN":
+            return f"FAILED:slither source binding ({source_status})", public_evidence
+        graph_path = Path(scratch) / "_mechanical_graph.json"
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        functions = graph.get("functions")
+        var_refs = graph.get("var_refs")
+        if type(functions) is not dict or type(var_refs) is not dict:
+            return "FAILED:slither source graph schema differs", public_evidence
+
+        function_keys: dict[tuple[str, str], list[str]] = {}
+        for identity, row in functions.items():
+            if type(identity) is not str or type(row) is not dict:
+                continue
+            match = re.search(
+                r"::([A-Za-z_$][A-Za-z0-9_$]*)\."
+                r"([A-Za-z_$][A-Za-z0-9_$]*)@",
+                identity,
+            )
+            if match is not None:
+                function_keys.setdefault((match.group(1), match.group(2)), []).append(identity)
+        variable_keys: dict[tuple[str, str], list[str]] = {}
+        variables_by_bare: dict[str, list[str]] = {}
+        for identity, row in var_refs.items():
+            if type(identity) is not str or type(row) is not dict:
+                continue
+            bare = str(row.get("bare") or identity.rsplit(".", 1)[-1])
+            contract = identity.rsplit(".", 1)[0].rsplit("::", 1)[-1]
+            variable_keys.setdefault((contract, bare), []).append(identity)
+            variables_by_bare.setdefault(bare, []).append(identity)
+
+        rows_by_function: dict[str, list[dict[str, object]]] = {}
+        for slither_row in slither_rows:
+            identity = _resolve_slither_source_function(
+                proj,
+                functions,
+                function_keys,
+                contract=str(slither_row["contract"]),
+                raw_signature=str(slither_row["name"]),
+            )
+            if identity is None:
+                continue
+            rows_by_function.setdefault(identity, []).append(slither_row)
+        row_by_function: dict[str, dict[str, object]] = {}
+        ambiguous_identities: list[str] = []
+        for identity, rows in rows_by_function.items():
+            selected = _select_slither_source_row(
+                proj,
+                functions,
+                identity,
+                rows,
+            )
+            if selected is None:
+                ambiguous_identities.append(identity)
+                function = functions.get(identity)
+                if isinstance(function, dict):
+                    function["uncertainty"] = sorted({
+                        *tuple(function.get("uncertainty") or ()),
+                        "SLITHER_INHERITED_OVERRIDE_ROW_AMBIGUITY",
+                    })
+                continue
+            row_by_function[identity] = selected
+        if ambiguous_identities:
+            duplicate_debt = (
+                "SLITHER_INHERITED_OVERRIDE_ROW_AMBIGUITY:"
+                f"{len(ambiguous_identities)}"
+            )
+            analysis_limitation = (
+                duplicate_debt
+                if analysis_limitation is None
+                else f"{analysis_limitation};{duplicate_debt}"
+            )
+        if not row_by_function:
+            return "FAILED:no Slither rows bind to audited source", public_evidence
+
+        def function_target(contract: str, raw: str) -> Optional[str]:
+            local = _resolve_slither_source_function(
+                proj,
+                functions,
+                function_keys,
+                contract=contract,
+                raw_signature=raw,
+            )
+            if local is not None:
+                return local
+            match = re.search(
+                r"(?:^|\.)([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\(|$)",
+                raw,
+            )
+            if match is None:
+                return None
+            bare = match.group(1)
+            global_rows = [
+                identity for (owner, name), identities in function_keys.items()
+                if name == bare for identity in identities
+            ]
+            return global_rows[0] if len(global_rows) == 1 else None
+
+        callees: dict[str, set[str]] = {}
+        for identity, slither_row in row_by_function.items():
+            contract = str(slither_row["contract"])
+            for raw_call in (
+                *tuple(slither_row["internal_calls"]),
+                *tuple(slither_row["external_calls"]),
+            ):
+                target = function_target(contract, str(raw_call))
+                if target is not None and target != identity:
+                    callees.setdefault(identity, set()).add(target)
+        callers: dict[str, set[str]] = {}
+        for caller, targets in callees.items():
+            for target in targets:
+                callers.setdefault(target, set()).add(caller)
+
+        def descriptor(identity: str) -> str:
+            row = functions[identity]
+            return f"{row.get('bare', identity)} ({row.get('loc', '?')})"
+
+        from enumeration_type_ir import (
+            build_function_signature_fact,
+            normalize_source_binding_path,
+        )
+
+        for identity, slither_row in row_by_function.items():
+            function = functions[identity]
+            function["callers"] = sorted(
+                str(functions[item].get("bare") or item)
+                for item in callers.get(identity, set())
+            )
+            function["callees"] = sorted(
+                str(functions[item].get("bare") or item)
+                for item in callees.get(identity, set())
+            )
+            # A typed fact is a hash-bound, internally canonical record.  It
+            # cannot be upgraded from source fallback authority by mutating a
+            # few fields: doing so leaves its canonical signature and digests
+            # bound to the old evidence.  Rebuild it from the Slither CLI row
+            # and the exact source locus instead.  Complexity is useful graph
+            # metadata, but it is deliberately outside the signature fact's
+            # closed schema/digest domain.
+            raw_loc = str(function.get("loc") or "")
+            loc_match = re.match(r"^(.*?):L?(\d+)$", raw_loc)
+            source_path = normalize_source_binding_path(
+                loc_match.group(1) if loc_match else raw_loc
+            )
+            source_line = int(loc_match.group(2)) if loc_match else 0
+            bare_name = str(function.get("bare") or slither_row["bare"])
+            raw_signature = str(slither_row["name"])
+            function["signature_fact"] = build_function_signature_fact(
+                ecosystem="sol",
+                provider="slither-cli",
+                function_identity=str(identity),
+                bare_name=bare_name,
+                provider_symbol=(
+                    f"{slither_row['contract']}.{raw_signature}"
+                ),
+                raw_signature=raw_signature,
+                source_path=source_path,
+                source_line=source_line,
+                source_sha256=_normalized_source_sha256(proj, source_path),
+                kind="Function",
+                visibility=str(slither_row["visibility"]),
+            )
+            function["cyclomatic_complexity"] = int(
+                slither_row["cyclomatic_complexity"]
+            )
+            function["slither_cli_bound"] = True
+
+            for polarity in ("reads", "writes"):
+                for raw_variable in tuple(slither_row[polarity]):
+                    bare = str(raw_variable).rsplit(".", 1)[-1]
+                    candidates = variable_keys.get((str(slither_row["contract"]), bare), [])
+                    if not candidates:
+                        candidates = variables_by_bare.get(bare, [])
+                    if len(candidates) != 1:
+                        continue
+                    variable = var_refs[candidates[0]]
+                    field = "read_sites" if polarity == "reads" else "write_sites"
+                    sites = set(variable.get(field) or [])
+                    sites.add(descriptor(identity))
+                    variable[field] = sorted(sites)
+                    variable["refs"] = sorted(set(variable.get("refs") or []) | sites)
+                    variable["confidence"] = "AST_FUNCTION_SCOPE_REFERENCE"
+
+        if not _write_mechanical_graph_json(
+            Path(scratch), "slither", var_refs, functions
+        ):
+            return "FAILED:ARTIFACT_STAGE:mechanical graph JSON write failed", public_evidence
+
+        read_map: dict[str, list[str]] = {}
+        write_map: dict[str, list[str]] = {}
+        for variable, row in var_refs.items():
+            if row.get("read_sites"):
+                read_map[variable] = list(row["read_sites"])
+            if row.get("write_sites"):
+                write_map[variable] = list(row["write_sites"])
+
+        def emit_var_map(filename: str, title: str, data: dict[str, list[str]]) -> None:
+            lines = [
+                f"# {title}", "",
+                (
+                    "> **Status**: PARTIAL / **Source**: contained Slither CLI; "
+                    f"**Debt**: {analysis_limitation}."
+                    if analysis_limitation is not None
+                    else "> **Status**: POPULATED / **Source**: contained Slither CLI."
+                ),
+                f"> {len(data)} state variable(s).", "",
+                "| State Variable | Functions |", "|----------------|-----------|",
+            ]
+            for variable in sorted(data):
+                lines.append(f"| `{variable}` | {', '.join(data[variable])} |")
+            _write_text(Path(scratch) / filename, "\n".join(lines) + "\n")
+
+        emit_var_map("state_read_map.md", "State Read Map", read_map)
+        emit_var_map("state_write_map.md", "State Write Map", write_map)
+        graph_status_line = (
+            "> **Status**: PARTIAL / **Source**: contained Slither CLI; "
+            f"**Debt**: {analysis_limitation}."
+            if analysis_limitation is not None
+            else "> **Status**: POPULATED / **Source**: contained Slither CLI."
+        )
+        caller_lines = [
+            "# Caller Map", "",
+            graph_status_line, "",
+            "| Function | Direct callers |", "|----------|----------------|",
+        ]
+        callee_lines = [
+            "# Callee Map", "",
+            graph_status_line, "",
+            "| Function | Direct callees |", "|----------|----------------|",
+        ]
+        summary_lines = [
+            (
+                f"> **Status**: PARTIAL / **Debt**: {analysis_limitation}"
+                if analysis_limitation is not None
+                else "> **Status**: POPULATED"
+            ),
+            "> **Source**: contained Slither CLI", "",
+            "# Function Summary", "",
+            "| Function | Location | Visibility | Signature | Complexity |",
+            "|----------|----------|------------|-----------|------------|",
+        ]
+        for identity in sorted(row_by_function):
+            row = functions[identity]
+            slither_row = row_by_function[identity]
+            caller_lines.append(
+                f"| `{identity}` ({row.get('loc', '?')}) | "
+                f"{', '.join(row.get('callers') or []) or '_(none)_'} |"
+            )
+            callee_lines.append(
+                f"| `{identity}` ({row.get('loc', '?')}) | "
+                f"{', '.join(row.get('callees') or []) or '_(none)_'} |"
+            )
+            signature = str(slither_row["name"]).replace("|", "&#124;")
+            summary_lines.append(
+                f"| `{identity}` | {row.get('loc', '?')} | "
+                f"{slither_row['visibility']} | `{signature}` | "
+                f"{slither_row['cyclomatic_complexity']} |"
+            )
+        _write_text(Path(scratch) / "caller_map.md", "\n".join(caller_lines) + "\n")
+        _write_text(Path(scratch) / "callee_map.md", "\n".join(callee_lines) + "\n")
+        _write_text(Path(scratch) / "function_summary.md", "\n".join(summary_lines) + "\n")
+        return (
+            f"WRITTEN:PARTIAL:{analysis_limitation}"
+            if analysis_limitation is not None
+            else "WRITTEN"
+        ), public_evidence
+    except EVMAnalysisWorkspaceAuthorityError as exc:
+        return f"FAILED:TOOLCHAIN_AUTHORITY_DEBT:{exc}", None
+    except (
+        OSError, RuntimeError, StaticAnalysisCompatExecutionError, TypeError,
+        ValueError,
+    ) as exc:
+        return f"FAILED:slither native execution ({type(exc).__name__})", None
+    finally:
+        shutil.rmtree(state_root, ignore_errors=True)
+
+
 _EVM_CALL_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+_SOL_SCOPE_FN_RE = re.compile(
+    r"\bfunction\s+([A-Za-z_]\w*)\s*\([^)]*\)\s*((?:\w+\s+)*)"
+)
 _EVM_CALL_STOP = {"if", "while", "for", "require", "assert", "revert", "return",
                   "emit", "new", "function", "modifier", "mapping", "address",
                   "uint", "int", "bool", "bytes", "string", "memory", "storage",
                   "calldata", "keccak256", "abi", "type", "payable", "this",
                   "super", "delete", "sizeof"}
+
+
+def _solidity_parameter_shape(raw_signature: str, bare_name: str) -> tuple[str, ...] | None:
+    """Return a comparison-only Solidity parameter type shape.
+
+    The result is never published as compiler authority.  It is used only to
+    join a Slither compiler signature to one source declaration when a bare
+    name is overloaded.
+    """
+
+    from enumeration_type_ir import build_function_signature_fact
+
+    fact = build_function_signature_fact(
+        ecosystem="sol",
+        provider="slither-binding",
+        function_identity="binding-only",
+        bare_name=bare_name,
+        provider_symbol="binding-only",
+        raw_signature=raw_signature,
+        source_path="binding-only.sol",
+        source_line=1,
+        source_sha256="0" * 64,
+        kind="Function",
+    )
+    if fact.get("parse_status") != "EXACT":
+        return None
+
+    def normalize(raw_type: object) -> str:
+        value = re.sub(r"\s+", "", str(raw_type or "")).casefold()
+        if value == "addresspayable":
+            return "address"
+        if value == "uint":
+            return "uint256"
+        if value == "int":
+            return "int256"
+        return value
+
+    rows = fact.get("parameter_facts")
+    if not isinstance(rows, list):
+        return None
+    return tuple(normalize(row.get("raw_type")) for row in rows if isinstance(row, dict))
+
+
+def _source_function_parameter_shape(
+    project: Path,
+    functions: Mapping[str, object],
+    identity: str,
+    bare_name: str,
+) -> tuple[str, ...] | None:
+    row = functions.get(identity)
+    if not isinstance(row, Mapping):
+        return None
+    locus = str(row.get("loc") or "")
+    match = re.fullmatch(r"(.+):L(\d+)", locus)
+    if match is None:
+        return None
+    relative = match.group(1).replace("\\", "/")
+    try:
+        source = (project / relative).resolve(strict=True)
+        source.relative_to(project.resolve(strict=True))
+        text = source.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeError, ValueError):
+        return None
+    masked = _strip_solidity_comments_and_strings(text)
+    expected_line = int(match.group(2))
+    candidates: list[tuple[str, ...]] = []
+    for declaration in _SOL_SCOPE_FN_RE.finditer(masked):
+        if declaration.group(1) != bare_name:
+            continue
+        if _line_of(text, declaration.start()) != expected_line:
+            continue
+        cursor = declaration.end(1)
+        while cursor < len(masked) and masked[cursor].isspace():
+            cursor += 1
+        if cursor >= len(masked) or masked[cursor] != "(":
+            continue
+        depth = 0
+        close = -1
+        for index in range(cursor, len(masked)):
+            if masked[index] == "(":
+                depth += 1
+            elif masked[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    close = index
+                    break
+        if close < 0:
+            continue
+        raw_parameters = text[cursor + 1:close]
+        shape = _solidity_parameter_shape(
+            f"{bare_name}({raw_parameters})",
+            bare_name,
+        )
+        if shape is not None:
+            candidates.append(shape)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _source_function_declaration_profile(
+    project: Path,
+    functions: Mapping[str, object],
+    identity: str,
+    bare_name: str,
+) -> tuple[str, tuple[str, ...]] | None:
+    """Return source-local visibility and modifier names for one declaration.
+
+    Slither's ``function-summary`` printer deliberately renders
+    ``Contract.get_summary()`` rows but drops the row's declaring-contract
+    field.  An inherited declaration and its local override can therefore
+    have the same printed contract/signature.  Bind such rows only when the
+    exact source declaration's qualifiers select one row; never guess from
+    row order or apparent data richness.
+    """
+
+    row = functions.get(identity)
+    if not isinstance(row, Mapping):
+        return None
+    locus = str(row.get("loc") or "")
+    match = re.fullmatch(r"(.+):L(\d+)", locus)
+    if match is None:
+        return None
+    relative = match.group(1).replace("\\", "/")
+    try:
+        source = (project / relative).resolve(strict=True)
+        source.relative_to(project.resolve(strict=True))
+        text = source.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeError, ValueError):
+        return None
+    masked = _strip_solidity_comments_and_strings(text)
+    expected_line = int(match.group(2))
+    profiles: list[tuple[str, tuple[str, ...]]] = []
+    visibility_words = {"external", "public", "internal", "private"}
+    non_modifier_words = {
+        *visibility_words,
+        "pure",
+        "view",
+        "payable",
+        "virtual",
+    }
+
+    def skip_group(value: str, cursor: int) -> int:
+        if cursor >= len(value) or value[cursor] != "(":
+            return cursor
+        depth = 0
+        for offset in range(cursor, len(value)):
+            if value[offset] == "(":
+                depth += 1
+            elif value[offset] == ")":
+                depth -= 1
+                if depth == 0:
+                    return offset + 1
+        return len(value)
+
+    for declaration in _SOL_SCOPE_FN_RE.finditer(masked):
+        if (
+            declaration.group(1) != bare_name
+            or _line_of(text, declaration.start()) != expected_line
+        ):
+            continue
+        cursor = declaration.end(1)
+        while cursor < len(masked) and masked[cursor].isspace():
+            cursor += 1
+        if cursor >= len(masked) or masked[cursor] != "(":
+            continue
+        close = skip_group(masked, cursor)
+        if close <= cursor:
+            continue
+        tail_end = close
+        depth = 0
+        while tail_end < len(masked):
+            char = masked[tail_end]
+            if char == "(":
+                depth += 1
+            elif char == ")" and depth:
+                depth -= 1
+            elif depth == 0 and char in "{;":
+                break
+            tail_end += 1
+        if tail_end >= len(masked):
+            continue
+        tail = masked[close:tail_end]
+        words: list[str] = []
+        visibility = ""
+        index = 0
+        while index < len(tail):
+            token = re.search(r"[A-Za-z_$][A-Za-z0-9_$]*", tail[index:])
+            if token is None:
+                break
+            word = token.group(0)
+            index += token.end()
+            while index < len(tail) and tail[index].isspace():
+                index += 1
+            if word in visibility_words:
+                visibility = word
+            if word in {"override", "returns"}:
+                index = skip_group(tail, index)
+                continue
+            if word in non_modifier_words:
+                continue
+            words.append(word)
+            index = skip_group(tail, index)
+        profiles.append((visibility, tuple(words)))
+    return profiles[0] if len(profiles) == 1 else None
+
+
+def _select_slither_source_row(
+    project: Path,
+    functions: Mapping[str, object],
+    identity: str,
+    rows: list[dict[str, object]],
+) -> dict[str, object] | None:
+    """Select one exact CLI row or leave the source fallback authoritative."""
+
+    if not rows:
+        return None
+    if all(row == rows[0] for row in rows[1:]):
+        return rows[0]
+    bare = str(
+        functions.get(identity, {}).get("bare", "")
+        if isinstance(functions.get(identity), Mapping)
+        else ""
+    )
+    profile = _source_function_declaration_profile(
+        project,
+        functions,
+        identity,
+        bare,
+    )
+    if profile is None:
+        return None
+    visibility, source_modifiers = profile
+    candidates = [
+        row for row in rows
+        if not visibility or str(row.get("visibility") or "") == visibility
+    ]
+    if source_modifiers:
+        expected = set(source_modifiers)
+        candidates = [
+            row for row in candidates
+            if expected.issubset({
+                match.group(1)
+                for raw in tuple(row.get("modifiers") or ())
+                if (
+                    match := re.search(
+                        r"(?:^|[,. ])([A-Za-z_$][A-Za-z0-9_$]*)",
+                        str(raw),
+                    )
+                ) is not None
+            })
+        ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _resolve_slither_source_function(
+    project: Path,
+    functions: Mapping[str, object],
+    function_keys: Mapping[tuple[str, str], list[str]],
+    *,
+    contract: str,
+    raw_signature: str,
+) -> str | None:
+    match = re.search(
+        r"(?:^|\.)([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\(|$)",
+        raw_signature,
+    )
+    if match is None:
+        return None
+    bare = match.group(1)
+    candidates = list(function_keys.get((contract, bare), []))
+    if len(candidates) == 1:
+        return candidates[0]
+    provider_shape = _solidity_parameter_shape(raw_signature, bare)
+    if provider_shape is None:
+        return None
+    matched = [
+        identity
+        for identity in candidates
+        if _source_function_parameter_shape(
+            project,
+            functions,
+            identity,
+            bare,
+        ) == provider_shape
+    ]
+    return matched[0] if len(matched) == 1 else None
 
 
 def _bake_evm_source_graph(scratch: Path, proj: Path) -> str:
@@ -4420,35 +6279,141 @@ def _bake_evm_source_graph(scratch: Path, proj: Path) -> str:
     if not files:
         return "SKIPPED:no .sol sources"
     fn_loc: Dict[str, str] = {}
+    fn_bare: Dict[str, str] = {}
+    fn_declaration_locus: Dict[str, str] = {}
+    fn_uncertainty: Dict[str, list[str]] = {}
     sym_refs: Dict[str, set] = {}
     fn_callees: Dict[str, set] = {}
+    state_declarations: Dict[str, dict[str, Any]] = {}
     try:
         for f in files:
             text = _read_text(f)
             if not text:
                 continue
-            # state variables declared in this file (name -> declaration).
-            state_vars = {m.group(2) for m in _EVM_STATE_RE.finditer(text)}
-            decls = list(_EVM_FN_RE.finditer(text))
-            for i, m in enumerate(decls):
-                name = m.group(1)
-                end = decls[i + 1].start() if i + 1 < len(decls) else len(text)
-                body = text[m.end():end]
-                fn_loc.setdefault(name, f"{_rel(f, proj)}:L{_line_of(text, m.start())}")
-                # which in-scope state vars does this function body mention?
-                body_idents = set(_EVM_CALL_RE.findall(body)) | set(
-                    re.findall(r"\b([A-Za-z_]\w*)\b", body))
-                for v in state_vars:
-                    if v in body_idents:
-                        sym_refs.setdefault(v, set()).add(name)
-                for cm in _EVM_CALL_RE.finditer(body):
-                    cn = cm.group(1)
-                    if cn != name and cn not in _EVM_CALL_STOP:
-                        # _finalize keeps only callees that are real functions.
-                        fn_callees.setdefault(name, set()).add(cn)
+            relative = _rel(f, proj)
+            masked = _strip_solidity_comments_and_strings(text)
+            if _sol_has_malformed_declared_scope(masked):
+                return "FAILED:evm source parse (MALFORMED_CONTRACT_SCOPE)"
+            declarations = _sol_state_declarations(text, source_path=relative)
+            for declaration in declarations:
+                identity = str(declaration["qualified_name"])
+                state_declarations[identity] = {
+                    "bare": str(declaration["bare"]),
+                    "declaration_locus": str(declaration["declaration_locus"]),
+                    "confidence": str(declaration["confidence"]),
+                    "uncertainty": list(declaration["uncertainty"]),
+                }
+            by_scope: dict[tuple[int, int, str], list[dict[str, Any]]] = {}
+            for declaration in declarations:
+                scope_key = (
+                    int(declaration["scope_start"]),
+                    int(declaration["scope_end"]),
+                    str(declaration["contract_name"]),
+                )
+                by_scope.setdefault(scope_key, []).append(declaration)
+            # Function/call coverage is not conditional on a contract declaring
+            # its own state.  Stateless utilities and derived contracts that
+            # only reference inherited state must remain in the function
+            # universe, while inherited-state edges remain explicitly
+            # unresolved in this source-only tier.
+            contract_scopes = [
+                (
+                    int(scope["body_start"]),
+                    int(scope["body_end"]),
+                    str(scope["name"]),
+                )
+                for scope in _sol_contract_scopes(masked)
+            ]
+            # Solidity also permits file-level free functions.  They have no
+            # contract state authority, but remain part of the call/function
+            # universe.  The sentinel cannot collide with a Solidity identifier.
+            scopes = [
+                (*scope, False) for scope in contract_scopes
+            ] + [(-1, len(masked) + 1, "<file>", True)]
+            for scope_start, scope_end, contract_name, file_scope in scopes:
+                scope_states = by_scope.get(
+                    (scope_start, scope_end, contract_name), []
+                )
+                functions: list[tuple[re.Match[str], str, str, str]] = []
+                functions_by_bare: dict[str, set[str]] = {}
+                for match in _SOL_SCOPE_FN_RE.finditer(
+                    masked, scope_start + 1, scope_end - 1
+                ):
+                    if file_scope and any(
+                        contract_start < match.start() < contract_end
+                        for contract_start, contract_end, _name in contract_scopes
+                    ):
+                        continue
+                    body_start, body_end = _sol_find_body(masked, match.end())
+                    if (
+                        body_start is None
+                        or body_end is None
+                        or body_start < scope_start
+                        or body_end > scope_end
+                    ):
+                        continue
+                    name = match.group(1)
+                    line = _line_of(text, match.start())
+                    column = match.start() - text.rfind("\n", 0, match.start())
+                    function_key = (
+                        f"{relative}::{contract_name}.{name}@L{line}:C{column}"
+                    )
+                    function_body = masked[body_start:body_end]
+                    functions.append((match, name, function_key, function_body))
+                    functions_by_bare.setdefault(name, set()).add(function_key)
+                    fn_loc[function_key] = f"{relative}:L{line}"
+                    fn_bare[function_key] = name
+                    fn_declaration_locus[function_key] = (
+                        f"{relative}:L{line}:C{column}"
+                    )
+                    fn_uncertainty[function_key] = [
+                        "SOURCE_ONLY_NO_SIGNATURE_RESOLUTION",
+                        "SOURCE_ONLY_INHERITED_STATE_RESOLUTION_UNAVAILABLE",
+                        "SOURCE_ONLY_LEXICAL_SCOPE_MEMBERSHIP",
+                    ]
+                    if file_scope:
+                        fn_uncertainty[function_key].append(
+                            "SOURCE_ONLY_FILE_SCOPE_FUNCTION"
+                        )
+                for _match, name, function_key, body in functions:
+                    # Which state declarations in THIS contract does this
+                    # function body mention?  A local shadow can still make a
+                    # reference edge approximate, but can never mint a state row.
+                    body_idents = set(_EVM_CALL_RE.findall(body)) | set(
+                        re.findall(r"\b([A-Za-z_]\w*)\b", body)
+                    )
+                    for declaration in scope_states:
+                        if str(declaration["bare"]) in body_idents:
+                            sym_refs.setdefault(
+                                str(declaration["qualified_name"]), set()
+                            ).add(function_key)
+                    for call in _EVM_CALL_RE.finditer(body):
+                        callee_name = call.group(1)
+                        candidates = functions_by_bare.get(callee_name, set())
+                        if (
+                            callee_name not in _EVM_CALL_STOP
+                            and len(candidates) == 1
+                        ):
+                            candidate = next(iter(candidates))
+                            if candidate != function_key:
+                                fn_callees.setdefault(function_key, set()).add(candidate)
+                        elif callee_name not in _EVM_CALL_STOP and len(candidates) > 1:
+                            marker = f"SOURCE_ONLY_OVERLOAD_CALL_UNRESOLVED:{callee_name}"
+                            if marker not in fn_uncertainty[function_key]:
+                                fn_uncertainty[function_key].append(marker)
     except Exception as e:
         return f"FAILED:evm source parse ({e.__class__.__name__})"
-    return _finalize_source_graph(scratch, "evm-source", fn_loc, sym_refs, fn_callees)
+    return _finalize_source_graph(
+        scratch,
+        "evm-source",
+        fn_loc,
+        sym_refs,
+        fn_callees,
+        state_declarations=state_declarations,
+        fn_bare=fn_bare,
+        fn_declaration_locus=fn_declaration_locus,
+        fn_uncertainty=fn_uncertainty,
+    )
 
 
 _VIA_IR_WARNED = False
@@ -4493,11 +6458,40 @@ def _maybe_warn_via_ir_build(proj: Path) -> None:
         pass
 
 
+def _bind_workspace_graph_reference(
+    scratch: Path,
+    workspace_authority: Optional[Mapping[str, Any]],
+) -> None:
+    """Embed only the path-free public workspace authority in graph output."""
+
+    if not isinstance(workspace_authority, Mapping):
+        raise EVMAnalysisWorkspaceAuthorityError(
+            "EVM graph publication lacks workspace authority"
+        )
+    graph_path = Path(scratch) / "_mechanical_graph.json"
+    value = json.loads(graph_path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise EVMAnalysisWorkspaceAuthorityError(
+            "EVM graph artifact is not an object"
+        )
+    value["evm_analysis_workspace"] = workspace_public_reference(
+        workspace_authority
+    )
+    graph_path.write_text(
+        json.dumps(value, sort_keys=True, indent=1) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _bake_evm_graph(
     scratch: Path,
     proj: Path,
     *,
     context: Optional[dict] = None,
+    workspace_authority: Optional[Mapping[str, Any]] = None,
+    session_tool_authority: object | None = None,
+    native_runtime_authority: object | None = None,
+    posix_compat_session_authority: object | None = None,
 ) -> str:
     """EVM graph provider with tiered degradation (never mock the compiler):
       1. Slither (PRECISE, type-resolved) when the project builds.
@@ -4517,8 +6511,16 @@ def _bake_evm_graph(
         tempfile.mkdtemp(prefix=".slither-graph-", dir=scratch)
     )
     try:
-        slither = _bake_evm_slither_graph(stage, proj)
-        if slither == "WRITTEN":
+        slither, native_execution_evidence = _bake_evm_slither_native_graph(
+            stage,
+            proj,
+            workspace_authority=workspace_authority,
+            session_tool_authority=session_tool_authority,
+            native_runtime_authority=native_runtime_authority,
+            posix_compat_session_authority=posix_compat_session_authority,
+        )
+        if slither.startswith("WRITTEN"):
+            _bind_workspace_graph_reference(stage, workspace_authority)
             publication, _evidence = (
                 _validate_and_publish_graph_artifact_set(
                     stage,
@@ -4529,8 +6531,13 @@ def _bake_evm_graph(
                 slither = publication
     finally:
         shutil.rmtree(stage, ignore_errors=True)
-    slither_authority = _capture_python_provider_authority(
-        "slither", project_root=proj
+    slither_rows = [
+        row for row in (workspace_authority or {}).get("tools", [])
+        if isinstance(row, Mapping) and row.get("tool_id") == "slither"
+    ]
+    slither_authority = (
+        slither_rows[0].get("signed_runtime_authority")
+        if len(slither_rows) == 1 else {}
     )
     _record_precise_graph_outcome(
         scratch,
@@ -4539,9 +6546,14 @@ def _bake_evm_graph(
         status=slither,
         authority=slither_authority,
         context=context,
+        native_execution_evidence=native_execution_evidence,
     )
-    if slither == "WRITTEN":
-        return "WRITTEN:slither"
+    if slither.startswith("WRITTEN"):
+        return (
+            "WRITTEN:slither"
+            if slither == "WRITTEN"
+            else f"WRITTEN:slither ({slither})"
+        )
     discard_issues = _discard_committed_graph_generation(scratch)
     if discard_issues:
         return (
@@ -4549,6 +6561,8 @@ def _bake_evm_graph(
             + ",".join(discard_issues)
         )
     fallback = _bake_evm_source_graph(scratch, proj)
+    if fallback == "WRITTEN":
+        _bind_workspace_graph_reference(scratch, workspace_authority)
     return (f"WRITTEN:evm-source (slither {slither})"
             if fallback == "WRITTEN" else f"FAILED:slither={slither}; source={fallback}")
 
@@ -4638,11 +6652,25 @@ def _bake_daml_graph(scratch: Path, proj: Path) -> str:
     return _finalize_source_graph(scratch, "daml", fn_loc, sym_refs, fn_callees)
 
 
-def _finalize_source_graph(scratch: Path, source: str, fn_loc: Dict[str, str],
-                           sym_refs: Dict[str, set], fn_callees: Dict[str, set]) -> str:
+def _finalize_source_graph(
+    scratch: Path,
+    source: str,
+    fn_loc: Dict[str, str],
+    sym_refs: Dict[str, set],
+    fn_callees: Dict[str, set],
+    *,
+    state_declarations: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    fn_bare: Optional[Mapping[str, str]] = None,
+    fn_declaration_locus: Optional[Mapping[str, str]] = None,
+    fn_uncertainty: Optional[Mapping[str, list[str]]] = None,
+) -> str:
     """Shared tail for the approximate source-parse providers (Move/DAML): invert
     callees, build the unified schema, emit `_mechanical_graph.json` + the maps."""
-    if not fn_loc:
+    declarations = dict(state_declarations or {})
+    function_aliases = dict(fn_bare or {})
+    function_loci = dict(fn_declaration_locus or {})
+    function_uncertainties = dict(fn_uncertainty or {})
+    if not fn_loc and not declarations:
         return "FAILED:no functions/choices extracted"
     fn_callers: Dict[str, set] = {}
     for caller, callees in fn_callees.items():
@@ -4653,23 +6681,50 @@ def _finalize_source_graph(scratch: Path, source: str, fn_loc: Dict[str, str],
     # referenced by exactly one function is still security-relevant and must
     # remain available to relation-scoped consumers; consumers own their own
     # denoising policy rather than receiving a destructively filtered graph.
-    var_refs = {
-        s: {
-            "bare": s,
-            "refs": sorted(f"{fn} ({fn_loc.get(fn, '?')})" for fn in fns),
-            "confidence": "FUNCTION_SCOPE_APPROXIMATE",
+    var_refs: dict[str, dict[str, Any]] = {}
+    for symbol in sorted(set(sym_refs) | set(declarations)):
+        refs = set(sym_refs.get(symbol, set()))
+        declaration = declarations.get(symbol)
+        if declaration is None and not (0 < len(refs) <= 25):
+            continue
+        descriptors = sorted(
+            f"{function_aliases.get(fn, fn)} "
+            f"({function_loci.get(fn, fn_loc.get(fn, '?'))})"
+            for fn in refs
+        )
+        row: dict[str, Any] = {
+            "bare": str(
+                declaration.get("bare") if declaration is not None else symbol
+            ),
+            "refs": descriptors,
+            "confidence": str(
+                declaration.get("confidence")
+                if declaration is not None
+                else "FUNCTION_SCOPE_APPROXIMATE"
+            ),
         }
-        for s, fns in sym_refs.items() if 0 < len(fns) <= 25
-    }
-    functions = {
-        fn: {
-            "bare": fn,
+        if declaration is not None:
+            row.update({
+                "declaration_locus": str(declaration.get("declaration_locus") or ""),
+                "reference_sites": descriptors,
+                "read_sites": [],
+                "write_sites": [],
+                "uncertainty": list(declaration.get("uncertainty") or []),
+            })
+        var_refs[symbol] = row
+    functions = {}
+    for fn, loc in fn_loc.items():
+        row: dict[str, Any] = {
+            "bare": function_aliases.get(fn, fn),
             "loc": loc,
             "callers": sorted(fn_callers.get(fn, set())),
             "callees": sorted(fn_callees.get(fn, set())),
         }
-        for fn, loc in fn_loc.items()
-    }
+        if fn in function_loci:
+            row["declaration_locus"] = function_loci[fn]
+        if fn in function_uncertainties:
+            row["uncertainty"] = sorted(set(function_uncertainties[fn]))
+        functions[fn] = row
     if not _write_mechanical_graph_json(
         scratch,
         source,
@@ -5854,14 +7909,8 @@ def _opengrep_rules_base() -> Path:
         if override is not None
         else _plamen_home() / "opengrep-rules"
     )
-# The three rule trees are repository gitlinks. The installer initializes
-# submodules before any audit; recon only accepts the exact release-bound
-# revisions and never materializes or repairs rules while source is bound.
-_OPENGREP_RULE_REVISIONS = {
-    "aptos-move-rules": "9ee5c476c6161d9eece74fd2f38685eb483b999c",
-    "decurity-rules": "2e878a89ac7bba1f8435e8a68e3ecb7700096cd5",
-    "opengrep-rules": "f1d2b562b414783763fd02a6ed2736eaed622efa",
-}
+# Public upstream/revision governance is shared with the installer-built,
+# portable rule-tree authority.  Runtime replay never consults Git metadata.
 _OPENGREP_LANG_RULES: Dict[str, List[str]] = {
     "evm": ["opengrep-rules/solidity", "decurity-rules/solidity/security"],
     "solana": ["opengrep-rules/rust", "decurity-rules/rust"],
@@ -5884,43 +7933,17 @@ _OPENGREP_RULE_FAILURES: Dict[str, str] = {}
 
 
 def _ensure_opengrep_rules() -> Dict[str, Path]:
-    """Return only populated rule submodules at their release-bound revisions."""
+    """Return only trees authenticated by the installed portable manifest."""
     _OPENGREP_RULE_FAILURES.clear()
-    available: Dict[str, Path] = {}
     rules_base = _opengrep_rules_base()
-    for name, expected_revision in _OPENGREP_RULE_REVISIONS.items():
-        local = rules_base / name
-        try:
-            populated = local.is_dir() and any(local.iterdir())
-        except OSError as exc:
-            _OPENGREP_RULE_FAILURES[name] = (
-                f"prebound rule submodule is unreadable: {type(exc).__name__}"
-            )
-            continue
-        if not populated:
-            _OPENGREP_RULE_FAILURES[name] = (
-                "prebound rule submodule is absent or empty; run installer "
-                "submodule initialization before the audit"
-            )
-            continue
-        if not (local / ".git").exists():
-            _OPENGREP_RULE_FAILURES[name] = (
-                "rule tree has no gitlink metadata; revision cannot be verified"
-            )
-            continue
-        rc, output = _run_hardened(
-            ["git", "-C", str(local), "rev-parse", "HEAD"], None, 20,
+    try:
+        return _validate_installed_rule_authority(rules_base)
+    except _OpenGrepRuleAuthorityError as exc:
+        reason = f"portable rule authority rejected: {exc}"
+        _OPENGREP_RULE_FAILURES.update(
+            {name: reason for name in _OPENGREP_RULE_REVISIONS}
         )
-        actual_revision = (output or "").strip().splitlines()
-        actual_revision = actual_revision[-1].strip() if actual_revision else ""
-        if rc != 0 or actual_revision != expected_revision:
-            _OPENGREP_RULE_FAILURES[name] = (
-                "rule revision mismatch: "
-                f"expected {expected_revision}, got {actual_revision or 'unreadable'}"
-            )
-            continue
-        available[name] = local
-    return available
+        return {}
 
 
 def _record_scanner_outcome(
@@ -5928,16 +7951,29 @@ def _record_scanner_outcome(
     outcome: ToolOutcome,
     *,
     context: Optional[dict] = None,
+    execution_receipt: Optional[Mapping[str, Any]] = None,
 ) -> ToolOutcome:
     """Persist scanner coverage debt without turning ledger I/O into a halt."""
     recorded = outcome
     if outcome.state is ToolOutcomeState.SUCCEEDED:
         try:
-            recorded = bind_succeeded_tool_outcome(
-                scratch,
-                outcome,
-                context=context or {},
-            )
+            try:
+                existing_envelope = json.loads(outcome.provider_ref)
+            except (TypeError, json.JSONDecodeError):
+                existing_envelope = None
+            if (
+                isinstance(existing_envelope, Mapping)
+                and existing_envelope.get("schema_version")
+                == "plamen.snapshot-execution-tool-outcome-envelope.v1"
+            ):
+                recorded = outcome
+            else:
+                recorded = bind_succeeded_tool_outcome(
+                    scratch,
+                    outcome,
+                    context=context or {},
+                    execution_receipt=execution_receipt or {},
+                )
         except (OSError, ToolCoverageLedgerError, TypeError, ValueError) as exc:
             recorded = ToolOutcome.debt(
                 outcome.capability_id,
@@ -6006,6 +8042,10 @@ def _run_opengrep_scan(
     lang: str,
     *,
     context: Optional[dict] = None,
+    workspace_authority: Optional[Mapping[str, Any]] = None,
+    session_tool_authority: object | None = None,
+    native_runtime_authority: object | None = None,
+    posix_compat_session_authority: object | None = None,
 ) -> str:
     """Run OpenGrep scan and write results to scratchpad.
 
@@ -6013,26 +8053,65 @@ def _run_opengrep_scan(
     Returns status string: WRITTEN:{n} findings | SKIPPED:{reason} | FAILED:{reason}
     """
     capability_id = "opengrep.static-analysis"
+    external_execution_receipt: Dict[str, Any] = {}
 
     def finish(outcome: ToolOutcome) -> str:
         return _record_scanner_outcome(
-            scratch, outcome, context=context
+            scratch,
+            outcome,
+            context=context,
+            execution_receipt=external_execution_receipt,
         ).legacy_status()
 
-    # Windows installs Semgrep as the compatible adapter. Prefer native
-    # OpenGrep where present, but accept the same Semgrep binary the installer
-    # provisions instead of reporting a false tool absence.
-    scanner_binary = shutil.which("opengrep") or shutil.which("semgrep")
-    if not scanner_binary:
-        return finish(ToolOutcome.debt(
-            capability_id, "opengrep/semgrep", ToolOutcomeState.UNAVAILABLE,
-            "opengrep-compatible scanner not found",
-        ))
-    scanner_name = (
-        "semgrep"
-        if "semgrep" in Path(scanner_binary).name.lower()
-        else "opengrep"
-    )
+    scanner_authority: Optional[Mapping[str, Any]] = None
+    native_execution_evidence: Optional[Mapping[str, Any]] = None
+    compat_execution_evidence: Optional[Mapping[str, Any]] = None
+    compat_lane = False
+    if lang == "evm":
+        if not isinstance(workspace_authority, Mapping):
+            return finish(ToolOutcome.debt(
+                capability_id, "opengrep", ToolOutcomeState.UNAVAILABLE,
+                "EVM_ANALYSIS_WORKSPACE_UNBOUND",
+            ))
+        available_tool_ids = tuple(
+            getattr(session_tool_authority, "tool_ids", ()) or ()
+        )
+        # The authenticated native image contract exposes an OpenGrep anchor,
+        # not a Semgrep alias.  A locally observed Semgrep binary is useful to
+        # legacy/non-EVM compatibility lanes, but cannot select or stand in for
+        # the native snapshot executable here.
+        scanner_name = "opengrep" if "opengrep" in available_tool_ids else ""
+        if scanner_name and native_runtime_authority is not None:
+            scanner_binary = scanner_name
+        elif posix_compat_session_authority is not None:
+            located = shutil.which("opengrep")
+            if not located:
+                return finish(ToolOutcome.debt(
+                    capability_id, "opengrep", ToolOutcomeState.UNAVAILABLE,
+                    "EVM_WORKSPACE_SCANNER_COMPAT_EXECUTABLE_UNAVAILABLE",
+                ))
+            scanner_name = "opengrep"
+            scanner_binary = str(Path(located).resolve(strict=True))
+            compat_lane = True
+        else:
+            return finish(ToolOutcome.debt(
+                capability_id, "opengrep", ToolOutcomeState.UNAVAILABLE,
+                "EVM_WORKSPACE_SCANNER_NATIVE_AUTHORITY_UNAVAILABLE",
+            ))
+    else:
+        # Non-EVM lanes retain their existing compatibility adapter. EVM never
+        # aliases semgrep as opengrep and never discovers either through PATH.
+        scanner_binary = shutil.which("opengrep") or shutil.which("semgrep")
+        if not scanner_binary:
+            return finish(ToolOutcome.debt(
+                capability_id, "opengrep/semgrep", ToolOutcomeState.UNAVAILABLE,
+                "opengrep-compatible scanner not found",
+            ))
+        scanner_name = (
+            "semgrep"
+            if "semgrep" in Path(scanner_binary).name.lower()
+            else "opengrep"
+        )
 
     rule_dirs = _OPENGREP_LANG_RULES.get(lang, [])
     if not rule_dirs:
@@ -6052,7 +8131,10 @@ def _run_opengrep_scan(
             continue
         full_path = available_repos[repo_name] / "/".join(rule_rel.split("/")[1:])
         if full_path.exists():
-            resolved_rules.append(str(full_path))
+            resolved_rules.append(
+                f"/workspace/source/{rule_rel}"
+                if lang == "evm" and not compat_lane else str(full_path)
+            )
 
     if not resolved_rules:
         if _OPENGREP_RULE_FAILURES:
@@ -6089,7 +8171,11 @@ def _run_opengrep_scan(
     findings_path = scratch / "opengrep_findings.md"
     # A retry must never leave a prior successful generation looking current.
     stale_cleanup_failed = False
-    for stale in (sarif_path, findings_path):
+    for stale in (
+        sarif_path,
+        findings_path,
+        scratch / _OPENGREP_OBSERVATIONAL_RECEIPT,
+    ):
         try:
             stale.unlink(missing_ok=True)
         except OSError:
@@ -6110,8 +8196,9 @@ def _run_opengrep_scan(
     # Grant write authority only to one fresh private stage, validate there,
     # then atomically promote the authenticated SARIF bytes.
     stage = Path(tempfile.mkdtemp(prefix=".og-", dir=scratch))
+    state_stage = Path(tempfile.mkdtemp(prefix=".og-state-", dir=scratch))
     staged_sarif = stage / "results.sarif"
-    scanner_env = dict(os.environ)
+    scanner_env = {} if lang == "evm" else dict(os.environ)
     scanner_env.update({
         # The scanner's Python wrapper and native core may both create
         # temporary/cache files.  Route every documented/legacy Semgrep path
@@ -6120,21 +8207,42 @@ def _run_opengrep_scan(
         # Do not precreate medium-integrity children before lease activation.
         # The lease lowers this exact empty root; scanner-created descendants
         # then inherit its low MIC label.
-        "TEMP": str(stage),
-        "TMP": str(stage),
-        "TMPDIR": str(stage),
-        "XDG_CACHE_HOME": str(stage),
-        "SEMGREP_SETTINGS_FILE": str(stage / "settings.yml"),
-        "SEMGREP_VERSION_CACHE_PATH": str(stage / "version"),
-        "SEMGREP_LOG_FILE": str(stage / "scanner.log"),
+        "TEMP": "/workspace/scratch" if lang == "evm" and not compat_lane else str(stage),
+        "TMP": "/workspace/scratch" if lang == "evm" and not compat_lane else str(stage),
+        "TMPDIR": "/workspace/scratch" if lang == "evm" and not compat_lane else str(stage),
+        "XDG_CACHE_HOME": "/workspace/state" if lang == "evm" and not compat_lane else str(stage),
+        "SEMGREP_SETTINGS_FILE": (
+            "/workspace/state/settings.yml" if lang == "evm" and not compat_lane
+            else str(stage / "settings.yml")
+        ),
+        "SEMGREP_VERSION_CACHE_PATH": (
+            "/workspace/state/version" if lang == "evm" and not compat_lane
+            else str(stage / "version")
+        ),
+        "SEMGREP_LOG_FILE": (
+            "/workspace/scratch/scanner.log" if lang == "evm" and not compat_lane
+            else str(stage / "scanner.log")
+        ),
         "OPENGREP_ENABLE_VERSION_CHECK": "0",
     })
     cmd = [scanner_binary, "scan", "--disable-version-check"]
     rule_flag = "--config" if scanner_name == "semgrep" else "-f"
     for rp in resolved_rules:
         cmd.extend([rule_flag, rp])
-    cmd.extend(["--sarif-output", str(staged_sarif)])
-    cmd.extend([_rel(p, proj) for p in source_files])
+    cmd.extend([
+        "--sarif-output",
+        "/workspace/scratch/results.sarif" if lang == "evm" and not compat_lane
+        else str(staged_sarif),
+    ])
+    if lang == "evm" and not compat_lane:
+        build_root = _workspace_build_root_path(workspace_authority)
+        cmd.extend([
+            _rel(p, Path(build_root)) for p in source_files
+        ])
+    elif compat_lane:
+        cmd.extend([str(p.resolve(strict=True)) for p in source_files])
+    else:
+        cmd.extend([_rel(p, proj) for p in source_files])
 
     # Hang-proof: temp-file drain + tree-kill. The prior Popen+communicate()
     # drained an OS PIPE — exactly the construct a grandchild holding the handle
@@ -6142,13 +8250,83 @@ def _run_opengrep_scan(
     # The hardened runner treats ``cwd`` as read-only input authority.  The
     # scanner receives only the fresh stage as explicit write authority.
     try:
-        rc, scanner_output = _run_hardened(
-            cmd,
-            proj,
-            _OPENGREP_SCAN_TIMEOUT,
-            env=scanner_env,
-            writable_roots=(stage,),
-        )
+        if lang == "evm":
+            replay_evm_analysis_workspace_execution_closure(
+                workspace_authority
+            )
+        if lang == "evm" and not compat_lane:
+            evidence = execute_session_bound_evm_tool(
+                workspace_authority,
+                scanner_name,
+                session_tool_authority=session_tool_authority,
+                native_runtime_authority=native_runtime_authority,
+                argv=cmd,
+                environment={key: scanner_env[key] for key in sorted(scanner_env)},
+                cwd="/workspace/project",
+                tool_scratch_root=stage,
+                tool_state_root=state_stage,
+                implementation_root=_plamen_home(),
+            )
+            terminal = evidence.public_receipt()["terminal"]
+            native_execution_evidence = evidence.public_receipt()
+            rc, scanner_output = int(terminal["returncode"]), ""
+        elif compat_lane:
+            compat_execution_evidence = execute_compat_static_analysis(
+                session_authority=posix_compat_session_authority,
+                workspace_authority=workspace_authority,
+                stage=stage,
+                tool_id="opengrep",
+                executable=Path(scanner_binary),
+                argv=cmd,
+                environment={key: scanner_env[key] for key in sorted(scanner_env)},
+                expected_outputs=("results.sarif",),
+                timeout_seconds=float(_OPENGREP_SCAN_TIMEOUT),
+                policy_inputs={
+                    "rule_revisions": {
+                        name: _OPENGREP_RULE_REVISIONS[name]
+                        for name in sorted(_OPENGREP_RULE_REVISIONS)
+                    },
+                    "source_file_count": len(source_files),
+                },
+            )
+            terminal = compat_execution_evidence["terminal"]
+            rc = int(terminal["returncode"])
+            scanner_output = "\n".join((
+                str(compat_execution_evidence.get("stdout") or ""),
+                str(compat_execution_evidence.get("stderr") or ""),
+            ))
+        else:
+            rc, scanner_output = _run_hardened(
+                cmd,
+                proj,
+                _OPENGREP_SCAN_TIMEOUT,
+                env=scanner_env,
+                writable_roots=(stage,),
+                execution_receipt=external_execution_receipt,
+                execution_tool=scanner_name,
+                version_command=(scanner_name, "--version"),
+                project_root=proj,
+                workspace_root=proj,
+                accepted_returncodes=(0,),
+            )
+    except (EVMAnalysisWorkspaceAuthorityError, StaticAnalysisCompatExecutionError) as exc:
+        shutil.rmtree(stage, ignore_errors=True)
+        shutil.rmtree(state_stage, ignore_errors=True)
+        return finish(ToolOutcome.debt(
+            capability_id, scanner_name, ToolOutcomeState.FAILED,
+            "EVM_WORKSPACE_CLOSURE_DRIFT_BEFORE_EXECUTION:" + str(exc),
+        ))
+    try:
+        if lang == "evm":
+            try:
+                replay_evm_analysis_workspace_execution_closure(
+                    workspace_authority
+                )
+            except EVMAnalysisWorkspaceAuthorityError as exc:
+                return finish(ToolOutcome.debt(
+                    capability_id, scanner_name, ToolOutcomeState.FAILED,
+                    "EVM_WORKSPACE_CLOSURE_DRIFT_AFTER_EXECUTION:" + str(exc),
+                ))
         if rc == 124:
             return finish(ToolOutcome.debt(
                 capability_id, scanner_name, ToolOutcomeState.FAILED,
@@ -6186,8 +8364,20 @@ def _run_opengrep_scan(
                 str(exc),
             ))
         os.replace(staged_sarif, sarif_path)
+        if (
+            scanner_authority is not None
+            and not _provider_authority_replays(
+                scanner_authority, project_root=proj
+            )
+        ):
+            sarif_path.unlink(missing_ok=True)
+            return finish(ToolOutcome.debt(
+                capability_id, scanner_name, ToolOutcomeState.FAILED,
+                "EVM_WORKSPACE_SCANNER_IDENTITY_DRIFT_AFTER_EXECUTION",
+            ))
     finally:
         shutil.rmtree(stage, ignore_errors=True)
+        shutil.rmtree(state_stage, ignore_errors=True)
 
     # Parse SARIF and write human-readable summary
     finding_count = _parse_opengrep_sarif(
@@ -6208,13 +8398,71 @@ def _run_opengrep_scan(
             if item.split("/")[0] in available_repos
         })
     )
-    return finish(ToolOutcome.succeeded(
+    success = ToolOutcome.succeeded(
         capability_id,
         scanner_name,
         finding_count,
         artifacts=("opengrep_results.sarif", "opengrep_findings.md"),
         provider_ref=revisions,
-    ))
+    )
+    if compat_lane and isinstance(compat_execution_evidence, Mapping):
+        debt = ToolOutcome.debt(
+            capability_id,
+            scanner_name,
+            ToolOutcomeState.FAILED,
+            (
+                "EXECUTED_OBSERVATIONAL_REDUCED_ISOLATION:"
+                f"{finding_count} finding(s); clean certification unavailable"
+            ),
+            provider_ref=json.dumps(
+                dict(compat_execution_evidence),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ),
+        )
+        if finding_count > 0:
+            try:
+                _write_opengrep_observational_receipt(
+                    scratch,
+                    outcome_record=debt.to_record(),
+                )
+            except (OSError, TypeError, ValueError, _OpenGrepObservationalAuthorityError):
+                # Coverage debt remains authoritative.  Without a replayable
+                # positive-evidence sidecar, downstream routing deliberately
+                # falls back to the conservative zero-data projection.
+                (scratch / _OPENGREP_OBSERVATIONAL_RECEIPT).unlink(
+                    missing_ok=True
+                )
+        return finish(debt)
+    if lang == "evm" and isinstance(native_execution_evidence, Mapping):
+        try:
+            envelope = build_snapshot_execution_tool_outcome_envelope(
+                scratch,
+                capability_id=capability_id,
+                tool=scanner_name,
+                evidence=native_execution_evidence,
+                context=context or {},
+                artifacts=("opengrep_results.sarif", "opengrep_findings.md"),
+                finding_count=finding_count,
+            )
+            success = ToolOutcome.succeeded(
+                capability_id,
+                scanner_name,
+                finding_count,
+                artifacts=("opengrep_results.sarif", "opengrep_findings.md"),
+                provider_ref=json.dumps(
+                    envelope, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False,
+                ),
+            )
+        except (OSError, ToolCoverageLedgerError, TypeError, ValueError) as exc:
+            return finish(ToolOutcome.debt(
+                capability_id, scanner_name, ToolOutcomeState.FAILED,
+                "SNAPSHOT_EXECUTION_OUTCOME_AUTHORITY_DEBT:"
+                f"{type(exc).__name__}:{exc}",
+            ))
+    return finish(success)
 
 
 def _parse_opengrep_sarif(
@@ -6307,10 +8555,14 @@ def _run_sec3_xray(
     Returns status string: WRITTEN:{n} findings | SKIPPED:{reason} | FAILED:{reason}
     """
     capability_id = "sec3-xray.solana-static-analysis"
+    execution_receipt: Dict[str, Any] = {}
 
     def finish(outcome: ToolOutcome) -> str:
         return _record_scanner_outcome(
-            scratch, outcome, context=context
+            scratch,
+            outcome,
+            context=context,
+            execution_receipt=execution_receipt,
         ).legacy_status()
 
     image = _resolve_sec3_image(image_ref)
@@ -6377,7 +8629,17 @@ def _run_sec3_xray(
 
     # Hang-proof: temp-file drain + tree-kill (the X-Ray container / LLVM
     # workers can no longer wedge the parent on a held pipe handle).
-    rc, _xray_out = _run_hardened(cmd, None, _SEC3_XRAY_TIMEOUT)
+    rc, _xray_out = _run_hardened(
+        cmd,
+        None,
+        _SEC3_XRAY_TIMEOUT,
+        execution_receipt=execution_receipt,
+        execution_tool="docker",
+        version_command=("docker", "--version"),
+        project_root=proj,
+        workspace_root=proj,
+        accepted_returncodes=(0,),
+    )
     if rc == 124:
         return finish(ToolOutcome.debt(
             capability_id, "sec3-xray", ToolOutcomeState.FAILED,
@@ -6784,7 +9046,11 @@ def _advisory_source_is_external(root: Path, project: Path) -> bool:
     return False
 
 
-def _govulncheck_outcome(proj: Path) -> Tuple[ToolOutcome, List[dict]]:
+def _govulncheck_outcome(
+    proj: Path,
+    *,
+    execution_receipt: Optional[Dict[str, Any]] = None,
+) -> Tuple[ToolOutcome, List[dict]]:
     """Run `govulncheck -json ./...` against a Go module.
 
     Returns a typed outcome plus any schema-validated findings.
@@ -6827,6 +9093,16 @@ def _govulncheck_outcome(proj: Path) -> Tuple[ToolOutcome, List[dict]]:
         "GOSUMDB": "off",
         "GOTOOLCHAIN": "local",
     })
+    receipt_kwargs: Dict[str, Any] = {}
+    if execution_receipt is not None:
+        receipt_kwargs = {
+            "execution_receipt": execution_receipt,
+            "execution_tool": "govulncheck",
+            "version_command": ("govulncheck", "-version"),
+            "project_root": proj,
+            "workspace_root": proj,
+            "accepted_returncodes": (0, 3),
+        }
     rc, out = _run_hardened(
         [
             "govulncheck",
@@ -6838,6 +9114,7 @@ def _govulncheck_outcome(proj: Path) -> Tuple[ToolOutcome, List[dict]]:
         proj,
         _GOVULNCHECK_TIMEOUT,
         govuln_env,
+        **receipt_kwargs,
     )
     if rc == 127:
         return ToolOutcome.debt(
@@ -6880,9 +9157,15 @@ def _govulncheck_outcome(proj: Path) -> Tuple[ToolOutcome, List[dict]]:
     ), findings
 
 
-def _govulncheck_scan(proj: Path) -> Tuple[str, List[dict]]:
+def _govulncheck_scan(
+    proj: Path,
+    *,
+    execution_receipt: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, List[dict]]:
     """Compatibility wrapper returning the legacy status-string shape."""
-    outcome, findings = _govulncheck_outcome(proj)
+    outcome, findings = _govulncheck_outcome(
+        proj, execution_receipt=execution_receipt
+    )
     return _dependency_outcome_status(outcome), findings
 
 
@@ -6939,7 +9222,11 @@ def _parse_cargo_audit_json(raw: str) -> Tuple[List[dict], bool]:
     return findings, True
 
 
-def _cargo_audit_outcome(proj: Path) -> Tuple[ToolOutcome, List[dict]]:
+def _cargo_audit_outcome(
+    proj: Path,
+    *,
+    execution_receipt: Optional[Dict[str, Any]] = None,
+) -> Tuple[ToolOutcome, List[dict]]:
     """Run `cargo audit --json` against a Rust workspace.
 
     Returns a typed outcome plus any schema-validated findings.
@@ -7014,6 +9301,16 @@ def _cargo_audit_outcome(proj: Path) -> Tuple[ToolOutcome, List[dict]]:
         audit_env = dict(os.environ)
         audit_env["CARGO_HOME"] = str(cargo_home)
         audit_env["CARGO_NET_OFFLINE"] = "true"
+        receipt_kwargs: Dict[str, Any] = {}
+        if execution_receipt is not None:
+            receipt_kwargs = {
+                "execution_receipt": execution_receipt,
+                "execution_tool": "cargo-audit",
+                "version_command": ("cargo-audit", "--version"),
+                "project_root": proj,
+                "workspace_root": proj,
+                "accepted_returncodes": (0, 1),
+            }
         rc, out = _run_hardened(
             [
                 cargo_audit_binary,
@@ -7028,6 +9325,7 @@ def _cargo_audit_outcome(proj: Path) -> Tuple[ToolOutcome, List[dict]]:
             neutral_path,
             _CARGO_AUDIT_TIMEOUT,
             audit_env,
+            **receipt_kwargs,
         )
     if rc == 124:
         return ToolOutcome.debt(
@@ -7064,9 +9362,15 @@ def _cargo_audit_outcome(proj: Path) -> Tuple[ToolOutcome, List[dict]]:
     ), findings
 
 
-def _cargo_audit_scan(proj: Path) -> Tuple[str, List[dict]]:
+def _cargo_audit_scan(
+    proj: Path,
+    *,
+    execution_receipt: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, List[dict]]:
     """Compatibility wrapper returning the legacy status-string shape."""
-    outcome, findings = _cargo_audit_outcome(proj)
+    outcome, findings = _cargo_audit_outcome(
+        proj, execution_receipt=execution_receipt
+    )
     return _dependency_outcome_status(outcome), findings
 
 
@@ -7166,6 +9470,7 @@ def _run_dependency_audit_l1(
         sections: List[Tuple[str, str, List[dict]]] = []
         statuses: List[str] = []
         outcomes: List[ToolOutcome] = []
+        outcome_receipts: List[Mapping[str, Any]] = []
 
         def run_capability(
             label: str,
@@ -7175,8 +9480,11 @@ def _run_dependency_audit_l1(
             source_id: str,
             scanner,
         ) -> None:
+            execution_receipt: Dict[str, Any] = {}
             try:
-                status, findings = scanner(proj)
+                status, findings = scanner(
+                    proj, execution_receipt=execution_receipt
+                )
             except Exception as exc:
                 status = f"FAILED:{type(exc).__name__}:{exc}"
                 findings = []
@@ -7196,6 +9504,7 @@ def _run_dependency_audit_l1(
                         artifacts=("dependency_audit_findings.md",),
                         provider_ref=provider_ref,
                     ))
+                    outcome_receipts.append(dict(execution_receipt))
                     return
                 status = f"FAILED:{issue}"
             reason = status.partition(":")[2] or status
@@ -7208,6 +9517,7 @@ def _run_dependency_audit_l1(
             outcomes.append(ToolOutcome.debt(
                 capability_id, tool, state, reason,
             ))
+            outcome_receipts.append({})
 
         # Each ecosystem is isolated. A parser/process defect in one scanner
         # cannot suppress the other half of a mixed L1 dependency audit.
@@ -7243,10 +9553,16 @@ def _run_dependency_audit_l1(
                 ToolOutcomeState.UNAVAILABLE,
                 reason,
             ))
+            outcome_receipts.append({})
         _write_dependency_audit_md(scratch, sections)
-        for outcome in outcomes:
+        for outcome, execution_receipt in zip(
+            outcomes, outcome_receipts, strict=True
+        ):
             _record_scanner_outcome(
-                scratch, outcome, context=context
+                scratch,
+                outcome,
+                context=context,
+                execution_receipt=execution_receipt,
             )
         return "; ".join(statuses)
     except Exception as e:
@@ -7809,6 +10125,18 @@ def _render_recon_prepass(config: dict) -> Dict[str, str]:
         proj = Path(config["project_root"])
         lang = (config.get("language") or "evm").lower()
         pipeline = (config.get("pipeline") or "sc").lower()
+        workspace_authority = config.get(
+            "_evm_analysis_workspace_authority"
+        )
+        session_tool_authority = config.get(
+            "_evm_session_tool_authority"
+        )
+        native_runtime_authority = config.get(
+            "_native_guest_runtime_authority"
+        )
+        posix_compat_session_authority = config.get(
+            "_posix_v2_compat_session_authority"
+        )
     except Exception as e:
         return {"_init": f"FAILED:{e}"}
 
@@ -7864,6 +10192,7 @@ def _render_recon_prepass(config: dict) -> Dict[str, str]:
               "# Function List\n\n[LLM TO ENRICH] No prepass for DAML (read-driven).\n\n"
               "| Template.Choice | Consume-Mode | Controller | Return | Arg-Derived Controller? |\n"
               "|-----------------|--------------|------------|--------|-------------------------|\n"))
+        _safe("modifiers.md",          lambda: _write_modifier_application_map(scratch, proj, lang))
         _safe("build_status.md",       lambda: _write_sc_recon_stub(scratch, "build_status.md",
               "# Build Status\n\n[LLM TO ENRICH] No prepass for DAML (read-driven).\n\n"
               "**Tool**: daml build\n\n**Status**: SKIPPED (recon LLM runs `daml build`)\n\n"
@@ -7889,6 +10218,7 @@ def _render_recon_prepass(config: dict) -> Dict[str, str]:
         _safe("contract_inventory.md", lambda: _write_contract_inventory_sc(scratch, proj, lang))
         _safe("state_variables.md",    lambda: _write_table_artifact(scratch, proj, lang, "state"))
         _safe("function_list.md",      lambda: _write_table_artifact(scratch, proj, lang, "fn"))
+        _safe("modifiers.md",          lambda: _write_modifier_application_map(scratch, proj, lang))
         # F1 (recall): mechanical Solidity reference graph. Tiered: Slither
         # (precise, needs a build) → compilation-free source parse (approximate,
         # always available; same tier as Move/DAML). Never mocks the compiler.
@@ -7898,7 +10228,15 @@ def _render_recon_prepass(config: dict) -> Dict[str, str]:
         if lang == "evm":
             _safe("_mechanical_graph.json",
                   lambda: _bake_evm_graph(
-                      scratch, proj, context=tool_context
+                      scratch,
+                      proj,
+                      context=tool_context,
+                      workspace_authority=workspace_authority,
+                      session_tool_authority=session_tool_authority,
+                      native_runtime_authority=native_runtime_authority,
+                      posix_compat_session_authority=(
+                          posix_compat_session_authority
+                      ),
                   ))
             _safe("niche_interface_parity_findings.md",
                   lambda: _write_interface_parity_findings(scratch, proj))
@@ -7909,7 +10247,12 @@ def _render_recon_prepass(config: dict) -> Dict[str, str]:
         # second compile: when Slither already compiled (source=slither), the
         # standalone forge build probe is derived-skipped instead of recompiling.
         _safe("build_status.md",       lambda: _write_build_status(
-            scratch, proj, lang, results.get("_mechanical_graph.json")))
+            scratch,
+            proj,
+            lang,
+            results.get("_mechanical_graph.json"),
+            workspace_authority=workspace_authority,
+        ))
         _safe("design_context.md",     lambda: _write_design_or_threat_stub(scratch, pipeline))
         # v2.8.6: stub the 4 artifacts the pre-pass previously skipped.
         # When Codex sub-agents partially fail, these stay at 0 bytes and
@@ -7989,7 +10332,16 @@ def _render_recon_prepass(config: dict) -> Dict[str, str]:
         _safe(
             "opengrep_scan",
             lambda: _run_opengrep_scan(
-                scratch, proj, lang, context=tool_context
+                scratch,
+                proj,
+                lang,
+                context=tool_context,
+                workspace_authority=workspace_authority,
+                session_tool_authority=session_tool_authority,
+                native_runtime_authority=native_runtime_authority,
+                posix_compat_session_authority=(
+                    posix_compat_session_authority
+                ),
             ),
         )
 
@@ -8019,6 +10371,7 @@ _SC_PREPASS_PUBLIC_OUTPUTS = (
     "contract_inventory.md",
     "state_variables.md",
     "function_list.md",
+    "modifiers.md",
     "build_status.md",
     "design_context.md",
     "attack_surface.md",
@@ -8057,6 +10410,8 @@ _PREPASS_AUXILIARY_OUTPUTS = frozenset({
     "sec3_results.sarif",
     "sec3_findings.md",
     "dependency_audit_findings.md",
+    "forge_build_receipt.v1.json",
+    "report_semantic_evm_workspace_toolchain.md",
 })
 _PREPASS_STAGE_MAX_ENTRIES = 128
 _PREPASS_STAGE_MAX_FILE_BYTES = 64 * 1024 * 1024
@@ -9182,6 +11537,9 @@ def _prepass_capture(
             source_path_authority["authority_digest"]
         )
     source_capture_digest = production_source_capture_digest
+    workspace_reference = config.get("_evm_analysis_workspace_reference")
+    if not isinstance(workspace_reference, Mapping):
+        workspace_reference = None
     input_set_digest = _prepass_stable_digest({
         "source_capture_digest": source_capture_digest,
         "production_source_capture_digest": production_source_capture_digest,
@@ -9192,6 +11550,7 @@ def _prepass_capture(
         "source_path_authority": source_path_authority,
         "audit_config_authority": audit_config_authority,
         "unexpected_semantic_outputs": unexpected,
+        "evm_analysis_workspace": workspace_reference,
     })
     return {
         "source_capture_digest": source_capture_digest,
@@ -9203,6 +11562,7 @@ def _prepass_capture(
         "source_path_authority": source_path_authority,
         "audit_config_authority": audit_config_authority,
         "unexpected_semantic_outputs": unexpected,
+        "evm_analysis_workspace": workspace_reference,
         "input_set_digest": input_set_digest,
     }
 
@@ -9299,7 +11659,7 @@ def _validated_prepass_preexecution_authority(
             "recon prepass planned output roster is malformed or aliased"
         )
     capture = value.get("authority_capture")
-    capture_fields = {
+    legacy_capture_fields = {
         "source_capture_digest",
         "production_source_capture_digest",
         "source_root_authority",
@@ -9311,7 +11671,13 @@ def _validated_prepass_preexecution_authority(
         "unexpected_semantic_outputs",
         "input_set_digest",
     }
-    if not isinstance(capture, dict) or set(capture) != capture_fields:
+    capture_fields = legacy_capture_fields | {"evm_analysis_workspace"}
+    if (
+        not isinstance(capture, dict)
+        or frozenset(capture) not in {
+            frozenset(legacy_capture_fields), frozenset(capture_fields)
+        }
+    ):
         raise ReconPrepassAuthorityError(
             "recon prepass arm authority capture denominator mismatch"
         )
@@ -9412,6 +11778,25 @@ def _validated_prepass_preexecution_authority(
         raise ReconPrepassAuthorityError(
             "recon prepass unexpected semantic authority is malformed"
         )
+    workspace_reference = capture.get("evm_analysis_workspace")
+    if "evm_analysis_workspace" in capture and workspace_reference is not None:
+        if not isinstance(workspace_reference, dict):
+            raise ReconPrepassAuthorityError(
+                "recon prepass EVM workspace reference is malformed"
+            )
+        reference_unsigned = dict(workspace_reference)
+        reference_digest = reference_unsigned.pop("reference_sha256", None)
+        if (
+            workspace_reference.get("schema_version")
+            != "plamen.evm_analysis_workspace_reference.v1"
+            or not isinstance(reference_digest, str)
+            or reference_digest != _prepass_stable_digest(reference_unsigned)
+            or workspace_reference.get("snapshot_sha256")
+            != capture.get("snapshot_digest")
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass EVM workspace reference does not replay"
+            )
     for field in ("snapshot_digest", "source_scope_digest"):
         digest_value = capture.get(field)
         if (
@@ -9464,7 +11849,7 @@ def _validated_prepass_preexecution_authority(
             raise ReconPrepassAuthorityError(
                 f"recon prepass arm authority capture {field} is invalid"
             )
-    expected_input_digest = _prepass_stable_digest({
+    input_denominator = {
         "source_capture_digest": capture["source_capture_digest"],
         "production_source_capture_digest": capture[
             "production_source_capture_digest"
@@ -9476,7 +11861,10 @@ def _validated_prepass_preexecution_authority(
         "source_path_authority": source_path_authority,
         "audit_config_authority": audit_config_authority,
         "unexpected_semantic_outputs": unexpected,
-    })
+    }
+    if "evm_analysis_workspace" in capture:
+        input_denominator["evm_analysis_workspace"] = workspace_reference
+    expected_input_digest = _prepass_stable_digest(input_denominator)
     if capture["input_set_digest"] != expected_input_digest:
         raise ReconPrepassAuthorityError(
             "recon prepass arm authority input-set digest mismatch"
@@ -12627,11 +15015,17 @@ def run_recon_prepass(
     config: dict,
     *,
     failure_injector: Callable[..., None] | None = None,
+    posix_compat_session_authority: object | None = None,
 ) -> Dict[str, str]:
     """Publish one exact, replayable DRIVER-owned prepass generation."""
 
     if not isinstance(config, dict):
         raise ReconPrepassAuthorityError("recon prepass config must be a dict")
+    if posix_compat_session_authority is not None:
+        config = dict(config)
+        config["_posix_v2_compat_session_authority"] = (
+            posix_compat_session_authority
+        )
     scratchpad_text = str(config.get("scratchpad") or "")
     project_root_text = str(config.get("project_root") or "")
     run_id = str(config.get("_run_id") or config.get("run_id") or "").strip()
@@ -12641,6 +15035,57 @@ def run_recon_prepass(
         )
     scratchpad = Path(scratchpad_text)
     project_root = Path(project_root_text)
+    pipeline = str(config.get("pipeline") or "sc").strip().lower()
+    language = str(config.get("language") or "").strip().lower()
+    session_tool_authority = config.get("_evm_session_tool_authority")
+    native_runtime_authority = config.get("_native_guest_runtime_authority")
+    evm_tool_execution_requested = (
+        os.environ.get("PLAMEN_PREPASS_EXTERNAL_SCANNERS") == "1"
+        or bool(config.get("prepass_external_scanners"))
+        or config.get("_evm_analysis_workspace_reference") is not None
+        or session_tool_authority is not None
+        or native_runtime_authority is not None
+    )
+    if (
+        pipeline != "l1"
+        and language in {"evm", "solidity", "ethereum"}
+        and evm_tool_execution_requested
+    ):
+        snapshot = config.get("_audit_snapshot") or config.get(
+            "audit_snapshot"
+        )
+        snapshot_sha256 = (
+            str(snapshot.get("snapshot_digest") or "")
+            if isinstance(snapshot, Mapping) else ""
+        )
+        try:
+            workspace_authority = load_evm_analysis_workspace_authority(
+                scratchpad,
+                expected_run_id=run_id,
+                expected_snapshot_sha256=snapshot_sha256,
+            )
+            workspace_reference = workspace_public_reference(
+                workspace_authority
+            )
+        except (EVMAnalysisWorkspaceAuthorityError, OSError) as exc:
+            raise ReconPrepassAuthorityError(
+                f"EVM workspace authority replay failed: {exc}"
+            ) from exc
+        supplied_reference = config.get(
+            "_evm_analysis_workspace_reference"
+        )
+        if (
+            isinstance(supplied_reference, Mapping)
+            and dict(supplied_reference) != workspace_reference
+        ):
+            raise ReconPrepassAuthorityError(
+                "EVM workspace public reference differs from committed receipt"
+            )
+        config = dict(config)
+        config["_evm_analysis_workspace_authority"] = workspace_authority
+        config["_evm_analysis_workspace_reference"] = workspace_reference
+        config["_evm_session_tool_authority"] = session_tool_authority
+        config["_native_guest_runtime_authority"] = native_runtime_authority
     ledger = read_artifact_ledger(scratchpad)
     units = ledger.get("work_units")
     if not isinstance(units, dict):
@@ -12940,7 +15385,10 @@ def run_recon_prepass(
             original_authority=stored_arm_authority,
             failure_injector=failure_injector,
         )
-        return run_recon_prepass(config)
+        return run_recon_prepass(
+            config,
+            posix_compat_session_authority=posix_compat_session_authority,
+        )
     capture = resumed_capture
 
     state = _prepass_bound_generation_state(scratchpad, armed, output_names)
@@ -13032,7 +15480,18 @@ def run_recon_prepass(
         _prepass_assert_capture_source_root(project_root, capture)
         stage_config = dict(config)
         stage_config["scratchpad"] = str(stage)
+        private_workspace = stage_config.get(
+            "_evm_analysis_workspace_authority"
+        )
+        if isinstance(private_workspace, Mapping):
+            _write_text(
+                stage / WORKSPACE_RECEIPT_PATH,
+                json.dumps(
+                    dict(private_workspace), sort_keys=True, indent=2
+                ) + "\n",
+            )
         results = _render_recon_prepass(stage_config)
+        (stage / WORKSPACE_RECEIPT_PATH).unlink(missing_ok=True)
         excluded_private_roots = _prepass_cleanup_renderer_private_stage(stage)
         for name in output_names[:-1]:
             path = stage / name
@@ -13120,7 +15579,10 @@ def run_recon_prepass(
                 original_authority=stored_arm_authority,
                 failure_injector=failure_injector,
             )
-            return run_recon_prepass(config)
+            return run_recon_prepass(
+                config,
+                posix_compat_session_authority=posix_compat_session_authority,
+            )
         publication_intent, publication_root = (
             _prepass_seal_publication_transaction(
                 scratchpad,
@@ -13224,7 +15686,10 @@ def run_recon_prepass(
                 original_authority=stored_arm_authority,
                 failure_injector=failure_injector,
             )
-            return run_recon_prepass(config)
+            return run_recon_prepass(
+                config,
+                posix_compat_session_authority=posix_compat_session_authority,
+            )
         if failure_injector is not None:
             failure_injector("before_commit")
         commit_capture = _prepass_capture(scratchpad, project_root, config)
@@ -13244,7 +15709,10 @@ def run_recon_prepass(
                 original_authority=stored_arm_authority,
                 failure_injector=failure_injector,
             )
-            return run_recon_prepass(config)
+            return run_recon_prepass(
+                config,
+                posix_compat_session_authority=posix_compat_session_authority,
+            )
         expected_records = staged_records
         committed = record_work_unit_artifacts(
             scratchpad,

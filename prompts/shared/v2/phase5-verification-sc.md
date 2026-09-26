@@ -61,8 +61,8 @@ complete verifier methodology.
    directly.
 2. Verify only finding IDs present in the shard manifest named by the Python
    override.
-3. Process rows sequentially. Write each row's verifier file before moving to
-   the next row.
+3. Process rows sequentially. Write each row's verifier Markdown, severity
+   proposal, and operator-application proposal before moving to the next row.
    On resume/retry, if the row's exact `verify_<ID>.md` file already exists
    and contains `Severity:`, `Evidence Tag:`, and `Verdict:`, count that row as
    complete only if either the row is not `unit`/`property`, or the file also
@@ -93,12 +93,16 @@ authoritative Evidence Tag from that run. Therefore:
   proof you don't have is worse than useless — it gets caught and your finding
   drops out of the verified set.
 - To get a real `[POC-PASS]`, write a REAL test that asserts the claimed HARM,
-  at a concrete path the executor can find, using the ecosystem framework named
-  in the cost-directive block. Populate `Test File:`, `Command:`, and
-  `Test Function:` with the exact values you used — these are the executor's
-  inputs, not decoration. The test path must use the ecosystem-correct extension
-  (`*.t.sol` / `*.rs` / `*.move` / `*_test.go`) under the project's test
-  directory.
+  using the ecosystem framework named in the cost-directive block. You do not
+  have write authority over the audited checkout. Put the COMPLETE source bytes
+  in exactly one `### Mechanical PoC Source` section and one ecosystem-labelled
+  fenced block inside your assigned `verify_<ID>.md`. Populate `Test File:`,
+  `Command:`, and `Test Function:` with the exact destination/function/command.
+  The driver extracts the authenticated fence and publishes it at `Test File`
+  only inside a disposable execution workspace. A path mention without that
+  exact source section is not a real test. The path must use the
+  ecosystem-correct extension (`*.t.sol` / `*.rs` / `*.move` / `_test.go`)
+  under the project's test directory.
 - If you genuinely cannot run a test (no toolchain, external-only dependency
   with no fork), say so honestly via the skip ledger. The executor degrades that
   to UNPROVEN without penalty — it never fabricates a pass and never halts.
@@ -110,10 +114,12 @@ for real, or declare the blocker for real.
 
 Before accepting `[CODE-TRACE]`, classify the row from the shard manifest:
 
-- `PoC Class = unit` or `property`: attempt an executable PoC/test first.
+- `PoC Class = unit` or `property`: author an executable PoC/test first.
   In a Foundry/Hardhat/cargo/Move/Soroban project, "no test written" is not a
   valid result for a testable row. Write the smallest harm-assertion test that
-  targets the queued Location and run it.
+  targets the queued Location. The later mechanical driver runs the exact
+  fenced source. Run it inside this verifier transaction only when the prompt
+  explicitly grants authenticated toolchain execution authority.
 - `PoC Class = structural` or `integration`: executable proof is still
   preferred, but `[CODE-TRACE]` is acceptable only when you document why no
   meaningful local harness exists.
@@ -139,6 +145,11 @@ Every verifier file MUST include this ledger:
 - Output: <relevant output or compiler/runtime blocker>
 ```
 
+`Test Function` is one executable identifier, not a sentence or a list. If
+the source also contains a fuzz companion, keep both declarations in the one
+fenced source file but name only the primary harm test in this field. The
+driver validates the declared function before execution.
+
 For `unit` and `property` rows, `Compiled: N/A`, `Result: N/A`, and "no test
 written" are invalid unless `PoC Not Attempted Because` names a real
 environmental blocker. Do not use `STRUCTURAL_NO_EXECUTABLE_HARM_ASSERTION`
@@ -159,8 +170,9 @@ For `unit` and `property` rows, default to `Attempted: YES`.
 
 Before writing each `verify_<ID>.md`, self-check: if the queue row says
 `PoC Class = unit` or `property`, the file must either contain a real attempted
-test command/result or a mechanically valid skip reason with concrete blocker
-evidence. The driver audits invalid skips and records them as violations.
+test handoff plus the exact `### Mechanical PoC Source` fenced source,
+or a mechanically valid skip reason with concrete blocker evidence. The driver
+audits invalid skips and records them as violations.
 
 **Skip codes have validity preconditions** — see `phase5-poc-execution.md`
 § "Skip-Reason Validity Preconditions". In short: `NO_BUILD_ENVIRONMENT` is
@@ -182,9 +194,10 @@ Class (`structural`/`integration`) with justification in your own ledger.
 
 ### Output
 
-For each assigned row, write exactly the verifier pair:
+For each assigned row, write exactly the verifier triplet:
 `{SCRATCHPAD}/verify_<ID>.md` and
-`{SCRATCHPAD}/verify_<ID>.severity_proposal.json`.
+`{SCRATCHPAD}/verify_<ID>.severity_proposal.json` and
+`{SCRATCHPAD}/verify_<ID>.operator_application.json`.
 
 Every verifier file MUST include:
 
@@ -197,10 +210,11 @@ Return one compact line per row:
 
 `<ID>: <VERDICT> | <EVIDENCE_TAG> | <1-sentence justification>`
 
-SCOPE: Write ONLY the `verify_<ID>.md` and matching
-`verify_<ID>.severity_proposal.json` files for IDs assigned in this shard's
-manifest. Do NOT read or write other verifier shards' files. Do NOT write
-any artifact outside this contract. Return your findings and stop.
+SCOPE: Write ONLY the `verify_<ID>.md`, matching
+`verify_<ID>.severity_proposal.json`, and matching
+`verify_<ID>.operator_application.json` files for IDs assigned in this
+shard's manifest. Do NOT read or write other verifier shards' files. Do NOT
+write any artifact outside this contract. Return your findings and stop.
 
 ---
 

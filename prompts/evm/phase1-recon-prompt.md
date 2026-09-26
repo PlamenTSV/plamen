@@ -461,7 +461,8 @@ From function_list.md, extract:
 - Setter/admin functions → {SCRATCHPAD}/setter_list.md
 - Emit statements → {SCRATCHPAD}/emit_list.md
 - min/max/cap/limit/rate/fee/threshold/factor/multiplier/ratio/weight/duration/delay/period variables → {SCRATCHPAD}/constraint_variables.md
-  Mark ⚠️ UNENFORCED for variables with setters but no enforcement
+  Use the exact table columns `Variable | Source Location | Bound / Enforcement | Setter | Status`.
+  Mark the Status as the literal `UNENFORCED` for variables with setters but no cited enforcement.
 - Permissionless public/external functions that emit events or modify shared state → append to {SCRATCHPAD}/setter_list.md under "## Permissionless State-Modifiers"
 
 ### Setter×Emit Cross-Reference (append to setter_list.md)

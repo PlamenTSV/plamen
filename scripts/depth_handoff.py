@@ -15,17 +15,25 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
+GRAPH_INPUTS = (
+    "caller_map.md",
+    "callee_map.md",
+    "state_write_map.md",
+    "function_summary.md",
+)
+
+GRAPH_GENERATION_FILE = "_mechanical_graph_generation.json"
+GRAPH_PROJECTION_OUTPUTS = (*GRAPH_INPUTS, GRAPH_GENERATION_FILE)
+
 OUTPUTS = (
     "depth_candidates.md",
     "file_coverage.md",
     "state_dependency_map.md",
     "phase4_gates.md",
-    "caller_map.md",
-    "callee_map.md",
-    "state_write_map.md",
-    "function_summary.md",
     "depth_handoff_receipt.json",
 )
+
+_GRAPH_GENERATION_SCHEMA = "plamen.mechanical_graph_generation.v1"
 
 _FINDING_RE = re.compile(
     r"^### Finding \[(INV-[0-9]+)\]:\s*(.+?)\s*$\n"
@@ -45,6 +53,76 @@ def _sha256(raw: bytes) -> str:
 
 def _canonical_json(value: Any) -> bytes:
     return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _validate_graph_generation_inputs(
+    *,
+    mechanical_graph_raw: bytes,
+    graph_generation_raw: bytes,
+    graph_projection_raw_by_name: Mapping[str, bytes],
+) -> dict[str, Any]:
+    """Authenticate the recon-owned graph generation without rewriting it.
+
+    Recon publishes the precise graph projections before inventory exists so
+    recon/breadth agents can consume them.  Inventory-to-Depth must therefore
+    bind those exact bytes as inputs, not claim the same filenames as new
+    outputs and collide with a valid current-run generation.
+    """
+
+    try:
+        manifest = json.loads(graph_generation_raw.decode("utf-8", errors="strict"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("mechanical graph generation manifest is invalid") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError("mechanical graph generation manifest is not an object")
+    denominator = [*GRAPH_INPUTS, "_mechanical_graph.json"]
+    unsigned = {
+        "schema_version": manifest.get("schema_version"),
+        "state": manifest.get("state"),
+        "artifact_denominator": manifest.get("artifact_denominator"),
+        "artifacts": manifest.get("artifacts"),
+    }
+    expected_generation = _sha256(
+        (
+            json.dumps(
+                unsigned,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+    )
+    if (
+        manifest.get("schema_version") != _GRAPH_GENERATION_SCHEMA
+        or manifest.get("state") != "COMMITTED"
+        or manifest.get("artifact_denominator") != denominator
+        or manifest.get("generation_sha256") != expected_generation
+    ):
+        raise ValueError("mechanical graph generation authority is incomplete")
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list) or len(artifacts) != len(denominator):
+        raise ValueError("mechanical graph generation artifact roster is invalid")
+    raw_by_name = {
+        **{str(name): bytes(raw) for name, raw in graph_projection_raw_by_name.items()},
+        "_mechanical_graph.json": mechanical_graph_raw,
+    }
+    if set(raw_by_name) != set(denominator):
+        raise ValueError("mechanical graph projection denominator differs")
+    for index, name in enumerate(denominator):
+        row = artifacts[index]
+        raw = raw_by_name[name]
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"path", "sha256", "bytes"}
+            or row.get("path") != name
+            or row.get("sha256") != _sha256(raw)
+            or row.get("bytes") != len(raw)
+        ):
+            raise ValueError(
+                f"mechanical graph generation artifact differs: {name}"
+            )
+    return manifest
 
 
 def _cell(value: Any) -> str:
@@ -268,6 +346,120 @@ def _graph_views(graph: Mapping[str, Any]) -> dict[str, bytes]:
     }
 
 
+def render_graph_projection_generation(
+    mechanical_graph_raw: bytes,
+) -> dict[str, bytes]:
+    """Render the provider-neutral graph projection generation.
+
+    Every mechanical provider tier publishes the same downstream interface.
+    Precise SCIP providers already materialize this generation during recon;
+    the EVM source/Slither graph path reaches this renderer through a distinct
+    DRIVER PhaseIO transaction before semantic invariants and Depth consume
+    the projections.
+    """
+
+    graph = _graph_payload(mechanical_graph_raw)
+    projections = _graph_views(graph)
+    denominator = [*GRAPH_INPUTS, "_mechanical_graph.json"]
+    raw_by_name = {
+        **projections,
+        "_mechanical_graph.json": mechanical_graph_raw,
+    }
+    unsigned: dict[str, Any] = {
+        "schema_version": _GRAPH_GENERATION_SCHEMA,
+        "state": "COMMITTED",
+        "artifact_denominator": denominator,
+        "artifacts": [
+            {
+                "path": name,
+                "sha256": _sha256(raw_by_name[name]),
+                "bytes": len(raw_by_name[name]),
+            }
+            for name in denominator
+        ],
+    }
+    manifest = {
+        **unsigned,
+        "generation_sha256": _sha256(
+            (
+                json.dumps(
+                    unsigned,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("utf-8")
+        ),
+    }
+    outputs = {**projections, GRAPH_GENERATION_FILE: _canonical_json(manifest)}
+    if tuple(outputs) != GRAPH_PROJECTION_OUTPUTS:
+        raise AssertionError("mechanical graph projection roster drift")
+    return outputs
+
+
+def write_graph_projection_generation(scratchpad: Path) -> None:
+    root = Path(scratchpad)
+    outputs = render_graph_projection_generation(
+        (root / "_mechanical_graph.json").read_bytes()
+    )
+    for name, raw in outputs.items():
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+
+def validate_graph_projection_generation(scratchpad: Path) -> list[str]:
+    root = Path(scratchpad)
+    try:
+        expected = render_graph_projection_generation(
+            (root / "_mechanical_graph.json").read_bytes()
+        )
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        return [
+            "mechanical graph projection derivation failed: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+    issues: list[str] = []
+    for name, raw in expected.items():
+        try:
+            observed = (root / name).read_bytes()
+        except OSError as exc:
+            issues.append(f"{name}: graph projection unavailable: {exc}")
+            continue
+        if observed != raw:
+            issues.append(
+                f"{name}: bytes differ from the mechanical graph projection"
+            )
+    return issues
+
+
+def validate_bound_graph_projection_generation(scratchpad: Path) -> list[str]:
+    """Validate any complete provider generation against its own manifest.
+
+    Precise SCIP projections need not be byte-identical to the normalized
+    fallback renderer.  Their authority is the signed denominator manifest;
+    the fallback PhaseIO transaction separately uses the stricter exact
+    deterministic renderer validation above.
+    """
+
+    root = Path(scratchpad)
+    try:
+        _validate_graph_generation_inputs(
+            mechanical_graph_raw=(root / "_mechanical_graph.json").read_bytes(),
+            graph_generation_raw=(root / GRAPH_GENERATION_FILE).read_bytes(),
+            graph_projection_raw_by_name={
+                name: (root / name).read_bytes() for name in GRAPH_INPUTS
+            },
+        )
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        return [
+            "mechanical graph generation validation failed: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+    return []
+
+
 def _state_dependency_map(graph: Mapping[str, Any]) -> bytes:
     rows: list[str] = []
     for state in graph.get("state_symbols", []):
@@ -330,12 +522,19 @@ def _phase4_gates(
 def render_depth_handoff(
     *,
     mechanical_graph_raw: bytes,
+    graph_generation_raw: bytes,
+    graph_projection_raw_by_name: Mapping[str, bytes],
     findings_inventory_raw: bytes,
     contract_inventory_raw: bytes,
     spawn_manifest_raw: bytes,
     breadth_raw_by_name: Mapping[str, bytes],
 ) -> dict[str, bytes]:
     graph = _graph_payload(mechanical_graph_raw)
+    generation = _validate_graph_generation_inputs(
+        mechanical_graph_raw=mechanical_graph_raw,
+        graph_generation_raw=graph_generation_raw,
+        graph_projection_raw_by_name=graph_projection_raw_by_name,
+    )
     finding_text = findings_inventory_raw.decode("utf-8", errors="replace")
     contract_text = contract_inventory_raw.decode("utf-8", errors="replace")
     manifest_text = spawn_manifest_raw.decode("utf-8", errors="replace")
@@ -346,19 +545,22 @@ def render_depth_handoff(
     findings = _inventory_findings(finding_text)
     if not findings:
         raise ValueError("canonical inventory contains no INV finding cards")
-    views = _graph_views(graph)
     file_coverage, uncovered = _file_coverage(contract_text, breadth_texts)
     outputs: dict[str, bytes] = {
         "depth_candidates.md": _depth_candidates(findings),
         "file_coverage.md": file_coverage,
         "state_dependency_map.md": _state_dependency_map(graph),
         "phase4_gates.md": _phase4_gates(manifest_text, breadth_texts, findings),
-        **views,
     }
     receipt = {
         "schema_version": "plamen.depth_handoff_receipt.v1",
         "source_sha256": {
             "_mechanical_graph.json": _sha256(mechanical_graph_raw),
+            GRAPH_GENERATION_FILE: _sha256(graph_generation_raw),
+            **{
+                name: _sha256(raw)
+                for name, raw in sorted(graph_projection_raw_by_name.items())
+            },
             "findings_inventory.md": _sha256(findings_inventory_raw),
             "contract_inventory.md": _sha256(contract_inventory_raw),
             "spawn_manifest.md": _sha256(spawn_manifest_raw),
@@ -367,6 +569,7 @@ def render_depth_handoff(
         "finding_count": len(findings),
         "function_count": len(graph.get("functions", {})),
         "state_symbol_count": len(graph.get("state_symbols", [])),
+        "graph_generation_sha256": generation["generation_sha256"],
         "uncovered_files": uncovered,
         "output_sha256": {name: _sha256(raw) for name, raw in sorted(outputs.items())},
     }
@@ -380,6 +583,10 @@ def write_depth_handoff(scratchpad: Path, breadth_outputs: Sequence[str]) -> Non
     root = Path(scratchpad)
     outputs = render_depth_handoff(
         mechanical_graph_raw=(root / "_mechanical_graph.json").read_bytes(),
+        graph_generation_raw=(root / GRAPH_GENERATION_FILE).read_bytes(),
+        graph_projection_raw_by_name={
+            name: (root / name).read_bytes() for name in GRAPH_INPUTS
+        },
         findings_inventory_raw=(root / "findings_inventory.md").read_bytes(),
         contract_inventory_raw=(root / "contract_inventory.md").read_bytes(),
         spawn_manifest_raw=(root / "spawn_manifest.md").read_bytes(),
@@ -396,6 +603,10 @@ def validate_depth_handoff(scratchpad: Path, breadth_outputs: Sequence[str]) -> 
     try:
         expected = render_depth_handoff(
             mechanical_graph_raw=(root / "_mechanical_graph.json").read_bytes(),
+            graph_generation_raw=(root / GRAPH_GENERATION_FILE).read_bytes(),
+            graph_projection_raw_by_name={
+                name: (root / name).read_bytes() for name in GRAPH_INPUTS
+            },
             findings_inventory_raw=(root / "findings_inventory.md").read_bytes(),
             contract_inventory_raw=(root / "contract_inventory.md").read_bytes(),
             spawn_manifest_raw=(root / "spawn_manifest.md").read_bytes(),

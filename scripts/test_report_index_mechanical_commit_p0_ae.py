@@ -68,6 +68,34 @@ def _write_mechanical_inputs(config: dict) -> None:
         (scratchpad / name).write_text(heading, encoding="utf-8")
 
 
+def _establish_sc_report_consumer_authority(
+    config: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cross the real SC prework transaction with an explicit empty R10 input.
+
+    This fixture exercises the later mechanical producer, not the independent
+    R10 reconciliation implementation.  Only that upstream producer boundary
+    is represented as an empty conditional universe; the production prework
+    arm, materialization, commit, replay, and ephemeral consumer-ready binding
+    all remain live.
+    """
+
+    if config["pipeline"] != "sc":
+        return
+    monkeypatch.setattr(
+        D, "_r10_report_prework_input_paths", lambda *_args, **_kwargs: ()
+    )
+    monkeypatch.setattr(
+        D, "_r10_report_prework_authority_issues", lambda *_args, **_kwargs: []
+    )
+    scratchpad = Path(config["scratchpad"])
+    ready, issues = D._run_report_index_prework_transaction(scratchpad, config)
+    assert ready is True
+    assert issues == []
+    assert D._r10_report_consumer_ready_issues(scratchpad, config) == []
+
+
 @pytest.mark.parametrize("pipeline", ["sc", "l1"])
 def test_report_index_mechanical_contract_is_exact_driver_authority(
     tmp_path: Path, pipeline: str
@@ -97,11 +125,14 @@ def test_report_index_mechanical_contract_is_exact_driver_authority(
 
 @pytest.mark.parametrize("pipeline", ["sc", "l1"])
 def test_mechanical_recorder_binds_driver_outputs_to_run_backend_and_contract(
-    tmp_path: Path, pipeline: str
+    tmp_path: Path,
+    pipeline: str,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     config = _config(tmp_path, pipeline)
     scratchpad = Path(config["scratchpad"])
     _write_mechanical_inputs(config)
+    _establish_sc_report_consumer_authority(config, monkeypatch)
     execute, issues = D._arm_report_index_mechanical_artifacts(
         scratchpad, config
     )
@@ -144,7 +175,7 @@ def _main_branch(start_marker: str, end_marker: str) -> str:
 def test_sc_pre_spawn_repair_records_driver_author_and_routing_after_expansion_before_commit():
     branch = _main_branch(
         'if config["pipeline"] == "sc" and phase.name == "report_index":',
-        'if config["pipeline"] == "l1" and phase.name == "report_index":',
+        'if (\n            config["pipeline"] in {"sc", "l1"}\n            and phase.name == "report_index"\n        ):',
     )
 
     arm_at = branch.index("_arm_report_index_mechanical_artifacts(")
@@ -167,7 +198,7 @@ def test_sc_pre_spawn_repair_records_driver_author_and_routing_after_expansion_b
 
 def test_l1_mechanical_path_records_driver_author_and_routing_after_expansion_before_commit():
     branch = _main_branch(
-        'if config["pipeline"] == "l1" and phase.name == "report_index":',
+        'if (\n            config["pipeline"] in {"sc", "l1"}\n            and phase.name == "report_index"\n        ):',
         "# Phase E11 follow-up #1: empty-shard body-writer skip",
     )
 
@@ -183,6 +214,22 @@ def test_l1_mechanical_path_records_driver_author_and_routing_after_expansion_be
     commit_at = branch.index("_commit_phase_from_disk_debt(", routing_at)
 
     assert arm_at < write_at < author_at < expand_at < routing_at < commit_at
+
+
+def test_fresh_sc_report_index_uses_driver_mechanical_authority():
+    """Fresh SC report indexing must not fall through to a Markdown writer."""
+
+    branch = _main_branch(
+        'if (\n            config["pipeline"] in {"sc", "l1"}\n            and phase.name == "report_index"\n        ):',
+        "# Phase E11 follow-up #1: empty-shard body-writer skip",
+    )
+
+    assert "_arm_report_index_mechanical_artifacts(" in branch
+    assert "_write_mechanical_report_index(" in branch
+    assert 'emit_report_records=(config["pipeline"] == "l1")' in branch
+    assert "_record_report_index_mechanical_artifacts(" in branch
+    assert "_run_report_index_canonicalization_transaction(" in branch
+    assert "continue" in branch
 
 
 @pytest.mark.parametrize(

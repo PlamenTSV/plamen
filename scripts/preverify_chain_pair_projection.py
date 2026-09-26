@@ -4,7 +4,9 @@
 This provider never assigns those roots new ownership.  It imports their live
 bytes only when the artifact ledger proves one common exact current-run
 PhaseIO producer: either ``chain/model`` or the journaled paired
-``chain/final_pair_auto_map_apply.<digest>`` successor.
+``chain/final_pair_auto_map_apply.<digest>`` successor.  Relation identities
+are resolved against the exact current-run ``_canonical_finding_ids.json``
+projection instead of a duplicated global regular-expression allow-list.
 
 The authorized pair is staged together and made visible with one directory
 rename.  Invalid, partial, foreign-run, or interrupted input produces a
@@ -30,6 +32,7 @@ from artifact_ledger import (
     validate_work_unit_artifacts,
     validate_work_unit_inputs,
 )
+from portable_path_contract import assert_lexically_bounded_relative_path
 from bounded_artifact_io import read_bounded_regular_bytes
 from phase_io_contracts import (
     ArtifactSpec,
@@ -40,7 +43,7 @@ from phase_io_contracts import (
 
 
 SCHEMA = "plamen.preverify_chain_pair_projection.v1"
-RECEIPT_SCHEMA = "plamen.preverify_chain_pair_projection_receipt.v2"
+RECEIPT_SCHEMA = "plamen.preverify_chain_pair_projection_receipt.v3"
 DEBT_SCHEMA = "plamen.preverify_chain_pair_projection_debt.v1"
 RELATION_SCHEMA = "plamen.preverify_chain_pair_relation_validation.v1"
 PAIR_DERIVATION_ALGORITHM = "plamen.preverify.chain_pair.v2"
@@ -50,10 +53,13 @@ PAIR_DERIVATION_CONFORMANCE_SHA256 = (
 ROOT = "_preverify_chain_pair"
 HYPOTHESES_LOGICAL = "hypotheses.md"
 MAPPING_LOGICAL = "finding_mapping.md"
+IDENTITY_UNIVERSE_LOGICAL = "_canonical_finding_ids.json"
+IDENTITY_UNIVERSE_SNAPSHOT = "source_identity_universe.json"
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
 MAX_RELATION_ROWS = 100_000
 MAX_RELATION_TABLES = 64
 MAX_RELATION_ISSUES = 128
+MAX_IDENTITY_RECORDS = 1_000_000
 _RELATION_COUNT_MARKER_RE = re.compile(
     r"<!--\s*PLAMEN_CHAIN_RELATION_COUNT:\s*(\d+)\s*-->",
     re.IGNORECASE,
@@ -170,6 +176,8 @@ _HYPOTHESIS_SOURCE_HEADERS = {
 }
 _MAPPING_SOURCE_HEADERS = {
     "finding",
+    "finding_s",
+    "findings",
     "finding_id",
     "source",
     "source_id",
@@ -193,25 +201,56 @@ def _clean_id_token(value: str) -> str:
 
 def _hypothesis_ids(value: str) -> tuple[str, ...]:
     try:
-        from plamen_parsers import normalize_hypothesis_id_token
+        from plamen_parsers import (
+            HYPOTHESIS_ID_RE,
+            extract_hypothesis_ids,
+            normalize_hypothesis_id_token,
+        )
     except (ImportError, AttributeError):
         return ()
+    cleaned = _clean_id_token(value)
     tokens = re.split(
         r"\s*(?:[,;+]|\band\b)\s*",
-        _clean_id_token(value),
+        cleaned,
         flags=re.IGNORECASE,
     )
     result: list[str] = []
     for token in tokens:
         identity = normalize_hypothesis_id_token(_clean_id_token(token))
         if not identity:
-            return ()
+            result = []
+            break
         if identity not in result:
             result.append(identity)
-    return tuple(result)
+    if result:
+        return tuple(result)
+
+    # A typed hypothesis cell often carries a display label after its stable
+    # identity (for example ``H-01 Public withdrawal``).  That is one
+    # semantic identity, not an ambiguous prose reference.  Admit only a
+    # single ID at the beginning of the typed cell, and reject list-like
+    # suffixes so malformed/missing second identities still fail closed.
+    extracted = list(dict.fromkeys(extract_hypothesis_ids(cleaned)))
+    leading = HYPOTHESIS_ID_RE.search(cleaned)
+    if (
+        len(extracted) != 1
+        or leading is None
+        or leading.start() != 0
+        or re.match(
+            r"\s*(?:[,;+]|\band\b)",
+            cleaned[leading.end():],
+            flags=re.IGNORECASE,
+        )
+    ):
+        return ()
+    return (extracted[0],)
 
 
-def _source_ids(value: str) -> tuple[str, ...]:
+def _source_ids(
+    value: str,
+    *,
+    allowed_source_ids: frozenset[str] | None = None,
+) -> tuple[str, ...]:
     try:
         from plamen_parsers import _INTERNAL_FINDING_ID_RE
     except (ImportError, AttributeError):
@@ -226,7 +265,11 @@ def _source_ids(value: str) -> tuple[str, ...]:
         identity = _clean_id_token(token).upper()
         if (
             not identity
-            or _INTERNAL_FINDING_ID_RE.fullmatch(identity) is None
+            or (
+                identity not in allowed_source_ids
+                if allowed_source_ids is not None
+                else _INTERNAL_FINDING_ID_RE.fullmatch(identity) is None
+            )
         ):
             return ()
         if identity not in result:
@@ -238,6 +281,7 @@ def _typed_relation_rows(
     text: str,
     *,
     hypothesis_document: bool,
+    allowed_source_ids: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Parse only typed Markdown relation tables and retain parse ambiguity."""
 
@@ -318,7 +362,10 @@ def _typed_relation_rows(
                 cursor += 1
                 continue
             hypotheses = _hypothesis_ids(cells[hypothesis_index])
-            sources = _source_ids(cells[source_index])
+            sources = _source_ids(
+                cells[source_index],
+                allowed_source_ids=allowed_source_ids,
+            )
             if not hypotheses or not sources:
                 issues.append(
                     f"typed row {candidate_rows} has an unparseable identity cell"
@@ -380,6 +427,8 @@ def _typed_relation_rows(
 def _relation_validation(
     hypotheses_raw: bytes,
     mapping_raw: bytes,
+    *,
+    allowed_source_ids: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     decode_issues: list[str] = []
     decoded: dict[str, str] = {}
@@ -404,6 +453,7 @@ def _relation_validation(
             return _typed_relation_rows(
                 decoded[logical],
                 hypothesis_document=hypothesis_document,
+                allowed_source_ids=allowed_source_ids,
             )
         except Exception as exc:
             # Relation diagnostics must never become a candidate filter.  An
@@ -552,10 +602,16 @@ def _relation_validation(
 def derive_preverify_chain_pair_relation(
     hypotheses_raw: bytes,
     mapping_raw: bytes,
+    *,
+    allowed_source_ids: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Replay the declared v1 chain-pair relation derivation."""
 
-    return _relation_validation(bytes(hypotheses_raw), bytes(mapping_raw))
+    return _relation_validation(
+        bytes(hypotheses_raw),
+        bytes(mapping_raw),
+        allowed_source_ids=allowed_source_ids,
+    )
 
 
 _PAIR_RELATION_DERIVER = derive_preverify_chain_pair_relation
@@ -676,6 +732,12 @@ def validate_preverify_chain_pair_derivation_conformance() -> None:
 def _safe_relative(value: object, *, label: str) -> str:
     text = str(value or "")
     path = PurePosixPath(text)
+    try:
+        assert_lexically_bounded_relative_path(text, label=label)
+    except ValueError as exc:
+        raise PreverifyChainPairProjectionError(
+            f"{label} is not a canonical relative POSIX path"
+        ) from exc
     if (
         not text
         or "\\" in text
@@ -707,6 +769,48 @@ def _source_authority(
             f"{relative}: source is not an exact PhaseIO producer"
         )
     return authority
+
+
+def derive_preverify_chain_source_identity_universe(
+    raw: bytes,
+) -> frozenset[str]:
+    """Read the exact driver-owned identity denominator for relation cells."""
+
+    try:
+        payload = json.loads(raw.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PreverifyChainPairProjectionError(
+            "canonical finding identity universe is not strict JSON"
+        ) from exc
+    records = payload.get("records") if isinstance(payload, Mapping) else None
+    declared_count = (
+        payload.get("record_count") if isinstance(payload, Mapping) else None
+    )
+    if (
+        not isinstance(records, list)
+        or type(declared_count) is not int
+        or declared_count != len(records)
+        or len(records) > MAX_IDENTITY_RECORDS
+    ):
+        raise PreverifyChainPairProjectionError(
+            "canonical finding identity universe denominator is malformed"
+        )
+    identities: set[str] = set()
+    for index, record in enumerate(records):
+        if not isinstance(record, Mapping):
+            raise PreverifyChainPairProjectionError(
+                "canonical finding identity universe contains a non-object "
+                f"record at index {index}"
+            )
+        for field in ("local_id", "local_id_raw", "canonical_id"):
+            value = record.get(field)
+            if isinstance(value, str) and value.strip():
+                identities.add(value.strip().upper())
+    if records and not identities:
+        raise PreverifyChainPairProjectionError(
+            "canonical finding identity universe contains no identities"
+        )
+    return frozenset(identities)
 
 
 def _derive_authorized(
@@ -793,9 +897,59 @@ def _derive_authorized(
             "journaled paired-repair unit"
         )
 
+    identity_raw = b""
+    identity_authority: dict[str, Any] | None = None
+    allowed_source_ids: frozenset[str] | None = None
+    identity_universe_issue = ""
+    try:
+        identity_raw = read_bounded_regular_bytes(
+            root / IDENTITY_UNIVERSE_LOGICAL,
+            MAX_SOURCE_BYTES,
+        )
+        identity_authority = _source_authority(
+            root,
+            project,
+            IDENTITY_UNIVERSE_LOGICAL,
+            run_id=run_id,
+        )
+        if (
+            not identity_raw
+            or identity_authority.get("identity")
+            != "scratchpad:" + IDENTITY_UNIVERSE_LOGICAL
+            or identity_authority.get("run_id") != run_id
+            or identity_authority.get("source_sha256") != _sha(identity_raw)
+            or identity_authority.get("source_size") != len(identity_raw)
+        ):
+            raise PreverifyChainPairProjectionError(
+                "canonical finding identity import authority does not bind "
+                "the live bytes"
+            )
+        allowed_source_ids = derive_preverify_chain_source_identity_universe(
+            identity_raw
+        )
+        source_bytes[IDENTITY_UNIVERSE_LOGICAL] = identity_raw
+        authorities[IDENTITY_UNIVERSE_LOGICAL] = identity_authority
+    except (
+        ArtifactLedgerError,
+        OSError,
+        PreverifyChainPairProjectionError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        # The identity projection is a precision aid for producer-local IDs,
+        # not authority to remove a chain candidate.  Legacy/current fixtures
+        # may legitimately lack it.  Retain the pair and fall back to the
+        # closed context-free grammar; relation ambiguity remains visible but
+        # can never become a new queue halt.
+        identity_raw = b""
+        identity_authority = None
+        allowed_source_ids = None
+        identity_universe_issue = f"{type(exc).__name__}: {exc}"
+
     relation_validation = derive_preverify_chain_pair_relation(
         source_bytes[HYPOTHESES_LOGICAL],
         source_bytes[MAPPING_LOGICAL],
+        allowed_source_ids=allowed_source_ids,
     )
     relation_debt = (
         []
@@ -809,6 +963,28 @@ def _derive_authorized(
             "proof_authority": "NONE",
         }]
     )
+    source_names = (
+        HYPOTHESES_LOGICAL,
+        MAPPING_LOGICAL,
+        *((IDENTITY_UNIVERSE_LOGICAL,) if allowed_source_ids is not None else ()),
+    )
+    identity_universe = (
+        {
+            "status": "EXACT_CURRENT_RUN",
+            "identity": "scratchpad:" + IDENTITY_UNIVERSE_LOGICAL,
+            "sha256": _sha(identity_raw),
+            "size": len(identity_raw),
+            "accepted_identity_count": len(allowed_source_ids),
+        }
+        if allowed_source_ids is not None
+        else {
+            "status": "LEGACY_CONTEXT_FREE_GRAMMAR",
+            "identity": "scratchpad:" + IDENTITY_UNIVERSE_LOGICAL,
+            "advisory_issue": identity_universe_issue,
+            "candidate_disposition": "PRESERVE_BOTH_ROOTS_FOR_VERIFICATION",
+            "proof_authority": "NONE",
+        }
+    )
     generation_core = {
         "schema_version": SCHEMA,
         "pipeline": pipeline,
@@ -819,12 +995,13 @@ def _derive_authorized(
         "run_id": run_id,
         "sources": {
             relative: _binding(source_bytes[relative])
-            for relative in (HYPOTHESES_LOGICAL, MAPPING_LOGICAL)
+            for relative in source_names
         },
         "source_authorities": {
             relative: authorities[relative]
-            for relative in (HYPOTHESES_LOGICAL, MAPPING_LOGICAL)
+            for relative in source_names
         },
+        "source_identity_universe": identity_universe,
         "relation_validation": relation_validation,
         "derivation_algorithm": PAIR_DERIVATION_ALGORITHM,
         "derivation_conformance_sha256": (
@@ -837,9 +1014,15 @@ def _derive_authorized(
         relative: f"{generation_root}/{relative}"
         for relative in (HYPOTHESES_LOGICAL, MAPPING_LOGICAL)
     }
+    identity_snapshot_path = (
+        f"{generation_root}/{IDENTITY_UNIVERSE_SNAPSHOT}"
+        if allowed_source_ids is not None
+        else None
+    )
     receipt_path = f"{generation_root}/receipt.json"
     required_paths = sorted({
         *logical_to_physical.values(),
+        *((identity_snapshot_path,) if identity_snapshot_path else ()),
         receipt_path,
     })
     unsigned_receipt = {
@@ -847,6 +1030,7 @@ def _derive_authorized(
         "schema_version": RECEIPT_SCHEMA,
         "generation_digest": generation_digest,
         "logical_to_physical": logical_to_physical,
+        "identity_universe_snapshot_path": identity_snapshot_path,
         "required_paths": required_paths,
         "debt": relation_debt,
         "candidate_disposition": "PRESERVE_ALL_FOR_VERIFICATION",
@@ -862,12 +1046,18 @@ def _derive_authorized(
             source_bytes[HYPOTHESES_LOGICAL],
         logical_to_physical[MAPPING_LOGICAL]:
             source_bytes[MAPPING_LOGICAL],
+        **(
+            {identity_snapshot_path: identity_raw}
+            if identity_snapshot_path is not None
+            else {}
+        ),
         receipt_path: _canonical_bytes(receipt),
     }
     return {
         "generation_digest": generation_digest,
         "generation_root": generation_root,
         "logical_to_physical": logical_to_physical,
+        "identity_universe_snapshot_path": identity_snapshot_path,
         "receipt_path": receipt_path,
         "required_paths": tuple(required_paths),
         "source_authorities": authorities,
@@ -1076,13 +1266,19 @@ def _publish_generation_atomically(
     try:
         outputs = derived["outputs"]
         assert isinstance(outputs, Mapping)
-        for logical in (HYPOTHESES_LOGICAL, MAPPING_LOGICAL):
-            relative = str(derived["logical_to_physical"][logical])
-            raw = bytes(outputs[relative])
-            _write_new_file(staging / logical, raw)
-            if failpoint is not None:
-                failpoint(f"after_stage_{logical}")
         receipt_relative = str(derived["receipt_path"])
+        for relative, output in sorted(outputs.items()):
+            relative = str(relative)
+            if relative == receipt_relative:
+                continue
+            leaf = PurePosixPath(relative).relative_to(generation_relative)
+            if len(leaf.parts) != 1:
+                raise PreverifyChainPairProjectionError(
+                    "chain-pair generation output is not a direct leaf"
+                )
+            _write_new_file(staging / leaf.name, bytes(output))
+            if failpoint is not None:
+                failpoint(f"after_stage_{leaf.name}")
         _write_new_file(staging / "receipt.json", bytes(outputs[receipt_relative]))
         if failpoint is not None:
             failpoint("before_chain_pair_publish")
@@ -1226,6 +1422,7 @@ def _degraded(
         "work_unit_key": None,
         "receipt_path": receipt_path if persisted else None,
         "logical_to_physical": {},
+        "identity_universe_snapshot_path": None,
         "required_paths": [receipt_path] if persisted else [],
         "debt": [{
             "reason_code": reason_code,
@@ -1403,6 +1600,9 @@ def prepare_preverify_chain_pair_projection(
         "work_unit_key": contract.key,
         "receipt_path": derived["receipt_path"],
         "logical_to_physical": dict(derived["logical_to_physical"]),
+        "identity_universe_snapshot_path": derived[
+            "identity_universe_snapshot_path"
+        ],
         "required_paths": list(derived["required_paths"]),
         "debt": list(derived["debt"]),
         "proof_authority": "NONE",
@@ -1420,6 +1620,7 @@ __all__ = [
     "SCHEMA",
     "derive_preverify_chain_pair_derivation_conformance_sha256",
     "derive_preverify_chain_pair_relation",
+    "derive_preverify_chain_source_identity_universe",
     "prepare_preverify_chain_pair_projection",
     "validate_preverify_chain_pair_derivation_conformance",
 ]

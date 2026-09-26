@@ -57,7 +57,7 @@ This is at the attention saturation limit for a single agent context.
 Every depth agent receives this block in its prompt:
 
 ```
-Read {SCRATCHPAD}/scip/repo_map.md + your domain-specific call_graph_*.md + xref_map.md
+Read {SCRATCHPAD}/scip/repo_map.md, {SCRATCHPAD}/scip/xref_map.md, and the call graph projection registered for your role in the table above
 + type_hierarchy.md + concurrency_inventory.md + panic_sites.md.
 DO NOT call mcp__scip-reader__*, mcp__ast-grep__*, or mcp__opengrep__* tools.
 They are unavailable in subagent contexts.
@@ -106,7 +106,7 @@ Follow every section and step — do not summarize or skip.
 
 ## SCIP Pre-Bake Directive
 
-Read {SCRATCHPAD}/scip/repo_map.md + your domain-specific call_graph_*.md + xref_map.md
+Read {SCRATCHPAD}/scip/repo_map.md, {SCRATCHPAD}/scip/xref_map.md, and the call graph projection registered for your role in the table above
 + type_hierarchy.md + concurrency_inventory.md + panic_sites.md.
 DO NOT call mcp__scip-reader__*, mcp__ast-grep__*, or mcp__opengrep__* tools.
 They are unavailable in subagent contexts.

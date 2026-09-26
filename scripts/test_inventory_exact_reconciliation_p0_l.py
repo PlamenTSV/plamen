@@ -34,6 +34,7 @@ import plamen_validators as V  # noqa: E402
 import plamen_driver as D  # noqa: E402
 import rooted_path_io as rooted_io  # noqa: E402
 from artifact_ledger import (  # noqa: E402
+    ArtifactLedgerError,
     read_artifact_ledger,
     record_work_unit_artifacts,
     record_work_unit_inputs,
@@ -454,6 +455,388 @@ def test_inventory_resume_recovers_durable_successor_without_runtime_maps(
 
     assert "_active_model_attempts" not in fresh_config
     assert "_phase_io_model_attempts" not in fresh_config
+
+
+def test_inventory_retry_resume_replays_inputs_bound_attempt_and_commits_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    phase, config, output = _active_inventory_retry_fixture(
+        tmp_path, run_id="b9567891-1234-4234-8234-123456789abc"
+    )
+    checkpoint = Checkpoint(run_id=config["_run_id"])
+    D._authorize_inventory_retry_launch(
+        checkpoint=checkpoint,
+        phase=phase,
+        config=config,
+        scratchpad=tmp_path,
+        attempt=2,
+        issues=["fixture retry before reinstall"],
+    )
+    archived, archive_issues = D._prepare_inventory_retry_prestate(
+        phase, tmp_path, config, prior_attempt=1, next_attempt=2
+    )
+    assert archive_issues == [] and archived == [output.name]
+    config["_active_model_attempts"][phase.name] = 2
+    config["_phase_io_model_attempts"][phase.name] = 2
+    assert D._bind_typed_model_phase_inputs(phase, tmp_path, config) == []
+    key2, row2 = D._inventory_attempt_unit(phase, tmp_path, config, 2)
+    assert row2 is not None
+    assert (
+        row2["semantic_status"], row2["execution_state"]
+    ) == ("INPUTS_BOUND", "INPUTS_BOUND_PREEXECUTION")
+
+    # Simulate the stale control left by a bad in-memory ordinal advance, then
+    # reinstall/restart with none of the transient attempt maps retained.
+    plan3 = (
+        tmp_path / "_retry_plans" / phase.name
+        / "phase.attempt-0003.json"
+    )
+    plan3.write_bytes(b'{"stale":"unarmed-attempt-three"}\n')
+    fresh = {
+        key: value for key, value in config.items()
+        if key not in {
+            "_active_model_attempts",
+            "_phase_io_model_attempts",
+            "_inventory_retry_prompt_plans",
+        }
+    }
+    prior, successor, resume_issues = D._inventory_resume_attempt_transition(
+        phase, tmp_path, fresh
+    )
+    assert resume_issues == []
+    assert (prior, successor) == (1, 2)
+    retired, retire_issues = D._retire_unarmed_inventory_retry_plans(
+        phase, tmp_path, fresh, durable_successor=successor
+    )
+    assert retire_issues == []
+    assert retired == [
+        f"_retry_control_debris/{phase.name}/phase.attempt-0003.json"
+    ]
+    assert not plan3.exists()
+
+    provider_observations: list[str] = []
+
+    def _provider_commit(**kwargs: object) -> int:
+        contract = kwargs["phase_io_contract"]
+        launch = kwargs["phase_io_launch"]
+        ledger_row = read_artifact_ledger(tmp_path)["work_units"][key2]
+        plan_identity = (
+            "scratchpad:_retry_plans/" + phase.name
+            + "/phase.attempt-0002.json"
+        )
+        assert ledger_row["execution_state"] == "INPUTS_BOUND_PREEXECUTION"
+        assert ledger_row["input_bindings"][plan_identity]["status"] == "ACTIVE"
+        provider_observations.append("provider-after-attempt2-input-bind")
+        _chunk(
+            tmp_path,
+            phase.name,
+            [("CC-2", "resumed retry completion", ("TF-1",))],
+        )
+        record_work_unit_artifacts(
+            tmp_path,
+            tmp_path,
+            contract,
+            launch,
+            run_id=fresh["_run_id"],
+            actor="MODEL",
+        )
+        return 0
+
+    plan2 = json.loads((
+        tmp_path / "_retry_plans" / phase.name
+        / "phase.attempt-0002.json"
+    ).read_text(encoding="utf-8"))
+    canonical_plan = json.dumps(plan2, indent=2, sort_keys=True)
+    monkeypatch.setattr(
+        D,
+        "build_phase_prompt",
+        lambda *_args, **_kwargs: (
+            "# exact retry\n\n```json\n" + canonical_plan + "\n```\n"
+        ),
+    )
+    monkeypatch.setattr(
+        D, "_translate_prompt_for_codex", lambda text, **_kwargs: text
+    )
+    monkeypatch.setattr(D, "_run_one_codex_exec", _provider_commit)
+
+    assert D._run_retry_phase(
+        phase,
+        fresh,
+        checkpoint=checkpoint,
+        scratchpad=tmp_path,
+        attempt=2,
+        issues=["resume exact attempt two after reinstall"],
+    ) == 0
+    assert provider_observations == ["provider-after-attempt2-input-bind"]
+    _key, committed = D._inventory_attempt_unit(
+        phase, tmp_path, fresh, 2
+    )
+    assert committed is not None
+    assert (
+        committed["semantic_status"], committed["execution_state"]
+    ) == ("ACTIVE", "OUTPUT_COMMITTED")
+    assert (
+        tmp_path / "_retry_receipts" / phase.name
+        / "transport.attempt2.json"
+    ).is_file()
+
+
+def test_inventory_retry_prelaunch_veto_keeps_successor_and_precise_debt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    phase, config, _output = _active_inventory_retry_fixture(
+        tmp_path, run_id="ba567891-1234-4234-8234-123456789abc"
+    )
+    checkpoint = Checkpoint(run_id=config["_run_id"])
+    D._authorize_inventory_retry_launch(
+        checkpoint=checkpoint,
+        phase=phase,
+        config=config,
+        scratchpad=tmp_path,
+        attempt=2,
+        issues=["fixture retry prelaunch"],
+    )
+    precise = "fixture exact quarantine prelaunch authority failed"
+    monkeypatch.setattr(
+        D,
+        "_prepare_inventory_retry_prestate",
+        lambda *_args, **_kwargs: ([], [precise]),
+    )
+
+    with pytest.raises(SystemExit) as stopped:
+        D._run_retry_phase(
+            phase,
+            config,
+            checkpoint=checkpoint,
+            scratchpad=tmp_path,
+            attempt=2,
+            issues=["fixture retry prelaunch"],
+        )
+    assert stopped.value.code == D.EXIT_DEGRADED
+    _key, attempt2 = D._inventory_attempt_unit(
+        phase, tmp_path, config, 2
+    )
+    assert attempt2 is None
+    prior, successor, issues = D._inventory_resume_attempt_transition(
+        phase, tmp_path, config
+    )
+    assert issues == []
+    assert (prior, successor) == (1, 2)
+    assert config["_active_model_attempts"][phase.name] == 1
+    assert config["_phase_io_model_attempts"][phase.name] == 1
+    debt = (tmp_path / f"{phase.name}.degraded").read_text(encoding="utf-8")
+    assert precise in debt
+    assert "exhausted retries" not in debt
+    assert not (
+        tmp_path / "_retry_plans" / phase.name
+        / "phase.attempt-0003.json"
+    ).exists()
+
+
+def test_canonical_inventory_model_retry_is_forbidden_before_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    phase = next(item for item in SC_PHASES if item.name == "inventory")
+    run_id = "ca567891-1234-4234-8234-123456789abc"
+    config = {
+        "pipeline": "sc",
+        "mode": "thorough",
+        "language": "evm",
+        "cli_backend": "codex",
+        "project_root": str(tmp_path),
+        "scratchpad": str(tmp_path),
+        "_run_id": run_id,
+        "_active_model_attempts": {phase.name: 1},
+        "_phase_io_model_attempts": {phase.name: 1},
+    }
+    checkpoint = Checkpoint(run_id=run_id)
+    provider_launches: list[int] = []
+    monkeypatch.setattr(
+        D,
+        "run_phase",
+        lambda *_args, **kwargs: provider_launches.append(
+            int(kwargs["attempt"])
+        ) or 0,
+    )
+
+    assert phase.name not in D._INVENTORY_RETRY_MODEL_PHASES
+    with pytest.raises(
+        ArtifactLedgerError, match="retry plan phase is unsupported"
+    ):
+        D._inventory_retry_plan_relative(phase.name, 2)
+    with pytest.raises(ValueError, match="no P0-AE resolver shape"):
+        resolve_phase_io_contract(
+            pipeline="sc",
+            mode="thorough",
+            ecosystem="evm",
+            backend="codex",
+            phase="inventory",
+            work_unit_id="model.attempt-0002",
+        )
+    with pytest.raises(SystemExit) as stopped:
+        D._run_retry_phase(
+            phase,
+            config,
+            checkpoint=checkpoint,
+            scratchpad=tmp_path,
+            attempt=2,
+            issues=["canonical aggregate debt"],
+        )
+
+    assert stopped.value.code == D.EXIT_DEGRADED
+    assert provider_launches == []
+    assert not (tmp_path / "_retry_plans" / "inventory").exists()
+    assert not (tmp_path / "_retry_receipts" / "inventory").exists()
+    assert phase.name not in config["_active_model_attempts"]
+    assert phase.name not in config["_phase_io_model_attempts"]
+    debt = (tmp_path / "inventory.degraded").read_text(encoding="utf-8")
+    assert "[CANONICAL_INVENTORY_MODEL_RETRY_FORBIDDEN]" in debt
+    persisted = Checkpoint.load(tmp_path)
+    assert persisted.phase_commits[phase.name].state == "INCOMPLETE_WITH_DEBT"
+
+
+def test_outer_retry_advance_requires_exact_admitted_model_row(
+    tmp_path: Path,
+) -> None:
+    phase, config, _output = _active_inventory_retry_fixture(
+        tmp_path, run_id="cb567891-1234-4234-8234-123456789abc"
+    )
+    checkpoint = Checkpoint(run_id=config["_run_id"])
+    config["_active_model_attempts"][phase.name] = 2
+    config["_phase_io_model_attempts"][phase.name] = 2
+
+    with pytest.raises(SystemExit) as stopped:
+        D._enforce_inventory_retry_attempt_admission_before_advance(
+            checkpoint=checkpoint,
+            phase=phase,
+            scratchpad=tmp_path,
+            config=config,
+            attempt=2,
+        )
+
+    assert stopped.value.code == D.EXIT_DEGRADED
+    assert config["_active_model_attempts"][phase.name] == 1
+    assert config["_phase_io_model_attempts"][phase.name] == 1
+    assert D._inventory_resume_attempt_transition(
+        phase, tmp_path, config
+    ) == (1, 2, [])
+    debt = (tmp_path / f"{phase.name}.degraded").read_text(encoding="utf-8")
+    assert "[INVENTORY_RETRY_ATTEMPT_ADVANCE_DEBT]" in debt
+    assert "has no exact MODEL row" in debt
+
+
+@pytest.mark.parametrize(
+    ("veto_stage", "debt_category"),
+    [
+        ("authorization", "INVENTORY_RETRY_PLAN_DEBT"),
+        ("interruption_recovery", "INVENTORY_INTERRUPTION_RECOVERY_DEBT"),
+        (
+            "containment_baseline",
+            "INVENTORY_RETRY_CONTAINMENT_BASELINE_DEBT",
+        ),
+    ],
+)
+def test_inventory_retry_preprovider_veto_is_terminal_without_phantom_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    veto_stage: str,
+    debt_category: str,
+) -> None:
+    phase, config, _output = _active_inventory_retry_fixture(
+        tmp_path, run_id=str(__import__("uuid").uuid4())
+    )
+    checkpoint = Checkpoint(run_id=config["_run_id"])
+    precise = f"fixture {veto_stage} pre-provider veto"
+    provider_launches: list[int] = []
+    monkeypatch.setattr(
+        D,
+        "run_phase",
+        lambda *_args, **kwargs: provider_launches.append(
+            int(kwargs["attempt"])
+        ) or 0,
+    )
+
+    # Simulate stale in-memory advancement.  Durable attempt-one authority,
+    # not these runtime caches, must restore the predecessor on every veto.
+    config["_active_model_attempts"][phase.name] = 2
+    config["_phase_io_model_attempts"][phase.name] = 2
+    if veto_stage == "authorization":
+        monkeypatch.setattr(
+            D,
+            "_authorize_inventory_retry_launch",
+            lambda **_kwargs: (_ for _ in ()).throw(ValueError(precise)),
+        )
+    elif veto_stage == "interruption_recovery":
+        original_authorize = D._authorize_inventory_retry_launch
+        original_generations = D._inventory_interruption_generations
+        generation_calls = 0
+
+        def _authorize_then_fault(**kwargs: object) -> tuple:
+            nonlocal generation_calls
+            result = original_authorize(**kwargs)
+
+            def _fault_once(*args: object, **inner_kwargs: object) -> tuple:
+                nonlocal generation_calls
+                generation_calls += 1
+                if generation_calls == 1:
+                    raise RuntimeError(precise)
+                return original_generations(*args, **inner_kwargs)
+
+            monkeypatch.setattr(
+                D, "_inventory_interruption_generations", _fault_once
+            )
+            return result
+
+        monkeypatch.setattr(
+            D, "_authorize_inventory_retry_launch", _authorize_then_fault
+        )
+    else:
+        monkeypatch.setattr(
+            D,
+            "_snapshot_file_state",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError(precise)),
+        )
+
+    with pytest.raises(SystemExit) as stopped:
+        D._run_retry_phase(
+            phase,
+            config,
+            checkpoint=checkpoint,
+            scratchpad=tmp_path,
+            attempt=2,
+            issues=["fixture attempt-one rejection"],
+        )
+
+    assert stopped.value.code == D.EXIT_DEGRADED
+    assert provider_launches == []
+    _key, attempt2 = D._inventory_attempt_unit(
+        phase, tmp_path, config, 2
+    )
+    assert attempt2 is None
+    assert D._inventory_resume_attempt_transition(
+        phase, tmp_path, config
+    ) == (1, 2, [])
+    assert config["_active_model_attempts"][phase.name] == 1
+    assert config["_phase_io_model_attempts"][phase.name] == 1
+    assert not (tmp_path / "_retry_receipts" / phase.name).exists()
+    assert not (tmp_path / "_retry_terminal" / phase.name).exists()
+    assert not (
+        tmp_path / "_retry_plans" / phase.name
+        / "phase.attempt-0003.json"
+    ).exists()
+    debt = (tmp_path / f"{phase.name}.degraded").read_text(
+        encoding="utf-8"
+    )
+    assert f"[{debt_category}]" in debt
+    assert precise in debt
+    assert "exhausted retries" not in debt
+    persisted = Checkpoint.load(tmp_path)
+    commit = persisted.phase_commits[phase.name]
+    assert commit.state == "INCOMPLETE_WITH_DEBT"
+    assert any(
+        precise in failure.message for failure in commit.unresolved_failures
+    )
 
 
 def _active_inventory_retry_fixture(
@@ -1220,7 +1603,7 @@ def test_containment_control_authority_reservation_crash_is_idempotent(
     )
     with pytest.raises(RuntimeError, match="fixed control authority"):
         V._snapshot_file_state(scratchpad, str(tmp_path))
-    assert rooted_io.is_reparse(poisoned)
+    assert rooted_io.is_symlink(poisoned) or rooted_io.is_reparse(poisoned)
     assert V._containment_control_authority_path(
         scratchpad, "evidence"
     ).is_file()
@@ -1264,7 +1647,7 @@ def test_containment_control_authority_collision_crash_is_idempotent(
     )
     with pytest.raises(RuntimeError, match="authority collision"):
         V._snapshot_file_state(scratchpad, str(tmp_path))
-    assert rooted_io.is_reparse(poisoned)
+    assert rooted_io.is_symlink(poisoned) or rooted_io.is_reparse(poisoned)
     assert not authority.exists()
 
     monkeypatch.setattr(
@@ -2358,6 +2741,7 @@ def test_containment_posix_parent_swap_never_publishes_external(
     target.mkdir()
     link = source_parent / "rogue"
     os.symlink(target, link, target_is_directory=True)
+    expected_identity = V._containment_identity(os.lstat(link))
     retained_destination = root / "quarantine-retained"
 
     def _swap(_source: Path, _destination: Path) -> None:
@@ -2365,17 +2749,23 @@ def test_containment_posix_parent_swap_never_publishes_external(
         os.symlink(outside, destination_parent, target_is_directory=True)
 
     monkeypatch.setattr(rooted_io, "_reparse_pre_quarantine_hook", _swap)
-    rooted_io.durable_quarantine_reparse(
-        root,
-        "source/rogue",
-        root,
-        "quarantine/rogue.link",
-        expected_identity=V._containment_identity(os.lstat(link)),
-    )
+    with pytest.raises(
+        rooted_io.RootedPathIOError,
+        match="ancestor name changed",
+    ):
+        rooted_io.durable_quarantine_reparse(
+            root,
+            "source/rogue",
+            root,
+            "quarantine/rogue.link",
+            expected_identity=expected_identity,
+        )
 
     assert list(outside.iterdir()) == []
-    assert os.path.lexists(retained_destination / "rogue.link")
-    assert not os.path.lexists(link)
+    assert list(retained_destination.iterdir()) == []
+    assert rooted_io.is_symlink(link) or rooted_io.is_reparse(link)
+    assert V._containment_identity(os.lstat(link)) == expected_identity
+    assert os.readlink(link) == os.fspath(target)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="NTFS junction regression")
@@ -2524,15 +2914,19 @@ def test_inventory_retry_attempt_three_requires_durable_attempt_two_lineage(
         lambda *_args, **_kwargs: launches.append(3) or 0,
     )
 
-    assert D._run_retry_phase(
-        phase,
-        config,
-        checkpoint=Checkpoint(run_id=config["_run_id"]),
-        scratchpad=tmp_path,
-        attempt=3,
-        issues=["attempt three must not skip durable attempt two"],
-    ) == D.EXIT_ERROR
+    with pytest.raises(SystemExit) as stopped:
+        D._run_retry_phase(
+            phase,
+            config,
+            checkpoint=Checkpoint(run_id=config["_run_id"]),
+            scratchpad=tmp_path,
+            attempt=3,
+            issues=["attempt three must not skip durable attempt two"],
+        )
+    assert stopped.value.code == D.EXIT_DEGRADED
     assert launches == []
+    assert config["_active_model_attempts"][phase.name] == 1
+    assert config["_phase_io_model_attempts"][phase.name] == 1
     assert output.exists()
     assert not (
         tmp_path / "_retry_plans" / phase.name

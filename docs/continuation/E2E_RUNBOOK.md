@@ -17,10 +17,14 @@ manually run or replace recon, breadth, depth, verification, or report phases.
 - Documentation input below each clone: `README.md`
 - Expected language: `evm`
 
-The target deliberately contains both `yarn.lock` and `package-lock.json`
-without machine-authoritative package-manager selection. Do not edit either
-lock or add `packageManager`. Preserve typed `AMBIGUOUS_JS_LOCKS` debt; an E2E
-report is not proof-grade compiler or PoC closure while that debt remains.
+The target deliberately contains both `yarn.lock` and `package-lock.json`; do
+not edit either lock or add `packageManager`. The schema-v2 authority must bind
+both candidate assessments and select Yarn only with
+`selection_basis=UNIQUE_MANIFEST_CONSISTENT_LOCK`: Yarn is recursively
+manifest-consistent, while npm has exact root dependency and dev-dependency
+mismatches. A missing assessment, zero consistent candidates, or multiple
+consistent candidates remains `AMBIGUOUS_JS_LOCKS` and blocks clean toolchain
+closure.
 
 ## Release and destination preconditions
 
@@ -32,7 +36,10 @@ report is not proof-grade compiler or PoC closure while that debt remains.
    Windows install once, and require `plamen doctor` to authenticate the exact
    source/package receipt.
 3. Do not reuse any earlier target clone, `.scratchpad`, failed staged output,
-   or E2E destination.
+   or E2E destination. Each target is a disposable audit clone below the owned
+   E2E work root; the canonical target checkout remains untouched. The required
+   in-project `.scratchpad` is excluded from the bound source denominator, and
+   the native provider mounts the frozen source lower read-only.
 4. Run Codex first. Run Claude only after the Codex process is terminal; never
    run these two release-candidate audits concurrently.
 

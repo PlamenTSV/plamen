@@ -15,8 +15,8 @@ import pytest
 
 import plamen_driver as driver
 import report_evidence_authority as report_authority
-from artifact_ledger import read_artifact_ledger
-from phase_io_contracts import resolve_phase_io_contract
+from artifact_ledger import read_artifact_ledger, record_work_unit_inputs, record_work_unit_artifacts
+from phase_io_contracts import LaunchSpec, resolve_phase_io_contract
 from plamen_types import Checkpoint, SC_PHASES
 from report_evidence_authority import (
     ReportEvidenceError,
@@ -77,6 +77,64 @@ One transition updates one accounting leg without its pair.
     if extra:
         report += "\n" + extra.rstrip() + "\n"
     return project_report_evidence_markdown(report, runtime["bundle"])
+
+
+def _authenticated_projected_report(
+    scratchpad: Path, config: dict[str, object], *, extra: str = "",
+) -> str:
+    """Publish fixture inputs through registered index and evidence producers.
+
+    The source records are harmless synthetic data; neither authority replay
+    nor the terminal finalizer is mocked or bypassed.
+    """
+    project = Path(str(config["project_root"]))
+    run_id = str(config["_run_id"])
+
+    def arm(phase, work_unit, **kwargs):
+        contract = resolve_phase_io_contract(
+            pipeline=str(config["pipeline"]), mode=str(config["mode"]),
+            ecosystem=str(config["language"]), backend=str(config["cli_backend"]),
+            phase=phase, work_unit_id=work_unit, **kwargs,
+        )
+        launch = LaunchSpec(
+            work_unit_key=contract.key, pipeline=contract.pipeline,
+            mode=contract.mode, ecosystem=contract.ecosystem, backend=contract.backend,
+            model="driver", timeout_s=120, exec_mode="python", tool_policy=("filesystem",),
+        )
+        for identity in contract.immutable_inputs:
+            scope, relative = identity.split(":", 1)
+            path = (scratchpad if scope == "scratchpad" else project) / relative
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("# Synthetic fixture input\n", encoding="utf-8")
+        record_work_unit_inputs(scratchpad, project, contract, launch, run_id=run_id)
+        return contract, launch
+
+    index_contract, index_launch = arm("report_index", "mechanical")
+    index = (
+        "# Report Index\n\n## Master Finding Index\n\n"
+        "| Report ID | Title | Severity | Location | Verification | Internal |\n"
+        "|---|---|---|---|---|---|\n"
+        "| H-01 | Paired accounting state can diverge | High | src/Module.sol:L10-L30 | CONFIRMED | INV-001 |\n"
+    )
+    (scratchpad / "report_index.md").write_text(index, encoding="utf-8")
+    (scratchpad / "report_coverage.md").write_text("# Synthetic coverage\n", encoding="utf-8")
+    record_work_unit_artifacts(scratchpad, project, index_contract, index_launch,
+                               run_id=run_id, actor="DRIVER")
+    sources = tuple(driver._report_evidence_source_inputs(scratchpad))
+    outputs = (
+        "report_evidence_records.json", "report_evidence_repair_request.json",
+        "report_evidence_projection.md",
+        *("report_evidence_manifests/" + Path(path).name for path in sources
+          if path.startswith("body_manifests/")),
+    )
+    evidence_contract, evidence_launch = arm(
+        "report_body", "evidence_pre", exact_inputs=sources, exact_outputs=outputs,
+    )
+    report = _projected_report(scratchpad, extra=extra)
+    record_work_unit_artifacts(scratchpad, project, evidence_contract, evidence_launch,
+                               run_id=run_id, actor="DRIVER")
+    return mechanical._stamp_body_header_status(report, mechanical._index_status_map(index))
 
 
 def test_duplicate_key_source_documents_cannot_collapse_the_report_denominator(
@@ -210,8 +268,9 @@ def test_driver_vetoes_a_quality_receipt_that_detects_proof_overclaim(
     scratchpad = project / ".scratchpad"
     scratchpad.mkdir(parents=True)
     _write_inputs(scratchpad, execution_tag="[STATIC-TRACE]")
-    report = _projected_report(
-        scratchpad,
+    config = _config(project, scratchpad, run_id="p1-k-adversarial-overclaim")
+    report = _authenticated_projected_report(
+        scratchpad, config,
         extra=(
             "**Additional analysis**:\n"
             "The PoC proves the harm and exploitability described by this finding."
@@ -221,7 +280,7 @@ def test_driver_vetoes_a_quality_receipt_that_detects_proof_overclaim(
 
     issues = driver._finalize_report_evidence_quality(
         scratchpad,
-        _config(project, scratchpad, run_id="p1-k-adversarial-overclaim"),
+        config,
     )
     receipt = json.loads(
         (scratchpad / "report_evidence_quality_receipt.json").read_text(
@@ -248,10 +307,10 @@ def test_quality_receipt_tamper_is_rejected_not_reblessed_on_resume(
     scratchpad = project / ".scratchpad"
     scratchpad.mkdir(parents=True)
     _write_inputs(scratchpad, execution_tag="[STATIC-TRACE]")
-    (project / "AUDIT_REPORT.md").write_text(
-        _projected_report(scratchpad), encoding="utf-8"
-    )
     config = _config(project, scratchpad, run_id="p1-k-adversarial-resume")
+    (project / "AUDIT_REPORT.md").write_text(
+        _authenticated_projected_report(scratchpad, config), encoding="utf-8"
+    )
 
     assert driver._finalize_report_evidence_quality(scratchpad, config) == []
     receipt_path = scratchpad / "report_evidence_quality_receipt.json"
@@ -275,10 +334,10 @@ def test_terminal_quality_gate_is_compare_only_and_does_not_mint_retry(
     scratchpad = project / ".scratchpad"
     scratchpad.mkdir(parents=True)
     _write_inputs(scratchpad, execution_tag="[STATIC-TRACE]")
-    (project / "AUDIT_REPORT.md").write_text(
-        _projected_report(scratchpad), encoding="utf-8"
-    )
     config = _config(project, scratchpad, run_id="p1-k-compare-only")
+    (project / "AUDIT_REPORT.md").write_text(
+        _authenticated_projected_report(scratchpad, config), encoding="utf-8"
+    )
 
     assert driver._finalize_report_evidence_quality(scratchpad, config) == []
     authority_dir = scratchpad / "_artifact_output_authority_cas"
@@ -321,7 +380,7 @@ def test_report_swap_after_compare_only_validation_cannot_be_delivered(
     checkpoint.save(scratchpad)
     _write_inputs(scratchpad, execution_tag="[STATIC-TRACE]")
     report = project / "AUDIT_REPORT.md"
-    report.write_text(_projected_report(scratchpad), encoding="utf-8")
+    report.write_text(_authenticated_projected_report(scratchpad, config), encoding="utf-8")
 
     assert driver._finalize_report_evidence_quality(scratchpad, config) == []
     accepted_report_sha256: list[str] = []
@@ -589,6 +648,141 @@ def test_typed_fallback_renderer_has_exact_terminal_delivery_parity(
     assert receipt["record_semantic_parity"] == {"H-01": True}
     assert receipt["typed_manifest_markdown_parity"] is True
     assert receipt["semantically_complete"] is True
+
+
+def test_driver_typed_fallback_commits_clean_evidence_without_runtime_debt(
+    tmp_path: Path,
+) -> None:
+    """Presentation retries may end in a deterministic typed projection."""
+
+    project = tmp_path / "project"
+    scratchpad = project / ".scratchpad"
+    scratchpad.mkdir(parents=True)
+    _write_inputs(scratchpad, execution_tag="[STATIC-TRACE]")
+    materialize_report_evidence_runtime(scratchpad)
+    config = _config(project, scratchpad, run_id="p1-k-typed-fallback")
+
+    written, issues = driver._materialize_typed_report_body_fallback(
+        _body_writer_phase(),
+        config,
+        scratchpad,
+        require_runtime_debt=False,
+    )
+
+    assert written is True, issues
+    assert issues == []
+    output = scratchpad / "report_critical_high.md"
+    assert output.is_file()
+    assert report_authority.validate_typed_report_evidence_shard_markdown(
+        scratchpad, "report_critical_high", output.read_text(encoding="utf-8")
+    ) == []
+    binding = read_artifact_ledger(scratchpad)["artifact_bindings"][
+        "scratchpad:report_critical_high.md"
+    ]
+    assert binding["writer"] == "DRIVER"
+    assert binding["owner_key"].endswith(
+        "/report_body/report_critical_high.typed_fallback"
+    )
+    assert not list((scratchpad / "_report_body_transactions").glob("*.json"))
+
+
+def test_driver_typed_fallback_supersedes_only_authenticated_model_bytes(
+    tmp_path: Path,
+) -> None:
+    """The exhausted-retry path replaces a bound model projection atomically."""
+
+    project = tmp_path / "project"
+    scratchpad = project / ".scratchpad"
+    scratchpad.mkdir(parents=True)
+    _write_inputs(scratchpad, execution_tag="[STATIC-TRACE]")
+    materialize_report_evidence_runtime(scratchpad)
+    config = _config(project, scratchpad, run_id="p1-k-model-replacement")
+    contract = resolve_phase_io_contract(
+        pipeline="sc",
+        mode="thorough",
+        ecosystem="evm",
+        backend="claude",
+        phase="report_body",
+        work_unit_id="model.report_critical_high",
+        exact_inputs=(
+            "body_manifests/report_critical_high.json",
+            "report_evidence_manifests/report_critical_high.json",
+            "verify_INV-001.md",
+        ),
+        exact_outputs=("report_critical_high.md",),
+    )
+    launch = LaunchSpec(
+        work_unit_key=contract.key,
+        pipeline=contract.pipeline,
+        mode=contract.mode,
+        ecosystem=contract.ecosystem,
+        backend=contract.backend,
+        model="fixture-model",
+        timeout_s=120,
+        exec_mode="subprocess",
+        tool_policy=("filesystem",),
+    )
+    record_work_unit_inputs(
+        scratchpad,
+        project,
+        contract,
+        launch,
+        run_id=str(config["_run_id"]),
+    )
+    bad_body = "# Syntactically valid but semantically incomplete model prose\n"
+    output = scratchpad / "report_critical_high.md"
+    output.write_text(bad_body, encoding="utf-8")
+    record_work_unit_artifacts(
+        scratchpad,
+        project,
+        contract,
+        launch,
+        run_id=str(config["_run_id"]),
+        actor="MODEL",
+    )
+
+    written, issues = driver._materialize_typed_report_body_fallback(
+        _body_writer_phase(),
+        config,
+        scratchpad,
+        require_runtime_debt=False,
+    )
+
+    assert written is True, issues
+    assert issues == []
+    rendered = output.read_text(encoding="utf-8")
+    assert rendered != bad_body
+    assert "### [H-01] Paired accounting state can diverge" in rendered
+    binding = read_artifact_ledger(scratchpad)["artifact_bindings"][
+        "scratchpad:report_critical_high.md"
+    ]
+    assert binding["writer"] == "DRIVER"
+    assert binding["owner_key"].endswith(
+        "/report_body/report_critical_high.typed_fallback"
+    )
+    assert not list((scratchpad / "_report_body_transactions").iterdir())
+
+
+def test_runtime_debt_wrapper_does_not_replace_a_clean_report_body(
+    tmp_path: Path,
+) -> None:
+    """The old pre-spawn path remains limited to explicit runtime debt."""
+
+    project = tmp_path / "project"
+    scratchpad = project / ".scratchpad"
+    scratchpad.mkdir(parents=True)
+    _write_inputs(scratchpad, execution_tag="[STATIC-TRACE]")
+    materialize_report_evidence_runtime(scratchpad)
+
+    written, issues = driver._materialize_runtime_debt_report_body(
+        _body_writer_phase(),
+        _config(project, scratchpad, run_id="p1-k-clean-no-runtime-debt"),
+        scratchpad,
+    )
+
+    assert written is False
+    assert issues == []
+    assert not (scratchpad / "report_critical_high.md").exists()
 
 
 def test_typed_fallback_does_not_reconsume_mutated_legacy_sources(

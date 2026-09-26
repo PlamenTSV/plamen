@@ -824,15 +824,16 @@ def test_malformed_issued_output_size_quarantines_without_crashing(
     }
     authority["authority_digest"] = AL._canonical_json_digest(unsigned)
 
-    work_unit = AL._record_work_unit_artifacts_unlocked(
-        scratchpad,
-        tmp_path,
-        contract,
-        launch,
-        run_id=RUN_ID,
-        actor="DRIVER",
-        output_commit_authority=authority,
-    )
+    with AL._ledger_transaction_lock(scratchpad):
+        work_unit = AL._record_work_unit_artifacts_unlocked(
+            scratchpad,
+            tmp_path,
+            contract,
+            launch,
+            run_id=RUN_ID,
+            actor="DRIVER",
+            output_commit_authority=authority,
+        )
 
     assert work_unit["semantic_status"] == "QUARANTINED"
     assert work_unit["execution_state"] == "OUTPUT_QUARANTINED"

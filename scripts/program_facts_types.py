@@ -6,6 +6,11 @@ small Stage-1 foundation shared by later schemas, receipts, and validators.
 
 from __future__ import annotations
 
+# Program Facts remains an emit-only substrate.  Artifact presence cannot
+# activate an audit consumer; a future cutover must change this authority in
+# the same release as the real consumer and its end-to-end acceptance tests.
+PROGRAM_FACTS_CONSUMER_ACTIVATION = False
+
 from collections.abc import Mapping, Sequence
 from collections import Counter
 from dataclasses import dataclass
@@ -3158,6 +3163,261 @@ def validate_program_facts_bundle_structural_test_only(
     )
 
 
+_PROGRAM_FACTS_V2_AUTHORITY_FIELDS = frozenset(
+    {
+        "execution_authority_digest",
+        "composition_authority_digest",
+        "methodology_package_digest",
+        "activation_decision_digest",
+        "activation_permit_digest",
+        "build_input_snapshot_digest",
+        "candidate_universe_digest",
+        "selected_scope_digest",
+        "capability_selection_digest",
+        "build_plan_digest",
+        "execution_set_digest",
+    }
+)
+_PROGRAM_FACTS_V2_BUNDLE_KEYS = frozenset(
+    {
+        "schema_version",
+        "payload",
+        "receipt",
+        "debt",
+        "expected_provider_lineage",
+        "legacy_projection",
+        "ledger_binding",
+    }
+)
+_PROGRAM_FACTS_V2_RECEIPT_KEYS = frozenset(
+    {
+        "schema_version",
+        "run_id",
+        "run_generation",
+        "status",
+        "authority_bindings",
+        "provider_executions",
+        "internal_cells",
+        "public_projection_policy_digest",
+        "receipt_body_sha256",
+    }
+)
+
+
+def _program_facts_v2_reject(reason_code: str) -> None:
+    raise ProgramFactsTypeError(reason_code)
+
+
+def _program_facts_v2_authority(
+    value: object,
+    *,
+    label: str,
+) -> dict[str, str]:
+    if not isinstance(value, Mapping) or frozenset(value) != (
+        _PROGRAM_FACTS_V2_AUTHORITY_FIELDS
+    ):
+        _program_facts_v2_reject("PF_A1_AUTHORITY_BINDING_SCHEMA_INVALID")
+    result = dict(value)
+    for key, digest in result.items():
+        if not isinstance(digest, str) or _HEX64_RE.fullmatch(digest) is None:
+            _program_facts_v2_reject(
+                f"PF_A1_AUTHORITY_BINDING_SCHEMA_INVALID:{label}:{key}"
+            )
+    return result
+
+
+def _program_facts_v2_receipt_body_digest(
+    receipt: Mapping[str, Any],
+) -> str:
+    unsigned = dict(receipt)
+    unsigned.pop("receipt_body_sha256", None)
+    return hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest()
+
+
+def validate_program_facts_v2_representation_v1(
+    document: Mapping[str, Any],
+    *,
+    captured_authority: Mapping[str, str],
+    current_authority: Mapping[str, str],
+    historical_replay: bool = False,
+) -> dict[str, Any]:
+    """Replay the public v2 sidecar graph without consulting ambient state.
+
+    ``captured_authority`` is the immutable run authority.  Current authority
+    is relevant only for a live replay; historical validation deliberately
+    remains bound to the captured values so later installations cannot rewrite
+    an already-published receipt.
+    """
+
+    if not isinstance(document, Mapping) or frozenset(document) != (
+        _PROGRAM_FACTS_V2_BUNDLE_KEYS
+    ):
+        _program_facts_v2_reject("PF_A1_PUBLIC_BUNDLE_SCHEMA_INVALID")
+    if document.get("schema_version") != (
+        "plamen.program_facts_public_v2_bundle.v1"
+    ):
+        _program_facts_v2_reject("PF_A1_V1_DOWNGRADE_REJECTED")
+    payload = document.get("payload")
+    receipt = document.get("receipt")
+    debt = document.get("debt")
+    if not all(isinstance(row, Mapping) for row in (payload, receipt, debt)):
+        _program_facts_v2_reject("PF_A1_PUBLIC_BUNDLE_SCHEMA_INVALID")
+    assert isinstance(payload, Mapping)
+    assert isinstance(receipt, Mapping)
+    assert isinstance(debt, Mapping)
+    if (
+        payload.get("schema_version") != "plamen.mechanical_program_facts.v2"
+        or receipt.get("schema_version")
+        != "plamen.mechanical_program_facts_receipt.v2"
+        or debt.get("schema_version")
+        != "plamen.mechanical_program_facts_debt.v2"
+    ):
+        _program_facts_v2_reject("PF_A1_V1_DOWNGRADE_REJECTED")
+    if frozenset(receipt) != _PROGRAM_FACTS_V2_RECEIPT_KEYS:
+        _program_facts_v2_reject("PF_A1_UNDOCUMENTED_DIGEST_PREIMAGE")
+
+    payload_authority = _program_facts_v2_authority(
+        payload.get("authority_bindings"), label="payload"
+    )
+    receipt_authority = _program_facts_v2_authority(
+        receipt.get("authority_bindings"), label="receipt"
+    )
+    debt_authority = _program_facts_v2_authority(
+        debt.get("authority_bindings"), label="debt"
+    )
+    captured = _program_facts_v2_authority(
+        captured_authority, label="captured_authority"
+    )
+    current = _program_facts_v2_authority(
+        current_authority, label="current_authority"
+    )
+    if (
+        payload_authority["activation_permit_digest"]
+        != receipt_authority["activation_permit_digest"]
+        or debt_authority["activation_permit_digest"]
+        != receipt_authority["activation_permit_digest"]
+    ):
+        _program_facts_v2_reject("PF_A1_PERMIT_BINDING_DIVERGENCE")
+    if (
+        payload_authority["execution_set_digest"]
+        != receipt_authority["execution_set_digest"]
+        or debt_authority["execution_set_digest"]
+        != receipt_authority["execution_set_digest"]
+        or receipt_authority["execution_set_digest"]
+        != captured["execution_set_digest"]
+    ):
+        _program_facts_v2_reject("PF_A1_EXECUTION_SET_BINDING_DIVERGENCE")
+    if not (
+        payload_authority == receipt_authority == debt_authority == captured
+    ):
+        _program_facts_v2_reject("PF_A1_AUTHORITY_BINDING_DIVERGENCE")
+    if not historical_replay and current != captured:
+        _program_facts_v2_reject("PF_A1_CURRENT_AUTHORITY_DIVERGENCE")
+
+    provider_executions = receipt.get("provider_executions")
+    expected_lineage = document.get("expected_provider_lineage")
+    if (
+        not isinstance(provider_executions, Sequence)
+        or isinstance(provider_executions, (str, bytes, bytearray))
+        or expected_lineage != provider_executions
+    ):
+        _program_facts_v2_reject("PF_A1_PROVIDER_LINEAGE_SUBSTITUTION")
+    for row in provider_executions:
+        if not isinstance(row, Mapping):
+            _program_facts_v2_reject("PF_A1_PROVIDER_LINEAGE_SUBSTITUTION")
+        for key in (
+            "request_digest",
+            "environment_digest",
+            "execution_set_row_digest",
+        ):
+            digest = row.get(key)
+            if not isinstance(digest, str) or _HEX64_RE.fullmatch(digest) is None:
+                _program_facts_v2_reject("PF_A1_PROVIDER_LINEAGE_SUBSTITUTION")
+        raw_cas = row.get("raw_cas")
+        if (
+            not isinstance(raw_cas, Mapping)
+            or frozenset(raw_cas) != {"namespace", "digest", "size"}
+            or not isinstance(raw_cas.get("digest"), str)
+            or _HEX64_RE.fullmatch(str(raw_cas.get("digest"))) is None
+        ):
+            _program_facts_v2_reject("PF_A1_PROVIDER_LINEAGE_SUBSTITUTION")
+
+    cells = receipt.get("internal_cells")
+    coverage = payload.get("coverage")
+    if (
+        not isinstance(cells, Sequence)
+        or isinstance(cells, (str, bytes, bytearray))
+        or not isinstance(coverage, Sequence)
+        or isinstance(coverage, (str, bytes, bytearray))
+    ):
+        _program_facts_v2_reject("PF_A1_PUBLIC_STATUS_MAPPING_INCOMPLETE")
+    public_cells = {
+        (
+            row.get("capability_id"),
+            row.get("build_variant_id"),
+            row.get("status"),
+        )
+        for row in coverage
+        if isinstance(row, Mapping)
+    }
+    expected_cells = {
+        (
+            row.get("capability_id"),
+            row.get("build_variant_id"),
+            row.get("public_status"),
+        )
+        for row in cells
+        if isinstance(row, Mapping)
+    }
+    statuses = (payload.get("status"), receipt.get("status"), debt.get("status"))
+    if public_cells != expected_cells or len(expected_cells) != len(cells) or not (
+        statuses[0] == statuses[1] == statuses[2]
+    ):
+        _program_facts_v2_reject("PF_A1_PUBLIC_STATUS_MAPPING_INCOMPLETE")
+
+    debt_rows = debt.get("rows")
+    if (
+        not isinstance(debt_rows, Sequence)
+        or isinstance(debt_rows, (str, bytes, bytearray))
+        or any(
+            not isinstance(row, Mapping)
+            or row.get("terminal_negative_authority") is not False
+            for row in debt_rows
+        )
+    ):
+        _program_facts_v2_reject("PF_A1_DEBT_NEGATIVE_AUTHORITY_OVERCLAIM")
+
+    stored_body_digest = receipt.get("receipt_body_sha256")
+    if (
+        not isinstance(stored_body_digest, str)
+        or _HEX64_RE.fullmatch(stored_body_digest) is None
+        or stored_body_digest != _program_facts_v2_receipt_body_digest(receipt)
+    ):
+        _program_facts_v2_reject(
+            "PF_A1_RECEIPT_DIGEST_GRAPH_RECURSIVE_OR_DIVERGENT"
+        )
+    receipt_bytes = canonical_file_bytes(receipt)
+    binding = document.get("ledger_binding")
+    expected_binding = {
+        "receipt_full_file_size": len(receipt_bytes),
+        "receipt_full_file_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+    }
+    if binding != expected_binding:
+        _program_facts_v2_reject(
+            "PF_A1_RECEIPT_DIGEST_GRAPH_RECURSIVE_OR_DIVERGENT"
+        )
+    return {
+        "accepted": True,
+        "authority_source": (
+            "CAPTURED_HISTORICAL" if historical_replay else "CAPTURED_CURRENT"
+        ),
+        "status": receipt["status"],
+        "receipt_full_file_sha256": expected_binding[
+            "receipt_full_file_sha256"
+        ],
+    }
+
+
 __all__ = [
     "CANONICALIZATION_VERSION",
     "DEFAULT_MAX_JSON_BYTES",
@@ -3182,6 +3442,7 @@ __all__ = [
     "validate_portable_path",
     "validate_program_facts_bundle",
     "validate_program_facts_bundle_structural_test_only",
+    "validate_program_facts_v2_representation_v1",
     "validate_program_facts_debt",
     "validate_program_facts_payload",
     "validate_program_facts_payload_shape",

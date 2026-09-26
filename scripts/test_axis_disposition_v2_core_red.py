@@ -385,6 +385,47 @@ def test_worklist_v2_binds_exact_function_source_cell_and_action(
     assert item["required_action_id"].startswith("AXIS-V2-")
 
 
+def test_semantic_only_axis_rows_are_sealed_with_driver_owned_identity(
+    tmp_path: Path,
+) -> None:
+    project, _scratchpad = _seed(tmp_path)
+    worklist = _worklist(
+        project,
+        _matrix([_gap("A.settle(uint256)", "contracts/A.sol", "boundary")]),
+    )
+    item = worklist["items"][0]
+    raw = _canonical({
+        # Legacy copied metadata is deliberately wrong and is not authority.
+        "schema_version": "model-typo",
+        "run_id": "model-typo",
+        "worklist_hash": "0" * 64,
+        "sidecar_digest": "f" * 64,
+        "items": [{
+            "disposition": "CLEAR",
+            "evidence": [{"kind": "SOURCE_LOCUS"}],
+            "invariant_commitment": {
+                "ci_id": "AXIS-CI-SEMANTIC-ONLY",
+                "shape": "NO_REVERT_AT_BOUNDARY",
+                "assertion": "The zero boundary cannot bypass the exact guard.",
+                "falsify_class": "boundary",
+            },
+            "rationale": "The exact source guard rejects the zero boundary.",
+        }],
+    })
+
+    initial, plan = _initial(worklist, raw, "")
+
+    assert initial["status"] == "COMPLETE"
+    assert plan["retained_work_item_ids"] == []
+    disposition = initial["dispositions"][0]
+    assert disposition["work_item_id"] == item["work_item_id"]
+    assert disposition["evidence"] == [_source_clear(item)]
+    commitment = disposition["invariant_commitment"]
+    assert commitment["provenance"] == f"AXW:{item['work_item_id']}"
+    assert commitment["source_hash"] == item["source_hash"]
+    assert len(commitment["ci_block_sha256"]) == 64
+
+
 def test_unknown_zero_denominator_is_never_clean_and_projects_debt(
     tmp_path: Path,
 ) -> None:
@@ -465,7 +506,7 @@ def test_same_named_functions_are_reconciled_only_by_work_item_id(
     ] == [first["work_item_id"], second["work_item_id"]]
 
 
-def test_untyped_or_source_drifted_clear_enters_repair(
+def test_untyped_clear_repairs_but_copied_source_hash_is_driver_sealed(
     tmp_path: Path,
 ) -> None:
     project, _scratchpad = _seed(tmp_path)
@@ -505,7 +546,13 @@ def test_untyped_or_source_drifted_clear_enters_repair(
         ],
     )
     initial, _plan = _initial(worklist, drifted, "")
-    assert initial["status"] == "REPAIR_REQUIRED"
+    assert initial["status"] == "COMPLETE"
+    disposition = initial["dispositions"][0]
+    assert disposition["evidence"][0]["source_hash"] == item["source_hash"]
+    assert (
+        disposition["invariant_commitment"]["source_hash"]
+        == item["source_hash"]
+    )
 
 
 def test_source_locus_clear_rejects_generic_safe_attestation(
@@ -579,7 +626,7 @@ def test_malformed_clear_committed_invariant_enters_exact_repair(
     item = worklist["items"][0]
     evidence = [_source_clear(item)]
     commitment = _axis_ci(item, evidence)
-    commitment["provenance"] = "AXW:AXW-FFFFFFFFFFFFFFFFFFFFFFFF"
+    commitment["shape"] = "MODEL_INVENTED_SHAPE"
     unsigned = {
         key: value
         for key, value in commitment.items()
@@ -603,7 +650,7 @@ def test_malformed_clear_committed_invariant_enters_exact_repair(
     initial, plan = _initial(worklist, sidecar, "")
 
     assert initial["status"] == "REPAIR_REQUIRED"
-    assert "AXW provenance" in initial["dispositions"][0]["reason"]
+    assert "shape" in initial["dispositions"][0]["reason"]
     assert plan["retained_work_item_ids"] == [item["work_item_id"]]
 
 

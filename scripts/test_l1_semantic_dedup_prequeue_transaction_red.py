@@ -51,6 +51,7 @@ from preverify_frozen_projection import (
     derive_preverify_finding_records_bytes,
 )
 import semantic_dedup_authority as AUTHORITY
+from semantic_dedup_transaction import SemanticDedupTransactionError
 
 
 RUN_ID = "3a021614-193f-4af7-bb7c-887907dc6f25"
@@ -778,11 +779,11 @@ def _run(
     return scratchpad, result
 
 
-def test_depth_promotion_advances_inventory_and_records_as_one_semantic_pair(
+def test_legacy_depth_promotion_semantic_pair_fails_closed_downstream(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A late additive inventory mutation cannot strand its JSON projection."""
+    """A pseudo-successor cannot authorize its own stale canonical bytes."""
 
     project = tmp_path / "project"
     project.mkdir()
@@ -860,18 +861,41 @@ def test_depth_promotion_advances_inventory_and_records_as_one_semantic_pair(
         for row in pair_events.values()
     )
 
-    # The real consumer must now accept the pair as a registered semantic
-    # successor.  This is the exact boundary that the L1 smoke run reached.
-    result = _required_apply()(
-        scratchpad=scratchpad,
-        project_root=project,
-        config=config,
-        run_id=RUN_ID,
+    canonical_before = {
+        name: (scratchpad / name).read_bytes()
+        for name in (
+            "findings_inventory.md",
+            "finding_records.json",
+            "_id_ledger.json",
+        )
+    }
+    with pytest.raises(
+        SemanticDedupTransactionError,
+        match="predecessor lacks active current-run producer authority",
+    ):
+        _required_apply()(
+            scratchpad=scratchpad,
+            project_root=project,
+            config=config,
+            run_id=RUN_ID,
+        )
+    assert {
+        name: (scratchpad / name).read_bytes()
+        for name in canonical_before
+    } == canonical_before
+    apply_key = canonical_work_unit_key(
+        "l1", "thorough", "rust", "claude", "semantic_dedup", APPLY_WORK_UNIT
     )
-    assert result.get("safe_to_consume") is True
+    assert (
+        read_artifact_ledger(scratchpad)
+        .get("work_units", {})
+        .get(apply_key, {})
+        .get("execution_state")
+        != "OUTPUT_COMMITTED"
+    )
 
 
-def test_gate_p_advances_inventory_and_records_as_one_semantic_pair(
+def test_gate_p_advances_inventory_as_one_coupled_successor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -883,9 +907,12 @@ def test_gate_p_advances_inventory_and_records_as_one_semantic_pair(
     checkpoint = Checkpoint(run_id=RUN_ID)
 
     def _append_gate_p(
-        root: Path, *, owner_phase: str = "semantic_dedup"
+        root: Path,
+        *,
+        owner_phase: str = "semantic_dedup",
+        refresh_coverage_seed: bool = True,
     ) -> dict[str, int]:
-        del owner_phase
+        del owner_phase, refresh_coverage_seed
         inventory = Path(root) / "findings_inventory.md"
         inventory_raw = (
             inventory.read_bytes()
@@ -922,6 +949,17 @@ def test_gate_p_advances_inventory_and_records_as_one_semantic_pair(
             encoding="utf-8",
             newline="\n",
         )
+        for name in (
+            "promotion_orphans.md",
+            "promotion_routing.md",
+            "promotion_orphans_appendix_c.md",
+            "promotion_orphans_appendix_a.md",
+            "promotion_gate_receipt.md",
+        ):
+            (Path(root) / name).write_text(
+                f"# {name}\n\nCoupled Gate-P fixture diagnostic.\n",
+                encoding="utf-8",
+            )
         return {
             "harvested": 1,
             "body_candidates": 1,
@@ -945,18 +983,33 @@ def test_gate_p_advances_inventory_and_records_as_one_semantic_pair(
     assert (scratchpad / "finding_records.json").read_bytes() == (
         derive_preverify_finding_records_bytes(inventory_raw)
     )
-    pair_events = {
-        str(row.get("artifact_identity") or ""): row
+    unit = read_artifact_ledger(scratchpad)["work_units"][
+        result["work_unit_key"]
+    ]
+    assert (unit["semantic_status"], unit["execution_state"]) == (
+        "ACTIVE",
+        "OUTPUT_COMMITTED",
+    )
+    assert unit["commit_authority"]["actor"] == "DRIVER"
+    assert "successor_consumption_authority" in unit
+    assert set(unit["artifacts"]) == {
+        "scratchpad:findings_inventory.md",
+        "scratchpad:finding_records.json",
+        "scratchpad:_id_ledger.json",
+        "scratchpad:promotion_orphans.md",
+        "scratchpad:promotion_routing.md",
+        "scratchpad:promotion_orphans_appendix_c.md",
+        "scratchpad:promotion_orphans_appendix_a.md",
+        "scratchpad:promotion_gate_receipt.md",
+        "scratchpad:gate_p_successor_receipt.json",
+    }
+    assert not [
+        row
         for row in semantic_mutation_events(scratchpad)
         if str(row.get("mutation_kind") or "").startswith(
             "GATE_P_ADDITIVE_PROMOTION"
         )
-    }
-    assert set(pair_events) == {
-        "scratchpad:findings_inventory.md",
-        "scratchpad:finding_records.json",
-        "scratchpad:_id_ledger.json",
-    }
+    ]
 
     applied = _required_apply()(
         scratchpad=scratchpad,

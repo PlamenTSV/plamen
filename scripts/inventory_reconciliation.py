@@ -20,9 +20,11 @@ import json
 import os
 import re
 from collections import Counter, defaultdict
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+import artifact_surface
 from finding_producer_registry import (
     ProducerResolutionError,
     materialized_producer_paths,
@@ -35,6 +37,7 @@ from closure_broker_v2 import resolve_central_negative_closure
 from operational_markdown import operational_markdown_field_view
 from plamen_markdown import (
     MarkdownParserContractError,
+    inline_code_source_spans,
     mapped_headings,
 )
 from plamen_parsers import _INVENTORY_SOURCE_PATTERNS, _normalize_finding_id
@@ -51,18 +54,39 @@ REEMIT_FILE = "inventory_reemit_receipt.json"
 
 _HEX_RE = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 _SOURCE_FIELD_RE = re.compile(
+    # Post-colon whitespace is captured INSIDE the value group, exactly as
+    # `_FIELD_RE` does and for the same reason: inline-code spans are blanked
+    # to whitespace in the operational view, so a `[ \t]*` outside the group
+    # eats the entire blanked value and leaves the group matching only the
+    # newline. That is not theoretical -- it silently dropped every backticked
+    # source reference, which is the natural spelling and the one the finding
+    # format's own examples use.
     r"(?ims)^[ \t]*(?:[-*][ \t]+)?\*\*Source IDs?\*\*"
-    r"(?:[ \t]+\([^()\r\n]{1,160}\))?[ \t]*:[ \t]*"
-    r"(?P<value>.*?)"
+    r"(?:[ \t]+\([^()\r\n]{1,160}\))?[ \t]*:"
+    r"(?P<value>[ \t]*.*?)"
     r"(?=^[ \t]*(?:[-*][ \t]+)?\*\*[^*\n]+\*\*"
-    r"(?:[ \t]+\([^()\r\n]{1,160}\))?[ \t]*:|^#{1,6}[ \t]+|\Z)"
+    r"(?:[ \t]+\([^()\r\n]{1,160}\))?[ \t]*:|^#{1,6}[ \t]+"
+    # A thematic break (`---` / `***` / `___` on its own line) ends the value.
+    # Producers separate finding blocks with `---`; swallowing it into the last
+    # field made the SOURCE facet end in " ---" while the final block, which
+    # preserved every byte of the actual content, did not -- and the block was
+    # charged FINAL_SEMANTIC_PRESERVATION_DEBT for a separator. Measured on
+    # DODO run42 INV-105 <- analysis_semi_trusted_bots.md:B3-10 [IMPACT].
+    r"|^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$|\Z)"
 )
 _FIELD_RE = re.compile(
     r"(?ims)^[ \t]*(?:[-*][ \t]+)?\*\*(?P<label>[^*\n]+)\*\*"
-    r"(?:[ \t]+\([^()\r\n]{1,160}\))?[ \t]*:[ \t]*"
-    r"(?P<value>.*?)"
+    r"(?:[ \t]+\([^()\r\n]{1,160}\))?[ \t]*:"
+    r"(?P<value>[ \t]*.*?)"
     r"(?=^[ \t]*(?:[-*][ \t]+)?\*\*[^*\n]+\*\*"
-    r"(?:[ \t]+\([^()\r\n]{1,160}\))?[ \t]*:|^#{1,6}[ \t]+|\Z)"
+    r"(?:[ \t]+\([^()\r\n]{1,160}\))?[ \t]*:|^#{1,6}[ \t]+"
+    # A thematic break (`---` / `***` / `___` on its own line) ends the value.
+    # Producers separate finding blocks with `---`; swallowing it into the last
+    # field made the SOURCE facet end in " ---" while the final block, which
+    # preserved every byte of the actual content, did not -- and the block was
+    # charged FINAL_SEMANTIC_PRESERVATION_DEBT for a separator. Measured on
+    # DODO run42 INV-105 <- analysis_semi_trusted_bots.md:B3-10 [IMPACT].
+    r"|^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$|\Z)"
 )
 _FINDING_ID_ATOM_RE = re.compile(
     r"[A-Za-z][A-Za-z0-9_-]{0,95}-\d+", re.ASCII
@@ -84,12 +108,105 @@ _IN_SCOPE_POINTER_RE = re.compile(
     r"[A-Za-z0-9_.-]+\.(?:sol|rs|go|move|cairo|vy|c|cc|cpp|h|hpp|ts|js|py)"
     r"\s*:\s*L?[1-9][0-9]*\b"
 )
-_FINDING_HEADING_CONTENT_RE = re.compile(
-    r"^Finding[ \t]+\[(?P<finding>[^\]\r\n]+)\]"
-    r"(?P<separator>[ \t]*[:=\-\u2013\u2014]*[ \t]*)"
-    r"(?P<title>.*)$",
+# STEP 8 (representation purge): the literal `^Finding[ \t]+\[<id>\]` heading
+# grammar is replaced by a meaning-based reader. It was the single highest-cost
+# gate in this module because a miss is SILENT: `## Issue [DT-1]`,
+# `## Finding DT-1`, `## [DT-1] title` and `## **Finding [DT-1]**` each produced
+# an EMPTY inventory with ZERO issues reported — the candidate simply vanished
+# from the denominator. `#### Finding [DT-1]` was dropped with an issue.
+#
+# Property: `identity.finding_block_heading` -> FAIL_CLOSED. Fail-closed on
+# identity means the DECISION is conservative (a heading that merely MENTIONS
+# an ID mid-sentence is still not a finding block), NOT that the bytes are
+# exact. So identity is read by `artifact_surface.candidate_identity` on the
+# normalized heading, and only a heading that OPENS with a finding label or a
+# bracketed ID is admitted.
+_FINDING_HEADING_LABEL_RE = re.compile(
+    r"^(?:finding|issue|candidate|hypothesis|vulnerability|chain)\b",
     re.IGNORECASE,
 )
+_FINDING_HEADING_SEPARATOR_RE = re.compile(
+    r"^[ \t]*[:=\-\u2013\u2014]*[ \t]*"
+)
+#: `PREFIX-<digits>`, optionally with intermediate alphanumeric segments.
+_PRODUCER_ID_SHAPE_RE = re.compile(
+    r"[A-Za-z][A-Za-z0-9]{0,15}(?:-[A-Za-z0-9]{1,24})*-\d{1,6}", re.ASCII
+)
+
+
+class _FindingHeadingMatch:
+    """`re.Match`-shaped result of the meaning-based heading reader."""
+
+    __slots__ = ("_groups",)
+
+    def __init__(self, finding: str, separator: str, title: str) -> None:
+        self._groups = {
+            "finding": finding,
+            "separator": separator,
+            "title": title,
+        }
+
+    def group(self, name: object = 0) -> str:
+        if name in (0, "0"):
+            return " ".join(self._groups.values())
+        return self._groups.get(str(name), "")
+
+
+def _finding_heading_match(content: object):
+    """Read a finding-block heading by MEANING. Returns None when absent."""
+    normalized = artifact_surface.strip_decoration(content).strip()
+    if not normalized:
+        return None
+    identity = artifact_surface.candidate_identity(normalized)
+    if identity is None:
+        return None
+    opens_with_label = bool(_FINDING_HEADING_LABEL_RE.match(normalized))
+    # A heading that OPENS with an ID and no label word must look like a real
+    # producer identity (`PREFIX-<digits>`), otherwise an ordinary hyphenated
+    # section title ("Per-Finding Detail") would mint a phantom block.
+    opens_with_id = identity.offset <= 1 and bool(
+        _PRODUCER_ID_SHAPE_RE.fullmatch(identity.value)
+    )
+    if not (opens_with_label or opens_with_id):
+        # A heading that merely CITES an ID ("Summary of C-01 results") is not
+        # a finding block. Conservative direction preserved.
+        return None
+    # The title is everything after the identity token, minus a separator.
+    end = identity.offset + len(identity.value)
+    tail = normalized[end:]
+    if tail.startswith("]"):
+        tail = tail[1:]
+    sep_match = _FINDING_HEADING_SEPARATOR_RE.match(tail)
+    separator = sep_match.group(0) if sep_match else ""
+    title = tail[len(separator):].strip()
+    return _FindingHeadingMatch(identity.value, separator, title)
+_UNLABELED_MECHANISM_FIELD_LINE_RE = re.compile(
+    r"^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?[A-Za-z]"
+    r"[A-Za-z0-9 /_-]{0,63}(?:\*\*)?"
+    r"(?:[ \t]+\([^()\r\n]{1,160}\))?[ \t]*[:=]",
+    re.ASCII,
+)
+_UNLABELED_MECHANISM_PREFIX_FIELD_RE = re.compile(
+    r"^[ \t]*(?:[-*][ \t]+)?\*\*(?P<label>[^*:\r\n]+)"
+    r"(?P<inner_colon>:)?\*\*"
+    r"(?:[ \t]+\([^()\r\n]{1,160}\))?"
+    r"[ \t]*(?P<outer_colon>:)?[ \t]*(?P<value>.*)$"
+)
+_UNLABELED_MECHANISM_PREFIX_FIELDS = {
+    "verdict": ("verdict", 0),
+    "severity": ("severity", 1),
+    "risk level": ("severity", 1),
+    "location": ("location", 2),
+    "code location": ("location", 2),
+    "methodology step": ("methodology_steps", 3),
+    "methodology steps": ("methodology_steps", 3),
+    "methodology step(s)": ("methodology_steps", 3),
+    "methodology row": ("methodology_steps", 3),
+    "methodology rows": ("methodology_steps", 3),
+}
+_MAX_UNLABELED_MECHANISM_PREFIX_FIELDS = 4
+_MAX_UNLABELED_MECHANISM_LINES = 8
+_MAX_UNLABELED_MECHANISM_CHARS = 4096
 
 # Exact Unicode Default_Ignorable_Code_Point ranges. Python's stdlib exposes
 # general categories but not this derived property; treating every ``Cf`` as
@@ -182,6 +299,11 @@ def _strict_json(path: Path) -> dict[str, Any]:
 
 def _atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if path.is_file() and path.read_bytes() == data:
+            return
+    except OSError:
+        pass
     temporary = path.with_name(f".{path.name}.p0l.tmp")
     with open(temporary, "wb") as handle:
         handle.write(data)
@@ -399,6 +521,158 @@ def _field(block: str, *labels: str) -> str:
     return ""
 
 
+@lru_cache(maxsize=256)
+def _field_inline_code_spans(block: str) -> tuple[tuple[int, int], ...]:
+    """Cache reviewed inline-code provenance for one canonical finding block."""
+
+    return tuple(
+        (int(start), int(end))
+        for start, end in inline_code_source_spans(block)
+    )
+
+
+def _restored_field_value(
+    raw_block: str, operational_block: str, start: int, end: int,
+) -> str:
+    """Return an authorized value span with parser-proven inline code restored.
+
+    The field view already blanks blockquote/list prefixes and non-operational
+    code/HTML, which is what stops a decoy label inside a fence from being read
+    as a real field. But it ALSO blanks inline code, and producers legitimately
+    write identifiers in code spans. So: locate the field in the operational
+    view -- the label must be real -- then restore only parser-proven inline
+    code INSIDE the authorized span, so visible identifiers survive without
+    reintroducing container markers or decoys.
+
+    One owner for this rule. `Source IDs` used to read the operational span
+    directly and therefore saw an empty value whenever a producer backticked
+    its references -- which is the natural spelling, and the one the finding
+    format's own examples use. Measured on DODO run41 `inventory_chunk_a`: a
+    complete 91KB shard delivering all 27 assigned identities was rejected
+    27/27 `UNMATCHED [MISSING_CHUNK_DISPOSITION]`, because every block wrote
+    ``**Source IDs**: `analysis_rescan_1.md:RS1-1` `` and the value blanked to
+    whitespace.
+    """
+
+    if len(raw_block) != len(operational_block):
+        raise InventoryReconciliationError(
+            "operational field view changed source offsets"
+        )
+    value_chars = list(operational_block[start:end])
+    for inline_start, inline_end in _field_inline_code_spans(raw_block):
+        restore_start = max(start, inline_start)
+        restore_end = min(end, inline_end)
+        if restore_start >= restore_end:
+            continue
+        value_chars[
+            restore_start - start : restore_end - start
+        ] = raw_block[restore_start:restore_end]
+    return "".join(value_chars)
+
+
+def _field_from_views(
+    raw_block: str,
+    operational_block: str,
+    *labels: str,
+) -> str:
+    """Select a real field safely while retaining its exact evidence value."""
+
+    if len(raw_block) != len(operational_block):
+        raise InventoryReconciliationError(
+            "operational field view changed source offsets"
+        )
+    wanted = {label.casefold() for label in labels}
+    for match in _FIELD_RE.finditer(operational_block):
+        if " ".join(match.group("label").split()).casefold() in wanted:
+            # The value group begins immediately after the real field's colon.
+            # Its leading whitespace is intentionally captured: inline-code
+            # spans are blanked in the operational view, and letting ``\s*``
+            # consume them outside the group would move the raw slice past a
+            # genuine leading identifier.  Container prefixes stay governed
+            # solely by the operational view, so blockquotes and nested lists
+            # require no second, divergent raw-prefix grammar.
+            start, end = match.span("value")
+            return _normalize_field_text(
+                _restored_field_value(raw_block, operational_block, start, end)
+            )
+    return ""
+
+
+def _semantic_lexical_surface(value: Any) -> str:
+    """Normalize the existing lexical-retention comparison consistently.
+
+    This deliberately retains inline-code delimiters and operators.  Removing
+    every ``*`` would make the lossy projection ``amount fee`` appear equal to
+    the source expression ``amount * fee``.  The comparison remains lexical
+    and one-directional; it does not infer semantic equivalence.
+    """
+
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _leading_unlabeled_mechanism(block: str) -> str:
+    """Recover one bounded prose paragraph after a fixed metadata prefix.
+
+    Some registered discovery producers emit the finding mechanism as the
+    first prose paragraph after Verdict/Severity/Location/Methodology-Step
+    metadata and before labeled Impact/External-Assumption fields.  That
+    paragraph is the producer's generic Description surface.  Recovery is
+    deliberately narrower than a best-effort body scrape: only those ordered,
+    single-line, non-duplicated prefix fields may precede it, and the prose
+    must be one paragraph.  Over-limit input remains unparseable debt instead
+    of being truncated into an apparently lossless mechanism.
+    """
+
+    prose: list[str] = []
+    prefix_fields: set[str] = set()
+    last_prefix_rank = -1
+    for line in str(block or "").splitlines()[1:]:
+        stripped = line.strip()
+        if not stripped:
+            if prose:
+                break
+            continue
+        prefix_match = _UNLABELED_MECHANISM_PREFIX_FIELD_RE.match(stripped)
+        if not prose and prefix_match is not None:
+            # Accept exactly one of ``**Label**: value`` and the widespread
+            # alternate spelling ``**Label:** value``.  A missing or doubled
+            # delimiter is not an authorized metadata prefix.
+            if bool(prefix_match.group("inner_colon")) == bool(
+                prefix_match.group("outer_colon")
+            ):
+                return ""
+            label = " ".join(prefix_match.group("label").split()).casefold()
+            prefix = _UNLABELED_MECHANISM_PREFIX_FIELDS.get(label)
+            if prefix is None:
+                return ""
+            canonical_label, rank = prefix
+            if (
+                canonical_label in prefix_fields
+                or rank < last_prefix_rank
+                or len(prefix_fields) >= _MAX_UNLABELED_MECHANISM_PREFIX_FIELDS
+            ):
+                return ""
+            prefix_fields.add(canonical_label)
+            last_prefix_rank = rank
+            continue
+        if (
+            stripped.startswith(("#", "|", ">", "```", "~~~", "<!--"))
+            or re.match(r"^(?:[-+*]|\d+[.)])[ \t]+", stripped)
+            or re.fullmatch(r"(?:[-*_][ \t]*){3,}", stripped)
+            or _UNLABELED_MECHANISM_FIELD_LINE_RE.match(stripped)
+        ):
+            if prose:
+                break
+            return ""
+        prose.append(stripped)
+        if (
+            len(prose) > _MAX_UNLABELED_MECHANISM_LINES
+            or sum(len(item) for item in prose) > _MAX_UNLABELED_MECHANISM_CHARS
+        ):
+            return ""
+    return _normalize_field_text(" ".join(prose))
+
+
 def _canonical_blocks(
     path: Path,
     *,
@@ -415,9 +689,7 @@ def _canonical_blocks(
         headings = mapped_headings(text)
         matches: list[tuple[int, dict[str, Any], re.Match[str]]] = []
         for heading_index, heading in enumerate(headings):
-            match = _FINDING_HEADING_CONTENT_RE.fullmatch(
-                str(heading["content"]).strip()
-            )
+            match = _finding_heading_match(heading["content"])
             if match is not None:
                 matches.append((heading_index, heading, match))
     except MarkdownParserContractError as exc:
@@ -435,48 +707,77 @@ def _canonical_blocks(
             if int(later["level"]) <= heading_depth:
                 end = int(later["start"])
                 break
-        block = text[start:end].strip()
-        operational_block = operational[start:end].strip()
+        raw_block = text[start:end]
+        operational_block = operational[start:end]
+        block = raw_block.strip()
         raw_id = match.group("finding").strip()
         finding_id = _normalize_finding_id(raw_id) or raw_id.upper()
         heading_supported = heading_depth in {2, 3}
         if not heading_supported:
+            # Property: `completion.finding_heading_depth` -> DEBT. Dropping
+            # the block here deleted a real candidate from the inventory
+            # denominator over FIVE `#` characters. The drift is reported; the
+            # candidate is kept. `include_unsupported_headings` is retained for
+            # callers that want to know, and no longer gates retention.
             issues.append(
                 f"{path.name}:{finding_id} uses unsupported explicit finding "
                 f"heading depth H{heading_depth}"
             )
-            if not include_unsupported_headings:
-                continue
         id_counts[finding_id] += 1
         # Heading content comes from the token, so list markers and up to three
         # source indentation columns never contaminate the canonical title.
         title = match.group("title").strip()
         source_match = _SOURCE_FIELD_RE.search(operational_block)
-        source_value = source_match.group("value") if source_match else ""
+        # Same two-view rule as every other field: the LABEL must be real in
+        # the operational view, the VALUE is restored from raw. Reading the
+        # operational span alone silently dropped every backticked reference.
+        source_value = (
+            _restored_field_value(
+                raw_block, operational_block, *source_match.span("value")
+            )
+            if source_match is not None else ""
+        )
         bare, qualified, reference_issues = _source_references(source_value)
-        description = _field(operational_block, "Description")
+        normalized_source_heading = artifact_surface.strip_decoration(
+            heading["content"]
+        ).strip()
+        source_heading_identity = artifact_surface.candidate_identity(
+            normalized_source_heading
+        )
+        description = _field_from_views(
+            raw_block, operational_block, "Description"
+        )
+        if not description:
+            description = _leading_unlabeled_mechanism(operational_block)
         # Description is mandatory in the canonical producer schema and
         # explicitly carries what the bug is.  Older and niche producers do
         # not always emit a separate Root Cause/Mechanism label, so preserve
         # that mechanism through the generic Description fallback instead of
         # declaring it absent.
         root_cause = (
-            _field(operational_block, "Root Cause", "Mechanism") or description
+            _field_from_views(
+                raw_block, operational_block, "Root Cause", "Mechanism"
+            ) or description
         )
         record = {
                 "finding_id": finding_id,
                 "title": title,
-                "severity": _field(operational_block, "Severity", "Risk Level"),
-                "location": _field(
-                    operational_block, "Location", "Code Location"
+                "severity": _field_from_views(
+                    raw_block, operational_block, "Severity", "Risk Level"
+                ),
+                "location": _field_from_views(
+                    raw_block, operational_block, "Location", "Code Location"
                 ),
                 "root_cause": root_cause,
                 "description": description,
-                "impact": _field(
-                    operational_block, "Impact", "Material Harm"
+                "impact": _field_from_views(
+                    raw_block, operational_block, "Impact", "Material Harm"
                 ),
-                "preconditions": _field(
-                    operational_block, "Preconditions", "Precondition Analysis"
+                "preconditions": _field_from_views(
+                    raw_block,
+                    operational_block,
+                    "Preconditions",
+                    "Precondition Analysis",
                 ),
                 "block": block,
                 "block_sha256": _sha_bytes(block.encode("utf-8")),
@@ -487,6 +788,16 @@ def _canonical_blocks(
                 ],
                 "source_reference_issues": sorted(reference_issues),
                 "ordinal": id_counts[finding_id],
+                "source_heading_labelled": bool(
+                    _FINDING_HEADING_LABEL_RE.match(
+                        normalized_source_heading
+                    )
+                ),
+                "source_heading_identity_form": (
+                    source_heading_identity.form
+                    if source_heading_identity is not None
+                    else ""
+                ),
             }
         if not heading_supported:
             record["unsupported_heading_depth"] = heading_depth
@@ -579,6 +890,28 @@ def _source_candidates(
                 or producer_accepts_local_id(producer, block["finding_id"])
             )
             if not local_id_valid:
+                # A bare, unlabelled H2/H3 can be a methodology subsection,
+                # not a producer action.  DODO run53 used ``### RS-1 —
+                # Cross-function state`` through ``RS-5`` (and one ``## RS-1
+                # through RS-5 applicability`` heading) inside registered
+                # per-contract outputs.  The meaning-based reconciliation
+                # reader saw their identifier-shaped prefixes, while the
+                # registered producer correctly rejected them as foreign
+                # local IDs.  Keeping them in the denominator made Inventory
+                # preserve rows that no source-action authenticator could ever
+                # bind.
+                #
+                # Exclude only this mechanically decidable non-action shape:
+                # unlabelled + bare identity + producer-invalid.  An explicit
+                # Candidate/Finding/Issue label or a bracketed identity remains
+                # fail-closed below, so a genuinely misnamed finding cannot
+                # disappear under this rule.
+                if (
+                    not bool(block.get("source_heading_labelled"))
+                    and str(block.get("source_heading_identity_form") or "")
+                    == "BARE"
+                ):
+                    continue
                 issues.append(
                     f"{name}:{block['finding_id']} violates registered producer "
                     f"{producer.key} local-ID grammar"
@@ -696,14 +1029,121 @@ def _bare_reference(
     ) and finding_id in set(block.get("source_ids") or [])
 
 
+_MATERIAL_TOKEN_RE = re.compile(r"[0-9A-Za-z_$.]{2,}")
+
+# Function words carry no material claim on their own.  A source fragment that
+# survives only as glue is not evidence of lost content; a dropped identifier,
+# literal, line number, or file reference always is.
+_IMMATERIAL_TOKENS = frozenset(
+    """
+    the a an is are was were be been being and or but if then so of to in on at by for
+    from with as that this these those it its not no also which while when where than
+    into onto via same only still both each any all can may will would should does do
+    did has have had here there they them their we you i he she his her our your
+    """.split()
+)
+
+# Residue characters that carry no claim on their own. Everything NOT listed is
+# material -- a whitelist, so an unanticipated character fails closed.
+# Deliberately absent, each for a measured reason:
+#   * operators -- dropping the `*` from `(amount * feePercent)` keeps both
+#     identifiers but changes the arithmetic;
+#   * `|` -- dropping it collapses a boundary table into prose;
+#   * every non-ASCII code point, dashes included -- a UTF-8 em dash rewritten
+#     as PowerShell mojibake is an encoding-fidelity loss this module already
+#     detects, and admitting dashes as glue would launder exactly that.
+_GLUE_PUNCTUATION = frozenset(" \t\n\r.,;:()[]{}\"'`_")
+
+# Emphasis runs are rendering, not claim. A LONE asterisk is multiplication and
+# stays material, so only doubled runs are stripped.
+_EMPHASIS_RUN_RE = re.compile(r"\*{2,}|_{2,}")
+
+
+def _material_tokens(text: str) -> list[str]:
+    return [
+        token for token in _MATERIAL_TOKEN_RE.findall(text)
+        if token.lower() not in _IMMATERIAL_TOKENS
+    ]
+
+
+def _residual_structure(fragment: str) -> str:
+    """Material non-word structure left in an uncovered source fragment."""
+
+    return "".join(
+        char for char in _EMPHASIS_RUN_RE.sub("", fragment)
+        if not char.isalnum() and char not in _GLUE_PUNCTUATION
+    )
+
+
+def _lost_material_tokens(source: str, target: str) -> list[str]:
+    """Material source content absent from ``target``.
+
+    ``source in target`` proves preservation but only tolerates a target that
+    reproduces the facet as one unbroken run.  A normalization shard that
+    interleaves a real code citation into a copied sentence -- strictly MORE
+    evidence than the source carried -- fails that test, and every such false
+    negative becomes an unresolvable retry: the shard is told a count, rewrites
+    the facet, and drifts further (DODO run35 went 11/49 -> 19/49 on retry and
+    the run died at a boundary whose output was information-complete).
+
+    So check CONTENT rather than contiguity. Every material token of the
+    source -- identifiers, literals, line references -- and every material
+    structure character -- operators, table pipes, non-ASCII -- must still
+    appear somewhere in the target. Insertion and re-ordering are free; a
+    dropped identifier, `L582`, `*`, `|`, or em dash is not.
+
+    This stays lexical and one-directional: a paraphrase drops material tokens
+    and still fails, so it never infers that two differently worded claims are
+    equivalent and never authorizes destructive absorption.
+
+    Deliberately linear. An earlier draft aligned contiguous runs with
+    ``difflib.SequenceMatcher`` over raw characters, which is quadratic: a 50KB
+    facet took 28 seconds, and a chunk gate runs this per finding per axis.
+    Alignment bought nothing anyway -- both residue checks were pure membership
+    tests -- so scanning the whole source is simultaneously faster and
+    STRICTER, because nothing hides inside an accidentally aligned run.
+    """
+
+    if source in target:
+        return []
+    lost = {
+        token for token in _material_tokens(source) if token not in target
+    }
+    lost.update(
+        char for char in set(_residual_structure(source)) if char not in target
+    )
+    return sorted(lost)
+
+
 def _semantic_preservation_deltas(
-    candidate: Mapping[str, Any], target: Mapping[str, Any]
+    candidate: Mapping[str, Any],
+    target: Mapping[str, Any],
+    *,
+    allow_run_alignment: bool = False,
 ) -> list[str]:
     """Return exact material facets not losslessly present in the target.
 
     This is deliberately lexical and one-directional: it can prove that bytes
     survived synthesis, not that two differently worded claims are equivalent.
     Semantic similarity therefore never authorizes destructive absorption.
+
+    ``allow_run_alignment`` is granted on the two ONE_TO_ONE_RETENTION_PROPOSAL
+    paths -- the chunk block and the final inventory block that cite exactly
+    this source identity -- where the question is only whether the facet's
+    material content survived.  It is NOT granted to receipt replay
+    (``_load_reemit_receipt``), which validates a verbatim splice and keeps the
+    strict single-run containment test.
+
+    Why the final path is included (DODO run43, 2026-09-19): the final
+    aggregate halted on nine rows whose final block carried EVERY material
+    token of the source facet plus 50-400 chars of inserted code citations
+    (``_lost_material_tokens == []``, ``source in target == False``).  Exact
+    substring is a proxy for preservation; the material-token check IS the
+    property, and it is linear, so the "alignment is expensive, chunk-only"
+    rationale no longer applies.  The anti-absorption brake is unchanged: a
+    paraphrase, a truncation, a dropped identifier/literal/line reference/
+    operator still fails, so similarity never authorizes destructive
+    absorption.
     """
 
     deltas: list[str] = []
@@ -712,27 +1152,169 @@ def _semantic_preservation_deltas(
         ("source_impact", "impact", "IMPACT"),
         ("source_preconditions", "preconditions", "PRECONDITIONS"),
     ):
-        source = re.sub(
-            r"\s+", " ", str(candidate.get(source_field) or "")
-        ).strip().casefold()
+        source = _semantic_lexical_surface(candidate.get(source_field))
         target_surfaces = [str(target.get(target_field) or "")]
         if axis == "ROOT_CAUSE":
             # Description is a canonical mechanism-bearing field.  Keep it as
             # an alternate preservation surface even when the target also
             # provides a separately worded Root Cause.
             target_surfaces.append(str(target.get("description") or ""))
-        target_value = re.sub(
-            r"\s+", " ", " ".join(target_surfaces)
-        ).strip().casefold()
+        target_value = _semantic_lexical_surface(" ".join(target_surfaces))
         if not source:
             # Missing source facets are ambiguity, not evidence that nothing
             # needed preservation.
             if axis in {"ROOT_CAUSE", "IMPACT"}:
                 deltas.append(f"UNPARSEABLE_{axis}")
             continue
-        if source not in target_value:
-            deltas.append(axis)
+        if source in target_value:
+            continue
+        if allow_run_alignment and not _lost_material_tokens(
+            source, target_value
+        ):
+            continue
+        deltas.append(axis)
     return deltas
+
+
+# Facet axis -> the candidate field carrying the verbatim source bytes.
+# Shared with `inventory_aggregate_authority`, which does the actual splice.
+DRIVER_RESTORABLE_AXIS_FIELDS = {
+    "ROOT_CAUSE": "source_root_cause",
+    "IMPACT": "source_impact",
+    "PRECONDITIONS": "source_preconditions",
+}
+
+
+# Preservation debt the driver can repair by splicing verbatim source bytes.
+# One name, two boundaries: chunk-scope and final-projection scope.
+_RESTORABLE_PRESERVATION_REASONS = frozenset({
+    "CHUNK_SEMANTIC_PRESERVATION_DEBT",
+    "FINAL_SEMANTIC_PRESERVATION_DEBT",
+})
+
+
+def driver_restorable_preservation_row(row: Mapping[str, Any]) -> bool:
+    """Will the canonical aggregate deterministically repair this row?
+
+    THE GATE MUST EXEMPT EXACTLY WHAT THE REPAIR COVERS -- no more, or content
+    is silently lost; no less, or the phase is failed for work Python is about
+    to do anyway. So the gate and the splice share this one predicate; if they
+    ever diverge, the divergence IS the loss.
+
+    Why this exists at all, measured on DODO run37's three chunks (same model,
+    same prompt, same contract):
+
+        chunk  identities  median source facet  preservation debt
+        a      37          887 ch                8  (22%)
+        b      37        1,223 ch               24  (65%)
+        c      57        breadth-heavy          43  (75%, ATTEMPT 1)
+
+    A 38% longer median facet tripled the failure rate. The shard is not
+    degrading between chunks; it is being handed progressively more bytes to
+    copy verbatim, and byte-exact transcription of long structured content is
+    not something a model does reliably -- run35's attempt 2 was handed 11
+    exact source facets in its prompt and reworded them anyway.
+
+    Gating on that forced a retry whose contract is "rewrite every block", which
+    then damaged rows that had been correct: 11->19, 3->8, 2->24 across three
+    observed retries. So a row the driver can restore verbatim is a RESTORATION
+    OBLIGATION, not a gate failure. It stays fully visible -- typed debt, a
+    named row in the receipt, and a splice count in run telemetry -- because a
+    masking repair that hides what it masked is the failure mode this driver
+    exists to prevent.
+    """
+
+    axes = [str(axis) for axis in (row.get("required_preservation_axes") or ())]
+    # An axis names a facet the splice must copy from the SOURCE. If the source
+    # rendered that facet EMPTY, there are no bytes to copy: the splice would be
+    # a no-op, the reconciler would flag the row again, and the reemit
+    # authority -- which refuses any row this predicate calls restorable --
+    # would refuse forever. That is the same shape as `UNPARSEABLE_*` (bytes
+    # that do not exist), and it gets the same answer: not restorable, stays
+    # visible HUMAN_REVIEW_DEBT. Measured on DODO run42 INV-014 <-
+    # analysis_core_state_economics.md:B1-14 [UNPARSEABLE_ROOT_CAUSE, IMPACT]
+    # with `source_impact == ""`: the aggregate could not commit.
+    if not any(
+        str(row.get(DRIVER_RESTORABLE_AXIS_FIELDS[axis]) or "").strip()
+        for axis in axes
+        if axis in DRIVER_RESTORABLE_AXIS_FIELDS
+    ):
+        return False
+    if (
+        row.get("disposition") != "HUMAN_REVIEW_DEBT"
+        # Both scopes, because the debt is the same defect measured at two
+        # boundaries. CHUNK_* compares a chunk against its assigned sources;
+        # FINAL_* compares `findings_inventory.md` against the whole raw
+        # discovery denominator. Accepting only the chunk code left the final
+        # projection unrepaired: DODO run39 cleared all three chunks on attempt
+        # 1 and then died at `inventory` with 9/132 FINAL_SEMANTIC_PRESERVATION
+        # _DEBT rows that `inventory_reemit_authority` refuses by design --
+        # "additive re-emission refuses to duplicate one-to-one final
+        # deliveries; repair the canonical projection instead". This IS that
+        # repair, so it must recognise the final scope's reason code.
+        or row.get("reason_code") not in _RESTORABLE_PRESERVATION_REASONS
+        or row.get("proposed_relation_kind") != "ONE_TO_ONE_RETENTION_PROPOSAL"
+        or not str(row.get("proposed_target_finding_id") or "")
+    ):
+        return False
+    axes = [str(axis) for axis in (row.get("required_preservation_axes") or ())]
+    if not axes:
+        return False
+    # Every axis that names REAL source content must be restorable, and at
+    # least one must be.
+    #
+    # `UNPARSEABLE_*` axes are deliberately not disqualifying. They mean the
+    # SOURCE artifact never rendered that facet -- a breadth finding with no
+    # Impact section, say -- so neither the splice (no bytes to copy) nor a
+    # shard retry (cannot transcribe what does not exist) can ever clear them.
+    # Gating a row on one is the unwinnable-contract failure this driver has
+    # hit repeatedly. run37 chunk_c held 3 such mixed rows
+    # (`['ROOT_CAUSE', 'UNPARSEABLE_IMPACT']`), and charging the shard for the
+    # upstream half would have forced a whole-artifact rewrite to repair a gap
+    # the rewrite cannot touch.
+    #
+    # The upstream debt stays fully visible: the row remains HUMAN_REVIEW_DEBT,
+    # its `UNPARSEABLE_*` axis stays in `required_preservation_axes`, and the
+    # gate logs it separately from cleanly-restorable rows.
+    restorable_axes = 0
+    for axis in axes:
+        if axis.startswith("UNPARSEABLE_"):
+            continue
+        field = DRIVER_RESTORABLE_AXIS_FIELDS.get(axis)
+        if field is None or not _semantic_lexical_surface(row.get(field)):
+            return False
+        restorable_axes += 1
+    return restorable_axes > 0
+
+
+def _shard_retry_resolvable(
+    disposition: str, reason_code: str, axes: Iterable[str]
+) -> bool:
+    """Can re-running the inventory shard actually clear this debt row?
+
+    Debt is real either way and stays in the ledger. But the phase gate is a
+    RETRY decision, and retrying a shard against debt it has no lever over is
+    the unwinnable-contract failure: the shard is handed a count it cannot act
+    on, rewrites correct work, and drifts. DODO run35 went 11/49 -> 19/49 that
+    way and the run died on a critical phase.
+
+    ``UNPARSEABLE_*`` says the SOURCE artifact never rendered that facet -- a
+    breadth finding laid out as step tables with no ``**Root Cause**:`` label,
+    or a ``REFUTATION_PROPOSAL`` with no Impact because nothing happens. No
+    chunk block can transcribe bytes the source does not contain, so this debt
+    belongs to the upstream artifact and must not gate the shard.
+    """
+
+    if disposition != "HUMAN_REVIEW_DEBT":
+        return False
+    axes = [str(axis) for axis in axes or ()]
+    if reason_code in {
+        "CHUNK_SEMANTIC_PRESERVATION_DEBT", "REEMIT_UNPARSEABLE_SOURCE_DEBT",
+    } and axes:
+        # Resolvable only if at least one axis names content the source really
+        # carries; an all-UNPARSEABLE row has nothing for the shard to copy.
+        return any(not axis.startswith("UNPARSEABLE_") for axis in axes)
+    return True
 
 
 def _material_preservation_deltas(deltas: Iterable[str]) -> list[str]:
@@ -882,10 +1464,19 @@ def _load_reemit_receipt(
             if len(targets) == 1 else ["TARGET_CARDINALITY"]
         )
         # Additive delivery cannot certify a mandatory facet the producer did
-        # not encode.  Keep that application gap in the enforced loss set so
-        # the ordinary content-bearing debt route, rather than a delivery
-        # receipt alone, remains responsible for resolving it.
-        material_loss = _material_preservation_deltas(preservation_deltas)
+        # not encode -- but it cannot LOSE it either: there are no source bytes
+        # for the re-emitted block to drop.  An UNPARSEABLE_* axis therefore
+        # never makes the receipt row "lossy"; it flows through to the final
+        # path, which keeps it visible as REEMIT_UNPARSEABLE_SOURCE_DEBT
+        # (human review + mandatory re-verification).  Measured on DODO run45:
+        # four all-UNPARSEABLE rows were re-emitted as INV-112..115 and then
+        # this loader refused its own delivery as "stale or lossy", the replay
+        # could not bind them, and the aggregate halted on a repair that
+        # cannot exist.
+        material_loss = [
+            axis for axis in _material_preservation_deltas(preservation_deltas)
+            if not str(axis).startswith("UNPARSEABLE_")
+        ]
         if (
             len(targets) != 1
             or str(targets[0].get("block_sha256") or "")
@@ -1538,8 +2129,12 @@ def reconcile_inventory(
                 proposed_target_finding_id = str(chunk_block["finding_id"])
                 proposed_target_block_sha256 = str(chunk_block["block_sha256"])
                 proposed_relation_kind = "ONE_TO_ONE_RETENTION_PROPOSAL"
+                # One source, one chunk block, nothing absorbed: preservation
+                # is the only question, so an interleaved code citation must
+                # not read as loss.  Every merge/absorption caller below keeps
+                # the strict single-run containment test.
                 required_preservation_axes = _semantic_preservation_deltas(
-                    candidate, chunk_block
+                    candidate, chunk_block, allow_run_alignment=True
                 )
                 material_preservation_axes = _material_preservation_deltas(
                     required_preservation_axes
@@ -1595,8 +2190,13 @@ def reconcile_inventory(
                 proposed_target_finding_id = str(final_block["finding_id"])
                 proposed_target_block_sha256 = str(final_block["block_sha256"])
                 proposed_relation_kind = "ONE_TO_ONE_RETENTION_PROPOSAL"
+                # Same one-to-one retention question as the chunk path: did
+                # the facet's material content survive?  A final block that
+                # interleaves code citations into a copied sentence is more
+                # evidence, not loss (run43 halted on nine such rows).  The
+                # material-token property is the gate, not run contiguity.
                 required_preservation_axes = _semantic_preservation_deltas(
-                    candidate, final_block
+                    candidate, final_block, allow_run_alignment=True
                 )
                 if reemit is not None:
                     # `_load_reemit_receipt` already replayed the exact source,
@@ -1693,6 +2293,9 @@ def reconcile_inventory(
                 "proposed_target_block_sha256": proposed_target_block_sha256,
                 "proposed_relation_kind": proposed_relation_kind,
                 "required_preservation_axes": required_preservation_axes,
+                "shard_retry_resolvable": _shard_retry_resolvable(
+                    disposition[0], disposition[2], required_preservation_axes
+                ),
                 "negative_closure_authority_digest": str(
                     central_resolution.get("resolution_digest") or ""
                 ),
@@ -1754,6 +2357,14 @@ def reconcile_inventory(
                 "structural Source-ID coverage does not prove every mechanism "
                 "and harm premise survived losslessly"
             )
+
+    for row in results:
+        # Computed AFTER the many-to-one collapse pass above, which can demote
+        # a RETAINED row to HUMAN_REVIEW_DEBT and clear its target. Computing
+        # it inside the per-candidate loop would mark a row restorable that the
+        # collapse then makes ambiguous -- and the splice would decline it,
+        # silently losing the content the gate had stopped blocking on.
+        row["driver_restorable"] = driver_restorable_preservation_row(row)
 
     for row in results:
         mandatory = row["disposition"] == "HUMAN_REVIEW_DEBT"

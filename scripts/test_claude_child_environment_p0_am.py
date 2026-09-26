@@ -9,6 +9,52 @@ import pytest
 
 import claude_auth_route as A
 import claude_child_environment as C
+import posix_backend_launch_policy as P
+
+
+def _dynamic_generation(version: str = "2.1.270") -> object:
+    hashes = [f"{index:x}" * 64 for index in range(1, 15)]
+    return P.TEST_ONLY_issue_backend_install_generation(
+        backend="claude", resolved_version=version,
+        executable_sha256=hashes[0], executable_size=1,
+        runtime_closure_sha256=hashes[1], publisher="Anthropic",
+        publisher_identity_sha256=hashes[2],
+        provenance="ANTHROPIC_INSTALLER_RECEIPT",
+        provenance_receipt_sha256=hashes[3],
+        latest_resolution_receipt_sha256=hashes[4],
+        cli_behavior_contract_sha256=P.backend_cli_behavior_contract_sha256("claude"),
+        cli_conformance_sha256=hashes[5],
+        install_generation_id=f"claude-{version}",
+        producer_receipt_sha256=hashes[6], acquisition_policy_sha256=hashes[7],
+        acquisition_validator_sha256=hashes[8],
+        registry_latest_observation_sha256=hashes[9],
+        upstream_integrity_sha256=hashes[10],
+        signature_provenance_sha256=hashes[11],
+        installed_manifest_sha256=hashes[12],
+        coordinator_receipt_sha256=hashes[13],
+    )
+
+
+def test_dynamic_controls_require_exact_generation_authority() -> None:
+    authority = _dynamic_generation()
+    with pytest.raises(C.ClaudeChildEnvironmentError):
+        C.normalize_claude_functional_controls(
+            _required_controls(), claude_code_version="2.1.270"
+        )
+    with pytest.raises(C.ClaudeChildEnvironmentError):
+        C.normalize_claude_functional_controls(
+            _required_controls(), claude_code_version="2.1.270",
+            install_generation_authority=authority,
+        )
+    assert C.TEST_ONLY_normalize_claude_functional_controls(
+        _required_controls(), claude_code_version="2.1.270",
+        install_generation_authority=authority,
+    ) == dict(sorted(_required_controls().items()))
+    with pytest.raises(C.ClaudeChildEnvironmentError):
+        C.TEST_ONLY_normalize_claude_functional_controls(
+            _required_controls(), claude_code_version="2.1.271",
+            install_generation_authority=authority,
+        )
 
 
 def _required_controls() -> dict[str, str]:

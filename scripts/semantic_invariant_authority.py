@@ -20,6 +20,8 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+import artifact_surface
+
 from state_symbol_authority import (
     GRAPH_SCHEMA,
     build_typed_state_symbols,
@@ -45,6 +47,7 @@ APPLICATION_RECEIPT_FILE = "semantic_invariant_application_receipt.json"
 GAPS_PROJECTION_FILE = "semantic_invariant_coverage_gaps.md"
 INDEPENDENT_TRACE_FILE = "semantic_invariant_independent_application.input.json"
 PASS2_PRE_FILE = "semantic_invariant_pass2_append_authority.json"
+PASS1_SNAPSHOT_FILE = "semantic_invariant_pass1_snapshot.md"
 FINAL_BYTE_AUTHORITY_FILE = "semantic_invariant_final_byte_authority.json"
 
 TRACE_BEGIN = "<!-- PLAMEN_SEMANTIC_INVARIANT_TRACE_JSON_BEGIN -->"
@@ -103,7 +106,10 @@ _INDEPENDENT_ROW_KEYS = {
 _INDEPENDENT_CONSUMERS = {"DEPTH_STATE_TRACE", "APPLICATION_SKEPTIC"}
 _SOURCE_LOCUS = re.compile(
     r"^(?P<file>[A-Za-z0-9_./\\ -]+\.(?:sol|rs|move|go|vy|daml))"
-    r":L(?P<line>[1-9]\d*)(?:-L?[1-9]\d*)?$"
+    # Separator and line prefix are presentation, not meaning: `:L370`,
+    # `:370`, `#L370` and ` L370` all name the same line.
+    r"\s*[:#]?\s*L?(?P<line>[1-9]\d*)"
+    r"(?:\s*[-\u2010-\u2015\u2212]\s*L?[1-9]\d*)?\s*[.,;]?$"
 )
 
 
@@ -681,6 +687,136 @@ def render_semantic_invariant_worklist(worklist: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _frozen_semantic_invariant_authority(
+    scratchpad: Path,
+    *,
+    ecosystem: str = "",
+    mode: str = "",
+    run_id: str = "",
+    source_snapshot_digest: str = "",
+) -> tuple[dict[str, Any], dict[str, Any], str, list[str]]:
+    """Replay the PRE identity while allowing checkpoint progress fields.
+
+    The checkpoint is mutable orchestration state.  Its run/snapshot/source
+    projection remains authoritative, but its whole-file byte binding must
+    stay frozen at PRE so a legitimate completed-phase update cannot silently
+    mint a new state denominator.  All non-checkpoint semantic inputs are
+    still rederived from their current bytes and compared exactly.
+    """
+
+    root = Path(scratchpad)
+    current_authority, current_worklist, _ = (
+        derive_semantic_invariant_authority(
+            root,
+            ecosystem=ecosystem,
+            mode=mode,
+            run_id=run_id,
+            source_snapshot_digest=source_snapshot_digest,
+        )
+    )
+    issues: list[str] = []
+    try:
+        frozen_authority = _load_json(root / AUTHORITY_FILE)
+        if not isinstance(frozen_authority, Mapping):
+            raise ValueError("authority root is not an object")
+    except Exception as exc:
+        frozen_authority = {}
+        issues.append(f"{AUTHORITY_FILE} missing or malformed: {type(exc).__name__}")
+    try:
+        frozen_worklist = _load_json(root / WORKLIST_FILE)
+        if not isinstance(frozen_worklist, Mapping):
+            raise ValueError("worklist root is not an object")
+    except Exception as exc:
+        frozen_worklist = {}
+        issues.append(f"{WORKLIST_FILE} missing or malformed: {type(exc).__name__}")
+
+    frozen_bindings = (
+        frozen_authority.get("input_bindings")
+        if isinstance(frozen_authority.get("input_bindings"), list)
+        else []
+    )
+    checkpoint_bindings = [
+        row
+        for row in frozen_bindings
+        if isinstance(row, Mapping)
+        and row.get("artifact") == _CHECKPOINT_FILE
+        and row.get("role") == "RUN_BINDING"
+    ]
+    checkpoint_binding: dict[str, Any] | None = None
+    if len(checkpoint_bindings) != 1:
+        issues.append("frozen authority checkpoint binding denominator mismatch")
+    else:
+        candidate = checkpoint_bindings[0]
+        if (
+            set(candidate) != {"artifact", "role", "sha256", "byte_count"}
+            or _HEX64.fullmatch(str(candidate.get("sha256") or "")) is None
+            or type(candidate.get("byte_count")) is not int
+            or int(candidate.get("byte_count")) <= 0
+        ):
+            issues.append("frozen authority checkpoint binding is malformed")
+        else:
+            checkpoint_binding = dict(candidate)
+
+    normalized_authority = dict(current_authority)
+    current_bindings = list(current_authority.get("input_bindings") or [])
+    current_checkpoint_rows = [
+        index
+        for index, row in enumerate(current_bindings)
+        if isinstance(row, Mapping)
+        and row.get("artifact") == _CHECKPOINT_FILE
+        and row.get("role") == "RUN_BINDING"
+    ]
+    if checkpoint_binding is None or len(current_checkpoint_rows) != 1:
+        issues.append("current authority checkpoint binding denominator mismatch")
+    else:
+        current_bindings[current_checkpoint_rows[0]] = checkpoint_binding
+    normalized_authority["input_bindings"] = sorted(
+        current_bindings,
+        key=lambda row: (str(row.get("artifact") or ""), str(row.get("role") or "")),
+    )
+    normalized_authority = _finalize(
+        normalized_authority, "authority_digest"
+    )
+
+    normalized_worklist = dict(current_worklist)
+    normalized_worklist["authority_digest"] = normalized_authority[
+        "authority_digest"
+    ]
+    normalized_worklist = _finalize(normalized_worklist, "worklist_digest")
+    projection = render_semantic_invariant_worklist(normalized_worklist)
+
+    if frozen_authority != normalized_authority:
+        issues.append(
+            f"{AUTHORITY_FILE} differs from current inputs after frozen "
+            "checkpoint replay"
+        )
+    if frozen_worklist != normalized_worklist:
+        issues.append(
+            f"{WORKLIST_FILE} differs from current inputs after frozen "
+            "checkpoint replay"
+        )
+    try:
+        actual_projection = (root / WORKLIST_PROJECTION_FILE).read_text(
+            encoding="utf-8", errors="strict"
+        )
+    except Exception as exc:
+        issues.append(
+            f"{WORKLIST_PROJECTION_FILE} missing or malformed: "
+            f"{type(exc).__name__}"
+        )
+    else:
+        if actual_projection != projection:
+            issues.append(
+                f"{WORKLIST_PROJECTION_FILE} differs from current frozen worklist"
+            )
+    return (
+        normalized_authority,
+        normalized_worklist,
+        projection,
+        list(dict.fromkeys(issues)),
+    )
+
+
 def _atomic_write_if_changed(path: Path, data: bytes) -> None:
     try:
         if path.is_file() and path.read_bytes() == data:
@@ -766,41 +902,13 @@ def validate_semantic_invariant_authority(
     run_id: str = "",
     source_snapshot_digest: str = "",
 ) -> list[str]:
-    root = Path(scratchpad)
-    expected_authority, expected_worklist, expected_projection = (
-        derive_semantic_invariant_authority(
-            root,
-            ecosystem=ecosystem,
-            mode=mode,
-            run_id=run_id,
-            source_snapshot_digest=source_snapshot_digest,
-        )
+    _, _, _, issues = _frozen_semantic_invariant_authority(
+        Path(scratchpad),
+        ecosystem=ecosystem,
+        mode=mode,
+        run_id=run_id,
+        source_snapshot_digest=source_snapshot_digest,
     )
-    issues: list[str] = []
-    for name, expected in (
-        (AUTHORITY_FILE, expected_authority),
-        (WORKLIST_FILE, expected_worklist),
-    ):
-        try:
-            actual = _load_json(root / name)
-        except Exception as exc:
-            issues.append(f"{name} missing or malformed: {type(exc).__name__}")
-            continue
-        if actual != expected:
-            issues.append(f"{name} differs from current inputs")
-    try:
-        actual_projection = (root / WORKLIST_PROJECTION_FILE).read_text(
-            encoding="utf-8", errors="strict"
-        )
-    except Exception as exc:
-        issues.append(
-            f"{WORKLIST_PROJECTION_FILE} missing or malformed: {type(exc).__name__}"
-        )
-    else:
-        if actual_projection != expected_projection:
-            issues.append(
-                f"{WORKLIST_PROJECTION_FILE} differs from current typed worklist"
-            )
     return issues
 
 
@@ -812,10 +920,122 @@ def parse_semantic_invariant_application_trace(text: str) -> dict[str, Any]:
     raw = text[start:end].strip()
     if not raw:
         raise ValueError("semantic invariant trace payload is empty")
-    payload = json.loads(raw)
+    # The sentinels delimit the region; the payload is the ONE JSON object
+    # inside it.  Prose, a code fence, or a note before/after the object is
+    # not the payload (DODO run47: the worker prefixed an honest note that it
+    # cannot compute SHA-256 without a shell, and `json.loads` failed at
+    # char 0, discarding a 43KB analysis).
+    first = raw.find("{")
+    last = raw.rfind("}")
+    if first < 0 or last < first:
+        raise ValueError("semantic invariant trace payload must be an object")
+    payload = json.loads(raw[first:last + 1])
     if not isinstance(payload, dict):
         raise ValueError("semantic invariant trace payload must be an object")
     return payload
+
+
+# --- Driver-sealed cryptographic fields -------------------------------------
+# A restricted worker (Read/Write/Edit/Glob/Grep, no shell) cannot compute
+# SHA-256, so every digest the trace carries is DRIVER authority stamped after
+# the model's content is bound -- the same contract the authentication-role
+# fact worker already uses ("do not include operator_digest or payload_digest:
+# cryptographic authority supplied by the driver").  The model supplies rows and
+# dispositions; the driver supplies identity.  A model-written digest is
+# replaced, never trusted and never fatal.
+SEMANTIC_INVARIANT_PRODUCER_OPERATOR_ID = "plamen.semantic_invariant.producer"
+SEMANTIC_INVARIANT_CONSUMER_OPERATOR_ID = "plamen.semantic_invariant.consumer"
+
+
+def semantic_invariant_producer_operator_digest() -> str:
+    """Driver-owned digest of the fixed producer operator descriptor."""
+
+    return _sha256_bytes(_canonical_json({
+        "operator_id": SEMANTIC_INVARIANT_PRODUCER_OPERATOR_ID,
+        "schema_version": APPLICATION_TRACE_SCHEMA,
+        "row_keys": sorted(_APPLICATION_ROW_KEYS),
+        "dispositions": sorted(_ALLOWED_DISPOSITIONS),
+    }))
+
+
+def semantic_invariant_consumer_operator_digest(consumer_kind: str) -> str:
+    """Driver-owned digest of the fixed consumer operator descriptor."""
+
+    return _sha256_bytes(_canonical_json({
+        "operator_id": SEMANTIC_INVARIANT_CONSUMER_OPERATOR_ID,
+        "consumer_kind": str(consumer_kind or "").strip().upper(),
+        "schema_version": INDEPENDENT_TRACE_SCHEMA,
+        "row_keys": sorted(_INDEPENDENT_ROW_KEYS),
+    }))
+
+
+def seal_application_payload(
+    payload: Mapping[str, Any], worklist: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return the producer trace with every cryptographic field driver-stamped."""
+
+    binding = worklist.get("run_binding") if isinstance(worklist.get("run_binding"), Mapping) else {}
+    sealed: dict[str, Any] = {
+        "schema_version": payload.get("schema_version"),
+        "run_binding_digest": str(binding.get("binding_digest") or ""),
+        "authority_digest": str(worklist.get("authority_digest") or ""),
+        "worklist_digest": str(worklist.get("worklist_digest") or ""),
+        "producer_operator_digest": semantic_invariant_producer_operator_digest(),
+        "rows": payload.get("rows"),
+    }
+    sealed["payload_digest"] = payload_digest(sealed)
+    return sealed
+
+
+def seal_independent_payload(
+    payload: Mapping[str, Any],
+    worklist: Mapping[str, Any],
+    producer_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the consumer trace with every cryptographic field driver-stamped,
+    including each row's binding to its exact producer row."""
+
+    binding = worklist.get("run_binding") if isinstance(worklist.get("run_binding"), Mapping) else {}
+    consumer_kind = str(payload.get("consumer_kind") or "").strip().upper()
+    producer_rows = {
+        str(row.get("state_id") or ""): row
+        for row in (producer_payload.get("rows") or [])
+        if isinstance(row, Mapping)
+    }
+    rows: Any = payload.get("rows")
+    if isinstance(rows, list):
+        sealed_rows = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                sealed_rows.append(row)
+                continue
+            producer_row = producer_rows.get(str(row.get("state_id") or ""))
+            sealed_row = dict(row)
+            sealed_row["producer_row_digest"] = (
+                producer_row_digest(producer_row) if producer_row is not None else ""
+            )
+            sealed_rows.append(sealed_row)
+        rows = sealed_rows
+    sealed: dict[str, Any] = {
+        "schema_version": payload.get("schema_version"),
+        "run_binding_digest": str(binding.get("binding_digest") or ""),
+        "authority_digest": str(worklist.get("authority_digest") or ""),
+        "worklist_digest": str(worklist.get("worklist_digest") or ""),
+        "producer_payload_digest": str(producer_payload.get("payload_digest") or ""),
+        "consumer_kind": payload.get("consumer_kind"),
+        "consumer_operator_digest": semantic_invariant_consumer_operator_digest(consumer_kind),
+        "rows": rows,
+    }
+    sealed["payload_digest"] = payload_digest(sealed)
+    return sealed
+
+
+def _seal_in_place(payload: Mapping[str, Any], sealed: Mapping[str, Any]) -> Mapping[str, Any]:
+    if isinstance(payload, dict):
+        payload.clear()
+        payload.update(sealed)
+        return payload
+    return dict(sealed)
 
 
 def _validate_application_payload(
@@ -823,14 +1043,18 @@ def _validate_application_payload(
 ) -> tuple[dict[str, Mapping[str, Any]], set[str], list[str], bool]:
     issues: list[str] = []
     fatal = False
-    if set(payload) != _APPLICATION_KEYS:
+    # Driver-seal every cryptographic field (in place, so every holder of this
+    # payload -- staged validator, derivation, consumer binding -- sees the
+    # same sealed identity).  Unknown extra keys are a schema mismatch.
+    if not isinstance(payload, Mapping):
+        return {}, set(), ["application trace payload must be an object"], True
+    unknown = set(payload) - _APPLICATION_KEYS
+    payload = _seal_in_place(payload, seal_application_payload(payload, worklist))
+    if unknown:
         issues.append("application trace schema fields mismatch")
         fatal = True
     if payload.get("schema_version") != APPLICATION_TRACE_SCHEMA:
         issues.append("application trace schema version mismatch")
-        fatal = True
-    if payload.get("payload_digest") != payload_digest(payload):
-        issues.append("application trace payload digest mismatch")
         fatal = True
     producer_operator_digest = str(
         payload.get("producer_operator_digest") or ""
@@ -889,10 +1113,22 @@ def _validate_application_payload(
 
 
 def _source_file(value: object) -> str:
-    match = _SOURCE_LOCUS.fullmatch(str(value or "").strip())
+    """Canonical source file from an evidence locus.
+
+    Property: `evidence.state_locus_binding` -> DEBT. The old gate fullmatched
+    the RAW string against `<path>:L<digits>`. A decorated locus
+    (`` `contracts/A.sol:L370` ``, `**contracts/A.sol:L370**`), a Unicode dash
+    in the range, or a trailing period returned "" — and "" made the row's
+    evidence unbound, degrading a DELIVERED semantic-invariant application to
+    UNMEASURABLE over punctuation. Normalize first, then match.
+    """
+    text = artifact_surface.strip_decoration(value).strip()
+    if not text:
+        return ""
+    match = _SOURCE_LOCUS.fullmatch(text)
     if not match:
         return ""
-    return match.group("file").replace("\\", "/").lstrip("./").casefold()
+    return match.group("file").replace("\\", "/").lstrip("./").strip().casefold()
 
 
 def _state_source_denominator(state: Mapping[str, Any]) -> set[str]:
@@ -962,17 +1198,21 @@ def _validate_independent_payload(
     payload: Mapping[str, Any],
     worklist: Mapping[str, Any],
     producer_payload: Mapping[str, Any],
+    authority: Mapping[str, Any],
 ) -> tuple[dict[str, Mapping[str, Any]], set[str], list[str], bool, str]:
     issues: list[str] = []
     fatal = False
-    if set(payload) != _INDEPENDENT_KEYS:
+    if not isinstance(payload, Mapping):
+        return {}, set(), ["independent application trace payload must be an object"], True, ""
+    unknown = set(payload) - _INDEPENDENT_KEYS
+    payload = _seal_in_place(
+        payload, seal_independent_payload(payload, worklist, producer_payload)
+    )
+    if unknown:
         issues.append("independent application trace schema fields mismatch")
         fatal = True
     if payload.get("schema_version") != INDEPENDENT_TRACE_SCHEMA:
         issues.append("independent application trace schema version mismatch")
-        fatal = True
-    if payload.get("payload_digest") != payload_digest(payload):
-        issues.append("independent application trace payload digest mismatch")
         fatal = True
     binding = worklist.get("run_binding") if isinstance(worklist.get("run_binding"), Mapping) else {}
     for field, expected, label in (
@@ -1035,7 +1275,107 @@ def _validate_independent_payload(
             invalid_ids.add(state_id)
             continue
         by_id[state_id] = row
+    required_ids = set(
+        independent_delivery_denominator(
+            producer_payload,
+            worklist,
+            authority,
+        )
+    )
+    if set(by_id) != required_ids:
+        issues.append(
+            "independent application rows differ from the exact delivered-state denominator"
+        )
+        fatal = True
     return by_id, invalid_ids, issues, fatal, consumer
+
+
+def independent_delivery_denominator(
+    producer_payload: Mapping[str, Any],
+    worklist: Mapping[str, Any],
+    authority: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Return every valid producer delivery requiring independent review.
+
+    Application completeness and semantic outcome are orthogonal. A valid
+    producer row with ``disposition=DELIVERED`` remains in the independent
+    denominator even when its write-site or semantic result reconciles to
+    DEFERRED, or the typed sources disagree. Otherwise the rows most in need
+    of independent review would be removed by the producer's own uncertainty.
+    Malformed/missing producer rows are repaired before this boundary and
+    cannot become review authority.
+    """
+
+    by_id, invalid_ids, _issues, fatal = _validate_application_payload(
+        producer_payload, worklist
+    )
+    if fatal:
+        return ()
+    # Callers bind the exact authority object at this boundary. Conflicts
+    # affect final reconciliation, never independent-review eligibility.
+    _ = authority
+    return tuple(sorted(
+        state_id
+        for state_id, row in by_id.items()
+        if state_id not in invalid_ids
+        and str(row.get("disposition") or "").strip().upper() == "DELIVERED"
+    ))
+
+
+def independent_consumer_prompt() -> str:
+    """Render the model contract using the validator's exact denominator."""
+
+    return f"""# Independent semantic-invariant application consumer
+
+Read the exact P1-D authority, worklist, producer trace in
+`semantic_invariants.md`, and its delivery receipt/gaps. Independently trace
+the current bytes only when the Thorough-mode successor
+`{FINAL_BYTE_AUTHORITY_FILE}` validates; it binds the distinct Pass-2 append
+producer to the final semantic artifact without granting that producer
+semantic or proof authority. Independently trace the relevant source paths and
+write ONLY `{INDEPENDENT_TRACE_FILE}` as JSON schema
+`{INDEPENDENT_TRACE_SCHEMA}`.
+
+The exact row denominator is every valid row in the embedded producer trace
+whose `disposition` is `DELIVERED`. Use those state IDs exactly and bind each
+one to its producer row. Application completeness is separate from semantic
+outcome: include producer deliveries whose reconciled receipt status is
+`DEFERRED` or `CONFLICT`, because producer uncertainty cannot remove a row
+from independent review. Missing or malformed producer rows must be repaired
+before this boundary and never become review authority. Assert exact set
+equality against the raw valid producer-delivery denominator before writing.
+
+Write consumer_kind `DEPTH_STATE_TRACE` and one row per denominator state. The
+JSON object has exactly these fields: schema_version, consumer_kind, rows.
+Each row has exactly state_id, disposition, evidence_loci, result. The
+independent disposition is `APPLIED` only when the depth trace actually
+re-applied the producer row; otherwise use `DEFERRED`.
+
+Do NOT include run_binding_digest, authority_digest, worklist_digest,
+producer_payload_digest, consumer_operator_digest, producer_row_digest, or
+payload_digest: those fields are cryptographic authority the driver stamps
+deterministically after your output is bound. Never invent a hash.
+Never convert a missing, deferred, conflicted, or unmeasurable producer row to
+proof. Write no other file and stop.
+"""
+
+
+def independent_consumer_correction_prompt() -> str:
+    """Bound one correction to an exact staged denominator mismatch."""
+
+    return """
+
+# Bounded staged-output correction (attempt 2 of 2)
+
+The first candidate failed the fail-closed staged semantic gate. Rebuild the
+JSON from the immutable inputs; do not reuse or assume publication of the
+rejected candidate. Enumerate exactly every valid producer row whose proposed
+`disposition` equals `DELIVERED`, including rows whose reconciled semantic
+status remains DEFERRED or CONFLICT. Missing or malformed producer rows require
+producer repair and cannot be invented here. Verify exact state-ID set
+equality, bind each row to its producer_row_digest, and recompute the compact
+no-newline payload digest. This is the only correction attempt.
+"""
 
 
 def _independent_row_status(
@@ -1057,6 +1397,129 @@ def _independent_row_status(
     if issues:
         return "DELIVERED", issues
     return disposition, []
+
+
+def validate_independent_semantic_invariant_trace(
+    scratchpad: Path,
+    payload: Mapping[str, Any],
+    *,
+    ecosystem: str = "",
+    mode: str = "",
+    run_id: str = "",
+    source_snapshot_digest: str = "",
+    backend: str = "claude",
+) -> list[str]:
+    """Validate an independent candidate before canonical publication."""
+
+    root = Path(scratchpad)
+    authority, worklist, _, issues = _frozen_semantic_invariant_authority(
+        root,
+        ecosystem=ecosystem,
+        mode=mode,
+        run_id=run_id,
+        source_snapshot_digest=source_snapshot_digest,
+    )
+    try:
+        producer = parse_semantic_invariant_application_trace(
+            (root / "semantic_invariants.md").read_text(
+                encoding="utf-8", errors="strict"
+            )
+        )
+    except Exception as exc:
+        return [
+            *issues,
+            f"independent application producer trace unavailable: "
+            f"{type(exc).__name__}: {exc}",
+        ]
+
+    producer_by_id, producer_invalid, producer_issues, producer_fatal = (
+        _validate_application_payload(producer, worklist)
+    )
+    issues.extend(producer_issues)
+    (
+        independent_by_id,
+        independent_invalid,
+        independent_issues,
+        independent_fatal,
+        consumer,
+    ) = _validate_independent_payload(
+        payload,
+        worklist,
+        producer,
+        authority,
+    )
+    issues.extend(independent_issues)
+
+    states = {
+        str(row.get("state_id") or ""): row
+        for row in worklist.get("states") or []
+        if isinstance(row, Mapping)
+    }
+    if not producer_fatal and not independent_fatal:
+        for state_id in sorted(independent_by_id):
+            if state_id in producer_invalid or state_id in independent_invalid:
+                continue
+            state = states.get(state_id)
+            producer_row = producer_by_id.get(state_id)
+            if state is None or producer_row is None:
+                continue
+            _, row_issues = _independent_row_status(
+                independent_by_id[state_id], state, producer_row
+            )
+            issues.extend(
+                f"independent application row {state_id}: {issue}"
+                for issue in row_issues
+            )
+
+    selected_mode = str(
+        mode
+        or (
+            worklist.get("run_binding", {}).get("mode")
+            if isinstance(worklist.get("run_binding"), Mapping)
+            else ""
+        )
+    ).strip().lower()
+    if consumer == "DEPTH_STATE_TRACE" and selected_mode == "thorough":
+        final_issues = validate_semantic_invariant_final_byte_authority(
+            root,
+            ecosystem=ecosystem,
+            mode=mode,
+            run_id=run_id,
+            source_snapshot_digest=source_snapshot_digest,
+            backend=backend,
+        )
+        issues.extend(
+            f"independent application final-byte authority: {issue}"
+            for issue in final_issues
+        )
+        try:
+            final = _load_json(root / FINAL_BYTE_AUTHORITY_FILE)
+            if not isinstance(final, Mapping):
+                raise ValueError("root is not an object")
+        except Exception as exc:
+            issues.append(
+                "independent application final-byte authority unavailable: "
+                f"{type(exc).__name__}"
+            )
+        else:
+            issues.extend(
+                f"independent application final-byte authority: {issue}"
+                for issue in semantic_invariant_pass2_debt_issues(final)
+            )
+            if (
+                final.get("prior_application_payload_digest")
+                != producer.get("payload_digest")
+            ):
+                issues.append(
+                    "independent application final-byte authority does not bind "
+                    "the producer payload"
+                )
+            if final.get("run_binding") != authority.get("run_binding"):
+                issues.append(
+                    "independent application final-byte run binding differs "
+                    "from the frozen semantic authority"
+                )
+    return list(dict.fromkeys(str(issue) for issue in issues if str(issue)))
 
 
 def _receipt_projection(receipt: Mapping[str, Any]) -> str:
@@ -1112,45 +1575,23 @@ def derive_semantic_invariant_application(
     run_id: str = "",
     source_snapshot_digest: str = "",
     load_independent_from_disk: bool = True,
+    backend: str = "claude",
 ) -> tuple[dict[str, Any], str]:
     root = Path(scratchpad)
-    expected_authority, expected_worklist, _projection = (
-        derive_semantic_invariant_authority(
-            root,
-            ecosystem=ecosystem,
-            mode=mode,
-            run_id=run_id,
-            source_snapshot_digest=source_snapshot_digest,
-        )
+    (
+        expected_authority,
+        expected_worklist,
+        _projection,
+        frozen_issues,
+    ) = _frozen_semantic_invariant_authority(
+        root,
+        ecosystem=ecosystem,
+        mode=mode,
+        run_id=run_id,
+        source_snapshot_digest=source_snapshot_digest,
     )
-    issues: list[str] = []
-    fatal = False
-    for name, expected in (
-        (AUTHORITY_FILE, expected_authority),
-        (WORKLIST_FILE, expected_worklist),
-    ):
-        try:
-            actual = _load_json(root / name)
-        except Exception as exc:
-            issues.append(f"{name} missing or malformed: {type(exc).__name__}")
-            fatal = True
-            continue
-        if actual != expected:
-            issues.append(f"{name} differs from current inputs")
-            fatal = True
-    try:
-        actual_projection = (root / WORKLIST_PROJECTION_FILE).read_text(
-            encoding="utf-8", errors="strict"
-        )
-    except Exception as exc:
-        issues.append(
-            f"{WORKLIST_PROJECTION_FILE} missing or malformed: {type(exc).__name__}"
-        )
-        fatal = True
-    else:
-        if actual_projection != render_semantic_invariant_worklist(expected_worklist):
-            issues.append(f"{WORKLIST_PROJECTION_FILE} differs from current inputs")
-            fatal = True
+    issues: list[str] = list(frozen_issues)
+    fatal = bool(frozen_issues)
 
     payload: Mapping[str, Any] | None = application_payload
     semantic_binding: dict[str, Any] | None = None
@@ -1179,6 +1620,7 @@ def derive_semantic_invariant_application(
                 fatal = True
     by_id: dict[str, Mapping[str, Any]] = {}
     invalid_ids: set[str] = set()
+    independent_delivery_ids: set[str] = set()
     if payload is not None:
         rows, invalid, payload_issues, payload_fatal = _validate_application_payload(
             payload, expected_worklist
@@ -1187,6 +1629,13 @@ def derive_semantic_invariant_application(
         invalid_ids = invalid
         issues.extend(payload_issues)
         fatal = fatal or payload_fatal
+        independent_delivery_ids = set(
+            independent_delivery_denominator(
+                payload,
+                expected_worklist,
+                expected_authority,
+            )
+        )
 
     independent = independent_payload
     independent_binding: dict[str, Any] | None = None
@@ -1222,9 +1671,33 @@ def derive_semantic_invariant_application(
                 independent_fatal,
                 independent_consumer,
             ) = _validate_independent_payload(
-                independent, expected_worklist, payload
+                independent,
+                expected_worklist,
+                payload,
+                expected_authority,
             )
             issues.extend(independent_issues)
+            if (
+                independent_consumer == "DEPTH_STATE_TRACE"
+                and str(mode or expected_worklist.get("run_binding", {}).get("mode") or "")
+                .strip()
+                .lower()
+                == "thorough"
+            ):
+                final_issues = validate_semantic_invariant_final_byte_authority(
+                    root,
+                    ecosystem=ecosystem,
+                    mode=mode,
+                    run_id=run_id,
+                    source_snapshot_digest=source_snapshot_digest,
+                    backend=backend,
+                )
+                if final_issues:
+                    issues.extend(
+                        f"independent application final-byte authority: {issue}"
+                        for issue in final_issues
+                    )
+                    independent_fatal = True
 
     conflicts_by_state: dict[str, list[str]] = {}
     for conflict in expected_authority.get("conflicts") or []:
@@ -1254,21 +1727,30 @@ def derive_semantic_invariant_application(
         independent_evidence: list[str] = []
         independent_result = ""
         if (
-            status == "DELIVERED"
+            status in {"DELIVERED", "DEFERRED"}
+            and state_id in independent_delivery_ids
             and independent_row is not None
             and state_id not in independent_invalid_ids
             and not independent_fatal
             and row is not None
         ):
-            status, independent_row_issues = _independent_row_status(
+            independent_status, independent_row_issues = _independent_row_status(
                 independent_row, state, row
             )
             row_issues.extend(independent_row_issues)
+            if not independent_row_issues:
+                status = independent_status
             if isinstance(independent_row.get("evidence_loci"), list):
                 independent_evidence = list(independent_row.get("evidence_loci") or [])
             independent_result = str(independent_row.get("result") or "")
-        elif status == "DELIVERED" and state_id in independent_invalid_ids:
-            row_issues.append("independent application row is invalid; producer remains delivered")
+        elif (
+            status in {"DELIVERED", "DEFERRED"}
+            and state_id in independent_delivery_ids
+            and state_id in independent_invalid_ids
+        ):
+            row_issues.append(
+                "independent application row is invalid; producer status is retained"
+            )
         state_results.append(
             {
                 "state_id": state_id,
@@ -1360,6 +1842,7 @@ def reconcile_semantic_invariant_application(
     run_id: str = "",
     source_snapshot_digest: str = "",
     load_independent_from_disk: bool = True,
+    backend: str = "claude",
 ) -> dict[str, Any]:
     root = Path(scratchpad)
     receipt, projection = derive_semantic_invariant_application(
@@ -1372,6 +1855,7 @@ def reconcile_semantic_invariant_application(
         run_id=run_id,
         source_snapshot_digest=source_snapshot_digest,
         load_independent_from_disk=load_independent_from_disk,
+        backend=backend,
     )
     _atomic_write_if_changed(root / APPLICATION_RECEIPT_FILE, _pretty_json(receipt))
     _atomic_write_if_changed(
@@ -1388,6 +1872,7 @@ def validate_semantic_invariant_application(
     run_id: str = "",
     source_snapshot_digest: str = "",
     load_independent_from_disk: bool = True,
+    backend: str = "claude",
 ) -> list[str]:
     root = Path(scratchpad)
     try:
@@ -1398,6 +1883,7 @@ def validate_semantic_invariant_application(
             run_id=run_id,
             source_snapshot_digest=source_snapshot_digest,
             load_independent_from_disk=load_independent_from_disk,
+            backend=backend,
         )
     except Exception as exc:
         return [f"semantic invariant reconciliation failed: {type(exc).__name__}"]
@@ -1632,9 +2118,10 @@ def write_semantic_invariant_pass2_pre_authority(
     scratchpad: Path,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """Create the immutable PRE authority once; exact resumes never rebind it."""
+    """Create the immutable PRE authority and byte-exact Pass-1 snapshot once."""
     root = Path(scratchpad)
     path = root / PASS2_PRE_FILE
+    snapshot_path = root / PASS1_SNAPSHOT_FILE
     if path.is_file():
         loaded = _load_json(path)
         if not isinstance(loaded, Mapping):
@@ -1644,8 +2131,23 @@ def write_semantic_invariant_pass2_pre_authority(
         )
         if issues:
             raise ValueError("; ".join(issues))
+        snapshot = snapshot_path.read_bytes()
+        if (
+            len(snapshot) != int(loaded.get("pre_semantic_byte_count") or -1)
+            or _sha256_bytes(snapshot)
+            != str(loaded.get("pre_semantic_sha256") or "")
+        ):
+            raise ValueError("existing Pass-1 snapshot differs from PRE authority")
         return dict(loaded)
     payload = derive_semantic_invariant_pass2_pre_authority(root, **kwargs)
+    semantic = (root / "semantic_invariants.md").read_bytes()
+    if (
+        len(semantic) != int(payload.get("pre_semantic_byte_count") or -1)
+        or _sha256_bytes(semantic)
+        != str(payload.get("pre_semantic_sha256") or "")
+    ):
+        raise ValueError("Pass-1 semantic bytes changed before snapshot publication")
+    _atomic_write_if_changed(snapshot_path, semantic)
     _atomic_write_if_changed(path, _pretty_json(payload))
     return payload
 
@@ -1680,6 +2182,16 @@ def validate_semantic_invariant_pass2_pre_authority(
             loaded, expected_run_binding=run_binding, backend=backend
         )
     )
+    try:
+        snapshot = (root / PASS1_SNAPSHOT_FILE).read_bytes()
+        if (
+            len(snapshot) != int(loaded.get("pre_semantic_byte_count") or -1)
+            or _sha256_bytes(snapshot)
+            != str(loaded.get("pre_semantic_sha256") or "")
+        ):
+            issues.append("Pass-1 snapshot does not match PRE authority")
+    except Exception as exc:
+        issues.append(f"Pass-1 snapshot unavailable: {type(exc).__name__}")
     try:
         semantic = (root / "semantic_invariants.md").read_bytes()
         count = int(loaded.get("pre_semantic_byte_count") or 0)
@@ -1776,8 +2288,18 @@ def derive_semantic_invariant_final_byte_authority(
     if not prefix_preserved:
         issues.append("Pass-2 append did not preserve the exact Pass-1 byte prefix")
     append_bytes = post_bytes[pre_count:] if prefix_preserved else b""
-    if not append_bytes:
-        issues.append("Pass-2 append is empty")
+    exact_preimage = bool(
+        prefix_preserved
+        and len(post_bytes) == pre_count
+        and _sha256_bytes(post_bytes) == pre_sha
+    )
+    assurance = (
+        "EXACT_SEALED_PASS1_FALLBACK"
+        if exact_preimage
+        else "EXACT_PREFIX_PRESERVING_APPEND_RECONCILIATION"
+    )
+    if not append_bytes and not exact_preimage:
+        issues.append("Pass-2 append is empty without an exact Pass-1 fallback")
     if pre.get("status") != "READY":
         issues.append("Pass-2 pre-authority was not READY")
 
@@ -1785,7 +2307,7 @@ def derive_semantic_invariant_final_byte_authority(
         "schema_version": FINAL_BYTE_AUTHORITY_SCHEMA,
         "run_binding": run_binding,
         "status": "VALID_FINAL_BYTES" if not issues else "UNMEASURABLE",
-        "assurance": "EXACT_PREFIX_PRESERVING_APPEND_RECONCILIATION",
+        "assurance": assurance,
         "semantic_correctness_proven": False,
         "append_producer_self_certified": False,
         "pre_authority_digest": str(pre.get("pre_authority_digest") or ""),
@@ -1868,7 +2390,11 @@ def _validate_final_byte_payload(
         issues.append("final-byte authority cannot prove semantic correctness")
     if payload.get("append_producer_self_certified") is not False:
         issues.append("Pass-2 producer cannot self-certify its append")
-    if payload.get("assurance") != "EXACT_PREFIX_PRESERVING_APPEND_RECONCILIATION":
+    assurance = payload.get("assurance")
+    if assurance not in {
+        "EXACT_PREFIX_PRESERVING_APPEND_RECONCILIATION",
+        "EXACT_SEALED_PASS1_FALLBACK",
+    }:
         issues.append("final-byte authority assurance mismatch")
     if payload.get("status") not in {"VALID_FINAL_BYTES", "UNMEASURABLE"}:
         issues.append("final-byte authority status invalid")
@@ -1928,11 +2454,24 @@ def _validate_final_byte_payload(
             issues.append("final-byte append count mismatch")
         if str(payload.get("append_sha256") or "") != _sha256_bytes(append_bytes):
             issues.append("final-byte append digest mismatch")
+        exact_preimage = bool(
+            prefix_preserved
+            and len(current) == pre_count
+            and _sha256_bytes(current)
+            == str(pre.get("pre_semantic_sha256") or "")
+        )
+        publication_shape_valid = (
+            bool(append_bytes)
+            if assurance == "EXACT_PREFIX_PRESERVING_APPEND_RECONCILIATION"
+            else exact_preimage
+            if assurance == "EXACT_SEALED_PASS1_FALLBACK"
+            else False
+        )
         expected_valid = (
             not payload_issues
             and pre.get("status") == "READY"
             and prefix_preserved
-            and bool(append_bytes)
+            and publication_shape_valid
         )
         if (payload.get("status") == "VALID_FINAL_BYTES") is not expected_valid:
             issues.append("final-byte authority status/evidence mismatch")
@@ -1995,6 +2534,7 @@ __all__ = [
     "AUTHORITY_FILE",
     "AUTHORITY_SCHEMA",
     "GAPS_PROJECTION_FILE",
+    "PASS1_SNAPSHOT_FILE",
     "PASS2_PRE_FILE",
     "PASS2_PRE_SCHEMA",
     "TRACE_BEGIN",
@@ -2006,6 +2546,9 @@ __all__ = [
     "derive_semantic_invariant_authority",
     "derive_semantic_invariant_final_byte_authority",
     "derive_semantic_invariant_pass2_pre_authority",
+    "independent_consumer_correction_prompt",
+    "independent_consumer_prompt",
+    "independent_delivery_denominator",
     "materialize_semantic_invariant_compatibility_inputs",
     "parse_semantic_invariant_application_trace",
     "payload_digest",
@@ -2013,6 +2556,7 @@ __all__ = [
     "reconcile_semantic_invariant_application",
     "render_semantic_invariant_worklist",
     "semantic_invariant_pass2_debt_issues",
+    "validate_independent_semantic_invariant_trace",
     "validate_semantic_invariant_application",
     "validate_semantic_invariant_authority",
     "validate_semantic_invariant_final_byte_authority",

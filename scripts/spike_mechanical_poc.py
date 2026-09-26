@@ -271,6 +271,20 @@ def parse_verify_file(verify_path: Path,
     func_field_m = _TEST_FUNC_FIELD_RE.search(text)
     if func_field_m:
         test_function = func_field_m.group(1)
+        shorthand = re.fullmatch(
+            r"test_([A-Za-z0-9_]+)_and_fuzz_\1", test_function,
+        )
+        if (
+            language == "evm"
+            and shorthand is not None
+            and re.search(
+                rf"\bfunction\s+{re.escape(test_function)}\s*\(", text,
+            ) is None
+        ):
+            # The source bridge separately authenticates both declarations.
+            # Execution targets the primary harm test, never the display
+            # shorthand as a nonexistent --match-test identity.
+            test_function = f"test_{shorthand.group(1)}"
     if not test_function and test_file_field:
         f_match = _FUNC_IN_TEST_FILE_RE.search(test_file_field)
         if f_match:

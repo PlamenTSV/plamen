@@ -64,6 +64,10 @@ def _graph(root: Path, *, ecosystem: str = "evm") -> None:
     (root / "_mechanical_graph.json").write_text(
         json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8"
     )
+    (root / "function_list.md").write_text(
+        "# Functions\n\n- `Vault.update()` — `src/Vault.sol:L20`\n",
+        encoding="utf-8",
+    )
 
 
 def _canonical_ids(root: Path, identities: tuple[str, ...] = ()) -> None:
@@ -578,7 +582,7 @@ def test_p1d_independent_consumer_is_distinct_and_reconciles_after_depth(
     assert sealed_prior["status"] == "DELIVERED"
     assert sealed_prior["receipt_digest"] != receipt["receipt_digest"]
     assert D._semantic_invariant_final_input_issues(tmp_path, config) == []
-    assert receipt["producer_operator_digest"] == "c" * 64
+    assert receipt["producer_operator_digest"] == S.semantic_invariant_producer_operator_digest()
     assert receipt["states"][0]["independent_consumer"] == "DEPTH_STATE_TRACE"
     ledger = read_artifact_ledger(tmp_path)
     worker = "sc/thorough/evm/claude/depth/worker.semantic_invariant_independent"
@@ -900,7 +904,7 @@ def test_p1d_depth_rejects_unowned_live_receipt_drift_after_final_seal(
     assert any("successor" in issue for issue in issues)
 
 
-def test_p1d_pass2_missing_or_empty_append_cannot_self_certify(
+def test_p1d_pass2_missing_or_empty_append_seals_exact_pass1_fallback(
     tmp_path: Path,
 ) -> None:
     _checkpoint(tmp_path)
@@ -917,9 +921,12 @@ def test_p1d_pass2_missing_or_empty_append_cannot_self_certify(
 
     issues = D._finalize_semantic_invariant_pass2_boundary(tmp_path, config)
 
-    assert any("append is empty" in issue for issue in issues)
+    assert issues == []
     final = json.loads((tmp_path / S.FINAL_BYTE_AUTHORITY_FILE).read_text())
-    assert final["status"] == "UNMEASURABLE"
+    assert final["status"] == "VALID_FINAL_BYTES"
+    assert final["assurance"] == "EXACT_SEALED_PASS1_FALLBACK"
+    assert final["append_byte_count"] == 0
+    assert final["pre_semantic_sha256"] == final["post_semantic_sha256"]
     assert final["semantic_correctness_proven"] is False
     assert final["append_producer_self_certified"] is False
 
@@ -1027,7 +1034,17 @@ def test_p1d_pass2_phaseio_has_distinct_append_and_successor_owners() -> None:
     assert worker.model_invoked is True
     assert worker.outputs[0].write_mode == "APPEND"
     assert worker.outputs[0].writer == "MODEL"
-    assert worker.immutable_inputs == (f"scratchpad:{S.PASS2_PRE_FILE}",)
+    assert set(worker.immutable_inputs) == {
+        f"scratchpad:{S.PASS2_PRE_FILE}",
+        f"scratchpad:{S.PASS1_SNAPSHOT_FILE}",
+        "scratchpad:state_variables.md",
+        "scratchpad:function_list.md",
+        "scratchpad:state_write_map.md",
+    }
+    assert {spec.path for spec in pre.outputs} == {
+        S.PASS2_PRE_FILE,
+        S.PASS1_SNAPSHOT_FILE,
+    }
     assert final.model_invoked is False
     assert final.outputs[0].path == S.FINAL_BYTE_AUTHORITY_FILE
     assert set(final.immutable_inputs) == {
@@ -1140,6 +1157,75 @@ def test_p1m_evm_typed_worker_stages_disjoint_authority_and_composition(
         f"scratchpad:{R.EXTERNAL_RESEARCH_FILE}",
         f"scratchpad:{R.PROJECTION_FILE}",
     }
+
+
+def test_p1m_live_driver_replaces_model_digest_mistakes_before_authority(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    _checkpoint(tmp_path)
+    _graph(tmp_path)
+    config = _config(tmp_path, backend="codex")
+
+    def fake_execute(**kwargs):
+        trace = _role_trace(tmp_path)
+        trace["run_binding_digest"] = "1" * 64
+        trace["operator_digest"] = "2" * 64
+        trace["payload_digest"] = "3" * 64
+        (tmp_path / R.TRACE_FILE).write_text(
+            json.dumps(trace, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr(D, "_execute_auxiliary_model_work_unit", fake_execute)
+
+    assert D._run_authentication_role_boundary(
+        tmp_path, config, _phase("depth")
+    ) == []
+    raw_trace = json.loads(
+        (tmp_path / R.TRACE_FILE).read_text(encoding="utf-8")
+    )
+    authority = json.loads(
+        (tmp_path / R.AUTHORITY_FILE).read_text(encoding="utf-8")
+    )
+    composition = json.loads(
+        (tmp_path / R.COMPOSITION_FILE).read_text(encoding="utf-8")
+    )
+
+    # The immutable MODEL artifact remains byte-for-byte attributable; its
+    # claimed hashes are never rewritten into apparent model authority.
+    assert raw_trace["payload_digest"] == "3" * 64
+    assert authority["status"] == "ACTIVE"
+    assert authority["trace_payload_digest"] != raw_trace["payload_digest"]
+    assert authority["operator_digest"] == R.authentication_role_operator_digest()
+    assert authority["trace_authority"]["cryptographic_authority"] == "DRIVER"
+    assert (
+        authority["trace_authority"]["producer_cryptographic_claims"]
+        == "REPLACED_UNTRUSTED"
+    )
+    assert composition["obligation_count"] == 1
+
+
+def test_p1m_prompt_assigns_only_semantics_to_model_and_enumerates_constraints(
+) -> None:
+    prompt = D._authentication_role_prompt()
+
+    assert "exactly schema_version, ecosystem,\nfacts" in prompt
+    assert "Do not include run_binding_digest" in prompt
+    assert (
+        "cryptographic authority\nowned and deterministically supplied by the driver"
+        in prompt
+    )
+    assert "provenance IN_SCOPE or EXTERNAL" in prompt
+    assert "`SOURCE` is not valid" in prompt
+    assert (
+        "IN_SCOPE\nfacts must set external_dependency and external_surface to empty strings"
+        in prompt
+    )
+    assert (
+        "EXTERNAL facts\nmust set both external_dependency and external_surface nonempty"
+        in prompt
+    )
 
 
 def test_p1m_transactional_inner_commit_is_not_double_committed(
@@ -1591,25 +1677,30 @@ def test_live_main_loop_orders_dm_boundaries_around_model_and_depth_commit() -> 
     )
     pre = call_lines("_prepare_semantic_invariant_pre_boundary")[0]
     pass2_pre = call_lines("_prepare_semantic_invariant_pass2_boundary")[0]
-    launch = min(
-        node.lineno
+    launch_assignments = [
+        node
         for node in ast.walk(main)
         if isinstance(node, ast.Assign)
         and len(node.targets) == 1
         and isinstance(node.targets[0], ast.Name)
         and node.targets[0].id == "rc"
-        and isinstance(node.value, ast.Call)
-        and call_name(node.value) == "run_phase"
-        and node.value.args
-        and isinstance(node.value.args[0], ast.Name)
-        and node.value.args[0].id == "phase"
         and any(
-            keyword.arg == "attempt"
-            and isinstance(keyword.value, ast.Constant)
-            and keyword.value.value == 1
-            for keyword in node.value.keywords
+            isinstance(call, ast.Call)
+            and call_name(call) == "run_phase"
+            and call.args
+            and isinstance(call.args[0], ast.Name)
+            and call.args[0].id == "phase"
+            and any(
+                keyword.arg == "attempt"
+                and isinstance(keyword.value, ast.Name)
+                and keyword.value.id == "current_attempt"
+                for keyword in call.keywords
+            )
+            for call in ast.walk(node.value)
         )
-    )
+    ]
+    assert len(launch_assignments) == 1
+    launch = launch_assignments[0].lineno
     post = min(line for line in call_lines("_finalize_semantic_invariant_post_boundary") if line > launch)
     assignments = [
         node

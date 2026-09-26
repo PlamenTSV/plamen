@@ -296,20 +296,33 @@ def build_report_index_candidates_json(
         c["default_report_tier"] = tier
         c["allowed_actions"] = list(ALLOWED_ACTIONS)
 
-    payload = {
+    unsigned_payload = {
         "schema_version": CANDIDATES_SCHEMA_VERSION,
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "row_count": len(enriched),
         "candidate_universe": universe_binding,
         "candidates": enriched,
     }
     out = scratchpad / "report_index_candidates.json"
+    generated_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+    if out.is_file():
+        try:
+            prior = json.loads(out.read_text(encoding="utf-8", errors="strict"))
+            if isinstance(prior, dict):
+                prior_semantics = {
+                    key: value for key, value in prior.items()
+                    if key != "generated_at"
+                }
+                if prior_semantics == unsigned_payload:
+                    generated_at = str(prior.get("generated_at") or generated_at)
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            pass
+    payload = {**unsigned_payload, "generated_at": generated_at}
+    raw = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if out.is_file() and out.read_bytes() == raw:
+        return payload
     try:
         tmp = out.with_suffix(out.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        tmp.write_bytes(raw)
         tmp.replace(out)
     except OSError:
         pass

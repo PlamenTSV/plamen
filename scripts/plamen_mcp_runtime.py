@@ -452,12 +452,60 @@ def _reject_extended_metadata(path: Path, label: str) -> None:
             )
         return
     listxattr = getattr(os, "listxattr", None)
-    if listxattr is None:
-        raise MCPRuntimeSecurityError(
-            f"extended-attribute enumeration is unavailable for {label}"
-        )
     try:
-        attributes = listxattr(_fs_path(path), follow_symlinks=False)
+        if listxattr is not None:
+            attributes = listxattr(_fs_path(path), follow_symlinks=False)
+        elif sys.platform == "darwin":
+            # Some reviewed CPython macOS distributions omit ``os.listxattr``
+            # even though Darwin exposes the descriptor-relative primitive.
+            # Bind the xattr census to a no-follow handle so a pathname swap
+            # cannot redirect validation to another object.
+            import ctypes
+
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(_fs_path(path), flags)
+            try:
+                libc = ctypes.CDLL(None, use_errno=True)
+                libc.flistxattr.argtypes = [
+                    ctypes.c_int,
+                    ctypes.c_void_p,
+                    ctypes.c_size_t,
+                    ctypes.c_int,
+                ]
+                libc.flistxattr.restype = ctypes.c_ssize_t
+                size = int(libc.flistxattr(descriptor, None, 0, 0))
+                if size < 0:
+                    raise OSError(
+                        ctypes.get_errno(),
+                        "flistxattr MCP runtime authority",
+                    )
+                if size > 1024 * 1024:
+                    raise MCPRuntimeSecurityError(
+                        f"extended-attribute roster is oversized for {label}"
+                    )
+                if size:
+                    buffer = ctypes.create_string_buffer(size)
+                    observed = int(
+                        libc.flistxattr(descriptor, buffer, size, 0)
+                    )
+                    if observed != size:
+                        raise MCPRuntimeSecurityError(
+                            f"extended-attribute roster changed for {label}"
+                        )
+                    encoded = buffer.raw[:observed].split(b"\x00")
+                    if encoded and encoded[-1] == b"":
+                        encoded.pop()
+                    attributes = [os.fsdecode(name) for name in encoded]
+                else:
+                    attributes = []
+            finally:
+                os.close(descriptor)
+        else:
+            raise MCPRuntimeSecurityError(
+                f"extended-attribute enumeration is unavailable for {label}"
+            )
     except OSError as exc:
         raise MCPRuntimeSecurityError(
             f"extended-attribute enumeration failed for {label}"
@@ -738,7 +786,24 @@ def _store_lock_file_snapshot(
 
 def _store_root_identity(path: Path) -> tuple[int, int, int, int]:
     info = _require_plain_directory(path, "generation store root")
-    return (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_nlink)
+    # APFS does not expose a stable directory link count: adding or removing
+    # an ordinary child can change ``st_nlink`` for the same directory inode.
+    # That makes it unsuitable as replacement authority across the lock-file
+    # publication seam.  Darwin cannot create ordinary hard links to
+    # directories, while the no-link ancestor checks reject symlinks, so bind
+    # the complete mode (including permissions) in its place.  Other hosts
+    # retain the reviewed link-count binding.
+    trailing_identity = (
+        stat.S_IMODE(info.st_mode)
+        if sys.platform == "darwin"
+        else int(info.st_nlink)
+    )
+    return (
+        int(info.st_dev),
+        int(info.st_ino),
+        stat.S_IFMT(info.st_mode),
+        trailing_identity,
+    )
 
 
 def _acquire_store_lock(
@@ -1458,15 +1523,33 @@ def _validate_finalizer_policy(value: Any) -> dict[str, Any]:
     if len(actions) > 1:
         raise MCPRuntimeSecurityError("generation post-npm finalizer count differs")
     if actions:
-        expected_action = {
-            "schema": "plamen.claude_native_finalizer.v1",
-            "package": "@anthropic-ai/claude-code",
-            "version": "2.1.252",
-            "script": "node_modules/@anthropic-ai/claude-code/install.cjs",
-            "output": "node_modules/@anthropic-ai/claude-code/bin/claude.exe",
-            "probe_args": ["--version"],
-        }
-        if actions[0] != expected_action:
+        action = actions[0]
+        if (
+            not isinstance(action, dict)
+            or set(action) != {
+                "schema", "package", "version", "script", "output",
+                "probe_args", "acquisition_policy_sha256",
+                "registry_metadata_sha256", "upstream_manifest_sha256",
+                "expected_executable_sha256", "expected_executable_size",
+            }
+            or action.get("schema") != "plamen.claude_native_finalizer.v2"
+            or action.get("package") != "@anthropic-ai/claude-code"
+            or not _PINNED_VERSION_RE.fullmatch(str(action.get("version") or ""))
+            or action.get("script")
+            != "node_modules/@anthropic-ai/claude-code/install.cjs"
+            or action.get("output")
+            != "node_modules/@anthropic-ai/claude-code/bin/claude.exe"
+            or action.get("probe_args") != ["--version"]
+            or any(
+                not re.fullmatch(r"[0-9a-f]{64}", str(action.get(field) or ""))
+                for field in (
+                    "acquisition_policy_sha256", "registry_metadata_sha256",
+                    "upstream_manifest_sha256", "expected_executable_sha256",
+                )
+            )
+            or type(action.get("expected_executable_size")) is not int
+            or action["expected_executable_size"] <= 0
+        ):
             raise MCPRuntimeSecurityError("generation post-npm finalizer differs")
     expected = {
         "schema": "plamen.mcp_finalizer_policy.v1",
@@ -1691,6 +1774,11 @@ def finalize_claude_native(
     payload_root: os.PathLike[str] | str,
     *,
     version: str,
+    acquisition_policy_sha256: str,
+    registry_metadata_sha256: str,
+    upstream_manifest_sha256: str,
+    expected_executable_sha256: str,
+    expected_executable_size: int,
     node_executable: os.PathLike[str] | str,
     environment: Mapping[str, str],
     runner: Callable[..., Any] = subprocess.run,
@@ -1698,7 +1786,18 @@ def finalize_claude_native(
     verifier: Verifier | None = None,
 ) -> dict[str, Any]:
     """Execute and verify the sole request-bound post-npm lifecycle action."""
-    if version != "2.1.252":
+    if (
+        not _PINNED_VERSION_RE.fullmatch(str(version or ""))
+        or any(
+            not re.fullmatch(r"[0-9a-f]{64}", str(value or ""))
+            for value in (
+                acquisition_policy_sha256, registry_metadata_sha256,
+                upstream_manifest_sha256, expected_executable_sha256,
+            )
+        )
+        or type(expected_executable_size) is not int
+        or expected_executable_size <= 0
+    ):
         raise MCPRuntimeSecurityError("Claude native finalizer version differs")
     if any(
         key.upper() in {"NODE_OPTIONS", "NODE_PATH"}
@@ -1749,6 +1848,10 @@ def finalize_claude_native(
                 pass
     info = _require_plain_file(output, "Claude native finalizer output")
     size, digest = _digest_file_exact(output, info)
+    if size != expected_executable_size or digest != expected_executable_sha256:
+        raise MCPRuntimeSecurityError(
+            "Claude native finalizer output differs from acquisition manifest"
+        )
     probe = runner(
         [str(_display_path(output)), "--version"], capture_output=True, text=True,
         timeout=60, env=dict(environment),
@@ -1756,7 +1859,11 @@ def finalize_claude_native(
     if probe.returncode != 0 or version not in ((probe.stdout or "") + (probe.stderr or "")):
         raise MCPRuntimeSecurityError("Claude native finalized version differs")
     return {"relative_path": "node_modules/@anthropic-ai/claude-code/bin/claude.exe",
-            "version": version, "size": size, "sha256": digest, "link_count": info.st_nlink}
+            "version": version, "size": size, "sha256": digest,
+            "link_count": info.st_nlink,
+            "acquisition_policy_sha256": acquisition_policy_sha256,
+            "registry_metadata_sha256": registry_metadata_sha256,
+            "upstream_manifest_sha256": upstream_manifest_sha256}
 
 
 def _validate_executable_receipt(value: Any, label: str) -> None:

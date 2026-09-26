@@ -1,0 +1,195 @@
+{
+  "schema": "plamen.goal-progress-evidence.v1",
+  "date": "2026-09-21",
+  "checkpoint": "nonempty-report-tail-passed-inventory-provenance-duplicate-under-repair",
+  "backend": "codex",
+  "production_e2e_completed": false,
+  "audit_launched": false,
+  "runtime_closure_sha256": "2846451c11864ee8ffed16df038754b943faa25b3e619e64364983e21415dba1",
+  "initial_tests": {
+    "runtime_closure_sha256": "2a2147989544dfbf2474123bf3e616b5f60d8db8f0b1a9dc4077d1ba42f7eee3",
+    "passed": 1288,
+    "failed": 0,
+    "skipped": 1,
+    "deselected": 113,
+    "raw_results": "/tmp/plamen-semantic-transitions-20260921-01/results.json",
+    "counts_by_suite": {
+      "test_artifact_surface.py": 262,
+      "test_artifact_surface_conformance.py": 209,
+      "test_artifact_surface_semantic_conflicts.py": 23,
+      "test_disposition_semantic_conflicts.py": 15,
+      "test_representation_purge_parsers.py": 103,
+      "test_representation_bound_gates_p0_am.py": 173,
+      "test_representation_tolerant_driver_gates.py": 66,
+      "test_candidate_negative_representation_purge_p0.py": 134,
+      "test_security_obligation_representation_purge.py": 62,
+      "test_material_harm_floor.py": 19,
+      "test_worker_prelaunch_matrix.py": 44,
+      "test_recon_canonical_prepass_handoff.py": 9,
+      "test_depth_additive_successor_transaction.py": 8,
+      "test_chain_tail_transaction_failpoint_matrix_p0_t.py": 2,
+      "test_chain_tail_isolated_phase_io_p0_t.py": 5,
+      "test_live_verify_queue_main_boundary_a0.py": 11,
+      "test_report_index_phase_io_p0_ae.py": 9,
+      "test_report_index_mechanical_commit_p0_ae.py": 8,
+      "test_report_body_pure_derivation.py": 3,
+      "test_report_body_attempt_authority.py": 69,
+      "test_report_body_bridge_routing.py": 9,
+      "test_audit_completion_receipt.py": 27,
+      "test_e2e_acceptance_verifier.py": 18
+    },
+    "skip": "Optional provider-live degraded-run evidence not supplied; no live run replayed."
+  },
+  "separate_report_tail": {
+    "state": "TIMED_OUT",
+    "timeout_seconds": 600,
+    "raw_results": "/tmp/plamen-semantic-report-tail-20260921-01/results.json",
+    "accepted": false
+  },
+  "prior_installation": {
+    "generation_sha256": "5cf76fc1ccfa8ce11814a28b87518c5b2f7f626ac3d18a2299779aa7f2bf0099",
+    "source_entry_count": 7740,
+    "verified": true,
+    "backup": "/tmp/plamen-preinstall-20260921.BUv0mk/installed-runtime-and-skills.tar.gz",
+    "help_exit_code": 0,
+    "plan_exit_code": 0,
+    "plan_provider_invocations": 0,
+    "plan_backend": "codex",
+    "limitation": "The first installed help incorrectly implies compatibility audits cannot launch. Actual _prepare_new_run_config supports local reduced-isolation audits separately from native completion authority. The temporary plan-blocking source change was withdrawn; truthful shared help/plan assurance notice is pending verification."
+  },
+  "installation": {
+    "runtime_closure_sha256": "6ba74959859cbfa3cdfb265e4a9665c99f386dab96ae3e611237c9e79e01f0cd",
+    "generation_sha256": "e23c38aee8c8aff4b4a4d07df71fe57801e0ea8d7049aa9c04b741cbe7343fac",
+    "source_entry_count": 7747,
+    "verified": true,
+    "backup": "/tmp/plamen-preinstall-20260921.BUv0mk/installed-runtime-and-skills.tar.gz",
+    "help_exit_code": 0,
+    "help_assurance_notice_correct": true,
+    "plan_exit_code": 0,
+    "plan_provider_invocations": 0,
+    "plan_backend": "codex",
+    "plan_launchable": true,
+    "plan_created_scratchpad": false,
+    "limitation": "Local POSIX compatibility runtime: reduced host-process isolation, no native containment or native audit-completion receipts. No production audit launched."
+  },
+  "followup_checks": {
+    "authenticated_heading_projection": {
+      "state": "PASSED",
+      "passed": 144,
+      "raw_results": "/tmp/plamen-heading-projection-20260921-03/results.json",
+      "scope": "Shared semantic table reader (75 new metamorphic checks), real assembler to authenticated projection parity, exact/negated status semantics, registered launch restrictions, sealed projection contents, wrong title/tag and authority rejection, source-root routing, read-only assessment; legacy title and completion tests retained. Not yet installed."
+    },
+    "evidence_quality_publication": {
+      "state": "PASSED",
+      "passed": 78,
+      "raw_results": "/tmp/plamen-evidence-quality-20260921-04/results.json",
+      "scope": "Quality assessment is read-only; typed finalizer exclusively publishes receipt. Real gate-to-finalizer sequence, authenticated index context, forged/unowned receipt rejection and existing tamper/overclaim/compare-only/swap negatives tested. Not yet installed.",
+      "intermediate_fixture_failures": "Run02 had 73 passes and 5 failures because older finalizer fixtures omitted the newly required committed index. Corrected fixtures now publish registered index/evidence authority; no production bypass."
+    },
+    "final_transitions": {
+      "state": "PASSED_WITH_SKIPS",
+      "passed": 169,
+      "skipped": 1,
+      "failed": 0,
+      "raw_results": "/tmp/plamen-transitions-final-20260921-01/results.json",
+      "skip": "Optional provider-live degraded-run evidence not supplied; no live run replayed."
+    },
+    "assurance_handoff": {
+      "state": "PASSED",
+      "passed": 31,
+      "raw_results": "/tmp/plamen-assurance-handoff-20260921-01/results.json",
+      "scope": "Real unchanged-byte producer handoff authorization, forged/foreign/unregistered successor rejection, existing transaction handoffs, recovery diagnostic control flow.",
+      "pre_fix": "Two of four new handoff checks failed before removing the weaker shortcut."
+    },
+    "final_semantics": {
+      "state": "PASSED",
+      "passed": 1119,
+      "failed": 0,
+      "raw_results": "/tmp/plamen-semantic-final-20260921-02/results.json"
+    },
+    "final_readiness": {
+      "state": "PASSED",
+      "passed": 58,
+      "failed": 0,
+      "raw_results": "/tmp/plamen-readiness-final-20260921-03/results.json"
+    },
+    "ledger_replay": {
+      "state": "PASSED",
+      "passed": 19,
+      "raw_results": "/tmp/plamen-ledger-replay-evidence-20260921-02/results.json",
+      "scope": "Exact-byte no-op publication preserves physical identity; changed bytes, unsafe paths, stale/malformed CAS still checked. Before fix, three direct replay cases failed."
+    },
+    "depth_to_empty_report_same_run": {
+      "state": "PASSED",
+      "passed": 1,
+      "elapsed_seconds": 395.167,
+      "raw_results": "/tmp/plamen-depth-report-20260921-03/results.json",
+      "scope": "Benign synthetic accepted-depth inputs through policy-empty queue to report assembly; not recon-to-report or global completion.",
+      "previous_failure": "Assembly committed successfully; new test asserted nonexistent commit_authority.actor rather than actual receipt schema. Corrected to output_authority_actor, added journal cross-binding and DRIVER replay; remaining assertions require rerun."
+    },
+    "depth_to_queue_same_run": {
+      "state": "PASSED",
+      "raw_results": "/tmp/plamen-depth-queue-20260921-01/results.json",
+      "scope": "Actual accepted-depth successor through same-run queue authority; initial context seeded, no provider calls."
+    },
+    "readiness": {
+      "empty_authority_passed": 12,
+      "frontend_passed": 34,
+      "macos_entry_passed": 12,
+      "raw_results": "/tmp/plamen-semantic-readiness-20260921-02/results.json",
+      "ui_followup": "Stale help expectation corrected after that batch; separate UI rerun: 12 passed in 34.59s."
+    },
+    "nonempty_tail": {
+      "state": "PASSED",
+      "passed": 1,
+      "elapsed_seconds": 710.056,
+      "raw_results": "/tmp/plamen-semantic-report-tail-20260921-06/results.json",
+      "scope": "Controlled children plus benign setter/readback tests; intentional unresolved-severity degraded outcome, not global audit completion.",
+      "earlier_ledger_failure": "Protected _artifact_state.json bytes apparently unchanged but inode/mtime changed on resume; exact writer caller not confirmed. Ledger exact-byte no-op fixed with focused regression; subsequent full-tail attempt passed that assertion.",
+      "progress": "Former ledger replay, assurance handoff, premature receipt publication and heading parity failures now pass in a fresh same-run fixture through final evidence quality. All three findings retained; intended unresolved-severity degraded outcome preserved.",
+      "previous_failure": "Report-floor no-change disposition handoff incorrectly treated as ordinary byte-identical authority, so no invalidation occurred and next prebind rejected new owner. Focused regression and subsequent full-tail boundary now pass.",
+      "last_pre_fix_failure": "Run05: assembly quality gate prematurely published report_evidence_quality_receipt.json outside PhaseIO. Intended final producer rejected UNOWNED_EXISTING_OUTPUT.",
+      "additional_read_only_observation": "After the authenticated heading correction, assessment of retained run05 reports DEGRADED_DELIVERY, all L-01..03 semantic parities true, structurally_delivered=true, with ledger and existing quality receipt bytes/inode/mtime unchanged. This read-only diagnostic does not repair the old unowned receipt or count as fresh run acceptance.",
+      "accepted": true,
+      "acceptance_scope": "Scoped synthetic report-tail fixture only; no provider audit agents, no real DODO audit, no global clean completion or recall measurement.",
+      "post_migration_replay": "Read-only compare_only of run06's final receipt under semantic-table reader revision succeeds exactly; all three parities true and ledger/receipt bytes, inode, mtime unchanged."
+    },
+    "inventory_transport": {
+      "state": "PASSED",
+      "passed": 76,
+      "raw_results": "/tmp/plamen-inventory-transport-20260921-02/results.json",
+      "scope": "Exact inventory MODEL attempt identities use existing POSIX receipt incorporation; aliases/DRIVER roles excluded. Shared predicate affects both compatibility transports; actual new child fixture exercises Codex, not a live Claude provider.",
+      "stale_fixture_correction": "Compatibility process marker must not waive a required completion receipt. Corrected isolated test expectation; no production completion policy changed."
+    },
+    "inventory_to_report": {
+      "state": "FAILED_AT_DUPLICATE_SOURCE_PROMOTION",
+      "raw_results": "/tmp/plamen-inventory-report-20260921-02/results.json",
+      "previous_failure": "Run01 reproduced a genuine child MODEL commit with no execution_authority. Exact inventory chunk routing now preserves the real controlled child receipt.",
+      "failure": "Real additive repair retains A-02 as INV-002 but omits Source Actions in emitted markdown; later promotion misses the existing authenticated referent and allocates INV-004. Three-ID expectation remains unchanged.",
+      "scope": "Benign controlled inventory child with seeded breadth/depth/chain context; not a real audit. Fresh-run emitter provenance fix in progress; no historical receipt rewritten."
+    },
+    "empty_report_integration": {
+      "state": "PASSED",
+      "passed": 1,
+      "elapsed_seconds": 374.37,
+      "raw_results": "/tmp/plamen-empty-report-20260921-04/results.json",
+      "scope": "Authenticated policy-empty report assembly and replay, with no-context, foreign-run, changed-tier and unexpected-ID rejection controls.",
+      "previous_failure": "Fixture incorrectly recommitted after arm returned execute=False. Test now uses read-only replay validation; production commit semantics unchanged."
+    }
+  },
+  "followup_in_progress": [
+    "source-action provenance continuity from inventory additive repair through depth promotion",
+    "bounded controlled inventory-child to empty-report fixture rerun",
+    "install final read-only assessment and presentation corrections after integration"
+  ],
+  "diagnostic_interruption": {
+    "state": "INTERRUPTED_NOT_ASSERTION_FAILURE",
+    "reason": "Opt-in faulthandler timer's traceback thread repeatedly sampled in PyCode_Addr2Line with truncated output and high CPU; instrumented pytest processes terminated deliberately and rerun without timer.",
+    "affected_runs": [
+      "/tmp/plamen-empty-report-20260921-02",
+      "/tmp/plamen-semantic-report-tail-20260921-03",
+      "/tmp/plamen-depth-report-20260921-01"
+    ],
+    "raw_runner_label_caveat": "Their existing results.json says FAILED with exit_code=-15; this records explicit cancellation, not an assertion failure. New runner distinguishes SIGNAL_TERMINATED."
+  }
+}

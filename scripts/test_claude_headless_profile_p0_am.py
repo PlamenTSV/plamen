@@ -3,12 +3,22 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 
 import pytest
 
 import claude_auth_route as A
 import claude_headless_profile as P
 import claude_stream_json_evidence as E
+
+
+_WINDOWS_TYPED_PROVIDER_AUTHORITY_ONLY = pytest.mark.skipif(
+    os.name != "nt",
+    reason=(
+        "fixture carries a Windows Authenticode executable/path authority; "
+        "POSIX native-sandbox profile authority has a separate regression"
+    ),
+)
 
 
 def _kwargs() -> dict[str, object]:
@@ -340,6 +350,7 @@ def test_profile_replay_rejects_every_semantic_mutation() -> None:
             P.replay_claude_headless_profile(changed)
 
 
+@_WINDOWS_TYPED_PROVIDER_AUTHORITY_ONLY
 def test_typed_safe_profile_derives_every_external_denominator() -> None:
     profile = P.compile_claude_headless_profile_from_authorities(
         **_typed_kwargs()
@@ -362,6 +373,7 @@ def test_typed_safe_profile_derives_every_external_denominator() -> None:
     assert P.replay_claude_headless_profile(profile) == profile
 
 
+@_WINDOWS_TYPED_PROVIDER_AUTHORITY_ONLY
 def test_typed_bound_profile_carries_settings_and_strict_mcp_authority() -> None:
     profile = P.compile_claude_headless_profile_from_authorities(
         **_typed_kwargs(
@@ -391,6 +403,7 @@ def test_typed_bound_profile_carries_settings_and_strict_mcp_authority() -> None
     assert P.replay_claude_headless_profile(profile) == profile
 
 
+@_WINDOWS_TYPED_PROVIDER_AUTHORITY_ONLY
 def test_pinned_restricted_profile_uses_truthful_default_init_denominator() -> None:
     profile = P.compile_claude_headless_profile_from_authorities(
         **_restricted_typed_kwargs()
@@ -413,7 +426,34 @@ def test_pinned_restricted_profile_uses_truthful_default_init_denominator() -> N
     assert P.replay_claude_headless_profile(profile) == profile
 
 
+def test_posix_native_profile_is_distinct_dontask_sandbox_lane() -> None:
+    profile = P.compile_posix_native_claude_headless_profile(
+        claude_code_version="2.1.252",
+        cwd="/workspace/project",
+        accepted_models=("claude-opus-5",),
+        builtin_tools=("Edit", "Glob", "Grep", "Read", "Write"),
+        required_tools=("Read", "Write"),
+        forbidden_tools=(
+            "Agent", "Bash", "PowerShell", "Task", "WebFetch", "WebSearch",
+        ),
+    )
+
+    assert profile["schema"] == P.POSIX_NATIVE_PROFILE_SCHEMA
+    assert profile["settings_contract"] == (
+        "POSIX_NATIVE_SANDBOX_DONTASK_V1"
+    )
+    permission_index = profile["cli_flags"].index("--permission-mode")
+    assert profile["cli_flags"][permission_index + 1] == "dontAsk"
+    assert "--allowedTools" not in profile["cli_flags"]
+    assert "--disallowedTools" not in profile["cli_flags"]
+    assert profile["expected_init_contract"]["accepted_api_key_sources"] == [
+        "none"
+    ]
+    assert P.replay_claude_headless_profile(profile) == profile
+
+
 @pytest.mark.parametrize("mutation", ("missing-restricted", "wrong-mode"))
+@_WINDOWS_TYPED_PROVIDER_AUTHORITY_ONLY
 def test_restricted_profile_replay_rejects_cli_authority_drift(
     mutation: str,
 ) -> None:
@@ -470,6 +510,7 @@ def test_default_or_restricted_permission_cannot_escape_exact_pinned_lane(
         P.compile_claude_headless_profile_from_authorities(**kwargs)
 
 
+@_WINDOWS_TYPED_PROVIDER_AUTHORITY_ONLY
 def test_typed_profile_rejects_route_settings_or_observation_substitution() -> None:
     safe_helper = _typed_kwargs(route="API_KEY_HELPER")
     with pytest.raises(P.ClaudeHeadlessProfileError, match="helper|settings"):

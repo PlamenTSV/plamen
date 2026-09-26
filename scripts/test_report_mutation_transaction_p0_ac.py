@@ -8,6 +8,9 @@ import pytest
 import plamen_driver as D
 import plamen_mechanical as M
 
+from artifact_ledger import record_work_unit_artifacts, record_work_unit_inputs
+from artifact_ledger import semantic_mutation_events
+from phase_io_contracts import ArtifactSpec, LaunchSpec, PhaseIOContract
 from report_mutation_transaction import (
     ReportMutationTransactionError,
     apply_report_mutation_transaction,
@@ -29,6 +32,100 @@ def _sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _authorize_report_predecessor(tmp_path: Path, *, run_id: str) -> None:
+    """Give the fixture report the same current-run authority as production."""
+
+    scratchpad = tmp_path / ".scratchpad"
+    report = tmp_path / "AUDIT_REPORT.md"
+    report_raw = report.read_bytes()
+    key = "sc/thorough/evm/codex/report_assemble/fixture"
+    contract = PhaseIOContract(
+        pipeline="sc",
+        mode="thorough",
+        ecosystem="evm",
+        backend="codex",
+        phase="report_assemble",
+        work_unit_id="fixture",
+        outputs=(
+            ArtifactSpec(
+                root="project",
+                path="AUDIT_REPORT.md",
+                owner_key=key,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="REPLACE",
+            ),
+        ),
+        model_invoked=False,
+    )
+    launch = LaunchSpec(
+        work_unit_key=contract.key,
+        pipeline=contract.pipeline,
+        mode=contract.mode,
+        ecosystem=contract.ecosystem,
+        backend=contract.backend,
+        model="driver",
+        timeout_s=30,
+        exec_mode="python",
+        tool_policy=("filesystem",),
+    )
+    # A REPLACE producer must arm while its output is absent. Preserve the
+    # fixture bytes across that production-equivalent transition.
+    report.unlink()
+    record_work_unit_inputs(scratchpad, tmp_path, contract, launch, run_id=run_id)
+    report.write_bytes(report_raw)
+    record_work_unit_artifacts(
+        scratchpad,
+        tmp_path,
+        contract,
+        launch,
+        run_id=run_id,
+        actor="DRIVER",
+    )
+
+
+def test_signed_report_successor_is_acknowledged_before_later_rewrite(
+    tmp_path: Path,
+):
+    run_id = "dcf00154-0c8e-4f4c-a9f9-589610a10020"
+    scratchpad = tmp_path / ".scratchpad"
+    scratchpad.mkdir()
+    (tmp_path / "AUDIT_REPORT.md").write_bytes(b"# Report\n\nBefore\n")
+    _authorize_report_predecessor(tmp_path, run_id=run_id)
+    (scratchpad / "report_dedup_agent_decisions.md").write_bytes(b"KEEP H-1\n")
+    after = b"# Report\n\nAfter\n"
+    apply_report_mutation_transaction(
+        scratchpad=scratchpad,
+        project_root=tmp_path,
+        run_id=run_id,
+        phase="report_dedup.evidence_projection",
+        post_report=after,
+        exact_inputs=("report_dedup_agent_decisions.md",),
+        sidecars={"report_dedup.candidate.md": after},
+    )
+    config = {
+        "_run_id": run_id,
+        "pipeline": "sc",
+        "mode": "thorough",
+        "language": "evm",
+        "cli_backend": "codex",
+        "project_root": str(tmp_path),
+        "_active_phase_names": ["report_assemble", "report_dedup", "report_floor"],
+    }
+    checkpoint = D.Checkpoint(completed=["report_assemble"], run_id=run_id)
+    assert D._acknowledge_report_transaction_successor(
+        scratchpad, tmp_path, config, checkpoint,
+        "report_dedup.evidence_projection",
+    ) == []
+    event = next(
+        row for row in semantic_mutation_events(scratchpad)
+        if row["mutation_kind"]
+        == "REPORT_TRANSACTION_REPORT_DEDUP.EVIDENCE_PROJECTION"
+    )
+    assert event["checkpoint_reconciled"] is True
+    assert event["event_id"] in D.Checkpoint.load(scratchpad).semantic_mutation_acks
+
+
 @pytest.mark.parametrize("boundary", BOUNDARIES)
 def test_crash_at_every_boundary_recovers_exactly(tmp_path: Path, boundary: str):
     scratchpad = tmp_path / ".scratchpad"
@@ -37,6 +134,7 @@ def test_crash_at_every_boundary_recovers_exactly(tmp_path: Path, boundary: str)
     before = b"# Report\n\noriginal bytes\n"
     after = b"# Report\n\ntransactional bytes\n"
     report.write_bytes(before)
+    _authorize_report_predecessor(tmp_path, run_id="run-1")
     source = scratchpad / "report_dedup_agent_decisions.md"
     source.write_bytes(b"KEEP H-1 H-2\n")
     sidecars = {
@@ -92,6 +190,7 @@ def test_open_transaction_never_overwrites_preimage_or_ambiguous_report(
     before = b"before\n"
     after = b"after\n"
     report.write_bytes(before)
+    _authorize_report_predecessor(tmp_path, run_id="run-1")
 
     def crash(name: str) -> None:
         if name == "ARMED_DURABLE":
@@ -136,6 +235,7 @@ def test_open_transaction_rejects_input_or_sidecar_tamper(tmp_path: Path):
     scratchpad.mkdir()
     report = tmp_path / "AUDIT_REPORT.md"
     report.write_bytes(b"before\n")
+    _authorize_report_predecessor(tmp_path, run_id="run-1")
     source = scratchpad / "source.json"
     source.write_bytes(b"{}\n")
     sidecars = {"candidate.md": b"candidate\n", "mapping.md": b"map\n"}
@@ -186,6 +286,7 @@ def test_candidate_cannot_bind_inputs_changed_after_computation(tmp_path: Path):
     scratchpad = tmp_path / ".scratchpad"
     scratchpad.mkdir()
     (tmp_path / "AUDIT_REPORT.md").write_bytes(b"before\n")
+    _authorize_report_predecessor(tmp_path, run_id="run-toctou")
     source = scratchpad / "source.json"
     source.write_bytes(b'{"version":1}\n')
     snapshot = capture_report_transaction_inputs(
@@ -212,6 +313,7 @@ def test_input_change_after_arm_blocks_canonical_replace(tmp_path: Path):
     scratchpad.mkdir()
     report = tmp_path / "AUDIT_REPORT.md"
     report.write_bytes(b"before\n")
+    _authorize_report_predecessor(tmp_path, run_id="run-toctou")
     source = scratchpad / "source.json"
     source.write_bytes(b'{"version":1}\n')
 
@@ -244,6 +346,7 @@ def test_report_tamper_after_replace_cannot_manufacture_commit(tmp_path: Path):
     scratchpad.mkdir()
     report = tmp_path / "AUDIT_REPORT.md"
     report.write_bytes(b"before\n")
+    _authorize_report_predecessor(tmp_path, run_id="run-tamper")
 
     def tamper_after_replace(name: str) -> None:
         if name == "REPORT_REPLACED":
@@ -269,6 +372,7 @@ def test_committed_transaction_is_idempotent_and_run_bound(tmp_path: Path):
     scratchpad = tmp_path / ".scratchpad"
     scratchpad.mkdir()
     (tmp_path / "AUDIT_REPORT.md").write_bytes(b"before\n")
+    _authorize_report_predecessor(tmp_path, run_id="run-1")
     kwargs = dict(
         scratchpad=scratchpad,
         project_root=tmp_path,
@@ -296,6 +400,7 @@ def test_report_dedup_recovers_after_canonical_replace_without_recompute(
     report = tmp_path / "AUDIT_REPORT.md"
     original = b"# Security Audit Report\n\n## Summary\n\nNo findings.\n"
     report.write_bytes(original)
+    _authorize_report_predecessor(tmp_path, run_id="run-dedup")
     real_apply = M._apply_report_mutation_transaction
 
     def crash_apply(**kwargs):
@@ -337,6 +442,7 @@ def test_external_research_appendix_is_typed_and_transactional(tmp_path: Path):
     report = tmp_path / "AUDIT_REPORT.md"
     before = b"# Security Audit Report\n\n## Summary\n\nContent.\n"
     report.write_bytes(before)
+    _authorize_report_predecessor(tmp_path, run_id="run-floor")
     (scratchpad / "external_research_gaps.md").write_text(
         "# External-Dependency Research Gaps\n\n"
         "| Finding ID | Dependency | Integration Surface | Reason |\n"
@@ -376,6 +482,7 @@ def test_untyped_stale_appendix_heading_cannot_suppress_current_gap_rows(
         "## Appendix E: Other retained content\n\nKeep me.\n",
         encoding="utf-8",
     )
+    _authorize_report_predecessor(tmp_path, run_id="run-stale-heading")
     (scratchpad / "external_research_gaps.md").write_text(
         "| Finding ID | Dependency | Integration Surface | Reason |\n"
         "|---|---|---|---|\n"
@@ -412,6 +519,7 @@ def test_ambiguous_duplicate_external_appendices_degrade_without_mutation(
         "## Appendix D: External-Dependency Research Gaps (Advisory)\n\nTwo.\n"
     )
     report.write_text(before, encoding="utf-8")
+    _authorize_report_predecessor(tmp_path, run_id="run-duplicate-heading")
     (scratchpad / "external_research_gaps.md").write_text(
         "| Finding ID | Dependency | Integration Surface | Reason |\n"
         "|---|---|---|---|\n"
@@ -434,6 +542,7 @@ def test_committed_external_appendix_drift_is_visible_debt_not_false_noop(
     scratchpad.mkdir()
     report = tmp_path / "AUDIT_REPORT.md"
     report.write_text("# Report\n\nContent.\n", encoding="utf-8")
+    _authorize_report_predecessor(tmp_path, run_id="run-floor-drift")
     ledger = scratchpad / "external_research_gaps.md"
     ledger.write_text(
         "| Finding ID | Dependency | Integration Surface | Reason |\n"
@@ -478,6 +587,7 @@ def test_typed_projection_is_a_recoverable_successor_transaction(
     report = tmp_path / "AUDIT_REPORT.md"
     before = "# Report\n\n### [H-01] Finding\n\nBody.\n"
     report.write_text(before, encoding="utf-8")
+    _authorize_report_predecessor(tmp_path, run_id="run-projection")
     monkeypatch.setattr(
         D, "validate_report_evidence_runtime", lambda _root: {"bundle": {}}
     )

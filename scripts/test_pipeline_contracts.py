@@ -49,6 +49,22 @@ def check(label: str, ok: bool, detail: str = ""):
         print(f"  FAIL  {label} :: {detail}")
 
 
+def _review_debt(sp: Path) -> int:
+    """Receipt-level accounting of NEEDS_INVENTORY_REVIEW rows.
+
+    A row whose SOURCE never rendered a mandatory facet (UNPARSEABLE_*), that
+    the driver cannot splice, and that is delivered one-to-one is irreparable
+    ambiguity: it stays HUMAN_REVIEW_DEBT in the receipt and the human-review
+    artifact but no longer blocks the canonical aggregate (DODO run45 halted
+    on exactly that).  The contract tests therefore read the debt from the
+    receipt instead of using a blocking parity issue as the proxy for
+    "the row was counted".
+    """
+    import inventory_reconciliation as _ir
+    receipt = _ir.reconcile_inventory(sp, persist=False)
+    return int(receipt.get("summary", {}).get("HUMAN_REVIEW_DEBT", 0) or 0)
+
+
 def _mkscratch(files: dict[str, str]) -> Path:
     sp = Path(tempfile.mkdtemp(prefix="plamen_pc_"))
     for name, body in files.items():
@@ -262,10 +278,18 @@ def test_AP_HF_1_inventory_usable_findings_functional_both_pipelines():
 
 
 def test_P4a_loss_sc_feeder_ids_in_promotion_files():
-    """P4a loss: SC feeder file patterns are in _DEPTH_PROMOTION_FILES."""
+    """P4a loss: every bulk SC feeder family is in _DEPTH_PROMOTION_FILES.
+
+    HISTORY: this contract used to require ``niche_*_findings.md`` here too.
+    It no longer does, and that is a DELIBERATE architectural change, not a
+    regression.  Niche findings now publish through the dedicated,
+    receipt-bearing ``promote_niche_to_inventory`` lane; listing them here as
+    well would give one inventory mutation TWO owners.  The separate contract
+    below pins that they are still delivered, so the recall guarantee this
+    test was written to protect is preserved by a stronger mechanism.
+    """
     pat_text = "\n".join(D._DEPTH_PROMOTION_FILES)
     required_patterns = [
-        "niche_*_findings.md",
         "blind_spot_*_findings.md",
         "analysis_rescan_*.md",
         "analysis_percontract_*.md",
@@ -277,6 +301,55 @@ def test_P4a_loss_sc_feeder_ids_in_promotion_files():
         "P4a.loss.sc-feeder-patterns in _DEPTH_PROMOTION_FILES",
         not missing,
         f"missing={missing}",
+    )
+
+
+def test_P4a_loss_niche_findings_have_exactly_one_delivery_owner():
+    """P4a loss: niche findings are delivered, by their dedicated publisher.
+
+    The recall requirement is that a niche agent -- which costs a full depth
+    budget slot, and which the NEVER-CUT rules call out by name after a
+    post-mortem attributed 6/7 misses to skipping them -- can never write
+    findings that no consumer reads.  Two ways to break that: drop it from
+    delivery entirely, or give it two owners that race on the same inventory
+    mutation.  Pin against both.
+    """
+    import finding_producer_registry as R
+
+    niche = [
+        producer
+        for producer in R.FINDING_PRODUCERS
+        if any("niche_" in pat for pat in producer.artifact_patterns)
+    ]
+    check(
+        "P4a.loss.niche producers are registered",
+        bool(niche),
+        f"count={len(niche)}",
+    )
+    undelivered = [
+        producer.key for producer in niche if not producer.required_consumers
+    ]
+    check(
+        "P4a.loss.every niche producer has delivery consumers",
+        not undelivered,
+        f"undelivered={undelivered}",
+    )
+    # The dedicated publisher owns the inventory mutation, so the generic
+    # pre-dedup publisher must NOT also claim it.
+    double_owned = [
+        producer.key
+        for producer in niche
+        if "pre_dedup_promotion" in producer.required_consumers
+    ]
+    check(
+        "P4a.loss.niche inventory mutation has exactly one owner",
+        not double_owned,
+        f"double_owned={double_owned}",
+    )
+    check(
+        "P4a.loss.niche glob absent from the generic bulk promotion list",
+        "niche_*_findings.md" not in "\n".join(D._DEPTH_PROMOTION_FILES),
+        "niche is in the bulk list AND has a dedicated publisher",
     )
 
 
@@ -323,7 +396,21 @@ def test_P4b_loss_depth_word_boundary_promotion_receipt():
 
 
 def test_P4b_loss_low_confidence_not_promoted():
-    """P4b loss: depth findings < min_confidence (0.70) NOT promoted."""
+    """P4b loss: confidence NEVER erases a discovered producer action.
+
+    HISTORY: this contract was inverted.  It used to assert that a depth
+    finding scoring below 0.70 must be DROPPED from inventory.  That is the
+    old lossy regime: a score is routing telemetry computed before
+    verification, and using it as an admission gate silently deletes findings
+    that later phases would have confirmed.  `phase4-confidence-scoring.md`
+    now states it directly -- "Confidence telemetry never changes a verdict",
+    and a finding below the routing threshold "remains a candidate and routes
+    to mandatory verification or visible human-review debt".
+
+    `_promote_depth_findings_to_inventory` keeps `min_confidence` only as a
+    signature-compatibility parameter and explicitly ignores it.  The test
+    name is kept so the old contract stays greppable in history.
+    """
     inv = "### Finding [INV-001]: existing\n**Location**: src/a.rs:L1\n"
     depth = (
         "### Finding [DCI-1]: low conf\n**Confidence**: 0.65\n"
@@ -339,9 +426,24 @@ def test_P4b_loss_low_confidence_not_promoted():
     })
     promoted = D._promote_depth_findings_to_inventory(sp)
     check(
-        "P4b.loss.low-confidence finding NOT promoted",
-        "DCI-1" not in promoted and "DCI-2" in promoted,
+        "P4b.loss.low-confidence finding is STILL promoted (recall-safe)",
+        "DCI-1" in promoted and "DCI-2" in promoted,
         f"promoted={promoted}",
+    )
+    # And the score must not be able to re-acquire admission authority by the
+    # back door of the surviving parameter.
+    strict = D._promote_depth_findings_to_inventory(
+        _mkscratch({
+            "findings_inventory.md": inv,
+            "depth_consensus_invariant_findings.md": depth,
+            "confidence_scores.md": scores,
+        }),
+        min_confidence=0.99,
+    )
+    check(
+        "P4b.loss.min_confidence cannot gate admission",
+        "DCI-1" in strict and "DCI-2" in strict,
+        f"strict={strict}",
     )
 
 
@@ -1178,7 +1280,7 @@ def test_INV_receipt_uses_parser_entries_not_loose_signal_blocks():
     inv = (sp / "findings_inventory.md").read_text(encoding="utf-8")
     ok = (
         parsed == 2 and merged == 2
-        and len(issues) == 1 and "NEEDS_INVENTORY_REVIEW" in issues[0]
+        and issues == [] and _review_debt(sp) >= 1
         and "AC-1" in inv and "AC-2" in inv
     )
     check(
@@ -1213,8 +1315,8 @@ def test_INV_chunk_parser_combines_tables_and_heading_findings():
     ok = (
         parsed == 3
         and merged == 3
-        and len(issues) == 1
-        and "NEEDS_INVENTORY_REVIEW" in issues[0]
+        and issues == []
+        and _review_debt(sp) >= 1
         and all(tok in inv for tok in ("AC-1", "TF-1", "EC-1"))
     )
     check(
@@ -1379,9 +1481,32 @@ def test_INV_refuted_na_depth_feeder_not_promoted():
     issues = D._validate_depth_promotion_receipt(sp)
     inv = (sp / "findings_inventory.md").read_text(encoding="utf-8")
 
-    assert promoted == []
+    # This test formerly asserted `promoted == []` -- a PRECISION gate that
+    # `_promote_depth_findings_to_inventory` explicitly disclaims: "deterministic
+    # plumbing, not a precision gate: confidence and consensus are routing
+    # telemetry for later verification and can never erase a discovered producer
+    # action." Its docstring names DEC findings as exactly the class the bridge
+    # exists to rescue from invisibility, so dropping DEC-1 would be the
+    # provenance laundering this driver is built to prevent, and it contradicts
+    # the candidate-negative contract ("a real, identified candidate ... remains
+    # in the negative-proposal denominator for independent review").
+    #
+    # The property worth testing is therefore not suppression but HONEST
+    # LABELLING: a refuted lead is retained, and retained as a candidate rather
+    # than as a confirmed finding.
+    assert promoted == ["DEC-1"], "a discovered producer action was erased"
     assert issues == []
-    assert "DEC-1" not in inv
+    assert "DEC-1" in inv, "refuted depth lead lost its provenance"
+    block = inv.split("refuted depth lead", 1)[1]
+    assert "**Severity**: Informational" in block, (
+        "a refuted lead must not be retained at a substantive severity"
+    )
+    assert "ANALYTICAL_CANDIDATE" in block, (
+        "a refuted lead must be labelled a candidate, not proof-grade evidence"
+    )
+    assert "depth_edge_case_findings.md:DEC-1@sha256:" in block, (
+        "retention without a bound source action is unverifiable provenance"
+    )
 
 
 def test_BS_report_index_missing_master_section():
@@ -1507,8 +1632,8 @@ def test_INV_chunk_heading_ids_are_preserved_when_source_ids_missing():
     ok = (
         parsed == 7
         and merged == 7
-        and len(issues) == 1
-        and "NEEDS_INVENTORY_REVIEW" in issues[0]
+        and issues == []
+        and _review_debt(sp) >= 1
         and all(f"AC-{i}" in inv for i in range(1, 8))
     )
     check(
@@ -1536,8 +1661,8 @@ def test_INV_shard_exact_mech_similarity_is_tag_only_without_shared_source():
     ok = (
         parsed == 147
             and merged == 147
-            and len(issues) == 1
-            and "NEEDS_INVENTORY_REVIEW" in issues[0]
+            and issues == []
+            and _review_debt(sp) >= 1
         and all(f"AC-{i}" in inv for i in range(1, 148))
     )
     check(
@@ -1569,11 +1694,11 @@ def test_INV_source_ids_bold_colon_format_counts_for_parity():
     issues = D._validate_inventory_parity(sp)
     check(
         "INV.source-ids-bold-colon-format-counts-for-parity",
-        len(issues) == 1 and "NEEDS_INVENTORY_REVIEW" in issues[0],
+        issues == [] and _review_debt(sp) >= 1,
         repr(issues),
     )
-    assert len(issues) == 1
-    assert "NEEDS_INVENTORY_REVIEW" in issues[0]
+    assert issues == []
+    assert _review_debt(sp) >= 1
 
 
 # =============================================================================

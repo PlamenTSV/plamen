@@ -112,9 +112,13 @@ def test_registry_source_roster_projects_to_every_delivery_consumer() -> None:
     }
     for consumer in R.REQUIRED_DELIVERY_CONSUMERS:
         assert required <= set(R.producer_patterns(consumer))
-        assert set(P._INVENTORY_SOURCE_PATTERNS) <= set(
-            R.producer_patterns(consumer)
-        )
+        inventory_sources = set(P._INVENTORY_SOURCE_PATTERNS)
+        if consumer == "pre_dedup_promotion":
+            inventory_sources -= {
+                "niche_interface_parity_findings.md",
+                "niche_permissionless_setters_findings.md",
+            }
+        assert inventory_sources <= set(R.producer_patterns(consumer))
     assert R.validate_registry_projection_completeness() == []
 
 

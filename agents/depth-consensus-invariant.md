@@ -15,9 +15,9 @@ Before ANY verdict:
 
 1. **Devil's Advocate**: Answer "What would make this exploitable under N-validator scenarios?" (never "nothing"). Specifically consider: 1/3 Byzantine, 1/2, 2/3.
 2. **Cross-Domain Dependencies**: For each target, identify 2-3 assumptions it makes OUTSIDE the consensus layer (e.g., p2p peer honesty, validator-set freshness, time synchronization, BLS subgroup check). Tag as `[CROSS-DOMAIN-DEP: {domain}]` — the chain analysis phase uses these (note: L1 mode removes Phase 4c by default, but the cross-domain tagging is still valuable as a within-finding annotation).
-3. **Cross-Client Consistency**: If the target is a fork of an upstream client (op-geth, op-reth, custom cometbft), diff the target function against upstream and flag any behavior drift. Differential divergence is Critical-severity by default.
-4. **Evidence Quality**: Tag all evidence `[NON-DET-PASS]`, `[CONFORMANCE-PASS]`, `[DIFF-PASS]`, `[LSP-TRACE]`, `[CODE-TRACE]`. `[CODE-TRACE]` caps the finding at CONTESTED.
-5. **Confidence Gate**: Uncertain? → CONTESTED, not REFUTED. Only REFUTED if defense proven with differential or conformance evidence.
+3. **Cross-Client Consistency**: If the target is a fork of an upstream client, diff the relevant behavior and trace any divergence to a concrete consensus, liveness, or safety consequence before assigning severity.
+4. **Evidence Quality**: Tag evidence `[NON-DET-PASS]`, `[CONFORMANCE-PASS]`, `[DIFF-PASS]`, `[LSP-TRACE]`, or `[CODE-TRACE]`; code-trace alone leaves execution and deployment assumptions open.
+5. **Uncertainty**: Preserve an unresolved candidate when evidence is incomplete. Propose a negative disposition only when differential, conformance, or equivalent production evidence proves the defense.
 
 Apply only the rule and skill files enumerated by the driver's content-bound
 methodology descriptors. Do not discover or open a legacy home-directory path.
@@ -121,7 +121,7 @@ If the target is a fork of an upstream client:
 3. If no upstream baseline is bound, do not infer or fetch one. Embed
    `NEEDS_UPSTREAM_DIFFERENTIAL: <client-or-subsystem>:<file:line>: <baseline
    evidence required>` in the assigned findings output and keep any
-   differential-dependent verdict CONTESTED.
+   differential-dependent candidate unresolved for independent verification.
 
 ### 6. Dormant-code check (for upgraded clients)
 
@@ -130,93 +130,6 @@ paths), apply Section 2 of the bound
 `HARDFORK_ACTIVATION_AND_PROTOCOL_UPGRADE` methodology when assigned; otherwise
 perform the embedded dormant-code check without discovering a skill path.
 
-## Output Format
+## Evidence to record
 
-**§WRITE-THEN-VERIFY**: Write your findings directly to `{scratchpad}/depth_consensus_invariant_findings.md` using the Write tool. Return ONLY a one-line summary: `"DONE: {N} consensus-invariant findings written to depth_consensus_invariant_findings.md"`. The orchestrator verifies the file exists. Do NOT return your full analysis as text — it wastes the orchestrator's context budget.
-
-**MANDATORY YAML header** (Phase 4b.1 telemetry requirement): Begin the file with a YAML block recording primitive invocations:
-
-```
----
-agent: depth-consensus-invariant
-model: opus
-iteration: 1
-started: {ISO-8601 timestamp}
-ended: {ISO-8601 timestamp}
-primitive_calls:
-  scip_reader:
-    - tool: {workspace_symbol | find_definition | find_references | list_symbols_in_file | stats | filter_by_prefix}
-      query: {symbol or query string}
-      result_count: {integer}
-  ast_grep:
-    - pattern: {ast-grep pattern}
-      lang: {go | rust}
-      matches: {integer}
-  opengrep: []  # empty when only the bound opengrep_findings.md projection was consumed
-fallback_to_grep: {true | false}
----
-```
-
-The header is parsed by the orchestrator's Phase 4b.2 primitive-call gate. An empty `scip_reader` + `ast_grep` list triggers a WARN in `violations.md`. `fallback_to_grep: true` is acceptable if a primitive was genuinely unavailable; log the reason in the body of the file.
-
-The YAML header goes INSIDE the `=== FILE: ... === ... === END FILE ===` fence, as the first block of the file content. Then append the main findings section:
-
-```markdown
-## DEPTH ANALYSIS: Consensus Invariant (L1)
-
-### Target 1: [Invariant / function from breadth pass]
-**Source Finding(s)**: [Breadth finding IDs]
-**Applied Skill(s)**: [List of SKILL.md files loaded]
-**Layer**: consensus
-
-#### Invariant
-∀ state s: [formal predicate]
-
-#### Write Sites
-| Function | Line | Can Break Invariant? | Guard | Byzantine-Reachable? |
-|----------|------|---------------------|-------|----------------------|
-
-#### Analysis
-[Detailed trace with concrete reasoning]
-
-#### Cross-Client Drift (if fork)
-Upstream behavior: ...
-Fork behavior: ...
-Divergence: [yes/no] + [impact]
-
-#### Verdict
-- [ ] CONFIRMED: [invariant broken; attack path described]
-- [ ] REFINED: [invariant holds in stated form but a variant is breakable]
-- [ ] REFUTED: [defense proven via differential or conformance evidence]
-- [ ] CONTESTED: [evidence mixed — escalate to verifier]
-
-#### Evidence Tags
-[NON-DET-PASS | CONFORMANCE-PASS | DIFF-PASS | LSP-TRACE | CODE-TRACE]
-
-#### Severity Rationale
-Impact: [cell] / Likelihood: [cell] / Modifiers: [list] = [tier]
-
-Use a content-bound L1 severity methodology only when the driver lists it.
-Otherwise apply this embedded floor: consensus halt, permanent split, direct
-fund loss, or permanent freeze is Critical impact; network-wide temporary DoS,
-reorg enablement, invalid-state acceptance, or permissionless node crash is
-High impact; single-node DoS or material degradation is Medium impact. Combine
-impact with permissionless/conditional/complex likelihood and state every
-modifier explicitly. Do not discover or open a severity document.
-
-### Target 2: ...
-
-## FINDING INDEX
-| ID | Severity | Location | Title | Source |
-```
-
-## Finding ID Format
-
-Use `[CI-N]` where N starts from 1. Each finding MUST include `Source: [breadth finding IDs]`.
-
-## Return Protocol
-
-Return ONLY: `DONE: {N} consensus-invariant findings (X confirmed, Y refined, Z refuted, W contested)`
-MAX 1 line.
-
-Contested findings go to the Phase 5 verifier with FLAG: `requires differential testing` or `requires conformance test vectors`.
+Use the driver-assigned output contract for IDs, outcomes, path, markers, and completion. For each target, state the formal invariant, every relevant write site and guard, Byzantine reachability, and any cross-client fork drift with its actual safety or liveness consequence. Give the impact × likelihood reasoning; a divergence by itself does not set severity. Record which assigned SCIP, ast-grep, opengrep, or grep primitives were actually used, including query/pattern and result count when available. Missing tool evidence remains a visible limitation, not a fabricated pass. Preserve uncertain candidates for independent verification.

@@ -1,6 +1,8 @@
 import hashlib
 import json
 
+import pytest
+
 import methodology_application as A
 
 
@@ -58,6 +60,155 @@ def _validate(sp, project, *, phase="breadth"):
         phase=phase,
         trusted_methodology_roots=[sp.parent.parent],
     )
+
+
+def test_authoritative_json_trace_does_not_require_cosmetic_heading():
+    payload = {
+        "schema_version": 1,
+        "rows": [
+            {
+                "skill": "ORACLE_ANALYSIS",
+                "step": "1",
+                "executed": "yes",
+                "evidence": "src/Oracle.sol:L2",
+                "result": "traced the concrete return-value branch",
+            }
+        ],
+    }
+    text = (
+        "# Findings\n\n"
+        f"{A.TRACE_JSON_BEGIN}\n"
+        f"{json.dumps(payload)}\n"
+        f"{A.TRACE_JSON_END}\n"
+    )
+
+    assert A._trace_rows(text) == payload["rows"]
+
+
+def test_headerless_authoritative_trace_reconciles_with_full_contract(tmp_path):
+    project = tmp_path / "project"
+    sp = project / ".scratchpad"
+    sp.mkdir(parents=True)
+    (project / "Oracle.sol").write_text("function read() {}\n", encoding="utf-8")
+    skill = tmp_path / "ORACLE_SKILL.md"
+    skill.write_text("# immutable skill\n", encoding="utf-8")
+    _dispatch(sp, _descriptor(skill, steps=("1",)))
+    output = _trace(
+        sp,
+        (
+            "ORACLE_ANALYSIS",
+            "1",
+            "yes",
+            "Oracle.sol:L1",
+            "traced the concrete return-value branch",
+        ),
+    ).replace("## Step Execution Trace\n\n", "")
+    (sp / "analysis_oracle.md").write_text(output, encoding="utf-8")
+
+    result = _validate(sp, project)
+
+    assert result["status"] == "ATTESTED"
+    assert result["closed_steps"] == 1
+    assert result["rows"][0]["application_completeness"] == "APPLIED"
+
+
+def test_duplicate_or_malformed_trace_sentinels_fail_closed():
+    payload = json.dumps({"schema_version": 1, "rows": []})
+    valid = f"{A.TRACE_JSON_BEGIN}\n{payload}\n{A.TRACE_JSON_END}"
+    malformed = (
+        f"{A.TRACE_JSON_BEGIN}\n{{not-json}}\n{A.TRACE_JSON_END}"
+    )
+    reversed_markers = (
+        f"{A.TRACE_JSON_END}\n{payload}\n{A.TRACE_JSON_BEGIN}"
+    )
+
+    assert A._trace_rows(valid + "\n" + A.TRACE_JSON_BEGIN) == []
+    assert A._trace_rows(valid + "\n" + A.TRACE_JSON_END) == []
+    assert A._trace_rows(malformed) == []
+    assert A._trace_rows(reversed_markers) == []
+
+
+def _repair_trace_source_evidence(executed: str, evidence: str) -> bytes:
+    payload = {
+        "schema_version": 1,
+        "rows": [{
+            "skill": "RESCAN_METHOD",
+            "step": "RS-X",
+            "executed": executed,
+            "evidence": evidence,
+            "result": "MAO-0123456789ABCDEF: exact repair result",
+        }],
+    }
+    return (
+        f"{A.TRACE_JSON_BEGIN}\n{json.dumps(payload)}\n{A.TRACE_JSON_END}\n"
+    ).encode()
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    (
+        "analysis_cross_chain_message_flow.md:L28",
+        "src/Oracle.sol:L3",
+        "Missing.sol:L1",
+    ),
+)
+def test_repair_positive_trace_requires_real_project_source_locus(
+    tmp_path, evidence,
+):
+    project = tmp_path / "project"
+    scratchpad = project / ".scratchpad"
+    (project / "src").mkdir(parents=True)
+    scratchpad.mkdir()
+    (project / "src" / "Oracle.sol").write_text(
+        "line one\nline two\n", encoding="utf-8"
+    )
+    (scratchpad / "analysis_cross_chain_message_flow.md").write_text(
+        "\n" * 30, encoding="utf-8"
+    )
+
+    issues = A.staged_repair_source_evidence_issues(
+        _repair_trace_source_evidence("yes", evidence),
+        project_root=project,
+        scratchpad=scratchpad,
+    )
+
+    assert issues == [
+        "repair step trace RESCAN_METHOD/RS-X "
+        + A.REPAIR_POSITIVE_EVIDENCE_REQUIREMENT
+    ]
+
+
+def test_repair_real_source_locus_or_explicit_debt_is_admitted(tmp_path):
+    project = tmp_path / "project"
+    scratchpad = project / ".scratchpad"
+    (project / "src").mkdir(parents=True)
+    scratchpad.mkdir()
+    (project / "src" / "Oracle.sol").write_text("line\n", encoding="utf-8")
+
+    assert A.staged_repair_source_evidence_issues(
+        _repair_trace_source_evidence("partial", "src/Oracle.sol:L1"),
+        project_root=project,
+        scratchpad=scratchpad,
+    ) == []
+    assert A.staged_repair_source_evidence_issues(
+        _repair_trace_source_evidence("unknown", "-"),
+        project_root=project,
+        scratchpad=scratchpad,
+    ) == []
+    fake_success = (
+        b"## Finding [MAR-1]: unsupported\n\n"
+        + _repair_trace_source_evidence("unknown", "-")
+    )
+    assert A.staged_repair_source_evidence_issues(
+        fake_success, project_root=project, scratchpad=scratchpad
+    ) == [
+        "repair finding cannot be published when every assigned step remains "
+        "Executed=no/unknown debt"
+    ]
+    contract = A.repair_source_evidence_prompt_contract()
+    assert A.REPAIR_POSITIVE_EVIDENCE_REQUIREMENT in contract
+    assert "Executed=no/unknown" in contract
+    assert "visible methodology debt" in contract
 
 
 def test_dispatch_merges_phases_and_binds_exact_methodology(tmp_path):

@@ -22,6 +22,7 @@ jobs:
   lock-authority:
     name: dependency authority (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +41,7 @@ jobs:
     name: pytest (${{ matrix.os }} / py${{ matrix.python }})
     needs: lock-authority
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -81,25 +83,94 @@ jobs:
       # skips inside the quarantine lane remain governed by the authenticated
       # fast-lane manifest. PLAMEN_AUTO_HALT_CHOICE=exit (job env) keeps the
       # driver-loop tests from hanging.
+      - name: Windows collection denominator guard
+        if: runner.os == 'Windows' && matrix.python == '3.12'
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = Join-Path $PWD "scripts"
+          $collection = @(& python -m pytest --collect-only -q scripts tests 2>&1)
+          $pytestExit = $LASTEXITCODE
+          if ($pytestExit -ne 0) {
+            $collection | Out-Host
+            throw "Complete Windows pytest collection failed with exit code $pytestExit"
+          }
+
+          $expected = @(
+            "tests/test_windows_private_execution_root_p0.py::test_modify_only_baseline_reproduces_write_owner_error5"
+            "tests/test_windows_private_execution_root_p0.py::test_private_root_handle_low_restore_and_fresh_leaf"
+            "tests/test_windows_private_execution_root_p0.py::test_retained_root_blocks_path_swap_and_rejects_dacl_drift"
+            "tests/test_windows_private_execution_root_p0.py::test_preexisting_reparse_is_rejected_without_following"
+            "tests/test_windows_private_execution_root_p0.py::test_reparse_parent_is_rejected_before_leaf_creation"
+            "tests/test_windows_private_execution_root_p0.py::test_private_authority_integrates_with_low_lease"
+            "tests/test_windows_private_execution_root_p0.py::test_real_low_job_writes_private_root_not_medium_sibling"
+            "tests/test_windows_private_execution_root_p0.py::test_auxiliary_lease_carries_private_authority_and_abort_closes_it"
+            "tests/test_windows_private_execution_root_p0.py::test_real_wer_provider_uses_private_root_without_scratch_acl_mutation"
+            "tests/test_windows_private_execution_root_p0.py::test_real_command_capable_claude_fixture_uses_private_mic_root"
+          )
+          $prefix = "tests/test_windows_private_execution_root_p0.py::"
+          $actual = @(
+            $collection |
+              ForEach-Object { "$($_)".Replace('\', '/') } |
+              Where-Object { $_.StartsWith($prefix) }
+          )
+          $missing = @($expected | Where-Object { $_ -notin $actual })
+          $unexpected = @($actual | Where-Object { $_ -notin $expected })
+          if ($actual.Count -ne $expected.Count -or $missing.Count -ne 0 -or $unexpected.Count -ne 0) {
+            Write-Error "Windows native denominator mismatch: expected 10 nodes, collected $($actual.Count)"
+            if ($missing.Count -ne 0) {
+              Write-Error "Missing nodes: $($missing -join ', ')"
+            }
+            if ($unexpected.Count -ne 0) {
+              Write-Error "Unexpected nodes: $($unexpected -join ', ')"
+            }
+            exit 1
+          }
+          Write-Host "Collected the exact 10-node Windows native denominator."
+
       - name: Fast lane (unit — parallel)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          cd scripts && python -m pytest -m "not integration and not fast_quarantine" -n auto -q
+          PYTHONPATH="$PWD/scripts" python -m pytest scripts tests -m "not integration and not fast_quarantine" -n auto -q
+
+      - name: Windows fast lane (unit — parallel)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = Join-Path $PWD "scripts"
+          python -m pytest scripts tests -m "not integration and not fast_quarantine" -n auto -q
 
       - name: Integration lane (real subprocess/timing — serial)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          cd scripts && python -m pytest -m "integration" -q
+          PYTHONPATH="$PWD/scripts" python -m pytest scripts tests -m "integration" -q
+
+      - name: Windows integration lane (real subprocess/timing — serial)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = Join-Path $PWD "scripts"
+          python -m pytest scripts tests -m "integration" -q
 
       - name: Quarantine lane (manifest-bound capability probes — serial)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          cd scripts && python -m pytest -m "fast_quarantine and not integration" -q
+          PYTHONPATH="$PWD/scripts" python -m pytest scripts tests -m "fast_quarantine and not integration" -q
+
+      - name: Windows quarantine lane (manifest-bound capability probes — serial)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = Join-Path $PWD "scripts"
+          python -m pytest scripts tests -m "fast_quarantine and not integration" -q
 
   dependency-review:
     name: dependency review (introduced High/Critical)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -114,6 +185,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: lock-authority
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:

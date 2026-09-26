@@ -369,18 +369,15 @@ def test_rescan_genuine_stub_fails_structurally_even_with_complete_marker(tmp_pa
 
 
 # --------------------------------------------------------------------------- #
-# SC regression — the SC report_index gate path must be unchanged              #
+# Shared SC/L1 deterministic report-index boundary                              #
 # --------------------------------------------------------------------------- #
 def _driver_source() -> str:
     import plamen_driver
     return Path(plamen_driver.__file__).read_text(encoding="utf-8")
 
 
-def test_sc_report_index_gate_has_no_sys_exit_unchanged():
-    """The SC report_index completeness gate must remain a degrade-with-flag
-    path (passed=False, no sys.exit). The L1 fix is scoped to the
-    `pipeline == "l1"` branch and must not have leaked a halt into the SC gate.
-    """
+def test_sc_report_index_observational_gate_has_no_sys_exit():
+    """The post-commit SC completeness checks remain degrade-with-flag."""
     src = _driver_source()
     start = src.index("# --- report_index: completeness gate ---")
     end = src.index("# --- report_assemble: quality gate", start)
@@ -388,24 +385,23 @@ def test_sc_report_index_gate_has_no_sys_exit_unchanged():
     assert "sys.exit" not in sc_block, (
         "SC report_index gate must never sys.exit — it degrades via passed=False"
     )
-    # SC still routes through its own mechanical repair-from-prior helper.
+    # Historical SC model indexes remain replayable through the compatibility
+    # repair, while fresh SC runs use the shared deterministic branch below.
     assert "_repair_sc_report_index_from_prior" in src
 
 
-def test_l1_report_index_branch_uses_repair_then_degrade():
-    """The L1 report_index branch must now (a) call the severity-provenance
-    repair before any degrade decision, and (b) write the human-review artifact
-    on the prose-degrade path instead of an unconditional sys.exit on the
-    post-write gate."""
+def test_shared_report_index_branch_uses_canonical_repair_then_degrade():
+    """SC and L1 share one deterministic, canonical report-index boundary."""
     src = _driver_source()
     l1_start = src.index(
-        'if config["pipeline"] == "l1" and phase.name == "report_index":'
+        'if (\n            config["pipeline"] in {"sc", "l1"}\n'
+        '            and phase.name == "report_index"\n        ):'
     )
     # Bound the branch at the next top-level `if phase.name.startswith(`.
     l1_end = src.index('if phase.name.startswith("report_body_writer_")', l1_start)
     l1_block = src[l1_start:l1_end]
     assert "_run_report_index_canonicalization_transaction" in l1_block, (
-        "L1 report_index must route all deterministic repairs through the "
+        "report_index must route all deterministic repairs through the "
         "canonical staged successor before degrading"
     )
     canonical_start = src.index(
@@ -419,7 +415,7 @@ def test_l1_report_index_branch_uses_repair_then_degrade():
         "the canonical staged successor must apply severity-provenance repair"
     )
     assert "report_semantic_severity_repairs.md" in l1_block, (
-        "L1 report_index must flag prose provenance to a human-review artifact"
+        "report_index must flag semantic provenance to a human-review artifact"
     )
     # The mechanical verify-file parity check must still be present as the hard
     # gate that retains sys.exit (silent-drop protection).

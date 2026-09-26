@@ -250,7 +250,7 @@ Each agent is `subagent_type="general-purpose"` with the model specified in Step
 
 **Never spawn only a subset** -- if only 1 of N agents is spawned, it may complete the entire remaining pipeline solo, skipping the other N-1 agents' domains.
 
-**Opus 4.8 MANDATE**: Spawn ALL agents listed in the roster above in a SINGLE message. Do not reason about whether each agent is needed — spawn them all. Every output file is required by downstream phases (chain analysis, verification, report). Spawn subagents simultaneously when fanning across independent analysis domains. You SHOULD use tools aggressively: Read source files, Grep for patterns, Glob for file discovery. Do not reason about code you haven't read.
+**ROSTER COMPLETENESS**: Spawn ALL agents listed in the roster above in a SINGLE message. Do not reason about whether each agent is needed — spawn them all. Every output file is required by downstream phases (chain analysis, verification, report). Spawn subagents simultaneously when fanning across independent analysis domains. You SHOULD use tools aggressively: Read source files, Grep for patterns, Glob for file discovery. Do not reason about code you haven't read.
 
 ---
 

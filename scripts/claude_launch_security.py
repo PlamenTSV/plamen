@@ -47,6 +47,9 @@ CLAUDE_LAUNCH_SECURITY_REQUEST_SCHEMA = (
 )
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_SEMVER_RE = re.compile(
+    r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+)
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _HOME_POLICIES = {"PRIVATE_HOME", "PRESERVE_TOOLCHAIN_HOME"}
 _SETTINGS_MODES = {"SAFE_MODE", "BOUND_SETTINGS"}
@@ -518,17 +521,16 @@ def replay_mcp_current_selection(
         raise ClaudeLaunchSecurityError(
             "MCP selection backend launches are malformed"
         )
-    expected_backend_rows = {
-        "claude": ("native", "2.1.252"),
-        "codex": ("native", "0.152.0"),
-    }
-    for backend, (kind, version) in expected_backend_rows.items():
+    expected_backend_rows = {"claude": "native", "codex": "native"}
+    for backend, kind in expected_backend_rows.items():
         row = backends.get(backend)
         if (
             not isinstance(row, dict)
             or set(row) != _BACKEND_LAUNCH_KEYS
             or row.get("execution_kind") != kind
-            or row.get("version") != version
+            or not isinstance(row.get("version"), str)
+            or len(row["version"]) > 32
+            or _SEMVER_RE.fullmatch(row["version"]) is None
             or isinstance(row.get("size"), bool)
             or not isinstance(row.get("size"), int)
             or row["size"] < 0

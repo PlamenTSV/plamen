@@ -9,6 +9,8 @@ import sys
 
 import pytest
 
+import opengrep_rule_authority as rule_authority
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -78,14 +80,22 @@ def test_current_source_roster_excludes_generated_bytecode_and_is_exact():
     runtime_paths = {
         "verification_policy/toolchain_runtime_closure.v1.json",
         "verification_policy/__init__.py",
+        "verification_policy/js_toolchain_acquisition.v1.json",
         "verification_policy/methodology_reachability.v1.json",
         "verification_policy/verification_method_registry.v1.json",
         *front._CODEX_INSTALL_TOP_LEVEL,
         *front._CODEX_INSTALL_MCP_FILES,
         *(row["path"] for row in closure["assets"]),
     }
+    rule_roster = rule_authority.source_rule_projection_roster(
+        ROOT / "opengrep-rules"
+    )
     exact_files = set(runtime_paths) | {"codex-adapter/AGENTS.md"}
-    tree_roots = list(front._CODEX_INSTALL_METHOD_ROOTS) + [
+    exact_files.update("opengrep-rules/" + path for path in rule_roster)
+    tree_roots = [
+        root for root in front._CODEX_INSTALL_METHOD_ROOTS
+        if root != "opengrep-rules"
+    ] + [
         "codex-adapter/" + root for root in front._CODEX_INSTALL_ADAPTER_ROOTS
     ]
     snapshot, _authority = front._codex_install_source_snapshot(
@@ -105,10 +115,16 @@ def test_current_source_roster_excludes_generated_bytecode_and_is_exact():
         *("codex-adapter/" + path for path in sorted(adapter_paths)),
     ]
 
-    assert len(closure["assets"]) == 354
-    assert len(source_paths) == front._CODEX_INSTALL_SOURCE_COUNT == 823
-    assert len(runtime_paths) == front._CODEX_INSTALL_RUNTIME_COUNT == 792
+    assert all(
+        os.path.lexists(ROOT / "opengrep-rules" / name / ".git")
+        for name in rule_authority.OPENGREP_RULE_SOURCES
+    )
+    assert len(closure["assets"]) == front._CODEX_INSTALL_CLOSURE_ASSET_COUNT == 492
+    assert len(rule_roster) == 226
+    assert len(source_paths) == front._CODEX_INSTALL_SOURCE_COUNT == 1189
+    assert len(runtime_paths) == front._CODEX_INSTALL_RUNTIME_COUNT == 1158
     assert len(adapter_paths) == front._CODEX_INSTALL_ADAPTER_COUNT == 31
+    assert "scripts/headless_phase_identity.py" in runtime_paths
     assert source_paths.count("scripts/claude_worker_prompt_consistency.py") == 1
     assert source_paths.count("scripts/windows_private_execution_root.py") == 1
     assert source_paths.count("scripts/late_committed_invariant_authority.py") == 1
@@ -119,6 +135,16 @@ def test_current_source_roster_excludes_generated_bytecode_and_is_exact():
         "custom-mcp/unified-vuln-db/unified_vuln/",
     ):
         assert any(path.startswith(prefix) for path in runtime_paths)
+    installed_rule_paths = {
+        path.removeprefix("opengrep-rules/")
+        for path in runtime_paths if path.startswith("opengrep-rules/")
+    }
+    assert installed_rule_paths == set(rule_roster)
+    assert "opengrep-rules/solidity/security/proxy-storage-collision.yaml" in rule_roster
+    assert "decurity-rules/solidity/security/proxy-storage-collision.yaml" in rule_roster
+    assert "aptos-move-rules/rules/move_on_aptos/lang/security/signer-leak.yaml" in rule_roster
+    assert "opengrep-rules/python/lang/security/audit/eval-detected.yaml" not in rule_roster
+    assert "opengrep-rules/README.md" not in rule_roster
     assert not any(
         "__pycache__" in {component.casefold() for component in path.split("/")}
         or path.casefold().endswith(".pyc")
@@ -765,6 +791,18 @@ def test_old_backend_shim_requires_exact_authenticated_retained_generation(
         backend="claude", plamen_root=plamen_root,
         interpreter=sys.executable, store_root=store_root,
     )
+    if sys.platform != "win32":
+        for mutated in (
+            raw.replace(b'exec ', b'exec  ', 1),
+            raw.replace(b' "$@"\n', b' $@\n'),
+            raw.replace(b' "$@"\n', b' "$@"; id\n'),
+            raw + b"true\n",
+            raw.replace(b"--receipt-sha256", b"'--receipt-sha256'", 1),
+        ):
+            assert not front._authenticated_retained_backend_shim(
+                mutated, backend="claude", plamen_root=plamen_root,
+                interpreter=sys.executable, store_root=store_root,
+            )
     foreign_root = (tmp_path / "foreign").absolute()
     foreign_root.mkdir()
     (foreign_root / "plamen.py").write_bytes(b"# foreign\n")
@@ -819,6 +857,9 @@ def test_backend_shim_plan_admits_only_authenticated_old_generation_without_muta
     shim_paths["codex"].write_bytes(front._backend_shim_bytes(
         "codex", plamen_root, sys.executable, selection=current,
     ))
+    if os.name != "nt":
+        for path in shim_paths.values():
+            path.chmod(0o700)
 
     class Runtime:
         signature_valid = True

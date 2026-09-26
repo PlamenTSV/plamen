@@ -9,10 +9,31 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
+import sys
 
 import pytest
 
 import terminal_audit_launch as T
+
+
+@pytest.fixture(autouse=True)
+def _regular_interpreter_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Give preparation the regular-file interpreter required in production.
+
+    Virtual environments intentionally expose ``bin/python`` through symlinks,
+    while the preparation boundary correctly rejects every linked path
+    component. These tests exercise preparation rather than virtualenv layout,
+    so retain byte-identical interpreter bytes at a private ordinary path.
+    """
+
+    source = Path(os.path.realpath(sys.executable))
+    retained = tmp_path / "managed-python"
+    shutil.copyfile(source, retained)
+    retained.chmod(0o500)
+    monkeypatch.setattr(T.sys, "executable", str(retained))
 
 
 def _tree_bytes(root: Path) -> dict[str, bytes]:

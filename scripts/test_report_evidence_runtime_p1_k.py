@@ -28,6 +28,7 @@ from report_evidence_authority import (
     finalize_report_evidence_delivery,
     materialize_report_evidence_runtime,
     prepare_report_evidence_repair_apply_plan,
+    project_report_evidence_repair_response,
     project_report_evidence_markdown,
     validate_report_evidence_runtime,
 )
@@ -365,6 +366,57 @@ def test_exact_repair_request_and_single_bounded_response(tmp_path: Path):
         apply_report_evidence_repair_response(tmp_path, response)
 
 
+def test_semantic_repair_projection_seals_driver_identity_and_ignores_copied_hashes(
+    tmp_path: Path,
+):
+    _write_inputs(tmp_path, impact="", recommendation="")
+    request = materialize_report_evidence_runtime(tmp_path)["repair_request"]
+    item = request["items"][0]
+    delta = {
+        "impact": "The inconsistent state can misallocate value at settlement.",
+        "recommendation": "Update both values atomically and assert equality.",
+    }
+
+    semantic_only = project_report_evidence_repair_response(
+        {"items": [{"delta": delta}]}, request=request
+    )
+    legacy_with_typos = project_report_evidence_repair_response(
+        {
+            "schema_version": "model-copied-version-typo",
+            "request_digest": "0" * 64,
+            "items": [{
+                "report_id": "H-0I",
+                "record_digest": "f" * 64,
+                "delta": delta,
+            }],
+        },
+        request=request,
+    )
+
+    assert semantic_only == legacy_with_typos == {
+        "schema_version": "plamen.report_evidence_repair_response.v1",
+        "request_digest": request["request_digest"],
+        "items": [{
+            "report_id": item["report_id"],
+            "record_digest": item["record_digest"],
+            "delta": delta,
+        }],
+    }
+
+
+def test_semantic_repair_projection_still_rejects_wrong_semantic_denominator(
+    tmp_path: Path,
+):
+    _write_inputs(tmp_path, impact="", recommendation="")
+    request = materialize_report_evidence_runtime(tmp_path)["repair_request"]
+
+    with pytest.raises(ReportEvidenceError, match="exact missing fields"):
+        project_report_evidence_repair_response(
+            {"items": [{"delta": {"impact": "Only one field."}}]},
+            request=request,
+        )
+
+
 def test_failed_repair_projects_client_visible_limitation_idempotently(tmp_path: Path):
     _write_inputs(tmp_path, impact="", recommendation="")
     result = materialize_report_evidence_runtime(tmp_path)
@@ -421,6 +473,95 @@ One transition updates one accounting leg without its pair.
     assert validators._validate_tier_body_against_manifest(
         tmp_path, "report_critical_high", content_debt
     ) == []
+
+
+def test_tier_validator_is_read_only_for_unprojected_typed_body(tmp_path: Path):
+    _write_inputs(tmp_path, impact="", recommendation="")
+    materialize_report_evidence_runtime(tmp_path)
+    body_path = tmp_path / "report_critical_high.md"
+    body_path.write_text(
+        """# Critical and High Findings
+
+### [H-01] Paired accounting state can diverge
+
+**Severity**: High
+**Verdict**: CONFIRMED
+**Location**: src/Module.sol:L10-L30
+
+**Description**:
+One transition updates one accounting leg without its pair.
+""",
+        encoding="utf-8",
+    )
+    before = (body_path.read_bytes(), body_path.stat().st_ino,
+              body_path.stat().st_mtime_ns)
+    issues = validators._validate_tier_body_against_manifest(
+        tmp_path, "report_critical_high"
+    )
+    assert any("stable semantic fixed point" in issue for issue in issues)
+    assert (body_path.read_bytes(), body_path.stat().st_ino,
+            body_path.stat().st_mtime_ns) == before
+
+
+def test_tier_validator_accepts_canonical_lf_and_crlf_without_rewrite(tmp_path: Path):
+    _write_inputs(tmp_path, impact="", recommendation="")
+    runtime = materialize_report_evidence_runtime(tmp_path)
+    raw = """### [H-01] Paired accounting state can diverge
+
+**Severity**: High
+**Verdict**: CONFIRMED
+**Location**: src/Module.sol:L10-L30
+
+**Description**:
+One transition updates one accounting leg without its pair.
+"""
+    canonical = (
+        project_report_evidence_markdown(raw, runtime["bundle"])
+        .rstrip().encode("utf-8") + b"\n"
+    )
+    body_path = tmp_path / "report_critical_high.md"
+    body_path.write_bytes(canonical)
+    assert validators._validate_tier_body_against_manifest(
+        tmp_path, "report_critical_high"
+    ) == []
+    body_path.write_bytes(canonical.replace(b"\n", b"\r\n"))
+    before = body_path.read_bytes()
+    assert validators._validate_tier_body_against_manifest(
+        tmp_path, "report_critical_high"
+    ) == []
+    assert body_path.read_bytes() == before
+
+
+def test_tier_validator_rejects_invalid_utf8_and_malformed_bundle(tmp_path: Path):
+    _write_inputs(tmp_path, impact="", recommendation="")
+    runtime = materialize_report_evidence_runtime(tmp_path)
+    raw = """### [H-01] Paired accounting state can diverge
+
+**Severity**: High
+**Verdict**: CONFIRMED
+**Location**: src/Module.sol:L10-L30
+
+**Description**:
+One transition updates one accounting leg without its pair.
+"""
+    body_path = tmp_path / "report_critical_high.md"
+    canonical = project_report_evidence_markdown(raw, runtime["bundle"])
+    body_path.write_bytes(canonical.rstrip().encode("utf-8") + b"\n\xff")
+    invalid_before = body_path.read_bytes()
+    assert validators._validate_tier_body_against_manifest(
+        tmp_path, "report_critical_high"
+    )
+    assert body_path.read_bytes() == invalid_before
+
+    body_path.write_bytes(canonical.rstrip().encode("utf-8") + b"\n")
+    (tmp_path / "report_evidence_records.json").write_bytes(b'{"broken":true}\n')
+    valid_before = body_path.read_bytes()
+    issues = validators._validate_tier_body_against_manifest(
+        tmp_path, "report_critical_high"
+    )
+    assert any("typed report evidence projection unavailable" in issue
+               for issue in issues)
+    assert body_path.read_bytes() == valid_before
 
 
 def test_final_receipt_reconciles_typed_manifest_and_markdown(tmp_path: Path):
@@ -688,7 +829,7 @@ def test_phase_io_contracts_own_pre_render_and_final_quality_sidecars():
 def test_driver_materializes_p1k_before_first_body_writer():
     source = Path(__file__).with_name("plamen_driver.py").read_text(encoding="utf-8")
     pre_hook = source.index("_ensure_report_evidence_before_body_writer(", source.index("# Phase E11 follow-up #1"))
-    empty_skip = source.index("_maybe_skip_empty_body_writer(", pre_hook)
+    empty_skip = source.index("run_empty_report_tier(", pre_hook)
     assert pre_hook < empty_skip
     helper = source.index("def _materialize_report_evidence_pre_body(")
     assert source.index("materialize_report_evidence_runtime(", helper) < pre_hook
@@ -953,6 +1094,23 @@ def test_live_prebody_and_body_writer_bind_exact_owned_source_transaction(
         "scratchpad:report_evidence_manifests/report_critical_high.json",
         "scratchpad:verify_H-993.md",
     }
+    contract, launch = current_driver._typed_model_phase_contract_and_launch(
+        body_phase, scratchpad, config
+    )
+    assert contract is not None and launch is not None
+    assert current_driver._prepared_headless_transaction_authority(
+        phase=body_phase,
+        config=config,
+        scratchpad=scratchpad,
+        timeout_s=float(launch.timeout_s),
+        expected_outputs=body_phase.expected_artifacts,
+        attempt=1,
+        agent_id=None,
+        agent_role=None,
+        source_phase=body_phase.name,
+        phase_io_contract=contract,
+        phase_io_launch=launch,
+    ) == (contract, launch)
 
 
 def _repair_response_for_active_request(scratchpad: Path) -> dict[str, object]:
@@ -991,9 +1149,31 @@ def test_live_driver_runs_exactly_one_claude_repair_and_resumes_without_relaunch
     _write_inputs(scratchpad, impact="")
     launches: list[str] = []
 
-    def _worker(**_kwargs):
+    def _worker(**kwargs):
+        contract = kwargs["phase_io_contract"]
+        launch = kwargs["phase_io_launch"]
+        assert contract.phase == "report_body"
+        assert contract.work_unit_id == "evidence_repair.model"
+        assert driver._prepared_headless_transaction_authority(
+            phase=kwargs["phase"],
+            config=kwargs["config"],
+            scratchpad=kwargs["scratchpad"],
+            timeout_s=kwargs["timeout"],
+            expected_outputs=(kwargs["job"]["output"],),
+            attempt=kwargs["attempt"],
+            agent_id=kwargs["job"]["agent_id"],
+            agent_role=None,
+            source_phase="",
+            phase_io_contract=contract,
+            phase_io_launch=launch,
+        ) == (contract, launch)
         launches.append("claude")
-        response = _repair_response_for_active_request(scratchpad)
+        legacy = _repair_response_for_active_request(scratchpad)
+        response = {
+            "items": [
+                {"delta": item["delta"]} for item in legacy["items"]
+            ]
+        }
         (scratchpad / "report_evidence_repair_response.json").write_text(
             json.dumps(response, sort_keys=True), encoding="utf-8"
         )
@@ -1009,6 +1189,45 @@ def test_live_driver_runs_exactly_one_claude_repair_and_resumes_without_relaunch
         phase, config, scratchpad
     ) == []
     assert launches == ["claude"]
+    import headless_phase_identity
+    assert headless_phase_identity.requires_standard_posix_model_incorporation(
+        phase_name=phase.name,
+        contract_phase="report_body",
+        work_unit_id="evidence_repair.model",
+        label="report_evidence_repair",
+        agent_id=None,
+    )
+    assert not headless_phase_identity.requires_report_model_preimage_capture(
+        contract_phase="report_body",
+        work_unit_id="evidence_repair.model",
+    )
+    assert headless_phase_identity.requires_report_model_preimage_capture(
+        contract_phase="report_body",
+        work_unit_id="model.report_low_info",
+    )
+    assert headless_phase_identity.requires_report_model_preimage_capture(
+        contract_phase="report_body",
+        work_unit_id="model.report_low_info.attempt-0002",
+    )
+    assert headless_phase_identity.requires_report_model_preimage_capture(
+        contract_phase="report_index",
+        work_unit_id="model",
+    )
+    assert headless_phase_identity.requires_report_model_preimage_capture(
+        contract_phase="report_index",
+        work_unit_id="model.attempt-0002",
+    )
+    assert not headless_phase_identity.requires_report_model_preimage_capture(
+        contract_phase="report_index",
+        work_unit_id="model.attempt-0001",
+    )
+    assert not headless_phase_identity.requires_standard_posix_model_incorporation(
+        phase_name=phase.name,
+        contract_phase="report_body",
+        work_unit_id="evidence_repair.model",
+        label=phase.name,
+        agent_id=None,
+    )
     assert (scratchpad / "report_evidence_repair_receipt.json").is_file()
     assert json.loads(
         (scratchpad / "report_evidence_repair_request.json").read_text(

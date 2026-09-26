@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 from functools import lru_cache
 import hashlib
+import json
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
@@ -100,11 +101,15 @@ _PUBLIC_SOURCE_ONLY_TEST_SUPPORT = {
     "scripts/test_support/claude_runtime_test_support.py",
     "scripts/test_support/program_facts_r2_1_b0_red_support.py",
 }
+_JS_ACQUISITION_POLICY = (
+    "verification_policy/js_toolchain_acquisition.v1.json"
+)
 _EMBEDDED_RUNTIME_SUBMODULE_ROOTS = (
     "custom-mcp/farofino-mcp",
     "custom-mcp/slither-mcp",
 )
 _REQUIRED_POLICY_FILES = {
+    _JS_ACQUISITION_POLICY,
     "verification_policy/ci_advisory_evidence.v1.json",
     "verification_policy/ci_dependency_authority.v1.json",
     "verification_policy/ci_dependency_provenance.v2.json",
@@ -155,6 +160,7 @@ _REQUIRED_PUBLIC_SCRIPT_RULES = {
     "!scripts/claude_stream_json_evidence.py",
     "!scripts/ci_dependency_authority.py",
     "!scripts/codex_dependency_research.py",
+    "!scripts/depth_dispatch_delta_authority.py",
     "!scripts/depth_handoff.py",
     "!scripts/headless_worker_runtime.py",
     "!scripts/linux_cgroup_exec.py",
@@ -325,7 +331,14 @@ def _public_worktree_paths() -> list[str]:
     # The digest-bound reachable-runtime projection is the package authority.
     # A typed top-level asset does not need a second filename allowlist, while
     # ignored/private assets fail rather than being force-added.
+    deferred = _installer_acquired_runtime_paths()
     for path in TOOLCHAIN_CONTROL.TOOLCHAIN_RUNTIME_REQUIRED_FILES:
+        if path in deferred:
+            if not _is_forbidden(path):
+                raise AssertionError(
+                    f"installer-acquired runtime asset is public: {path}"
+                )
+            continue
         candidate = REPO_ROOT / path
         if not candidate.is_file():
             raise AssertionError(
@@ -337,6 +350,48 @@ def _public_worktree_paths() -> list[str]:
             )
         selected.add(path)
     return sorted(selected)
+
+
+@lru_cache(maxsize=1)
+def _installer_acquired_runtime_paths() -> frozenset[str]:
+    """Return the exact archive-free-checkout acquisition denominator."""
+
+    policy = json.loads(
+        (REPO_ROOT / _JS_ACQUISITION_POLICY).read_text(encoding="utf-8")
+    )
+    artifacts = policy.get("artifacts") if isinstance(policy, dict) else None
+    if (
+        not isinstance(policy, dict)
+        or policy.get("schema") != "plamen.js-toolchain-acquisition.v1"
+        or not isinstance(artifacts, list)
+        or len(artifacts) != 7
+    ):
+        raise AssertionError("JS acquisition policy denominator is malformed")
+    paths: set[str] = set()
+    for row in artifacts:
+        if (
+            not isinstance(row, dict)
+            or set(row) != {
+                "archive_format", "artifact_id", "path", "sha256", "size", "url",
+            }
+            or not isinstance(row["path"], str)
+            or not row["path"].startswith("runtime/toolchains/js/")
+            or not isinstance(row["sha256"], str)
+            or len(row["sha256"]) != 64
+            or not isinstance(row["size"], int)
+            or row["size"] <= 0
+            or not isinstance(row["url"], str)
+            or not row["url"].startswith("https://")
+            or row["path"] in paths
+        ):
+            raise AssertionError("JS acquisition policy row is malformed")
+        paths.add(row["path"])
+    closure_paths = set(TOOLCHAIN_CONTROL.TOOLCHAIN_RUNTIME_REQUIRED_FILES)
+    if not paths <= closure_paths:
+        raise AssertionError(
+            "installer-acquired JS assets are absent from runtime closure"
+        )
+    return frozenset(paths)
 
 
 def _temporary_index_paths(env: dict[str, str]) -> list[str]:
@@ -435,9 +490,11 @@ def _temporary_public_archive(tmp_path: Path) -> Path:
 
     paths = _public_worktree_paths()
     _stage_public_paths(paths, env)
-    runtime_paths = list(
-        TOOLCHAIN_CONTROL.TOOLCHAIN_RUNTIME_REQUIRED_FILES
-    )
+    deferred = _installer_acquired_runtime_paths()
+    runtime_paths = [
+        path for path in TOOLCHAIN_CONTROL.TOOLCHAIN_RUNTIME_REQUIRED_FILES
+        if path not in deferred
+    ]
     for path in runtime_paths:
         if _is_forbidden(path):
             raise AssertionError(
@@ -472,11 +529,18 @@ def _temporary_public_archive(tmp_path: Path) -> Path:
                 "public archive omitted typed runtime assets: "
                 f"{sorted(set(runtime_paths) - set(members))}"
             )
+        if deferred & set(members):
+            raise AssertionError(
+                "installer-acquired JS archives entered public source package: "
+                f"{sorted(deferred & set(members))}"
+            )
         expected_digests = {
             row["path"]: (row["digest_mode"], row["sha256"])
             for row in TOOLCHAIN_CONTROL.TOOLCHAIN_RUNTIME_ASSET_ROWS
         }
         for path, (digest_mode, expected) in expected_digests.items():
+            if path in deferred:
+                continue
             stream = package.extractfile(members[path])
             if stream is None:
                 raise AssertionError(
@@ -671,9 +735,9 @@ def test_clean_archive_compiles_and_imports_runtime_from_itself(
         f"root = Path({str(extracted)!r}).resolve()\n"
         "sys.path[:0] = [str(root / 'scripts'), str(root)]\n"
         "import bb_wrapper_provider_adapter, claude_provider_policy\n"
-        "import plamen_driver, plamen_validators, verification_policy\n"
+        "import posix_v2_compat_install, verification_policy\n"
         "for module in (bb_wrapper_provider_adapter, claude_provider_policy, "
-        "plamen_driver, plamen_validators, verification_policy):\n"
+        "posix_v2_compat_install, verification_policy):\n"
         "    path = Path(module.__file__).resolve()\n"
         "    assert path == root or root in path.parents, (module.__name__, path)\n"
     )

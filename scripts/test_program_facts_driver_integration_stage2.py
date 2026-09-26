@@ -11,6 +11,7 @@ import pytest
 
 from artifact_ledger import read_artifact_ledger
 from audit_snapshot import build_audit_snapshot
+import evm_analysis_workspace_authority as WORKSPACE
 from phase_io_contracts import resolve_phase_io_contract
 import program_facts_driver_integration as INTEGRATION
 from program_facts_driver_integration import (
@@ -66,8 +67,18 @@ def _fixture(
         "scope_notes": "Program Facts driver integration fixture",
     }
     installed_root = Path(__file__).resolve().parents[1]
+    if controlled_authority and language == "evm":
+        config["_resolved_build_root_authority"] = (
+            WORKSPACE.capture_evm_build_root_resolver_authority(
+                project,
+                project,
+            )
+        )
     snapshot = (
-        build_audit_snapshot(config, installed_root)
+        build_audit_snapshot(
+            INTEGRATION._snapshot_visible_config(config),
+            installed_root,
+        )
         if controlled_authority and language == "evm"
         else {}
     )
@@ -107,6 +118,19 @@ def _fixture(
         json.dumps(checkpoint, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    if controlled_authority and language == "evm":
+        workspace_outcome = WORKSPACE.ensure_evm_analysis_workspace_authority(
+            config=config,
+            scratchpad=scratchpad,
+            project_root=project,
+            run_id=run_id,
+            audit_snapshot=snapshot,
+            implementation_root=installed_root,
+        )
+        assert workspace_outcome is not None
+        config["_evm_analysis_workspace_reference"] = dict(
+            workspace_outcome.public_reference
+        )
     return {
         "project": project,
         "scratchpad": scratchpad,
@@ -208,6 +232,7 @@ def test_checkpoint_capture_is_zero_input_driver_phaseio_predecessor() -> None:
         work_unit_id="program_facts_bake",
         exact_inputs=(
             PROGRAM_FACTS_CHECKPOINT_CAPTURE_PATH,
+            WORKSPACE.WORKSPACE_RECEIPT_PATH,
             *PROGRAM_FACTS_METHODOLOGY_INPUT_PATHS,
         ),
         exact_outputs=SIDE_CARS,
@@ -223,8 +248,17 @@ def test_checkpoint_capture_is_zero_input_driver_phaseio_predecessor() -> None:
     assert methodology.immutable_inputs == (
         f"scratchpad:{PROGRAM_FACTS_CHECKPOINT_CAPTURE_PATH}",
     )
-    assert bake.immutable_inputs[0] == (
-        f"scratchpad:{PROGRAM_FACTS_CHECKPOINT_CAPTURE_PATH}"
+    expected_bake_inputs = tuple(sorted((
+        f"scratchpad:{PROGRAM_FACTS_CHECKPOINT_CAPTURE_PATH}",
+        f"scratchpad:{WORKSPACE.WORKSPACE_RECEIPT_PATH}",
+        *(
+            f"scratchpad:{identity}"
+            for identity in PROGRAM_FACTS_METHODOLOGY_INPUT_PATHS
+        ),
+    )))
+    assert bake.immutable_inputs == expected_bake_inputs
+    assert expected_bake_inputs[-1] == (
+        f"scratchpad:{WORKSPACE.WORKSPACE_RECEIPT_PATH}"
     )
     assert "scratchpad:_v2_checkpoint.json" not in bake.immutable_inputs
 
@@ -401,7 +435,7 @@ def test_driver_orders_program_facts_before_legacy_recon_prepass() -> None:
     assert main.index("checkpoint.save(scratchpad)") < hook
 
 
-def test_driver_cannot_continue_false_clean_when_debt_persistence_fails() -> None:
+def test_driver_cannot_continue_when_diagnostic_persistence_fails() -> None:
     source = (
         Path(__file__).with_name("plamen_driver.py")
         .read_text(encoding="utf-8", errors="strict")
@@ -416,11 +450,11 @@ def test_driver_cannot_continue_false_clean_when_debt_persistence_fails() -> Non
     )
     projection = failure_boundary.index("_append_phase_io_debt(")
     assert runtime_debt < projection
-    assert "failed to persist runtime degradation" in failure_boundary
+    assert "failed to persist runtime diagnostic" in failure_boundary
     assert "sys.exit(EXIT_DEGRADED)" in failure_boundary
 
 
-def test_runtime_debt_survives_recon_projection_clear_and_exactly_clears(
+def test_runtime_diagnostic_is_durable_nonterminal_and_exactly_clears(
     tmp_path: Path,
 ) -> None:
     import plamen_driver as DRIVER
@@ -428,6 +462,7 @@ def test_runtime_debt_survives_recon_projection_clear_and_exactly_clears(
     scratchpad = tmp_path / ".scratchpad"
     scratchpad.mkdir()
     checkpoint = DRIVER.Checkpoint(run_id=str(uuid.uuid4()))
+    checkpoint.record_runtime_debt("OTHER-ACTIVE-SUBSYSTEM", "a" * 64)
     checkpoint.save(scratchpad)
 
     receipt_sha256 = DRIVER._record_program_facts_stage2_runtime_debt(
@@ -435,30 +470,75 @@ def test_runtime_debt_survives_recon_projection_clear_and_exactly_clears(
         checkpoint,
         "controlled Program Facts publication failure",
     )
-    debt_id = DRIVER._PROGRAM_FACTS_STAGE2_RUNTIME_DEBT_ID
     receipt_path = (
         scratchpad / DRIVER._PROGRAM_FACTS_STAGE2_RUNTIME_DEBT_PATH
     )
-    assert checkpoint.runtime_debts == {debt_id: receipt_sha256}
+    assert checkpoint.runtime_debts == {
+        "OTHER-ACTIVE-SUBSYSTEM": "a" * 64
+    }
     assert hashlib.sha256(receipt_path.read_bytes()).hexdigest() == (
         receipt_sha256
     )
 
     # A later clean recon commit may clear only its phase projection. The
-    # process-level checkpoint binding remains authoritative and visible.
+    # independent diagnostic receipt remains visible without contaminating
+    # the active-subsystem terminal debt channel.
     recon_projection = scratchpad / "recon.degraded"
     recon_projection.write_text("projection\n", encoding="utf-8")
     recon_projection.unlink()
     replayed = DRIVER.Checkpoint.load(scratchpad)
-    assert replayed.runtime_debts == {debt_id: receipt_sha256}
+    assert replayed.runtime_debts == {
+        "OTHER-ACTIVE-SUBSYSTEM": "a" * 64
+    }
 
     assert DRIVER._clear_program_facts_stage2_runtime_debt(
         scratchpad,
         replayed,
     )
     final = DRIVER.Checkpoint.load(scratchpad)
-    assert final.runtime_debts == {}
+    assert final.runtime_debts == {
+        "OTHER-ACTIVE-SUBSYSTEM": "a" * 64
+    }
     assert not receipt_path.exists()
+
+
+def test_runtime_diagnostic_migrates_only_exact_legacy_checkpoint_binding(
+    tmp_path: Path,
+) -> None:
+    import plamen_driver as DRIVER
+
+    scratchpad = tmp_path / ".scratchpad"
+    scratchpad.mkdir()
+    checkpoint = DRIVER.Checkpoint(run_id=str(uuid.uuid4()))
+    checkpoint.record_runtime_debt("OTHER-ACTIVE-SUBSYSTEM", "b" * 64)
+    checkpoint.save(scratchpad)
+    legacy_sha256 = DRIVER._record_program_facts_stage2_runtime_debt(
+        scratchpad,
+        checkpoint,
+        "legacy Program Facts publication failure",
+    )
+    checkpoint.record_runtime_debt(
+        DRIVER._PROGRAM_FACTS_STAGE2_RUNTIME_DEBT_ID,
+        legacy_sha256,
+    )
+    checkpoint.save(scratchpad)
+
+    current_sha256 = DRIVER._record_program_facts_stage2_runtime_debt(
+        scratchpad,
+        checkpoint,
+        "current Program Facts publication failure",
+    )
+
+    replayed = DRIVER.Checkpoint.load(scratchpad)
+    assert replayed.runtime_debts == {
+        "OTHER-ACTIVE-SUBSYSTEM": "b" * 64
+    }
+    receipt_path = (
+        scratchpad / DRIVER._PROGRAM_FACTS_STAGE2_RUNTIME_DEBT_PATH
+    )
+    assert hashlib.sha256(receipt_path.read_bytes()).hexdigest() == (
+        current_sha256
+    )
 
 
 def test_checkpoint_capture_bytes_are_canonical_and_content_addressed(

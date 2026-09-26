@@ -20,6 +20,7 @@ from phase_io_contracts import (
     canonical_artifact_identity,
     canonical_work_unit_key,
     recon_direct_retry_output_paths,
+    registered_projection_handoff,
     resolve_phase_io_contract,
 )
 
@@ -205,6 +206,7 @@ def test_recon_contracts_assign_prepass_worker_research_and_merge_exactly():
     assert _ids(prepass) == {
         "scratchpad:contract_inventory.md",
         "scratchpad:state_variables.md",
+        "scratchpad:modifiers.md",
         "scratchpad:function_list.md",
         "scratchpad:build_status.md",
         "scratchpad:design_context.md",
@@ -253,12 +255,12 @@ def test_recon_contracts_assign_prepass_worker_research_and_merge_exactly():
     assert research_spec.condition_id == "external_dependency_obligations_present"
 
     matrix = (
-        ("sc", "light", 2, 12),
-        ("sc", "core", 4, 12),
-        ("sc", "thorough", 4, 12),
-        ("l1", "light", 3, 8),
-        ("l1", "core", 5, 8),
-        ("l1", "thorough", 5, 8),
+            ("sc", "light", 2, 15),
+            ("sc", "core", 4, 15),
+            ("sc", "thorough", 4, 15),
+        ("l1", "light", 3, 9),
+        ("l1", "core", 5, 9),
+        ("l1", "thorough", 5, 9),
     )
     for pipeline, mode, input_count, output_count in matrix:
         merge = _resolve(
@@ -271,6 +273,7 @@ def test_recon_contracts_assign_prepass_worker_research_and_merge_exactly():
         )
         assert receipt.writer == "DRIVER"
         assert receipt.minimum_gate == "RECON_SIGNAL_TRANSFORM_RECEIPT"
+        assert "scratchpad:meta_buffer.md" in _ids(merge)
         if pipeline == "sc":
             assert "scratchpad:recon_summary.md" in _ids(merge)
             assert "scratchpad:build_status.md" in _ids(merge)
@@ -510,6 +513,29 @@ def test_report_index_prework_model_and_routing_form_three_transactions():
 
 
 def test_severity_adjudication_shadow_has_distinct_plan_worker_bind_transactions():
+    capture_prefix = "_severity_adjudication_inputs/"
+    source_snapshot = capture_prefix + "source_ledger.initial.json"
+    captured_inputs = (
+        capture_prefix + "audit_snapshot.json",
+        capture_prefix + "audit_config.json",
+        capture_prefix + "finding-output-format.md",
+        capture_prefix + "poc-execution.md",
+        capture_prefix + "report-template.md",
+    )
+    planning_inputs = _resolve(
+        "severity_adjudication_shadow",
+        "planning_inputs",
+        exact_inputs=(source_snapshot,),
+        exact_outputs=captured_inputs,
+    )
+    assert planning_inputs.model_invoked is False
+    assert planning_inputs.immutable_inputs == (
+        f"scratchpad:{source_snapshot}",
+    )
+    assert _ids(planning_inputs) == {
+        f"scratchpad:{path}" for path in captured_inputs
+    }
+
     planning = _resolve(
         "severity_adjudication_shadow",
         "planning",
@@ -521,11 +547,14 @@ def test_severity_adjudication_shadow_has_distinct_plan_worker_bind_transactions
             "severity_adjudication_launch_intent.0001.json",
             "severity_adjudication_tool_policy.0001.json",
         ),
-        exact_inputs=("rules/severity.md",),
+        exact_inputs=(source_snapshot, *captured_inputs),
     )
     assert planning.model_invoked is False
     assert all(output.writer == "DRIVER" for output in planning.outputs)
-    assert "scratchpad:severity_decision_ledger.shadow.json" in planning.immutable_inputs
+    assert set(planning.immutable_inputs) == {
+        f"scratchpad:{source_snapshot}",
+        *(f"scratchpad:{path}" for path in captured_inputs),
+    }
 
     worker = _resolve(
         "severity_adjudication_shadow",
@@ -546,20 +575,30 @@ def test_severity_adjudication_shadow_has_distinct_plan_worker_bind_transactions
 
     bind = _resolve(
         "severity_adjudication_shadow",
-        "bind",
+        "bind.0001.h-1",
         exact_outputs=(
-            "verify_H-1.severity_decision.json",
             "verify_H-1.severity_adjudication_receipt.json",
+            "verify_H-1.severity_decision.json",
             "severity_decision_ledger.shadow.json",
-            "severity_adjudication_work_reconciliation.json",
         ),
         exact_inputs=(
+            "severity_adjudication_work_manifest.json",
+            "severity_adjudication_work_plan.json",
             "verify_H-1.severity_adjudication_proposal.json",
+            "severity_adjudication_context.0001.json",
+            "severity_adjudication_prompt.0001.md",
+            "severity_adjudication_tool_policy.0001.json",
             "severity_adjudication_launch_intent.0001.json",
+            "severity_adjudication_worker_run.0001.json",
         ),
     )
     assert bind.model_invoked is False
     assert all(output.writer == "DRIVER" for output in bind.outputs)
+    assert _ids(bind) == {
+        "scratchpad:verify_H-1.severity_adjudication_receipt.json",
+        "scratchpad:verify_H-1.severity_decision.json",
+        "scratchpad:severity_decision_ledger.shadow.json",
+    }
 
 
 def test_severity_shadow_report_projection_is_driver_owned_and_read_only():
@@ -830,4 +869,120 @@ def test_runtime_debt_report_fallback_cannot_masquerade_as_model_output():
                 "report_evidence_manifests/report_medium.json",
             ),
             exact_outputs=("report_medium.md",),
+        )
+
+
+def test_typed_report_fallback_is_a_driver_projection_not_model_authority():
+    contract = _resolve(
+        "report_body",
+        "report_medium.typed_fallback",
+        exact_inputs=(
+            "report_evidence_records.json",
+            "report_evidence_manifests/report_medium.json",
+        ),
+        exact_outputs=("report_medium.md",),
+    )
+    assert contract.model_invoked is False
+    assert contract.outputs[0].writer == "DRIVER"
+    assert (
+        contract.outputs[0].minimum_gate
+        == "EXACT_TYPED_EVIDENCE_DENOMINATOR_AND_SEMANTIC_PARITY"
+    )
+    assert set(contract.immutable_inputs) == {
+        "scratchpad:report_evidence_records.json",
+        "scratchpad:report_evidence_manifests/report_medium.json",
+    }
+    with pytest.raises(ValueError, match="typed bundle"):
+        _resolve(
+            "report_body",
+            "report_medium.typed_fallback",
+            exact_inputs=(
+                "report_evidence_manifests/report_medium.json",
+            ),
+            exact_outputs=("report_medium.md",),
+        )
+
+
+@pytest.mark.parametrize(
+    "shard,ordinal,verifier_inputs",
+    (
+        ("report_critical_high", 1, ()),
+        ("report_medium_a", 2, ("verify_HYP-001.md",)),
+        ("report_low_info_z", 9999, ("verify_LOW-1.md", "verify_INFO-2.md")),
+    ),
+)
+def test_report_body_evidence_projection_is_exact_registered_successor(
+    shard, ordinal, verifier_inputs,
+):
+    attempt = "" if ordinal == 1 else f".attempt-{ordinal:04d}"
+    inputs = (
+        "report_evidence_records.json",
+        f"body_manifests/{shard}.json",
+        f"report_evidence_manifests/{shard}.json",
+        *verifier_inputs,
+    )
+    contract = _resolve(
+        "report_body",
+        f"evidence_projection.{shard}{attempt}",
+        exact_inputs=inputs,
+        exact_outputs=(
+            f"{shard}.md",
+            f"report_evidence_projection_receipts/{shard}{attempt}.json",
+        ),
+    )
+    assert contract.model_invoked is False
+    assert contract.immutable_inputs == tuple(
+        f"scratchpad:{name}" for name in sorted(inputs)
+    )
+    assert {
+        row.identity: (row.writer, row.write_mode) for row in contract.outputs
+    } == {
+        f"scratchpad:{shard}.md": ("DRIVER", "REPLACE"),
+        f"scratchpad:report_evidence_projection_receipts/{shard}{attempt}.json": (
+            "DRIVER", "CREATE",
+        ),
+    }
+    model = canonical_work_unit_key(
+        BASE["pipeline"], BASE["mode"], BASE["ecosystem"], BASE["backend"],
+        "report_body", f"model.{shard}{attempt}",
+    )
+    assert registered_projection_handoff(
+        model, contract.key, f"scratchpad:{shard}.md"
+    )
+    assert not registered_projection_handoff(
+        model,
+        contract.key,
+        f"scratchpad:report_evidence_projection_receipts/{shard}{attempt}.json",
+    )
+
+
+@pytest.mark.parametrize(
+    "work_unit_id",
+    (
+        "evidence_projection.report_medium_aa",
+        "evidence_projection.report_medium_c2",
+        "evidence_projection.report_MEDIUM",
+        "evidence_projection.report_unknown",
+        "evidence_projection.report_medium/escape",
+        "evidence_projection.report_medium.attempt-0001",
+        "evidence_projection.report_medium.attempt-2",
+        "evidence_projection.report_medium.attempt-10000",
+    ),
+)
+def test_report_body_evidence_projection_rejects_out_of_grammar_ids(
+    work_unit_id,
+):
+    with pytest.raises(ValueError):
+        _resolve(
+            "report_body",
+            work_unit_id,
+            exact_inputs=(
+                "report_evidence_records.json",
+                "body_manifests/report_medium.json",
+                "report_evidence_manifests/report_medium.json",
+            ),
+            exact_outputs=(
+                "report_medium.md",
+                "report_evidence_projection_receipts/report_medium.json",
+            ),
         )

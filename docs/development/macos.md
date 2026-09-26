@@ -11,6 +11,14 @@ provider or E2E audit completed.
 
 ## Current support boundary
 
+An already-installed POSIX compatibility package also exposes the normal
+`plamen` terminal wizard and `plamen start-config CONFIG` / `plamen resume CONFIG`
+commands. They select the installed transport internally; no user-facing
+platform flag is required. This Codex lane records reduced host-process isolation
+and unavailable tool authority explicitly. It is separate from the native
+release qualification below and does not prove a flawless full audit or Claude
+parity. Never replace `~/.plamen` while an audit is reading that generation.
+
 | Capability | arm64 | x86_64 | Status |
 |---|---:|---:|---|
 | Clone and edit the source checkout | Yes | Yes | Source files are portable |

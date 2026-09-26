@@ -265,7 +265,7 @@ def print_banner(pipeline: str, mode: str, project_root: str,
         eco_line = f"  Ecosystem: {eco}\n" if eco else ""
         print(
             f"\n{'=' * 60}\n"
-            f"  PLAMEN V2 DRIVER -- {pipeline.upper()} / {mode.upper()}\n"
+            f"  PLAMEN V3 DRIVER -- {pipeline.upper()} / {mode.upper()}\n"
             f"{eco_line}"
             f"  Project:  {project_root}\n"
             f"{ai_line}"
@@ -294,7 +294,7 @@ def print_banner(pipeline: str, mode: str, project_root: str,
     table.add_row("Ctrl+P", "[bold yellow]pause/unpause[/] [dim]-- waits between phases[/]")
     table.add_row("Rate limit", "[dim]auto-waits with countdown, ENTER to retry early[/]")
 
-    title = _gradient_text(" PLAMEN V2 ")
+    title = _gradient_text(" PLAMEN V3 ")
     console.print()
     console.print(Panel(table, title=title, border_style="#7030FF",
                         width=min(console.width, 72)))
@@ -546,6 +546,48 @@ def print_halt_diagnostics(phase_name: str, scratchpad: str,
 
     console.print(Panel(table, title="[dim]Diagnostics[/]", border_style="dim",
                         width=min(console.width, 72)))
+
+
+def print_provider_policy_stop(phase_name: str, scratchpad: str,
+                               receipt_path: str):
+    """Explain an already authenticated provider refusal, without a new call.
+
+    The driver supplies this classification from its current-attempt receipt;
+    do not infer it from arbitrary artifact text or the latest available log.
+    This is advisory display only, not authorization to retry the request.
+    """
+    diagnosis = (
+        "### What Happened\n"
+        f"Codex blocked the {phase_name} phase with a provider security-policy "
+        "refusal. The audit is incomplete; saved checkpoints and committed "
+        "artifacts are retained. No automatic retry was launched.\n\n"
+        "### Classification\nPROVIDER_POLICY_REFUSAL\n\n"
+        "### Next Step\n"
+        "Resolve the provider access issue before explicitly resuming. Check "
+        "that any approved security-work access covers the account and Codex "
+        "surface used for this run. If the block appears incorrect, use the "
+        "provider's feedback or support process. This message alone does not "
+        "establish whether the account is approved.\n"
+        "Official guidance: https://learn.chatgpt.com/docs/cyber-safety\n\n"
+        "Changing artifact validators, reinstalling Python, or simply waiting "
+        "is not a fix for this refusal. Do not automatically rephrase the "
+        "request or switch models/backends to bypass it.\n\n"
+        f"### Saved Evidence\nReceipt: {receipt_path}\n"
+    )
+    diagnosis_path = Path(scratchpad) / f"_diagnosis_{phase_name}.md"
+    try:
+        diagnosis_path.write_text(
+            f"# Failure Diagnosis: {phase_name}\n\n" + diagnosis,
+            encoding="utf-8",
+        )
+    except OSError:
+        # Failure to save an advisory explanation cannot obscure the stop.
+        pass
+    if not RICH_AVAILABLE:
+        print(f"\n{diagnosis}", file=sys.stderr)
+    else:
+        console.print(Panel(Text(diagnosis), title="Provider Access Block",
+                            border_style="red", width=min(console.width, 90)))
 
 
 def print_failure_diagnosis(phase_name: str, scratchpad: str,
@@ -1458,6 +1500,13 @@ def print_skipped_summary(skipped_names: list[str]):
     console.print(f"  [dim]Skipping {n} completed phases[/]")
 
 
+def _stderr_is_tty() -> bool:
+    try:
+        return bool(sys.stderr.isatty())
+    except Exception:
+        return False
+
+
 def rate_limit_wait_interactive(wait_s: int, phase_name: str) -> bool:
     """Countdown with keyboard shortcut to retry early.
 
@@ -1531,16 +1580,26 @@ def rate_limit_wait_interactive(wait_s: int, phase_name: str) -> bool:
         watcher = threading.Thread(target=_stdin_watcher, daemon=True)
         watcher.start()
 
+    # Under nohup/CI stderr is a file: a carriage-return countdown every 150 ms
+    # would append megabytes of "\r  Retrying in ..." over a multi-hour wait.
+    quiet = not _stderr_is_tty()
+    next_quiet_line = 0.0
     try:
         while time.time() < deadline:
             remaining = int(deadline - time.time())
             if remaining <= 0:
                 break
             m, s = divmod(remaining, 60)
-            msg = f"\r  Retrying in {m}:{s:02d} ...  "
-            sys.stderr.write(msg)
-            sys.stderr.flush()
-            if early_resume.wait(timeout=0.15):
+            if quiet:
+                if time.time() >= next_quiet_line:
+                    sys.stderr.write(f"  Retrying in {m}:{s:02d} ...\n")
+                    sys.stderr.flush()
+                    next_quiet_line = time.time() + 300.0
+            else:
+                msg = f"\r  Retrying in {m}:{s:02d} ...  "
+                sys.stderr.write(msg)
+                sys.stderr.flush()
+            if early_resume.wait(timeout=5.0 if quiet else 0.15):
                 sys.stderr.write("\r" + " " * 40 + "\r")
                 sys.stderr.flush()
                 return True

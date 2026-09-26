@@ -44,9 +44,9 @@
     "unresolved_nodes_sha256": "3176c06f7446119f92bdd97eb4f2482f620ffff7474558665ded06cf95e7a874",
     "quarantine_nodes_sha256": "29bdd0de57165822ae1472f57de64d272a30617a14c5fb654ac5ffae2158e98b",
     "source_path_roster_sha256": "f27577b1f91e246ccb65d3e167399c2cbcc6c4832a6ec4bcd4557966ccc118d4",
-    "source_roster_sha256": "badef23e1e9eb2a59b97d76b9866791d4d6865015f51c8a59cd471d3f450f7bf",
+    "source_roster_sha256": "84c102d1f5d690be597e90ff36f78c92c1849c79ee28c41a9f716a760d2a7c6f",
     "quarantine_source_path_roster_sha256": "858dd7735dd18648e7c4574e95ea0b2a3ba137469da99e9419b38ce63e8bd86b",
-    "quarantine_source_roster_sha256": "3165afe5458a71d9e820307a2a1b69a355986488871a53d2cd1bd84496fc7aad",
+    "quarantine_source_roster_sha256": "97cf890eadebb093b8a03784542fdbc148fb0668c690e714387ddaecfea383db",
     "entry_roster_sha256": "ed7627a4d5705dac3529b91359eb964795bee193b24f5d416c442c05ae214fe1"
   },
   "sources": [
@@ -56,7 +56,7 @@
     },
     {
       "path": "scripts/test_application_skeptic_driver_p0_bcd.py",
-      "sha256": "2c41c79c9569f1e0d76ad1f0b116bee48b6ce9e6c8de5a2c3a506de335a14afb"
+      "sha256": "3c1386a39971b1356826aaa126063c3e1f75c982c8e0076912436a19fa4a481f"
     },
     {
       "path": "scripts/test_artifact_ledger_windows_finddata_lifecycle.py",
@@ -64,7 +64,7 @@
     },
     {
       "path": "scripts/test_audit_snapshot_r0_8cd.py",
-      "sha256": "3ad0ef181eef54200169df14ba63b4453517c2a9c30613dddc4f750b1638ee9a"
+      "sha256": "dfe32a02a552c07f9f4cf28f7730996e5c75e16c069586aef899b763a786578b"
     },
     {
       "path": "scripts/test_bb_path_authority_longpath_20260729.py",
@@ -72,7 +72,7 @@
     },
     {
       "path": "scripts/test_candidate_negative_driver_p1_f.py",
-      "sha256": "841e72c75f768906612dda5317ac5c823976951d5d9810a3669fbe7925635826"
+      "sha256": "56c8039d84b1e2f18d0e6a9254d2e80696154dd6d7adec1f67688bbcad891971"
     },
     {
       "path": "scripts/test_ci_toolchain_independent_r3_blockers.py",
@@ -80,7 +80,7 @@
     },
     {
       "path": "scripts/test_claude_attempt_profile_p0_am.py",
-      "sha256": "8bd0f328b87f1c0dd3bcedc3f46771e4e5359b9d7ca06f9cc406c1cefea05447"
+      "sha256": "fcd3bfc5d2fc7ae5b5c676e526167c8150a59038ba561120f1c81073b0f20dd4"
     },
     {
       "path": "scripts/test_claude_provider_authority_sealing_red_p0_am.py",
@@ -88,11 +88,11 @@
     },
     {
       "path": "scripts/test_claude_stored_subscription_source_p0_am.py",
-      "sha256": "d23fcd91c23a8255a6a5eca028f57699ef8653ed4e62ac3a9b058d5e930cbedc"
+      "sha256": "5061661f1653062acfddca0edacb8769d003b84f570c60566f2bbd77912d48d5"
     },
     {
       "path": "scripts/test_isolated_execution_host.py",
-      "sha256": "249ff3f444b322b21df3a431db820103b0d72cf94c1857ecf7cfe5a1ae60c1e6"
+      "sha256": "a8b108202164b4b8e622f7547a994973e83136fe01fc6617aafaf8fec11e83e4"
     },
     {
       "path": "scripts/test_mechanical_gate_registry_schema.py",
@@ -112,11 +112,11 @@
     },
     {
       "path": "scripts/test_owned_process_runner.py",
-      "sha256": "5cc58dd6200a7f7dab937f873c74571b82d5acdc7b6f420cf835db11f72b6107"
+      "sha256": "9aa7e199041256709dadd4930a8a5f80f29f287234e17153021463c69d4b9292"
     },
     {
       "path": "scripts/test_owned_process_scope_launch_state_p0_am.py",
-      "sha256": "f8396ec294aa134d2d2dfe6bd17a72416e465e22d8edd201af773871e3336f30"
+      "sha256": "b7a55a06ba8ffa1a82637083861d334de1b7b43df454e67e295255a08018a2a9"
     },
     {
       "path": "scripts/test_owned_process_scope_linux_p0_am.py",
@@ -176,7 +176,7 @@
     },
     {
       "path": "scripts/test_toolchain_round51_blockers.py",
-      "sha256": "dfbac3264f1fcd91c8d58ea9339b8471b0a9722a85ea83ce4662fc3e116b9b99"
+      "sha256": "6d1992ef9245cfa35d96ce7c5947d30f405cc711ab7ca0b9d59d7356df401c24"
     },
     {
       "path": "scripts/test_v2_post_release_fixes.py",
@@ -184,7 +184,7 @@
     },
     {
       "path": "scripts/test_verify_queue_durable_write_once_p0.py",
-      "sha256": "96eb682962b2454ac291234dbbc427c930ee1a84c2675df0c5fed93eb961f990"
+      "sha256": "b80bb27257900e02a0639a20e609db7dc453cb91d9a5e456aade968f154cc2c9"
     },
     {
       "path": "scripts/test_wer_observer_independent_review_reds.py",
@@ -300,7 +300,7 @@
     },
     {
       "path": "scripts/test_live_verify_queue_main_boundary_a0.py",
-      "sha256": "a93e15c0e69139c570d51aeec1676d6b8fea131cfbeb1948f8d6029013d8746e"
+      "sha256": "335667f417397f7edd8a6e99155df9140158eec5b99678f7fcae6670b95f2c7c"
     },
     {
       "path": "scripts/test_live_verify_queue_prearm_presence_authority_adversarial.py",
@@ -308,7 +308,7 @@
     },
     {
       "path": "scripts/test_mandatory_reverification_nc5.py",
-      "sha256": "93b518ddec5246887f01d285fcc6b4c82aa6d56fa7a4101acd66ef37ec4da2d6"
+      "sha256": "2104077673ec0afb7362502944c5befff372f90d8f9db7f0166195b700045fca"
     },
     {
       "path": "scripts/test_mechanical_gate_execution_receipts.py",
@@ -368,7 +368,7 @@
     },
     {
       "path": "scripts/test_terminal_audit_launch_readiness.py",
-      "sha256": "2a75fa6bebe66ac996ac6360ea0e5edafc3f439a1c9fd092a53f6f0f89a2c6c6"
+      "sha256": "07ae4d13fdc174c68068f780af4ec6436f298a079cd0e53f55403ebee0574bf0"
     },
     {
       "path": "scripts/test_toolchain_round3_blockers.py",
@@ -404,7 +404,7 @@
     },
     {
       "path": "scripts/test_worker_transaction_stage0_red_p0_am.py",
-      "sha256": "e894b89f724c94070feab1f0c09ed398c65aa13fe254f353dc6d68563332e425"
+      "sha256": "d67afb35aecf7c9bfb74369f068a51a58026b340f7e7016755b115590ac320a8"
     },
     {
       "path": "scripts/bounty/test_bb_human_gate_containment_20260727.py",

@@ -181,6 +181,33 @@ def test_p31_manifest_round_trip(tmp_path):
     assert by_id["HH-03"]["effective_tag"] == "[CODE-TRACE]"
 
 
+def test_p31_exact_semantic_replay_preserves_physical_identity(
+    tmp_path, monkeypatch,
+):
+    import mechanical_verify as mechanical
+
+    verify = tmp_path / "verify_HH-01.md"
+    verify.write_text("**Evidence Tag**: [CODE-TRACE]\n", encoding="utf-8")
+    results = [
+        _FakeResult(
+            verify_file=verify.name,
+            finding_id="HH-01",
+            status="NO_TEST_FILE",
+        )
+    ]
+    clock = {"value": "2026-01-01T00:00:00"}
+    monkeypatch.setattr(mechanical.time, "strftime", lambda _fmt: clock["value"])
+    mechanical._write_verdict_manifest(results, tmp_path)
+    path = tmp_path / "verdict_manifest.json"
+    before = path.stat()
+    clock["value"] = "2099-12-31T23:59:59"
+    mechanical._write_verdict_manifest(results, tmp_path)
+    after = path.stat()
+    assert (after.st_dev, after.st_ino, after.st_mtime_ns) == (
+        before.st_dev, before.st_ino, before.st_mtime_ns,
+    )
+
+
 def test_p31_read_returns_empty_on_missing(tmp_path):
     """No verdict_manifest.json → []."""
     assert read_verdict_manifest(tmp_path) == []

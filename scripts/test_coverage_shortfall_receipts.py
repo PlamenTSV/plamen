@@ -788,6 +788,26 @@ def test_gate_p_global_cap_is_loud_lower_bound(tmp_path: Path, monkeypatch):
     assert row["count_semantics"] == "LOWER_BOUND"
 
 
+def test_gate_p_default_bounds_admit_real_thorough_discriminator_shape(
+    tmp_path: Path, monkeypatch
+):
+    """Run72 produced 53 valid reopen actions in one registered artifact."""
+    (tmp_path / "report_index_coverage_seed.md").write_text(
+        "| Finding/Hyp ID | Title | Verdict |\n|---|---|---|\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "depth_one.md").write_text("fixture\n", encoding="utf-8")
+    _patch_gate_p_harvest(monkeypatch, 53)
+
+    orphans = M.compute_promotion_orphans(tmp_path)
+    assert len(orphans) == 53
+    shortfall_path = tmp_path / "_coverage_shortfalls.json"
+    assert not shortfall_path.exists() or not any(
+        row["cap"] in {"PROMO_MAX_PER_FILE", "PROMO_MAX_PER_RUN"}
+        for row in _shortfalls(tmp_path)
+    )
+
+
 def test_gate_p_id_only_tracked_row_after_capacity_records_real_overflow(
     tmp_path: Path, monkeypatch
 ):

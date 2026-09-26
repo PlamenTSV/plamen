@@ -600,14 +600,25 @@ def test_validator_dispatch_table_integrity():
     Every such function must be importable from the driver namespace."""
     import plamen_driver as D
 
-    # Find all _validate_* and _generate_*_retry_hint calls in the driver
+    # Find all _validate_* and _generate_*_retry_hint calls in the driver.
+    # Nested transaction validators are deliberately local capabilities, so
+    # they must not be mistaken for missing star-import exports.
     driver_source = (SCRIPTS_DIR / "plamen_driver.py").read_text(encoding="utf-8")
+    driver_tree = ast.parse(driver_source)
+    locally_defined = {
+        node.name
+        for node in ast.walk(driver_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
     validator_calls = set(re.findall(r'\b(_validate_\w+)\s*\(', driver_source))
     generator_calls = set(re.findall(r'\b(_generate_\w+)\s*\(', driver_source))
     checker_calls = set(re.findall(r'\b(_check_\w+)\s*\(', driver_source))
 
     all_calls = validator_calls | generator_calls | checker_calls
-    missing = [name for name in all_calls if not hasattr(D, name)]
+    missing = [
+        name for name in all_calls
+        if name not in locally_defined and not hasattr(D, name)
+    ]
 
     assert not missing, (
         f"Driver calls these functions but they're not accessible:\n"
@@ -968,7 +979,7 @@ def test_display_plain_output_for_captured_shell():
         timeout=10,
     )
     assert r.returncode == 0, r.stderr
-    assert "PLAMEN V2 DRIVER -- SC / CORE" in r.stderr
+    assert "PLAMEN V3 DRIVER -- SC / CORE" in r.stderr
     assert "AI Model: Claude Code / sonnet" in r.stderr
     assert "\r" not in r.stderr
     assert "╭" not in r.stderr

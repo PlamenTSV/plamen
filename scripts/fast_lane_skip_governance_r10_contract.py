@@ -86,13 +86,18 @@ def test_ci_workflow_executes_exact_total_marker_partition() -> None:
         / "workflows"
         / "tests.yml"
     ).read_text(encoding="utf-8")
-    commands = (
-        'python -m pytest -m "not integration and not fast_quarantine"',
-        'python -m pytest -m "integration"',
-        'python -m pytest -m "fast_quarantine and not integration"',
-    )
-    for command in commands:
-        assert workflow.count(command) == 1
+    for selector in (
+        'not integration and not fast_quarantine',
+        'integration',
+        'fast_quarantine and not integration',
+    ):
+        command = f'python -m pytest scripts tests -m "{selector}"'
+        # One POSIX and one Windows lane must collect the same denominator.
+        assert workflow.count(command) == 2
+        assert (
+            f'PYTHONPATH="$PWD/scripts" {command}'
+        ) in workflow
+    assert "cd scripts && python -m pytest" not in workflow
 
     # The three selectors must cover each possible marker combination exactly
     # once: ordinary unit, quarantined unit, integration, and quarantined

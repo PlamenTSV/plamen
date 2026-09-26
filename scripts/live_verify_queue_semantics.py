@@ -29,6 +29,7 @@ import tempfile
 from typing import Any, Iterable, Mapping, Sequence
 
 import chain_tail_authority as _chain_tail
+from portable_path_contract import assert_lexically_bounded_relative_path
 from compound_plan_adapter import (
     adapt_chain_composition_candidates,
     adapt_chain_hypotheses,
@@ -205,6 +206,14 @@ def _field_digest(value: Mapping[str, Any], field: str) -> str:
 def _safe_relative(value: Any) -> str:
     text = str(value or "").strip().replace("\\", "/")
     pure = PurePosixPath(text)
+    try:
+        assert_lexically_bounded_relative_path(
+            text, label="live semantic path"
+        )
+    except ValueError as exc:
+        raise LiveVerifyQueueSemanticError(
+            f"unsafe live semantic path: {value!r}"
+        ) from exc
     if (
         not text
         or pure.is_absolute()
@@ -745,6 +754,191 @@ def _empty_evidence_debt() -> dict[str, Any]:
     }
 
 
+_POLICY_IDENTITY_ACCOUNTING_SCHEMA = (
+    "plamen.live_queue_identity_accounting.v2"
+)
+_IDENTITY_TRANSITION_KIND = "EXPLICIT_TYPED_RELABEL"
+
+
+def _identity_neutral_payload(item: QueueWorkItem) -> dict[str, Any]:
+    """Return the claim payload that an identity-only relabel may not change.
+
+    Queue order is routing metadata and the remaining omitted fields are the
+    identity envelope itself.  Everything that affects the claim, evidence,
+    scope, severity, or required verification disposition stays digest-bound.
+    """
+
+    payload = item.to_dict()
+    for field in (
+        "candidate_identity",
+        "work_item_id",
+        "lineage",
+        "aliases",
+        "queue_priority",
+        "expected_output_file",
+    ):
+        payload.pop(field)
+    return payload
+
+
+def _is_explicit_typed_relabel(
+    source: QueueWorkItem,
+    target: QueueWorkItem,
+) -> bool:
+    """Recognize a lossless, typed, one-to-one identity migration.
+
+    Merely mentioning the old ID in prose is deliberately insufficient.  The
+    target must carry it as both an alias and a parent-bound MIGRATION_DEBT
+    lineage link, may not introduce unrelated identities, and must preserve
+    the complete identity-neutral claim payload.
+    """
+
+    if (
+        source.work_item_id == target.work_item_id
+        or target.candidate_identity != target.work_item_id
+        or source.work_item_id not in target.aliases
+        or _identity_neutral_payload(source)
+        != _identity_neutral_payload(target)
+    ):
+        return False
+    if not any(
+        link.identity == source.work_item_id
+        and link.relation == "MIGRATION_DEBT"
+        and link.parent_identity == target.work_item_id
+        for link in target.lineage
+    ):
+        return False
+    if not any(
+        link.identity == target.work_item_id
+        and link.relation == "ORIGIN"
+        for link in target.lineage
+    ):
+        return False
+    source_identity_denominator = {
+        source.work_item_id,
+        source.candidate_identity,
+        *source.aliases,
+        *(link.identity for link in source.lineage),
+    }
+    target_identity_denominator = {
+        target.work_item_id,
+        source.work_item_id,
+        *source_identity_denominator,
+    }
+    return (
+        set(target.aliases) <= target_identity_denominator
+        and {link.identity for link in target.lineage}
+        <= target_identity_denominator
+    )
+
+
+def _build_policy_identity_accounting(
+    base_items: Sequence[QueueWorkItem],
+    active_items: Sequence[QueueWorkItem],
+    excluded_items: Sequence[QueueWorkItem],
+) -> dict[str, Any]:
+    """Close the T2 denominator across stable IDs and typed relabels.
+
+    A policy pass is allowed to reorder records and to perform a lossless
+    one-to-one relabel.  It is not allowed to add a claim, merge claims, fan a
+    claim out, or alter claim semantics under cover of an identity change.
+    Unrouted base records remain explicit visible debt; unexplained targets
+    keep ``exact_partition`` false and therefore cannot publish.
+    """
+
+    base = {item.work_item_id: item for item in base_items}
+    active = {item.work_item_id: item for item in active_items}
+    excluded = {item.work_item_id: item for item in excluded_items}
+    base_ids = set(base)
+    active_ids = set(active)
+    excluded_ids = set(excluded)
+    duplicate_ids = active_ids & excluded_ids
+    delivered = {**active, **excluded}
+    missing_source_ids = base_ids - active_ids - excluded_ids
+    extra_target_ids = (active_ids | excluded_ids) - base_ids
+
+    candidates_by_target: dict[str, tuple[str, ...]] = {}
+    for target_id in sorted(extra_target_ids):
+        target = delivered[target_id]
+        candidates_by_target[target_id] = tuple(
+            source_id
+            for source_id in sorted(missing_source_ids)
+            if _is_explicit_typed_relabel(base[source_id], target)
+        )
+    target_count_by_source: dict[str, int] = {}
+    for candidates in candidates_by_target.values():
+        for source_id in candidates:
+            target_count_by_source[source_id] = (
+                target_count_by_source.get(source_id, 0) + 1
+            )
+
+    transitions: list[dict[str, Any]] = []
+    migrated_sources: set[str] = set()
+    migrated_targets: set[str] = set()
+    for target_id, candidates in sorted(candidates_by_target.items()):
+        if (
+            len(candidates) != 1
+            or target_count_by_source.get(candidates[0]) != 1
+        ):
+            continue
+        source_id = candidates[0]
+        source = base[source_id]
+        target = delivered[target_id]
+        transitions.append({
+            "source_work_item_id": source_id,
+            "target_work_item_id": target_id,
+            "target_partition": (
+                "ACTIVE" if target_id in active_ids
+                else "AUTHORIZED_EXCLUDED"
+            ),
+            "transition_kind": _IDENTITY_TRANSITION_KIND,
+            "source_work_item_digest": source.digest,
+            "target_work_item_digest": target.digest,
+            "semantic_payload_digest": _digest(
+                _identity_neutral_payload(source)
+            ),
+        })
+        migrated_sources.add(source_id)
+        migrated_targets.add(target_id)
+
+    visible_debt = missing_source_ids - migrated_sources
+    unauthorized_targets = extra_target_ids - migrated_targets
+    direct_active_sources = active_ids & base_ids
+    direct_excluded_sources = excluded_ids & base_ids
+    source_outcomes = (
+        direct_active_sources,
+        direct_excluded_sources,
+        migrated_sources,
+        visible_debt,
+    )
+    no_source_overlap = sum(map(len, source_outcomes)) == len(
+        set().union(*source_outcomes)
+    )
+    exact_partition = (
+        base_ids == set().union(*source_outcomes)
+        and no_source_overlap
+        and not duplicate_ids
+        and not unauthorized_targets
+        and len(migrated_sources) == len(migrated_targets)
+        == len(transitions)
+    )
+    return {
+        "schema_version": _POLICY_IDENTITY_ACCOUNTING_SCHEMA,
+        "base_record_set_digest": queue_record_set_digest(base_items),
+        "active_record_set_digest": queue_record_set_digest(active_items),
+        "excluded_record_set_digest": queue_record_set_digest(excluded_items),
+        "base_ids": sorted(base_ids),
+        "active_ids": sorted(active_ids),
+        "authorized_excluded_ids": sorted(excluded_ids),
+        "identity_transitions": transitions,
+        "visible_debt_ids": sorted(visible_debt),
+        "unauthorized_target_ids": sorted(unauthorized_targets),
+        "duplicate_partition_ids": sorted(duplicate_ids),
+        "exact_partition": exact_partition,
+        "proof_authority": "NONE",
+    }
+
+
 def _t2(
     unit: Mapping[str, Any],
     frozen: Mapping[str, bytes],
@@ -814,28 +1008,9 @@ def _t2(
                 (root / "verification_queue_evidence_debt.json").read_bytes(),
         }
 
-    active_ids = {item.work_item_id for item in active_items}
-    excluded_ids = {item.work_item_id for item in excluded_items}
-    base_ids = {item.work_item_id for item in base_items}
-    unaccounted = sorted(base_ids - active_ids - excluded_ids)
-    duplicated = sorted(active_ids & excluded_ids)
-    accounting = {
-        "schema_version": "plamen.live_queue_identity_accounting.v1",
-        "base_ids": sorted(base_ids),
-        "active_ids": sorted(active_ids),
-        "authorized_excluded_ids": sorted(excluded_ids),
-        "visible_debt_ids": unaccounted,
-        "duplicate_partition_ids": duplicated,
-        # Visible debt is a terminal, non-proof disposition rather than a
-        # disappearance.  Exactness therefore means the full base denominator
-        # is represented once across the three closed outcomes.
-        "exact_partition": (
-            base_ids == active_ids | excluded_ids | set(unaccounted)
-            and not (active_ids & excluded_ids)
-            and not duplicated
-        ),
-        "proof_authority": "NONE",
-    }
+    accounting = _build_policy_identity_accounting(
+        base_items, active_items, excluded_items
+    )
     disposition = {
         "schema_version": "plamen.live_queue_policy_disposition.v1",
         "pipeline": pipeline,
@@ -1502,6 +1677,161 @@ def _t5(
     }
 
 
+def _validate_policy_identity_accounting(
+    accounting: Mapping[str, Any],
+    active: Sequence[QueueWorkItem],
+    excluded: Sequence[QueueWorkItem],
+) -> tuple[set[str], set[str], set[str], set[str]]:
+    """Replay T2's typed identity transitions without trusting its verdict."""
+
+    required_keys = {
+        "schema_version",
+        "base_record_set_digest",
+        "active_record_set_digest",
+        "excluded_record_set_digest",
+        "base_ids",
+        "active_ids",
+        "authorized_excluded_ids",
+        "identity_transitions",
+        "visible_debt_ids",
+        "unauthorized_target_ids",
+        "duplicate_partition_ids",
+        "exact_partition",
+        "proof_authority",
+    }
+    if (
+        accounting.get("schema_version")
+        != _POLICY_IDENTITY_ACCOUNTING_SCHEMA
+        or set(accounting) != required_keys
+        or accounting.get("exact_partition") is not True
+        or accounting.get("proof_authority") != "NONE"
+    ):
+        raise LiveVerifyQueueSemanticError(
+            "policy identity accounting is not an exact typed v2 partition"
+        )
+
+    def identity_set(field: str) -> set[str]:
+        value = accounting.get(field)
+        if (
+            not isinstance(value, list)
+            or any(not isinstance(item, str) or not item for item in value)
+            or len(value) != len(set(value))
+            or value != sorted(value)
+        ):
+            raise LiveVerifyQueueSemanticError(
+                f"policy identity accounting {field} is not canonical"
+            )
+        return set(value)
+
+    base_ids = identity_set("base_ids")
+    active_ids = identity_set("active_ids")
+    excluded_ids = identity_set("authorized_excluded_ids")
+    visible_ids = identity_set("visible_debt_ids")
+    unauthorized_targets = identity_set("unauthorized_target_ids")
+    duplicate_ids = identity_set("duplicate_partition_ids")
+    active_by_id = {item.work_item_id: item for item in active}
+    excluded_by_id = {item.work_item_id: item for item in excluded}
+    delivered = {**active_by_id, **excluded_by_id}
+    if (
+        active_ids != set(active_by_id)
+        or excluded_ids != set(excluded_by_id)
+        or accounting.get("active_record_set_digest")
+        != queue_record_set_digest(active)
+        or accounting.get("excluded_record_set_digest")
+        != queue_record_set_digest(excluded)
+        or not isinstance(accounting.get("base_record_set_digest"), str)
+        or _HEX64.fullmatch(str(accounting["base_record_set_digest"])) is None
+        or active_ids & excluded_ids
+        or duplicate_ids
+        or unauthorized_targets
+    ):
+        raise LiveVerifyQueueSemanticError(
+            "policy record sets differ from their typed identity accounting"
+        )
+
+    transitions_raw = accounting.get("identity_transitions")
+    if not isinstance(transitions_raw, list) or any(
+        not isinstance(row, Mapping) for row in transitions_raw
+    ):
+        raise LiveVerifyQueueSemanticError(
+            "policy identity transitions are malformed"
+        )
+    transition_keys = {
+        "source_work_item_id",
+        "target_work_item_id",
+        "target_partition",
+        "transition_kind",
+        "source_work_item_digest",
+        "target_work_item_digest",
+        "semantic_payload_digest",
+    }
+    transition_sources: set[str] = set()
+    transition_targets: set[str] = set()
+    for row in transitions_raw:
+        if set(row) != transition_keys:
+            raise LiveVerifyQueueSemanticError(
+                "policy identity transition has a non-canonical shape"
+            )
+        source_id = row.get("source_work_item_id")
+        target_id = row.get("target_work_item_id")
+        partition = row.get("target_partition")
+        if (
+            not isinstance(source_id, str)
+            or not isinstance(target_id, str)
+            or source_id in transition_sources
+            or target_id in transition_targets
+            or source_id not in base_ids
+            or source_id in active_ids | excluded_ids | visible_ids
+            or target_id not in delivered
+            or target_id in base_ids
+            or row.get("transition_kind") != _IDENTITY_TRANSITION_KIND
+            or partition
+            != ("ACTIVE" if target_id in active_ids else "AUTHORIZED_EXCLUDED")
+        ):
+            raise LiveVerifyQueueSemanticError(
+                "policy identity transition is not one-to-one and partition-bound"
+            )
+        target = delivered[target_id]
+        if (
+            row.get("target_work_item_digest") != target.digest
+            or row.get("semantic_payload_digest")
+            != _digest(_identity_neutral_payload(target))
+            or not isinstance(row.get("source_work_item_digest"), str)
+            or _HEX64.fullmatch(str(row["source_work_item_digest"])) is None
+            or source_id not in target.aliases
+            or not any(
+                link.identity == source_id
+                and link.relation == "MIGRATION_DEBT"
+                and link.parent_identity == target_id
+                for link in target.lineage
+            )
+        ):
+            raise LiveVerifyQueueSemanticError(
+                "policy identity transition is not digest- and lineage-bound"
+            )
+        transition_sources.add(source_id)
+        transition_targets.add(target_id)
+
+    direct_active = active_ids & base_ids
+    direct_excluded = excluded_ids & base_ids
+    source_outcomes = (
+        direct_active,
+        direct_excluded,
+        transition_sources,
+        visible_ids,
+    )
+    if (
+        base_ids != set().union(*source_outcomes)
+        or sum(map(len, source_outcomes)) != len(base_ids)
+        or (active_ids | excluded_ids) - base_ids != transition_targets
+        or len(transitions_raw) != len(transition_sources)
+    ):
+        raise LiveVerifyQueueSemanticError(
+            "policy identity accounting is not a closed source/target partition"
+        )
+    return base_ids, active_ids, excluded_ids, visible_ids
+
+
 def _t6(
     unit: Mapping[str, Any],
     frozen: Mapping[str, bytes],
@@ -1518,41 +1848,14 @@ def _t6(
         _input_by_suffix(frozen, "identity_accounting.json"),
         "T2 identity accounting",
     )
-    if (
-        policy_accounting.get("schema_version")
-        != "plamen.live_queue_identity_accounting.v1"
-        or policy_accounting.get("exact_partition") is not True
-    ):
-        raise LiveVerifyQueueSemanticError(
-            "T6 policy identity accounting is not an exact closed partition"
-        )
-    policy_base_ids = set(map(
-        str, policy_accounting.get("base_ids") or ()
-    ))
-    policy_active_ids = set(map(
-        str, policy_accounting.get("active_ids") or ()
-    ))
-    policy_excluded_ids = set(map(
-        str,
-        policy_accounting.get("authorized_excluded_ids") or (),
-    ))
-    policy_visible_ids = set(map(
-        str, policy_accounting.get("visible_debt_ids") or ()
-    ))
-    if (
-        policy_active_ids
-        != {item.work_item_id for item in active}
-        or policy_excluded_ids
-        != {item.work_item_id for item in excluded}
-        or policy_base_ids
-        != policy_active_ids | policy_excluded_ids | policy_visible_ids
-        or policy_active_ids & policy_excluded_ids
-        or policy_active_ids & policy_visible_ids
-        or policy_excluded_ids & policy_visible_ids
-    ):
-        raise LiveVerifyQueueSemanticError(
-            "T6 policy record sets differ from their identity accounting"
-        )
+    (
+        policy_base_ids,
+        policy_active_ids,
+        policy_excluded_ids,
+        policy_visible_ids,
+    ) = _validate_policy_identity_accounting(
+        policy_accounting, active, excluded
+    )
     source_suffixes = (
         "mandatory_reverification/queue_delta.work_items.json",
         "composition_delivery/queue_delta.work_items.json",
@@ -1775,11 +2078,11 @@ def _validate_t8_source_obligation_fixed_point(
     accounting = _private_json_by_suffix(
         frozen, "source_obligation_accounting.json"
     )
+    _validate_policy_identity_accounting(
+        policy, active, excluded_at_policy
+    )
     if (
-        policy.get("schema_version")
-        != "plamen.live_queue_identity_accounting.v1"
-        or policy.get("exact_partition") is not True
-        or accounting.get("schema_version")
+        accounting.get("schema_version")
         != "plamen.live_source_obligation_accounting.v1"
         or accounting.get("exact_partition") is not True
     ):

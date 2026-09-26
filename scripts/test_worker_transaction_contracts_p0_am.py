@@ -13,6 +13,7 @@ import pytest
 
 import worker_transaction as T
 import worker_execution_receipts as W
+import posix_backend_execution as PBE
 import artifact_ledger as L
 import rooted_path_io as RIO
 from phase_io_contracts import (
@@ -28,6 +29,44 @@ from test_support_startup_permit import (
 from test_claude_launch_authority_fixtures import (
     install_test_only_launch_authority_adapter,
     materialize_test_provider_executable,
+)
+
+
+def _admitted_linux_process_authority_available() -> bool:
+    """True only for the reviewed Linux cgroup-v2 plus Landlock boundary."""
+
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        capability = W.process_tree_termination_capability()
+    except Exception:
+        return False
+    return (
+        capability.get("platform") == "LINUX"
+        and capability.get("exhaustive_descendant_termination_authority")
+        is True
+        and W._transaction_write_authority(capability) == "EXHAUSTIVE"
+    )
+
+
+_SUPPORTED_PHYSICAL_PROCESS_ONLY = pytest.mark.skipif(
+    os.name != "nt" and not _admitted_linux_process_authority_available(),
+    reason=(
+        "positive native transaction execution requires Windows Job/MIC "
+        "authority or admitted Linux cgroup-v2 plus Landlock authority"
+    ),
+)
+_AUTHORIZED_MODEL_PROCESS_ONLY = pytest.mark.skipif(
+    os.name != "nt"
+    and not (
+        _admitted_linux_process_authority_available()
+        and PBE.outer_supervisor_context_available()
+    ),
+    reason=(
+        "positive POSIX model execution requires an admitted Linux process "
+        "boundary and authenticated native/out-of-process supervisor authority; "
+        "the distinct TEST_ONLY bridge cannot authorize production WER"
+    ),
 )
 
 
@@ -555,6 +594,7 @@ def _strict_proposal_digest(_path: Path, raw: bytes) -> str:
     ).hexdigest()
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_native_transaction_stages_without_canonical_publication(
     tmp_path: Path,
 ) -> None:
@@ -641,6 +681,7 @@ def test_native_transaction_stages_without_canonical_publication(
     assert registry["attempts"] == {}
 
 
+@_AUTHORIZED_MODEL_PROCESS_ONLY
 def test_headless_model_uses_precompiled_attempt_lane_and_cannot_publish_canonical(
     tmp_path: Path,
 ) -> None:
@@ -761,6 +802,7 @@ def test_headless_model_uses_precompiled_attempt_lane_and_cannot_publish_canonic
         )
 
 
+@_SUPPORTED_PHYSICAL_PROCESS_ONLY
 def test_phaseio_incorporation_is_the_only_canonical_publisher(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

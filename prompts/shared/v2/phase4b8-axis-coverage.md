@@ -77,82 +77,62 @@ For every `work_item_id`, emit exactly one of:
   source-grounded evidence. `CLEAR` must not reference an action and must not
   create a finding block.
 
-`FINDING` and `UNRESOLVED` must reference exactly the row's
-`required_action_id`; do not mint a different ID. Do not fabricate a finding
-to fill a quota. You have no authority to drop, merge, or downgrade an
-existing finding.
+`FINDING` and `UNRESOLVED` must use the row's exact `required_action_id` in the
+Markdown action block; the driver derives the JSON route. Do not mint a
+different ID. Do not fabricate a finding to fill a quota. You have no
+authority to drop, merge, or downgrade an existing finding.
 
 ---
 
-## Strict JSON authority
+## Semantic JSON authority
 
 Write `axis_coverage_dispositions.json` as strict JSON with no comments,
-trailing commas, prose, or Markdown fences:
+trailing commas, prose, or Markdown fences. Emit only model-owned judgments;
+the driver binds all IDs, routes, loci, hashes, schema and provenance fields:
 
 ```json
 {
-  "schema_version": "plamen.axis_model_dispositions.v1",
-  "run_id": "<copy the exact worklist run_id>",
-  "worklist_hash": "<copy the exact worklist_hash>",
-  "producer": "MODEL",
   "items": [
     {
-      "work_item_id": "AXW-...",
       "disposition": "CLEAR",
-      "action_id": "",
       "evidence": [
         {
-          "kind": "SOURCE_LOCUS",
-          "source_relpath": "relative/path.ext",
-          "source_locus": "L123",
-          "source_hash": "<copy the exact AXW source_hash>"
+          "kind": "SOURCE_LOCUS"
         }
       ],
       "invariant_commitment": {
         "ci_id": "AXIS-CI-<unique uppercase token>",
-        "ci_block_sha256": "<sha256 of the other eight canonical commitment fields>",
-        "locus": "relative/path.ext:L123",
         "shape": "NO_REVERT_AT_BOUNDARY",
         "assertion": "Concrete falsifiable safety property for this AXW row.",
-        "falsify_class": "boundary",
-        "provenance": "AXW:AXW-...",
-        "source_hash": "<copy the exact AXW source_hash>",
-        "evidence_sha256": "<sha256 of canonical JSON for the evidence array>"
+        "falsify_class": "boundary"
       },
       "rationale": "Concrete, source-grounded conclusion."
     }
-  ],
-  "sidecar_digest": "<sha256 of canonical JSON for every other top-level field>"
+  ]
 }
 ```
 
 The `items` array must contain exactly one object for every authoritative
-worklist item and no other object. Preserve each `work_item_id` exactly and
-copy `run_id` and `worklist_hash` exactly. Set `producer` to `MODEL`. Compute
-`sidecar_digest` over the other top-level fields using UTF-8 JSON with sorted
-keys, no insignificant whitespace, and separators `,` and `:`. The only
-permitted dispositions are `FINDING`, `UNRESOLVED`, and `CLEAR`.
+worklist item and no other object, in exact worklist order. The only permitted
+dispositions are `FINDING`, `UNRESOLVED`, and `CLEAR`.
 
-For `FINDING` or `UNRESOLVED`, `action_id` must equal that AXW row's
-`required_action_id` and the matching Markdown action block must exist. That
-block must include non-empty `Severity`, `Location`, `Work Item ID`, and
-`Description` fields. For `CLEAR`, `action_id` must be the empty string,
-`evidence` must contain exactly one typed object (`SOURCE_LOCUS`,
-`CANONICAL_PRIOR`, or registered `EXECUTION_RECEIPT`), and the row must not
-reference an action. Every `CLEAR` must also contain exactly one
-`invariant_commitment` object with the nine keys shown above. Its locus must be
-the exact production `source_relpath:source_locus`; shape must be one of
+For `FINDING` or `UNRESOLVED`, the matching Markdown action block must exist.
+That block must write the four non-empty metadata labels exactly as
+`**Severity**:`, `**Location**:`, `**Work Item ID**:`, and
+`**Description**:`. For `CLEAR`, `evidence` contains exactly one typed object:
+`SOURCE_LOCUS` needs only `kind`; `CANONICAL_PRIOR` also names `canonical_id`;
+registered `EXECUTION_RECEIPT` also names `evidence_id`. Every `CLEAR` contains
+exactly one `invariant_commitment` with the four semantic keys shown above.
+Shape must be one of
 `CONSERVATION`, `REQUESTED_EQ_DELIVERED`, `APPROVE_EQ_SPEND`,
 `NO_REVERT_AT_BOUNDARY`, `ROUNDTRIP`, or `FRESHNESS`; falsify class must be one
-of `property`, `boundary`, `roundtrip`, or `conservation`; provenance must be
-exactly `AXW:<work_item_id>`; and the source/evidence hashes must bind the exact
-AXW source and typed evidence array. `ci_id` and `ci_block_sha256` must each be
+of `property`, `boundary`, `roundtrip`, or `conservation`; `ci_id` must be
 unique across all rows. For `FINDING` or `UNRESOLVED`, set
 `invariant_commitment` to JSON `null`.
 Never encode missing analysis as an empty or vague clear.
 
-If the driver intentionally supplies an exact zero-item worklist, copy its
-hash, emit an empty `items` array, and record the zero-work explanation in
+If the driver intentionally supplies an exact zero-item worklist, emit an
+empty `items` array, and record the zero-work explanation in
 Markdown. Do not infer zero work from missing or malformed input.
 
 ---

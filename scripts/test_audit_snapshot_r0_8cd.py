@@ -519,7 +519,11 @@ def test_explicit_vyper_scope_fails_closed_without_end_to_end_lane(tmp_path):
     config["allow_incomplete_vyper_coverage"] = True
     degraded = build_audit_snapshot(config, implementation)
     limitations = degraded["components"]["source_scope"]["coverage_limitations"]
-    assert limitations and limitations[0].startswith("VYPER_END_TO_END")
+    assert limitations
+    assert any(
+        limitation.startswith("VYPER_END_TO_END")
+        for limitation in limitations
+    )
 
 
 def test_remote_inputs_and_missing_roots_fail_closed(tmp_path):

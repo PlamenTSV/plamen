@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from test_support.tool_execution_receipt import fixture_execution_receipt
 
 from tool_coverage_ledger import (
     LEDGER_FILENAME,
@@ -53,7 +54,9 @@ def test_ledger_merges_capabilities_without_erasing_debt(tmp_path: Path) -> None
         "project_root_sha256": hashlib.sha256(
             project_identity.encode("utf-8")
         ).hexdigest(),
-        "ecosystem": "evm",
+        # This test exercises generic ledger merging. EVM success is covered by
+        # the workspace-authority tests and must carry its workspace context.
+        "ecosystem": "solana",
         "pipeline": "sc",
         "mode": "thorough",
         "platform": (
@@ -78,6 +81,7 @@ def test_ledger_merges_capabilities_without_erasing_debt(tmp_path: Path) -> None
             ),
         ),
         context=context,
+        execution_receipt=fixture_execution_receipt(),
     )
     record_tool_outcome(tmp_path, success)
 

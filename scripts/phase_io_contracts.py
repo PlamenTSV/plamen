@@ -241,6 +241,224 @@ _REGISTERED_PROJECTION_HANDOFFS = frozenset({
         "inventory/additive_reemit",
         "scratchpad:_id_ledger.json",
     ),
+    *(
+        (predecessor, "enumgap_delivery/inventory_append", identity)
+        for predecessor, identities in (
+            (
+                "inventory/canonical_aggregate",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                ),
+            ),
+            ("inventory/id_ledger_merge", ("scratchpad:_id_ledger.json",)),
+            (
+                "inventory/additive_reemit",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "inventory/additive_depth_finalize",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "inventory/late_recall_floor",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "inventory/gate_p_successor",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "semantic_dedup/prequeue_apply",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "axis_disposition/promotion",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+        )
+        for identity in identities
+    ),
+    *(
+        (predecessor, "inventory/additive_depth_finalize", identity)
+        for predecessor, identities in (
+            (
+                "inventory/canonical_aggregate",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                ),
+            ),
+            (
+                "inventory/id_ledger_merge",
+                ("scratchpad:_id_ledger.json",),
+            ),
+            (
+                "inventory/additive_reemit",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "inventory/late_recall_floor",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+        )
+        for identity in identities
+    ),
+    *(
+        (predecessor, "inventory/late_recall_floor", identity)
+        for predecessor, identities in (
+            (
+                "inventory/canonical_aggregate",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                ),
+            ),
+            (
+                "inventory/id_ledger_merge",
+                ("scratchpad:_id_ledger.json",),
+            ),
+            (
+                "inventory/additive_reemit",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "inventory/additive_depth_finalize",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "semantic_dedup/prequeue_apply",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "axis_disposition/promotion",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "enumgap_delivery/inventory_append",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+        )
+        for identity in identities
+    ),
+    *(
+        (predecessor, "inventory/gate_p_successor", identity)
+        for predecessor, identities in (
+            (
+                "inventory/canonical_aggregate",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "inventory/id_ledger_merge",
+                ("scratchpad:_id_ledger.json",),
+            ),
+            (
+                "inventory/additive_reemit",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "inventory/additive_depth_finalize",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "inventory/late_recall_floor",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "semantic_dedup/prequeue_apply",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "axis_disposition/promotion",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "enumgap_delivery/inventory_append",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+        )
+        for identity in identities
+    ),
     (
         "invariants/worker.semantic_invariants",
         "invariants/semantic_invariants.fallback",
@@ -255,6 +473,9 @@ _REGISTERED_PROJECTION_HANDOFFS = frozenset({
         for predecessor in (
             "inventory/canonical_aggregate",
             "inventory/additive_reemit",
+            "inventory/additive_depth_finalize",
+            "inventory/late_recall_floor",
+            "inventory/gate_p_successor",
             "enumgap_delivery/inventory_append",
             "axis_disposition/promotion",
             "semantic_dedup/prequeue_apply",
@@ -262,29 +483,153 @@ _REGISTERED_PROJECTION_HANDOFFS = frozenset({
         for artifact in (
             "findings_inventory.md",
             *(
-                ("finding_records.json",)
-                if predecessor
-                in {
-                    "inventory/canonical_aggregate",
-                    "inventory/additive_reemit",
-                    "semantic_dedup/prequeue_apply",
-                }
+                    ("finding_records.json",)
+                    if predecessor
+                    in {
+                        "inventory/canonical_aggregate",
+                        "inventory/additive_reemit",
+                        "inventory/additive_depth_finalize",
+                        "inventory/late_recall_floor",
+                        "inventory/gate_p_successor",
+                        "enumgap_delivery/inventory_append",
+                        "axis_disposition/promotion",
+                        "semantic_dedup/prequeue_apply",
+                    }
                 else ()
             ),
         )
     ),
     *(
-        (
-            predecessor,
-            "axis_disposition/promotion",
-            "scratchpad:findings_inventory.md",
+        (predecessor, "axis_disposition/promotion.plan", identity)
+        for predecessor, identities in (
+            (
+                "inventory/canonical_aggregate",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                ),
+            ),
+            ("inventory/id_ledger_merge", ("scratchpad:_id_ledger.json",)),
+            (
+                "inventory/additive_reemit",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "inventory/additive_depth_finalize",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "inventory/late_recall_floor",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "inventory/gate_p_successor",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "semantic_dedup/prequeue_apply",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "axis_disposition/promotion",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "enumgap_delivery/inventory_append",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
         )
-        for predecessor in (
-            "inventory/canonical_aggregate",
-            "inventory/additive_reemit",
-            "enumgap_delivery/inventory_append",
-            "axis_disposition/promotion",
+        for identity in identities
+    ),
+    *(
+        (predecessor, "axis_disposition/promotion", identity)
+        for predecessor, identities in (
+            (
+                "inventory/canonical_aggregate",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                ),
+            ),
+            ("inventory/id_ledger_merge", ("scratchpad:_id_ledger.json",)),
+            (
+                "inventory/additive_reemit",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "inventory/additive_depth_finalize",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "inventory/late_recall_floor",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "inventory/gate_p_successor",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "enumgap_delivery/inventory_append",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
+            (
+                "axis_disposition/promotion",
+                (
+                    "scratchpad:findings_inventory.md",
+                    "scratchpad:finding_records.json",
+                    "scratchpad:_id_ledger.json",
+                ),
+            ),
         )
+        for identity in identities
     ),
     *(
         (
@@ -523,6 +868,7 @@ _REGISTERED_PROJECTION_HANDOFFS = frozenset({
             "contract_inventory.md",
             "state_variables.md",
             "function_list.md",
+            "modifiers.md",
             "build_status.md",
             "design_context.md",
             "attack_surface.md",
@@ -531,6 +877,7 @@ _REGISTERED_PROJECTION_HANDOFFS = frozenset({
             "emit_list.md",
             "template_recommendations.md",
             "recon_summary.md",
+            "meta_buffer.md",
             # L1-only prepass -> canonical merge projections.
             "subsystem_map.md",
             "trust_boundaries.md",
@@ -572,6 +919,55 @@ _REGISTERED_PROJECTION_HANDOFFS = frozenset({
 })
 
 
+def registered_read_only_consumption(
+    producer_key: str,
+    consumer_key: str,
+    identity: str,
+) -> bool:
+    """Return true only for a severity bind's exact read-only decision edge."""
+
+    producer = _validate_work_unit_key(producer_key)
+    consumer = _validate_work_unit_key(consumer_key)
+    artifact = _validate_artifact_identity(identity)
+    producer_parts = producer.split("/")
+    consumer_parts = consumer.split("/")
+    if producer_parts[:4] != consumer_parts[:4]:
+        return False
+    producer_relative = "/".join(producer_parts[4:])
+    consumer_relative = "/".join(consumer_parts[4:])
+    bind_re = re.compile(
+        r"severity_adjudication_shadow/bind\.(\d{4})\."
+        r"([a-z][a-z0-9-]{0,95})"
+    )
+    consumer_bind = bind_re.fullmatch(consumer_relative)
+    decision = re.fullmatch(
+        r"scratchpad:verify_([A-Za-z][A-Za-z0-9-]{0,95})"
+        r"\.severity_decision\.json",
+        artifact,
+    )
+    if consumer_bind is None or decision is None:
+        return False
+    consumer_ordinal = int(consumer_bind.group(1))
+    consumer_candidate = consumer_bind.group(2)
+    decision_candidate = decision.group(1).casefold()
+    if (
+        consumer_ordinal < 1
+        or decision_candidate == consumer_candidate
+    ):
+        return False
+    if producer_relative.startswith(
+        "severity_adjudication_shadow/source_decisions."
+    ):
+        return bool(producer_relative.rsplit(".", 1)[-1])
+    producer_bind = bind_re.fullmatch(producer_relative)
+    return bool(
+        producer_bind is not None
+        and int(producer_bind.group(1)) >= 1
+        and int(producer_bind.group(1)) < consumer_ordinal
+        and producer_bind.group(2) == decision_candidate
+    )
+
+
 def registered_projection_handoff(
     predecessor_key: str,
     successor_key: str,
@@ -586,6 +982,77 @@ def registered_projection_handoff(
     next_parts = successor.split("/")
     predecessor_relative = "/".join(prior_parts[4:])
     successor_relative = "/".join(next_parts[4:])
+    prior_report_body = parse_report_body_attempt_work_unit(
+        predecessor_relative.removeprefix("report_body/")
+    ) if predecessor_relative.startswith("report_body/") else None
+    next_report_body = parse_report_body_attempt_work_unit(
+        successor_relative.removeprefix("report_body/")
+    ) if successor_relative.startswith("report_body/") else None
+    if (
+        prior_parts[:4] == next_parts[:4]
+        and prior_report_body is not None
+        and next_report_body is not None
+        and artifact == f"scratchpad:{prior_report_body[1]}.md"
+        and prior_report_body[1] == next_report_body[1]
+    ):
+        prior_role, _shard, prior_ordinal = prior_report_body
+        next_role, _next_shard, next_ordinal = next_report_body
+        return bool(
+            (prior_role, next_role, next_ordinal - prior_ordinal)
+            in {
+                ("model", "evidence_projection", 0),
+                ("model", "model", 1),
+                ("evidence_projection", "model", 1),
+            }
+        )
+    typed_fallback = re.fullmatch(
+        rf"report_body/({_REPORT_BODY_SHARD_PATTERN})\.typed_fallback",
+        successor_relative,
+    )
+    if (
+        prior_parts[:4] == next_parts[:4]
+        and prior_report_body is not None
+        and typed_fallback is not None
+        and prior_report_body[0] in {"model", "evidence_projection"}
+        and prior_report_body[1] == typed_fallback.group(1)
+        and artifact == f"scratchpad:{typed_fallback.group(1)}.md"
+    ):
+        # A bounded model/projection attempt and the deterministic typed
+        # renderer consume the same authenticated shard denominator.  The
+        # latter is the registered terminal presentation successor when model
+        # retries exhaust; it cannot change finding semantics.
+        return True
+    severity_bind_re = re.compile(
+        r"severity_adjudication_shadow/bind\.(\d{4})\."
+        r"([a-z][a-z0-9-]{0,95})"
+    )
+    next_severity_bind = severity_bind_re.fullmatch(successor_relative)
+    prior_severity_bind = severity_bind_re.fullmatch(predecessor_relative)
+    if prior_parts[:4] == next_parts[:4] and next_severity_bind is not None:
+        ordinal = int(next_severity_bind.group(1))
+        candidate = next_severity_bind.group(2)
+        decision_match = re.fullmatch(
+            r"scratchpad:verify_([A-Za-z][A-Za-z0-9-]{0,95})"
+            r"\.severity_decision\.json", artifact,
+        )
+        if (
+            decision_match is not None
+            and decision_match.group(1).casefold() == candidate
+            and predecessor_relative.startswith(
+                "severity_adjudication_shadow/source_decisions."
+            )
+        ):
+            # The runtime plan proves the source unit contains this exact
+            # candidate and that the ordinal is its one scheduled bind.
+            return ordinal >= 1
+        if artifact == "scratchpad:severity_decision_ledger.shadow.json":
+            if predecessor_relative == (
+                "severity_adjudication_shadow/source_aggregate"
+            ):
+                return ordinal == 1
+            if prior_severity_bind is not None:
+                prior_ordinal = int(prior_severity_bind.group(1))
+                return prior_ordinal >= 1 and prior_ordinal + 1 == ordinal
     prepass_attempt_re = re.compile(r"recon/prepass\.attempt-(\d{4})")
     predecessor_attempt = prepass_attempt_re.fullmatch(
         predecessor_relative
@@ -658,6 +1125,157 @@ def registered_projection_handoff(
         return True
     if prior_parts[:4] != next_parts[:4]:
         return False
+    if (
+        predecessor_relative == "rescan/self_exclusion_reemit"
+        and artifact == "scratchpad:analysis_percontract_reemit.md"
+        and (
+            successor_relative in {
+                "candidate_negative_authority/harvest.rescan",
+                "inventory/aggregate_plan.single_shard",
+                "inventory/aggregate_plan.chunked",
+                "inventory/canonical_aggregate",
+                "inventory/exact_reconciliation",
+                "inventory/gate_p.source_capture",
+                "chain/state_resolution",
+                "chain/state_resolution_enabler_prefill",
+                "chain/tail_control_init",
+                "chain/tail_manifest",
+            }
+            or re.fullmatch(
+                r"inventory_chunk_[a-c]/(?:model\.attempt\d{4}|"
+                r"exact_reconciliation)",
+                successor_relative,
+            ) is not None
+            or re.fullmatch(
+                r"semantic_identity/projection\.[a-z0-9_.-]+",
+                successor_relative,
+            ) is not None
+            or re.fullmatch(
+                r"sc_verify_queue/preverify_capture\.[a-f0-9]{64}",
+                successor_relative,
+            ) is not None
+        )
+    ):
+        # The deterministic re-emitter is the canonical producer for this
+        # recovered finding source. Register only its finite, read-only audit
+        # consumers; none of these transfers or mutates the artifact.
+        return True
+    late_ci_successor = re.fullmatch(
+        r"inventory/late_ci_recovery\.(?:exploration_skeptic|skeptic)\."
+        r"[a-f0-9]{16}",
+        successor_relative,
+    )
+    late_ci_predecessor = re.fullmatch(
+        r"inventory/late_ci_recovery\.(?:exploration_skeptic|skeptic)\."
+        r"[a-f0-9]{16}",
+        predecessor_relative,
+    )
+    late_ci_predecessor_artifacts = {
+        "inventory/canonical_aggregate": {
+            "scratchpad:findings_inventory.md",
+            "scratchpad:finding_records.json",
+        },
+        "inventory/id_ledger_merge": {"scratchpad:_id_ledger.json"},
+        "inventory/additive_reemit": {
+            "scratchpad:findings_inventory.md",
+            "scratchpad:finding_records.json",
+            "scratchpad:_id_ledger.json",
+        },
+        "inventory/additive_depth_finalize": {
+            "scratchpad:findings_inventory.md",
+            "scratchpad:finding_records.json",
+            "scratchpad:_id_ledger.json",
+        },
+        "inventory/late_recall_floor": {
+            "scratchpad:findings_inventory.md",
+            "scratchpad:finding_records.json",
+            "scratchpad:_id_ledger.json",
+        },
+        "inventory/gate_p_successor": {
+            "scratchpad:findings_inventory.md",
+            "scratchpad:finding_records.json",
+            "scratchpad:_id_ledger.json",
+        },
+        "semantic_dedup/prequeue_apply": {
+            "scratchpad:findings_inventory.md",
+            "scratchpad:finding_records.json",
+            "scratchpad:_id_ledger.json",
+        },
+        "axis_disposition/promotion": {
+            "scratchpad:findings_inventory.md",
+            "scratchpad:finding_records.json",
+            "scratchpad:_id_ledger.json",
+        },
+        "enumgap_delivery/inventory_append": {
+            "scratchpad:findings_inventory.md",
+            "scratchpad:finding_records.json",
+            "scratchpad:_id_ledger.json",
+        },
+    }
+    late_ci_successor_artifacts = {
+        # A dynamic late-CI recovery owns the same canonical triplet as the
+        # fixed inventory successors below.  The reverse direction was
+        # already registered above (fixed producer -> late-CI successor), but
+        # omitting these exact late-CI -> fixed-successor edges made the next
+        # coupled Axis/Gate-P transaction reject a clean same-run prestate.
+        "inventory/late_recall_floor": {
+            "scratchpad:findings_inventory.md",
+            "scratchpad:finding_records.json",
+            "scratchpad:_id_ledger.json",
+        },
+        "inventory/gate_p_successor": {
+            "scratchpad:findings_inventory.md",
+            "scratchpad:finding_records.json",
+            "scratchpad:_id_ledger.json",
+        },
+        "semantic_dedup/prequeue_apply": {
+            "scratchpad:findings_inventory.md",
+            "scratchpad:finding_records.json",
+            "scratchpad:_id_ledger.json",
+        },
+        "axis_disposition/promotion.plan": {
+            "scratchpad:findings_inventory.md",
+            "scratchpad:finding_records.json",
+            "scratchpad:_id_ledger.json",
+        },
+        "axis_disposition/promotion": {
+            "scratchpad:findings_inventory.md",
+            "scratchpad:finding_records.json",
+            "scratchpad:_id_ledger.json",
+        },
+        "enumgap_delivery/inventory_append": {
+            "scratchpad:findings_inventory.md",
+            "scratchpad:finding_records.json",
+            "scratchpad:_id_ledger.json",
+        },
+    }
+    if (
+        late_ci_successor is not None
+        and (
+            (late_ci_predecessor is not None and artifact in {
+                "scratchpad:findings_inventory.md",
+                "scratchpad:finding_records.json",
+                "scratchpad:_id_ledger.json",
+            })
+            or artifact in late_ci_predecessor_artifacts.get(
+                predecessor_relative, set()
+            )
+        )
+    ):
+        # A late committed-invariant recovery is an additive, merge-event
+        # proved successor of whichever registered canonical inventory
+        # producer currently owns each member of the coupled triple.
+        return True
+    if (
+        late_ci_predecessor is not None
+        and artifact in late_ci_successor_artifacts.get(
+            successor_relative, set()
+        )
+    ):
+        # Preserve the exact dynamic producer identity while declaring only
+        # the fixed canonical successors that already accept this triplet.
+        # Unknown work units and non-canonical siblings remain unregistered.
+        return True
     inventory_retry_pattern = re.compile(
         r"inventory_chunk_([abc])/model\.attempt(\d{4})"
     )
@@ -1320,6 +1938,13 @@ class PhaseIOContract:
         bounded = tuple(sorted({
             _validate_artifact_identity(item) for item in self.bounded_lookup_inputs
         }))
+        mutable_journal = "scratchpad:_artifact_state.json"
+        if mutable_journal in set(immutable) | set(bounded):
+            raise ValueError(
+                "the mutable PhaseIO ledger cannot be a semantic input to a "
+                "PhaseIO work unit; bind selected producer artifacts or copy "
+                "a pre-arm ledger witness into isolated staging instead"
+            )
         overlap = set(identities) & (set(immutable) | set(bounded))
         if overlap:
             raise ValueError(
@@ -1659,9 +2284,15 @@ def _is_program_facts_contract(contract: PhaseIOContract) -> bool:
         contract.phase == "recon"
         and contract.work_unit_id
         in {
+            "evm_analysis_projection_capture",
+            "evm_analysis_workspace_capture",
             "program_facts_checkpoint_capture",
             "program_facts_methodology_capture",
             "program_facts_bake",
+            "program_facts_provider",
+            "program_facts_v2_activation_authority",
+            "program_facts_v2_authority_capture",
+            "program_facts_bake_v2",
         }
     )
 
@@ -1669,6 +2300,18 @@ def _is_program_facts_contract(contract: PhaseIOContract) -> bool:
 def _program_facts_registered_launch(
     contract: PhaseIOContract,
 ) -> LaunchSpec:
+    if contract.work_unit_id == "program_facts_provider":
+        return LaunchSpec(
+            work_unit_key=contract.key,
+            pipeline=contract.pipeline,
+            mode=contract.mode,
+            ecosystem=contract.ecosystem,
+            backend=contract.backend,
+            model="program-facts-provider",
+            timeout_s=_PROGRAM_FACTS_LAUNCH_TIMEOUT_S,
+            exec_mode="worker-transaction",
+            tool_policy=("slither", "solc"),
+        )
     return LaunchSpec(
         work_unit_key=contract.key,
         pipeline=contract.pipeline,
@@ -1680,6 +2323,17 @@ def _program_facts_registered_launch(
         exec_mode="python",
         tool_policy=(),
     )
+
+
+def resolve_program_facts_registered_launch(
+    contract: PhaseIOContract,
+) -> LaunchSpec:
+    """Return the registry-owned launch for an exact Program Facts unit."""
+
+    replayed = replay_phase_io_contract_authority(contract)
+    if not _is_program_facts_contract(replayed):
+        raise ValueError("contract is not a registered Program Facts work unit")
+    return _program_facts_registered_launch(replayed)
 
 
 def replay_phase_io_contract_authority(
@@ -1776,7 +2430,11 @@ def replay_phase_io_contract_authority(
             replayed.immutable_inputs, "inputs"
         ),
         exact_outputs=tuple(output.path for output in replayed.outputs),
-        exact_writer="DRIVER",
+        exact_writer=(
+            "MODEL"
+            if replayed.work_unit_id == "program_facts_provider"
+            else "DRIVER"
+        ),
     )
     if _phase_io_contract_manifest(expected) != manifest:
         raise ValueError(
@@ -2655,6 +3313,8 @@ _RECON_CANONICAL_OUTPUTS = (
     "design_context.md",
     "attack_surface.md",
     "state_variables.md",
+    "constraint_variables.md",
+    "modifiers.md",
     "function_list.md",
     "contract_inventory.md",
     "template_recommendations.md",
@@ -2662,6 +3322,7 @@ _RECON_CANONICAL_OUTPUTS = (
     "setter_list.md",
     "emit_list.md",
     "build_status.md",
+    "meta_buffer.md",
 )
 
 _RECON_LIGHT_SHARDS = (
@@ -2708,6 +3369,7 @@ _L1_RECON_CANONICAL_OUTPUTS = (
     "trust_boundaries.md",
     "template_recommendations.md",
     "scope_leftover.md",
+    "meta_buffer.md",
 )
 
 _L1_RECON_SHARDS = (
@@ -2823,6 +3485,8 @@ _SC_RECON_EVIDENCE_INPUTS = (
     "design_context.md",
     "attack_surface.md",
     "state_variables.md",
+    "constraint_variables.md",
+    "modifiers.md",
     "function_list.md",
     "contract_inventory.md",
     "template_recommendations.md",
@@ -2863,7 +3527,13 @@ _L1_BREADTH_REQUIRED_INPUTS = (
 )
 _COMMON_DEPTH_REGISTERED_FIXED_INPUTS = frozenset({
     "findings_inventory.md",
+    "depth_inventory_snapshot.md",
     "depth_candidates.md",
+    "confidence_scores.md",
+    "step_execution_gaps_mechanical.md",
+    "skill_execution_gaps.md",
+    "notread_priority_gaps.md",
+    "perturbation_findings.md",
     "semantic_invariants.md",
     "semantic_invariant_coverage_gaps.md",
     "constraint_variables.md",
@@ -2878,10 +3548,12 @@ _COMMON_DEPTH_REGISTERED_FIXED_INPUTS = frozenset({
     "fuzz_workspace_index.json",
     "semantic_invariant_final_byte_authority.json",
     _IMPACT_MAP_EVIDENCE_FILE,
+    *_SECURITY_OBLIGATION_SIDECARS,
 })
 _SC_DEPTH_REGISTERED_FIXED_INPUTS = frozenset({
     *_COMMON_DEPTH_REGISTERED_FIXED_INPUTS,
     "opengrep_findings.md",
+    "opengrep_obligations_UNASSIGNED.md",
     "_mechanical_graph.json",
     "call_graph.md",
     "caller_map.md",
@@ -2896,7 +3568,6 @@ _SC_DEPTH_REGISTERED_FIXED_INPUTS = frozenset({
     "scip/xref_map.md",
     "scip/type_hierarchy.md",
     "scip/call_graph.md",
-    *_SECURITY_OBLIGATION_SIDECARS,
 })
 _L1_DEPTH_REGISTERED_FIXED_INPUTS = frozenset({
     *_COMMON_DEPTH_REGISTERED_FIXED_INPUTS,
@@ -2981,11 +3652,11 @@ def _legacy_worker_fallback_inputs(
             )
         )
         pipeline_inputs = (
-            _SECURITY_OBLIGATION_SIDECARS
-            if pipeline == "sc"
-            else (
-                "instantiation.json", "confidence_scores.md", "violations.md",
-            )
+            *_SECURITY_OBLIGATION_SIDECARS,
+            *(
+                ("instantiation.json", "confidence_scores.md", "violations.md")
+                if pipeline == "l1" else ()
+            ),
         )
         l1_role_graph: tuple[str, ...] = ()
         if pipeline == "l1":
@@ -3062,24 +3733,37 @@ def _registered_worker_inputs(
             _SC_RECON_EVIDENCE_INPUTS
             if pipeline == "sc" else _L1_RECON_EVIDENCE_INPUTS
         )
-        opengrep = (
-            "opengrep_findings.md"
-            if pipeline == "sc" else "opengrep_hits_ranked.md"
-        )
-        required = {
-            *recon, "rescan_manifest.md", opengrep,
-        }
-        fixed = set(required)
+        required = {*recon, "rescan_manifest.md"}
+        if pipeline == "sc":
+            opengrep_choices = {
+                "opengrep_findings.md",
+                "opengrep_obligations_UNASSIGNED.md",
+            }
+            selected_opengrep = set(normalized) & opengrep_choices
+            fixed = {*required, *opengrep_choices}
+        else:
+            selected_opengrep = {"opengrep_hits_ranked.md"}
+            required.add("opengrep_hits_ranked.md")
+            fixed = set(required)
         invalid = sorted(
             path for path in normalized
             if path not in fixed
             and re.fullmatch(r"analysis_(?!rescan_|percontract_)[A-Za-z0-9_.-]+\.md", path)
             is None
         )
-        if not required.issubset(normalized) or invalid:
+        exact_scanner_issue = (
+            pipeline == "sc" and len(selected_opengrep) != 1
+        )
+        if not required.issubset(normalized) or invalid or exact_scanner_issue:
+            scanner_detail = (
+                "; SC rescan requires exactly one of opengrep_findings.md "
+                "or opengrep_obligations_UNASSIGNED.md"
+                if exact_scanner_issue else ""
+            )
             raise ValueError(
                 "rescan worker inputs omit the pipeline base denominator or "
                 "contain unregistered prior artifacts: " + ", ".join(invalid)
+                + scanner_detail
             )
         return normalized
 
@@ -3087,10 +3771,6 @@ def _registered_worker_inputs(
         recon = (
             _SC_RECON_EVIDENCE_INPUTS
             if pipeline == "sc" else _L1_RECON_EVIDENCE_INPUTS
-        )
-        opengrep = (
-            "opengrep_findings.md"
-            if pipeline == "sc" else "opengrep_hits_ranked.md"
         )
         graph_required = ({
             "_mechanical_graph.json",
@@ -3116,15 +3796,25 @@ def _registered_worker_inputs(
             ), None)
             if l1_call_graph:
                 graph_required.add(l1_call_graph)
+        inventory_input = (
+            "depth_inventory_snapshot.md"
+            if pipeline == "sc" else "findings_inventory.md"
+        )
         required = {
-            *recon, "findings_inventory.md", opengrep,
-            *graph_required,
+            *recon, inventory_input, *graph_required,
+            *_SECURITY_OBLIGATION_SIDECARS,
         }
         if pipeline == "sc":
-            required.update(_SECURITY_OBLIGATION_SIDECARS)
+            opengrep_choices = {
+                "opengrep_findings.md",
+                "opengrep_obligations_UNASSIGNED.md",
+            }
+            selected_opengrep = set(normalized) & opengrep_choices
         else:
+            selected_opengrep = {"opengrep_hits_ranked.md"}
             required.update({
-                "instantiation.json", "confidence_scores.md", "violations.md",
+                "instantiation.json", "opengrep_hits_ranked.md",
+                "confidence_scores.md", "violations.md",
             })
         if str(mode).lower() in {"core", "thorough"}:
             required.update({
@@ -3154,17 +3844,24 @@ def _registered_worker_inputs(
                     # Keep the four fixed scanner rows above explicit; never
                     # admit a generic ``*_findings.md`` fallback here.
                     and re.fullmatch(r"niche_[A-Za-z0-9_.-]+_findings\.md", path) is None
-                    and re.fullmatch(r"opengrep_obligations_[A-Za-z0-9_.-]+\.md", path)
-                    is None
                     and re.fullmatch(r"(?:call|inheritance|state|dependency)_graph[A-Za-z0-9_.-]*\.md", path)
                     is None
                 )
             )
         )
-        if not required.issubset(normalized) or invalid:
+        exact_scanner_issue = (
+            pipeline == "sc" and len(selected_opengrep) != 1
+        )
+        if not required.issubset(normalized) or invalid or exact_scanner_issue:
+            scanner_detail = (
+                "; SC depth requires exactly one of opengrep_findings.md "
+                "or opengrep_obligations_UNASSIGNED.md"
+                if exact_scanner_issue else ""
+            )
             raise ValueError(
                 "depth worker inputs omit the pipeline base denominator or "
                 "contain unregistered evidence: " + ", ".join(invalid)
+                + scanner_detail
             )
         return normalized
 
@@ -3267,11 +3964,27 @@ _PROGRAM_FACTS_BAKE_OUTPUTS = (
     "mechanical_program_facts_receipt.v1.json",
     "mechanical_program_facts_debt.v1.json",
 )
+_PROGRAM_FACTS_V2_BAKE_OUTPUTS = (
+    "mechanical_program_facts.v2.json",
+    "mechanical_program_facts_receipt.v2.json",
+    "mechanical_program_facts_debt.v2.json",
+)
+_PROGRAM_FACTS_V2_AUTHORITY_CAPTURE = (
+    "_program_facts_inputs/program_facts_v2_authority_capture.v1.json"
+)
+_PROGRAM_FACTS_V2_WORKER_OUTPUT = (
+    "_program_facts_provider_raw/program_facts_v2_candidate.json"
+)
+_PROGRAM_FACTS_V2_ACTIVATION_AUTHORITY = (
+    "_program_facts_inputs/program_facts_v2_activation_authority.v1.json"
+)
+_EVM_ANALYSIS_WORKSPACE_RECEIPT = (
+    "evm_analysis_workspace_receipt.v1.json"
+)
 _PROGRAM_FACTS_CHECKPOINT_CAPTURE = (
     "_program_facts_inputs/checkpoint_capture.v1.json"
 )
-_PROGRAM_FACTS_BAKE_CORE_INPUTS = (
-    _PROGRAM_FACTS_CHECKPOINT_CAPTURE,
+_PROGRAM_FACTS_METHODOLOGY_OUTPUTS = (
     "_program_facts_methodology/program-facts-methodology-package.v1.json",
     "_program_facts_methodology/program-facts-provider-registry.v1.json",
     "_program_facts_methodology/schemas/mechanical_program_facts.v1.schema.json",
@@ -3281,7 +3994,10 @@ _PROGRAM_FACTS_BAKE_CORE_INPUTS = (
     "_program_facts_methodology/schemas/program_facts_disagreement.v1.schema.json",
     "_program_facts_methodology/schemas/program_facts_slice.v1.schema.json",
 )
-_PROGRAM_FACTS_METHODOLOGY_OUTPUTS = _PROGRAM_FACTS_BAKE_CORE_INPUTS[1:]
+_PROGRAM_FACTS_BAKE_CORE_INPUTS = (
+    _PROGRAM_FACTS_CHECKPOINT_CAPTURE,
+    *_PROGRAM_FACTS_METHODOLOGY_OUTPUTS,
+)
 _PROGRAM_FACTS_ECOSYSTEMS_BY_PIPELINE = {
     "sc": frozenset({"evm", "solana", "soroban", "aptos", "sui"}),
     "l1": frozenset({"go", "rust", "daml"}),
@@ -3294,6 +4010,9 @@ _SEMANTIC_INVARIANT_RESULT_SIDECARS = (
 )
 _SEMANTIC_INVARIANT_PASS2_PRE_FILE = (
     "semantic_invariant_pass2_append_authority.json"
+)
+_SEMANTIC_INVARIANT_PASS1_SNAPSHOT_FILE = (
+    "semantic_invariant_pass1_snapshot.md"
 )
 _SEMANTIC_INVARIANT_FINAL_BYTE_FILE = (
     "semantic_invariant_final_byte_authority.json"
@@ -3647,6 +4366,46 @@ def _dynamic_specs(
     )
 
 
+_REPORT_BODY_SHARD_PATTERN = (
+    r"report_(?:critical_high|medium|low_info)(?:_[a-z])?"
+)
+
+
+def parse_report_body_attempt_work_unit(
+    work_unit_id: str,
+) -> tuple[str, str, int] | None:
+    """Parse one closed report-body MODEL/projection generation identity."""
+
+    if type(work_unit_id) is not str:
+        return None
+    match = re.fullmatch(
+        rf"(model|evidence_projection)\.({_REPORT_BODY_SHARD_PATTERN})"
+        r"(?:\.attempt-([0-9]{4}))?",
+        work_unit_id,
+    )
+    if match is None:
+        return None
+    ordinal = int(match.group(3) or "1")
+    if (match.group(3) is None) != (ordinal == 1) or ordinal < 1:
+        return None
+    return match.group(1), match.group(2), ordinal
+
+
+def report_body_attempt_work_unit_id(
+    role: str, shard: str, ordinal: int,
+) -> str:
+    """Build the unique canonical work-unit id for a report-body attempt."""
+
+    if role not in {"model", "evidence_projection"}:
+        raise ValueError("report-body attempt role is unsupported")
+    if re.fullmatch(_REPORT_BODY_SHARD_PATTERN, shard) is None:
+        raise ValueError("report-body attempt shard is unsupported")
+    if type(ordinal) is not int or ordinal < 1 or ordinal > 9999:
+        raise ValueError("report-body attempt ordinal is outside 1..9999")
+    suffix = "" if ordinal == 1 else f".attempt-{ordinal:04d}"
+    return f"{role}.{shard}{suffix}"
+
+
 def resolve_phase_io_contract(
     *,
     pipeline: str,
@@ -3685,12 +4444,35 @@ def resolve_phase_io_contract(
     backend_n = _canonical_component(backend, "backend")
     phase_n = _canonical_component(phase, "phase")
     work_n = _canonical_component(work_unit_id, "work_unit_id")
+    if (
+        phase_n == "report_body"
+        and parse_report_body_attempt_work_unit(work_n) is not None
+    ):
+        canonical_dimensions = {
+            "pipeline": pipeline_n,
+            "mode": mode_n,
+            "ecosystem": ecosystem_n,
+            "backend": backend_n,
+            "phase": phase_n,
+            "work_unit_id": work_n,
+        }
+        for field, raw in raw_dimensions.items():
+            if raw != canonical_dimensions[field]:
+                raise ValueError(
+                    f"report-body {field} uses a non-canonical alias"
+                )
     program_facts_unit = (
         phase_n == "recon"
         and work_n in {
+            "evm_analysis_projection_capture",
+            "evm_analysis_workspace_capture",
             "program_facts_checkpoint_capture",
             "program_facts_methodology_capture",
             "program_facts_bake",
+            "program_facts_provider",
+            "program_facts_v2_activation_authority",
+            "program_facts_v2_authority_capture",
+            "program_facts_bake_v2",
         }
     )
     if program_facts_unit:
@@ -3716,6 +4498,26 @@ def resolve_phase_io_contract(
         ):
             raise ValueError(
                 "program-facts work unit has no registered dimension pairing"
+            )
+        if (
+            work_n in {
+                "evm_analysis_projection_capture",
+                "evm_analysis_workspace_capture",
+            }
+            and (pipeline_n != "sc" or ecosystem_n != "evm")
+        ):
+            raise ValueError(
+                "EVM analysis projection/workspace capture is registered only "
+                "for SC/EVM"
+            )
+        if work_n in {
+            "program_facts_provider",
+            "program_facts_v2_activation_authority",
+            "program_facts_v2_authority_capture",
+            "program_facts_bake_v2",
+        } and (pipeline_n != "sc" or ecosystem_n != "evm"):
+            raise ValueError(
+                "Program Facts v2 production units are registered only for SC/EVM"
             )
         _program_facts_alias_free_paths(
             exact_inputs,
@@ -3752,6 +4554,14 @@ def resolve_phase_io_contract(
     launch_profile = ""
     required_commit_actor = ""
 
+    late_ci_source_capture = bool(
+        phase_n == "inventory"
+        and re.fullmatch(
+            r"late_ci_recovery\.source_capture\."
+            r"(?:exploration_skeptic|skeptic)\.[a-f0-9]{16}",
+            work_n,
+        )
+    )
     if exact_input_authorities and (
         (phase_n, work_n)
         not in {
@@ -3759,6 +4569,7 @@ def resolve_phase_io_contract(
             ("report_index", "human_review_authority"),
             ("report_index", "chain_deferred_authority"),
         }
+        and not late_ci_source_capture
     ):
         raise ValueError(
             "exact_input_authorities is registered only for "
@@ -3766,6 +4577,104 @@ def resolve_phase_io_contract(
         )
 
     if (
+        phase_n == "recon"
+        and work_n == "evm_analysis_projection_capture"
+    ):
+        canonical_outputs = _fixed_output_set(
+            exact_outputs,
+            (
+                "evm_analysis_projection_receipt.v1.json",
+                "evm_tool_materialization_lineage.v2.json",
+            ),
+            label=f"{phase_n}/{work_n}",
+        )
+        if exact_inputs:
+            raise ValueError(
+                "recon/evm_analysis_projection_capture has the registered "
+                "zero-input denominator"
+            )
+        if conditional_output_ids or condition_id:
+            raise ValueError(
+                "recon/evm_analysis_projection_capture has no conditional "
+                "outputs"
+            )
+        projection_schemas = {
+            "evm_analysis_projection_receipt.v1.json": (
+                "plamen.private-analysis-projection-custody.v1"
+            ),
+            "evm_tool_materialization_lineage.v2.json": (
+                "plamen.evm-tool-materialization-lineage.v2"
+            ),
+        }
+        outputs = tuple(
+            _artifact(
+                owner,
+                path,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="CREATE",
+                schema_version=projection_schemas[path],
+                minimum_gate=(
+                    "NATIVE_PROJECTION_SNAPSHOT_AND_DESCRIPTOR_LINEAGE_BOUND"
+                ),
+                consumers=(
+                    "recon/evm_analysis_workspace_capture",
+                    "recon/prepass",
+                    "recon/program_facts_bake",
+                ),
+            )
+            for path in canonical_outputs
+        )
+        immutable = ()
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
+
+    elif (
+        phase_n == "recon"
+        and work_n == "evm_analysis_workspace_capture"
+    ):
+        canonical_outputs = _fixed_output_set(
+            exact_outputs,
+            (_EVM_ANALYSIS_WORKSPACE_RECEIPT,),
+            label=f"{phase_n}/{work_n}",
+        )
+        if exact_inputs:
+            raise ValueError(
+                "recon/evm_analysis_workspace_capture has the registered "
+                "snapshot-bound zero-artifact input denominator"
+            )
+        if conditional_output_ids or condition_id:
+            raise ValueError(
+                "recon/evm_analysis_workspace_capture has no conditional outputs"
+            )
+        outputs = (
+            _artifact(
+                owner,
+                canonical_outputs[0],
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="CREATE",
+                schema_version=(
+                    "plamen.evm_analysis_workspace_receipt.v1"
+                ),
+                minimum_gate=(
+                    "SNAPSHOT_DESCRIPTOR_BUILD_VARIANT_AND_TOOL_ADMISSION_BOUND"
+                ),
+                consumers=(
+                    "recon/program_facts_bake",
+                    "recon/prepass",
+                    "breadth/opengrep.static-analysis",
+                    "graph/downstream-authority",
+                ),
+            ),
+        )
+        immutable = ()
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
+
+    elif (
         phase_n == "recon"
         and work_n == "program_facts_checkpoint_capture"
     ):
@@ -3919,6 +4828,253 @@ def resolve_phase_io_contract(
         launch_profile = "DRIVER_PYTHON_NO_TOOLS"
         required_commit_actor = "DRIVER"
 
+    elif (
+        phase_n == "recon"
+        and work_n in {
+            "program_facts_provider",
+            "program_facts_v2_activation_authority",
+        }
+    ):
+        _fixed_path_set(
+            exact_inputs,
+            (_EVM_ANALYSIS_WORKSPACE_RECEIPT,),
+            label=f"{phase_n}/{work_n}",
+        )
+        output_path = (
+            _PROGRAM_FACTS_V2_WORKER_OUTPUT
+            if work_n == "program_facts_provider"
+            else _PROGRAM_FACTS_V2_ACTIVATION_AUTHORITY
+        )
+        _fixed_output_set(
+            exact_outputs,
+            (output_path,),
+            label=f"{phase_n}/{work_n}",
+        )
+        if conditional_output_ids or condition_id:
+            raise ValueError(f"{phase_n}/{work_n} has no conditional outputs")
+        workspace_contract = resolve_phase_io_contract(
+            pipeline=pipeline_n,
+            mode=mode_n,
+            ecosystem=ecosystem_n,
+            backend=backend_n,
+            phase="recon",
+            work_unit_id="evm_analysis_workspace_capture",
+            exact_inputs=(),
+            exact_outputs=(_EVM_ANALYSIS_WORKSPACE_RECEIPT,),
+            exact_writer="DRIVER",
+        )
+        workspace_launch = _program_facts_registered_launch(
+            workspace_contract
+        )
+        writer = "MODEL" if work_n == "program_facts_provider" else "DRIVER"
+        outputs = (
+            _artifact(
+                owner,
+                output_path,
+                artifact_class=(
+                    "REQUIRED" if writer == "MODEL" else "DRIVER_GENERATED"
+                ),
+                writer=writer,
+                write_mode="CREATE",
+                schema_version=(
+                    "plamen.program_facts_v2_worker_output.v1"
+                    if writer == "MODEL"
+                    else "plamen.program_facts_v2_activation_authority.v1"
+                ),
+                minimum_gate=(
+                    "COMMITTED_WTX_WORK_PLAN_AND_WORKSPACE_BOUND_OUTPUT"
+                    if writer == "MODEL"
+                    else "COMMITTED_ISSUER_REVIEW_AND_ACTIVATION_AUTHORITY"
+                ),
+                consumers=("recon/program_facts_v2_authority_capture",),
+            ),
+        )
+        immutable = _identities(exact_inputs)
+        input_authority_requirements = (
+            InputAuthorityRequirement(
+                identity=canonical_artifact_identity(
+                    "scratchpad", _EVM_ANALYSIS_WORKSPACE_RECEIPT
+                ),
+                allow_raw=False,
+                expected_producer_work_unit_key=workspace_contract.key,
+                expected_writer="DRIVER",
+                require_same_run=True,
+                expected_contract_digest=workspace_contract.digest,
+                expected_launch_digest=workspace_launch.digest,
+                require_exact_contract=True,
+                require_exact_launch=True,
+            ),
+        )
+        model_invoked = writer == "MODEL"
+        launch_profile = (
+            "" if writer == "MODEL" else "DRIVER_PYTHON_NO_TOOLS"
+        )
+        required_commit_actor = writer
+
+    elif (
+        phase_n == "recon"
+        and work_n == "program_facts_v2_authority_capture"
+    ):
+        _fixed_path_set(
+            exact_inputs,
+            (_EVM_ANALYSIS_WORKSPACE_RECEIPT,),
+            label=f"{phase_n}/{work_n}",
+        )
+        _fixed_output_set(
+            exact_outputs,
+            (_PROGRAM_FACTS_V2_AUTHORITY_CAPTURE,),
+            label=f"{phase_n}/{work_n}",
+        )
+        if conditional_output_ids or condition_id:
+            raise ValueError(
+                "recon/program_facts_v2_authority_capture has no conditional outputs"
+            )
+        workspace_contract = resolve_phase_io_contract(
+            pipeline=pipeline_n,
+            mode=mode_n,
+            ecosystem=ecosystem_n,
+            backend=backend_n,
+            phase="recon",
+            work_unit_id="evm_analysis_workspace_capture",
+            exact_inputs=(),
+            exact_outputs=(_EVM_ANALYSIS_WORKSPACE_RECEIPT,),
+            exact_writer="DRIVER",
+        )
+        workspace_launch = _program_facts_registered_launch(
+            workspace_contract
+        )
+        outputs = (
+            _artifact(
+                owner,
+                _PROGRAM_FACTS_V2_AUTHORITY_CAPTURE,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="CREATE",
+                schema_version=(
+                    "plamen.program_facts_v2_authority_capture.v1"
+                ),
+                minimum_gate=(
+                    "COMMITTED_WORKSPACE_WTX_PERMIT_AND_CANDIDATE_REPLAY"
+                ),
+                consumers=("recon/program_facts_bake_v2",),
+            ),
+        )
+        immutable = _identities(exact_inputs)
+        input_authority_requirements = (
+            InputAuthorityRequirement(
+                identity=canonical_artifact_identity(
+                    "scratchpad", _EVM_ANALYSIS_WORKSPACE_RECEIPT
+                ),
+                allow_raw=False,
+                expected_producer_work_unit_key=workspace_contract.key,
+                expected_writer="DRIVER",
+                require_same_run=True,
+                expected_contract_digest=workspace_contract.digest,
+                expected_launch_digest=workspace_launch.digest,
+                require_exact_contract=True,
+                require_exact_launch=True,
+            ),
+        )
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
+
+    elif phase_n == "recon" and work_n == "program_facts_bake_v2":
+        _fixed_path_set(
+            exact_inputs,
+            (
+                _EVM_ANALYSIS_WORKSPACE_RECEIPT,
+                _PROGRAM_FACTS_V2_AUTHORITY_CAPTURE,
+            ),
+            label=f"{phase_n}/{work_n}",
+        )
+        canonical_outputs = _fixed_output_set(
+            exact_outputs,
+            _PROGRAM_FACTS_V2_BAKE_OUTPUTS,
+            label=f"{phase_n}/{work_n}",
+        )
+        if conditional_output_ids or condition_id:
+            raise ValueError(
+                "recon/program_facts_bake_v2 has no conditional outputs"
+            )
+        workspace_contract = resolve_phase_io_contract(
+            pipeline=pipeline_n,
+            mode=mode_n,
+            ecosystem=ecosystem_n,
+            backend=backend_n,
+            phase="recon",
+            work_unit_id="evm_analysis_workspace_capture",
+            exact_inputs=(),
+            exact_outputs=(_EVM_ANALYSIS_WORKSPACE_RECEIPT,),
+            exact_writer="DRIVER",
+        )
+        workspace_launch = _program_facts_registered_launch(
+            workspace_contract
+        )
+        capture_contract = resolve_phase_io_contract(
+            pipeline=pipeline_n,
+            mode=mode_n,
+            ecosystem=ecosystem_n,
+            backend=backend_n,
+            phase="recon",
+            work_unit_id="program_facts_v2_authority_capture",
+            exact_inputs=(_EVM_ANALYSIS_WORKSPACE_RECEIPT,),
+            exact_outputs=(_PROGRAM_FACTS_V2_AUTHORITY_CAPTURE,),
+            exact_writer="DRIVER",
+        )
+        capture_launch = _program_facts_registered_launch(capture_contract)
+        requirements = []
+        for path, predecessor, predecessor_launch in (
+            (
+                _EVM_ANALYSIS_WORKSPACE_RECEIPT,
+                workspace_contract,
+                workspace_launch,
+            ),
+            (
+                _PROGRAM_FACTS_V2_AUTHORITY_CAPTURE,
+                capture_contract,
+                capture_launch,
+            ),
+        ):
+            requirements.append(InputAuthorityRequirement(
+                identity=canonical_artifact_identity("scratchpad", path),
+                allow_raw=False,
+                expected_producer_work_unit_key=predecessor.key,
+                expected_writer="DRIVER",
+                require_same_run=True,
+                expected_contract_digest=predecessor.digest,
+                expected_launch_digest=predecessor_launch.digest,
+                require_exact_contract=True,
+                require_exact_launch=True,
+            ))
+        schema_by_path = dict(zip(
+            _PROGRAM_FACTS_V2_BAKE_OUTPUTS,
+            (
+                "plamen.mechanical_program_facts.v2",
+                "plamen.mechanical_program_facts_receipt.v2",
+                "plamen.mechanical_program_facts_debt.v2",
+            ),
+            strict=True,
+        ))
+        outputs = tuple(
+            _artifact(
+                owner,
+                path,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="CREATE",
+                schema_version=schema_by_path[path],
+                minimum_gate="WORKSPACE_WTX_PERMIT_CANDIDATE_EXACT_REPLAY",
+                consumers=("program_facts/v2-loader",),
+            )
+            for path in canonical_outputs
+        )
+        immutable = _identities(exact_inputs)
+        input_authority_requirements = tuple(requirements)
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
+
     elif phase_n == "recon" and work_n == "program_facts_bake":
         canonical_outputs = _fixed_output_set(
             exact_outputs,
@@ -3941,7 +5097,14 @@ def resolve_phase_io_contract(
             raise ValueError(
                 "recon/program_facts_bake exact inputs contain a duplicate"
             )
-        missing_inputs = set(_PROGRAM_FACTS_BAKE_CORE_INPUTS) - set(
+        required_bake_inputs = {
+            *_PROGRAM_FACTS_BAKE_CORE_INPUTS,
+            *(
+                (_EVM_ANALYSIS_WORKSPACE_RECEIPT,)
+                if ecosystem_n == "evm" else ()
+            ),
+        }
+        missing_inputs = required_bake_inputs - set(
             canonical_inputs
         )
         if missing_inputs:
@@ -3950,14 +5113,17 @@ def resolve_phase_io_contract(
                 + ", ".join(sorted(missing_inputs))
             )
         additional_inputs = (
-            set(canonical_inputs) - set(_PROGRAM_FACTS_BAKE_CORE_INPUTS)
+            set(canonical_inputs) - required_bake_inputs
         )
         invalid_additional = sorted(
             path
             for path in additional_inputs
             if (
-                not path.startswith("_program_facts_inputs/")
-                or not path.endswith(".json")
+                path != _EVM_ANALYSIS_WORKSPACE_RECEIPT
+                and (
+                    not path.startswith("_program_facts_inputs/")
+                    or not path.endswith(".json")
+                )
             )
         )
         if invalid_additional:
@@ -4044,6 +5210,23 @@ def resolve_phase_io_contract(
         checkpoint_launch = _program_facts_registered_launch(
             checkpoint_contract
         )
+        workspace_contract = None
+        workspace_launch = None
+        if ecosystem_n == "evm":
+            workspace_contract = resolve_phase_io_contract(
+                pipeline=pipeline_n,
+                mode=mode_n,
+                ecosystem=ecosystem_n,
+                backend=backend_n,
+                phase="recon",
+                work_unit_id="evm_analysis_workspace_capture",
+                exact_inputs=(),
+                exact_outputs=(_EVM_ANALYSIS_WORKSPACE_RECEIPT,),
+                exact_writer="DRIVER",
+            )
+            workspace_launch = _program_facts_registered_launch(
+                workspace_contract
+            )
         methodology_paths = set(_PROGRAM_FACTS_METHODOLOGY_OUTPUTS)
         requirements: list[InputAuthorityRequirement] = []
         for path in canonical_inputs:
@@ -4055,6 +5238,9 @@ def resolve_phase_io_contract(
             elif path == _PROGRAM_FACTS_CHECKPOINT_CAPTURE:
                 predecessor = checkpoint_contract
                 predecessor_launch = checkpoint_launch
+            elif path == _EVM_ANALYSIS_WORKSPACE_RECEIPT:
+                predecessor = workspace_contract
+                predecessor_launch = workspace_launch
             requirements.append(
                 InputAuthorityRequirement(
                     identity=canonical_artifact_identity(
@@ -4161,11 +5347,19 @@ def resolve_phase_io_contract(
             ("semantic_invariants.md",),
             label=f"{phase_n}/{work_n}",
         )
+        # `function_list.md` is a mandated read in
+        # prompts/shared/v2/phase4a5-invariants.md ("Your Inputs" + SCOPE) and
+        # is already registered for the Pass 2 worker.  DODO run46: without it
+        # the restricted Claude prompt/PhaseIO consistency check denied the
+        # Pass 1 model launch (UNREGISTERED_ARTIFACT_READ) and the phase fell
+        # to the state_variables.md fallback -- Thorough's semantic-invariant
+        # pass silently never ran on this backend.
         semantic_inputs = _fixed_path_set(
             exact_inputs,
             (
                 *_SEMANTIC_INVARIANT_SOURCE_INPUTS,
                 *_SEMANTIC_INVARIANT_PRE_SIDECARS,
+                "function_list.md",
             ),
             label=f"{phase_n}/{work_n}",
         )
@@ -4223,20 +5417,70 @@ def resolve_phase_io_contract(
         launch_profile = "DRIVER_PYTHON_NO_TOOLS"
         required_commit_actor = "DRIVER"
 
-    elif phase_n == "inventory" and work_n == "depth_handoff":
+    elif phase_n == "inventory" and work_n == "mechanical_graph_projection":
+        canonical_inputs = _fixed_path_set(
+            exact_inputs,
+            ("_mechanical_graph.json",),
+            label=f"{phase_n}/{work_n} inputs",
+        )
         canonical_outputs = _fixed_output_set(
             exact_outputs,
             (
-                "depth_candidates.md",
-                "file_coverage.md",
-                "state_dependency_map.md",
-                "phase4_gates.md",
                 "caller_map.md",
                 "callee_map.md",
                 "state_write_map.md",
                 "function_summary.md",
-                "depth_handoff_receipt.json",
+                "_mechanical_graph_generation.json",
             ),
+            label=f"{phase_n}/{work_n} outputs",
+        )
+        schema_by_path = {
+            "caller_map.md": "plamen.mechanical_graph_projection.v1",
+            "callee_map.md": "plamen.mechanical_graph_projection.v1",
+            "state_write_map.md": "plamen.mechanical_graph_projection.v1",
+            "function_summary.md": "plamen.mechanical_graph_projection.v1",
+            "_mechanical_graph_generation.json": (
+                "plamen.mechanical_graph_generation.v1"
+            ),
+        }
+        outputs = tuple(
+            _artifact(
+                owner,
+                path,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="CREATE",
+                schema_version=schema_by_path[path],
+                minimum_gate="EXACT_PROVIDER_NEUTRAL_GRAPH_PROJECTION",
+                consumers=(
+                    "inventory/depth_handoff",
+                    "invariants/semantic_invariants.pre",
+                    "depth/worker.*",
+                ),
+            )
+            for path in canonical_outputs
+        )
+        immutable = _identities(canonical_inputs)
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
+
+    elif phase_n == "inventory" and work_n == "depth_handoff":
+        registered_outputs = (
+                "depth_candidates.md",
+                "file_coverage.md",
+                "state_dependency_map.md",
+                "phase4_gates.md",
+                "depth_handoff_receipt.json",
+            )
+        if "depth_inventory_snapshot.md" in exact_outputs:
+            registered_outputs = (
+                *registered_outputs,
+                "depth_inventory_snapshot.md",
+            )
+        canonical_outputs = _fixed_output_set(
+            exact_outputs,
+            registered_outputs,
             label=f"{phase_n}/{work_n}",
         )
         canonical_inputs = tuple(
@@ -4246,6 +5490,11 @@ def resolve_phase_io_contract(
             raise ValueError("inventory/depth_handoff inputs contain duplicates")
         required_inputs = {
             "_mechanical_graph.json",
+            "_mechanical_graph_generation.json",
+            "caller_map.md",
+            "callee_map.md",
+            "state_write_map.md",
+            "function_summary.md",
             "findings_inventory.md",
             "contract_inventory.md",
             "attack_surface.md",
@@ -4274,11 +5523,10 @@ def resolve_phase_io_contract(
             "file_coverage.md": "plamen.file_coverage_projection.v1",
             "state_dependency_map.md": "plamen.state_dependency_projection.v1",
             "phase4_gates.md": "plamen.phase4_gate_projection.v1",
-            "caller_map.md": "plamen.mechanical_caller_projection.v1",
-            "callee_map.md": "plamen.mechanical_callee_projection.v1",
-            "state_write_map.md": "plamen.mechanical_state_write_projection.v1",
-            "function_summary.md": "plamen.mechanical_function_summary_projection.v1",
             "depth_handoff_receipt.json": "plamen.depth_handoff_receipt.v1",
+            "depth_inventory_snapshot.md": (
+                "plamen.depth_inventory_snapshot.v1"
+            ),
         }
         outputs = tuple(
             _artifact(
@@ -4295,6 +5543,490 @@ def resolve_phase_io_contract(
             for path in canonical_outputs
         )
         immutable = _identities(canonical_inputs)
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
+
+    elif (
+        phase_n == "inventory"
+        and work_n == "gate_p.source_capture"
+    ):
+        _fixed_output_set(
+            exact_outputs,
+            ("gate_p_successor_plan.json",),
+            label=f"{phase_n}/{work_n}",
+        )
+        canonical_inputs = tuple(
+            _canonical_relative_path(path) for path in exact_inputs
+        )
+        if (
+            not canonical_inputs
+            or len(canonical_inputs) != len(set(canonical_inputs))
+            or any("/" in path for path in canonical_inputs)
+            or "gate_p_successor_plan.json" in canonical_inputs
+        ):
+            raise ValueError(
+                "inventory/gate_p.source_capture requires a duplicate-free "
+                "top-level exact source denominator"
+            )
+        outputs = (
+            _artifact(
+                owner,
+                "gate_p_successor_plan.json",
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="CREATE",
+                schema_version="plamen.gate_p_successor_plan.v1",
+                minimum_gate=(
+                    "EXACT_SOURCE_PREIMAGES_AND_RECOVERABLE_COUPLED_POSTIMAGES"
+                ),
+                consumers=("inventory/gate_p_successor",),
+            ),
+        )
+        immutable = _identities(canonical_inputs)
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
+
+    elif phase_n == "inventory" and work_n == "gate_p_successor":
+        canonical_inputs = _fixed_path_set(
+            exact_inputs,
+            ("gate_p_successor_plan.json",),
+            label=f"{phase_n}/{work_n}",
+        )
+        canonical_outputs = _fixed_output_set(
+            exact_outputs,
+            (
+                "_id_ledger.json",
+                "finding_records.json",
+                "findings_inventory.md",
+                "promotion_orphans.md",
+                "promotion_routing.md",
+                "promotion_orphans_appendix_c.md",
+                "promotion_orphans_appendix_a.md",
+                "promotion_gate_receipt.md",
+                "gate_p_successor_receipt.json",
+            ),
+            label=f"{phase_n}/{work_n}",
+        )
+        schema_by_path = {
+            "_id_ledger.json": "plamen.id_ledger.v1",
+            "finding_records.json": "plamen.finding_records.v2",
+            "findings_inventory.md": "plamen.findings_inventory.v1",
+            "promotion_orphans.md": "plamen.gate_p.orphans.v1",
+            "promotion_routing.md": "plamen.gate_p.routing.v1",
+            "promotion_orphans_appendix_c.md": (
+                "plamen.gate_p.appendix_c.v1"
+            ),
+            "promotion_orphans_appendix_a.md": (
+                "plamen.gate_p.appendix_a.v1"
+            ),
+            "promotion_gate_receipt.md": "plamen.gate_p.receipt.v2",
+            "gate_p_successor_receipt.json": (
+                "plamen.gate_p_successor_receipt.v1"
+            ),
+        }
+        outputs = tuple(
+            _artifact(
+                owner,
+                path,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode=(
+                    "CREATE"
+                    if path == "gate_p_successor_receipt.json"
+                    else "REPLACE"
+                ),
+                schema_version=schema_by_path[path],
+                minimum_gate=(
+                    "ARMED_EXACT_CAS_COUPLED_GATE_P_SUCCESSOR"
+                    if path in {
+                        "_id_ledger.json",
+                        "finding_records.json",
+                        "findings_inventory.md",
+                    }
+                    else (
+                        "EXACT_PLANNED_GATE_P_DIAGNOSTIC_PROJECTION"
+                        if path != "gate_p_successor_receipt.json"
+                        else "EXACT_GATE_P_PLAN_TO_POSTIMAGE_ACCOUNTING"
+                    )
+                ),
+                consumers=(
+                    "semantic_dedup/prequeue_apply",
+                    "rag_sweep/*",
+                ),
+            )
+            for path in canonical_outputs
+        )
+        immutable = _identities(canonical_inputs)
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
+
+    elif (
+        phase_n == "inventory"
+        and work_n == "late_recall_floor.source_capture"
+    ):
+        _fixed_output_set(
+            exact_outputs,
+            ("inventory_floor_source_manifest.json",),
+            label=f"{phase_n}/{work_n}",
+        )
+        canonical_inputs = _fixed_path_set(
+            exact_inputs, tuple(exact_inputs), label=f"{phase_n}/{work_n}",
+        )
+        allowed_exact = {
+            "findings_inventory.md",
+            "finding_records.json",
+            "_id_ledger.json",
+        }
+        allowed_patterns = (
+            re.compile(r"findings_inventory_chunk_[A-Za-z0-9_.-]+\.md"),
+            re.compile(r"analysis_[A-Za-z0-9_.-]+\.md"),
+            re.compile(r"depth_[A-Za-z0-9_.-]+_findings\.md"),
+            re.compile(r"blind_spot_[A-Za-z0-9_.-]+_findings\.md"),
+            re.compile(r"niche_[A-Za-z0-9_.-]+_findings\.md"),
+        )
+        invalid = tuple(
+            path for path in canonical_inputs
+            if path not in allowed_exact
+            and not any(pattern.fullmatch(path) for pattern in allowed_patterns)
+        )
+        if invalid:
+            raise ValueError(
+                "inventory/late_recall_floor.source_capture input is outside "
+                "the bounded recall allowlist: " + ", ".join(invalid)
+            )
+        outputs = (
+            _artifact(
+                owner,
+                "inventory_floor_source_manifest.json",
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="CREATE",
+                schema_version="plamen.inventory_floor_source_manifest.v1",
+                minimum_gate=(
+                    "EXACT_BOUNDED_RECALL_SOURCE_AND_PROPOSAL_CAPTURE"
+                ),
+                consumers=("inventory/late_recall_floor",),
+            ),
+        )
+        immutable = _identities(canonical_inputs)
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
+
+    elif phase_n == "inventory" and work_n == "late_recall_floor":
+        canonical_inputs = _fixed_path_set(
+            exact_inputs, tuple(exact_inputs), label=f"{phase_n}/{work_n}",
+        )
+        if canonical_inputs != ("inventory_floor_source_manifest.json",):
+            raise ValueError(
+                "inventory/late_recall_floor requires its immutable source "
+                "manifest as its sole semantic input"
+            )
+        canonical_outputs = _fixed_output_set(
+            exact_outputs,
+            (
+                "findings_inventory.md",
+                "finding_records.json",
+                "_id_ledger.json",
+                "inventory_floor_receipt.json",
+            ),
+            label=f"{phase_n}/{work_n}",
+        )
+        schema_by_path = {
+            "findings_inventory.md": "plamen.findings_inventory.v1",
+            "finding_records.json": "plamen.finding_records.v2",
+            "_id_ledger.json": "plamen.id_ledger.v1",
+            "inventory_floor_receipt.json": (
+                "plamen.inventory_floor_receipt.v1"
+            ),
+        }
+        outputs = tuple(
+            _artifact(
+                owner,
+                path,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode=(
+                    "CREATE"
+                    if path == "inventory_floor_receipt.json"
+                    else "REPLACE"
+                ),
+                schema_version=schema_by_path[path],
+                minimum_gate=(
+                    "ARMED_EXACT_CAS_COUPLED_RECALL_SUCCESSOR"
+                    if path != "inventory_floor_receipt.json"
+                    else "EXACT_RECALL_SOURCE_TO_POSTIMAGE_ACCOUNTING"
+                ),
+            )
+            for path in canonical_outputs
+        )
+        immutable = _identities(exact_inputs)
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
+
+    elif (
+        phase_n == "inventory"
+        and work_n == "additive_depth_finalize.source_capture"
+    ):
+        _fixed_output_set(
+            exact_outputs,
+            ("depth_additive_source_manifest.json",),
+            label=f"{phase_n}/{work_n}",
+        )
+        canonical_inputs = _fixed_path_set(
+            exact_inputs,
+            tuple(exact_inputs),
+            label=f"{phase_n}/{work_n}",
+        )
+        required_inputs = {
+            "findings_inventory.md",
+            "finding_records.json",
+            "_id_ledger.json",
+        }
+        if not required_inputs.issubset(canonical_inputs):
+            raise ValueError(
+                "inventory/additive_depth_finalize.source_capture requires "
+                "the coupled canonical inventory predecessor"
+            )
+        outputs = (
+            _artifact(
+                owner,
+                "depth_additive_source_manifest.json",
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="CREATE",
+                schema_version="plamen.depth_additive_source_manifest.v1",
+                minimum_gate=(
+                    "EXACT_BOUNDED_ACCEPTED_DEPTH_AND_CANONICAL_PREDECESSOR_CAPTURE"
+                ),
+                consumers=("inventory/additive_depth_finalize",),
+            ),
+        )
+        immutable = _identities(canonical_inputs)
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
+
+    elif phase_n == "inventory" and work_n == "additive_depth_finalize":
+        canonical_finalize_inputs = _fixed_path_set(
+            exact_inputs, tuple(exact_inputs), label=f"{phase_n}/{work_n}",
+        )
+        if canonical_finalize_inputs != (
+            "depth_additive_source_manifest.json",
+        ):
+            raise ValueError(
+                "inventory/additive_depth_finalize requires the immutable "
+                "source manifest as its sole semantic input"
+            )
+        base_outputs = (
+            "depth_additive_finalization.json",
+            "depth_additive_finalization_debt.json",
+            "findings_inventory.md",
+            "finding_records.json",
+            "_id_ledger.json",
+        )
+        routed_outputs = (
+            "_enumeration_obligations.json",
+            "enumeration_obligations.md",
+        )
+        normalized_outputs = (
+            tuple(_canonical_relative_path(path) for path in exact_outputs)
+            if exact_outputs else base_outputs
+        )
+        if (
+            len(normalized_outputs) != len(set(normalized_outputs))
+            or (
+                set(normalized_outputs) != set(base_outputs)
+                and set(normalized_outputs)
+                != set((*base_outputs, *routed_outputs))
+            )
+        ):
+            raise ValueError(
+                f"{phase_n}/{work_n} must use the registered base output "
+                "denominator, with either both or neither enumeration "
+                "routing outputs"
+            )
+        canonical_outputs = (
+            *base_outputs,
+            *(routed_outputs if set(routed_outputs).issubset(normalized_outputs) else ()),
+        )
+        schema_by_path = {
+            "findings_inventory.md": "plamen.findings_inventory.v1",
+            "finding_records.json": "plamen.finding_records.v2",
+            "_id_ledger.json": "plamen.id_ledger.v1",
+            "depth_additive_finalization.json": (
+                "plamen.depth_additive_finalization.v1"
+            ),
+            "depth_additive_finalization_debt.json": (
+                "plamen.depth_additive_finalization_debt.v1"
+            ),
+            "_enumeration_obligations.json": (
+                "plamen.enumeration_obligation_set.v2"
+            ),
+            "enumeration_obligations.md": "unstructured.v1",
+        }
+        merge_paths = {
+            "findings_inventory.md", "finding_records.json", "_id_ledger.json",
+        }
+        outputs = tuple(
+            _artifact(
+                owner,
+                path,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="MERGE" if path in merge_paths else "CREATE",
+                schema_version=schema_by_path[path],
+                minimum_gate=(
+                    "ARMED_EXACT_CAS_COUPLED_DEPTH_ADDITIVE_SUCCESSOR"
+                    if path in merge_paths
+                    else (
+                        "EXACT_DEPTH_ADDITIVE_ENUMERATION_ROUTING"
+                        if path in routed_outputs
+                        else "EXACT_DEPTH_ADDITIVE_FINALIZATION_ACCOUNTING"
+                    )
+                ),
+                consumers=(
+                    "enumgap_disposition/planning",
+                    "enumgap_exploration/model",
+                ) if path in routed_outputs else (),
+            )
+            for path in canonical_outputs
+        )
+        immutable = _identities(exact_inputs)
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
+
+    elif (
+        phase_n == "inventory"
+        and re.fullmatch(
+            r"late_ci_recovery\.source_capture\."
+            r"(?:exploration_skeptic|skeptic)\.[a-f0-9]{16}",
+            work_n,
+        )
+    ):
+        match = re.fullmatch(
+            r"late_ci_recovery\.source_capture\."
+            r"(?P<source>exploration_skeptic|skeptic)\."
+            r"(?P<generation>[a-f0-9]{16})",
+            work_n,
+        )
+        assert match is not None
+        manifest_path = (
+            f"_late_ci_recovery/{match.group('source')}/"
+            f"{match.group('generation')}/source_manifest.json"
+        )
+        _fixed_output_set(
+            exact_outputs, (manifest_path,), label=f"{phase_n}/{work_n}",
+        )
+        canonical_inputs = _fixed_path_set(
+            exact_inputs, tuple(exact_inputs), label=f"{phase_n}/{work_n}",
+        )
+        required_predecessors = {
+            "findings_inventory.md", "finding_records.json", "_id_ledger.json",
+        }
+        allowed_source_names = {
+            "exploration_skeptic_findings.md",
+            "skeptic_findings.md",
+            "_mechanical_graph.json",
+        }
+        source_inputs = set(canonical_inputs) - required_predecessors
+        if (
+            not required_predecessors.issubset(canonical_inputs)
+            or not source_inputs
+            or any(
+                name not in allowed_source_names
+                and re.fullmatch(r"depth_[A-Za-z0-9_.-]+_findings\.md", name) is None
+                and re.fullmatch(r"verify_[A-Za-z0-9_.-]+\.md", name) is None
+                for name in source_inputs
+            )
+        ):
+            raise ValueError(
+                "inventory/late_ci_recovery source capture requires the exact "
+                "active canonical predecessor and bounded CI sources"
+            )
+        input_authority_requirements = _strict_dynamic_input_authorities(
+            canonical_inputs,
+            exact_input_authorities,
+            label=f"{phase_n}/{work_n} CI sources",
+        )
+        outputs = (
+            _artifact(
+                owner,
+                manifest_path,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="CREATE",
+                schema_version="plamen.late_ci_recovery_source_manifest.v1",
+                minimum_gate="EXACT_ACTIVE_LATE_CI_PREDECESSOR_CAPTURE",
+                consumers=(
+                    f"inventory/late_ci_recovery.{match.group('source')}."
+                    f"{match.group('generation')}",
+                ),
+            ),
+        )
+        immutable = _identities(canonical_inputs)
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
+
+    elif (
+        phase_n == "inventory"
+        and re.fullmatch(
+            r"late_ci_recovery\.(?:exploration_skeptic|skeptic)\.[a-f0-9]{16}",
+            work_n,
+        )
+    ):
+        match = re.fullmatch(
+            r"late_ci_recovery\.(?P<source>exploration_skeptic|skeptic)\."
+            r"(?P<generation>[a-f0-9]{16})",
+            work_n,
+        )
+        assert match is not None
+        manifest_path = (
+            f"_late_ci_recovery/{match.group('source')}/"
+            f"{match.group('generation')}/source_manifest.json"
+        )
+        _fixed_path_set(
+            exact_inputs, (manifest_path,), label=f"{phase_n}/{work_n}",
+        )
+        canonical_outputs = _fixed_output_set(
+            exact_outputs,
+            (
+                "findings_inventory.md",
+                "finding_records.json",
+                "_id_ledger.json",
+            ),
+            label=f"{phase_n}/{work_n}",
+        )
+        schema_by_path = {
+            "findings_inventory.md": "plamen.findings_inventory.v1",
+            "finding_records.json": "plamen.finding_records.v2",
+            "_id_ledger.json": "plamen.id_ledger.v1",
+        }
+        outputs = tuple(
+            _artifact(
+                owner,
+                path,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                # These are recall-monotonic canonical projections.  Treat
+                # the captured predecessor as an authenticated merge
+                # preimage so the ledger can authorize the replacement and
+                # prove that no existing inventory identity disappeared.
+                write_mode="MERGE",
+                schema_version=schema_by_path[path],
+                minimum_gate=(
+                    "ARMED_EXACT_CAS_COUPLED_LATE_CI_SUCCESSOR"
+                ),
+            )
+            for path in canonical_outputs
+        )
+        immutable = _identities((manifest_path,))
         model_invoked = False
         launch_profile = "DRIVER_PYTHON_NO_TOOLS"
         required_commit_actor = "DRIVER"
@@ -4628,7 +6360,10 @@ def resolve_phase_io_contract(
     ):
         _fixed_output_set(
             exact_outputs,
-            (_SEMANTIC_INVARIANT_PASS2_PRE_FILE,),
+            (
+                _SEMANTIC_INVARIANT_PASS2_PRE_FILE,
+                _SEMANTIC_INVARIANT_PASS1_SNAPSHOT_FILE,
+            ),
             label=f"{phase_n}/{work_n}",
         )
         # The deterministic output is the content-addressed seal over the
@@ -4659,6 +6394,19 @@ def resolve_phase_io_contract(
                     "invariants_p2/semantic_invariants.pass2_reconcile",
                 ),
             ),
+            _artifact(
+                owner,
+                _SEMANTIC_INVARIANT_PASS1_SNAPSHOT_FILE,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                schema_version=(
+                    "plamen.semantic_invariant_pass1_byte_snapshot.v1"
+                ),
+                minimum_gate="EXACT_PRE_APPEND_BYTE_SNAPSHOT",
+                consumers=(
+                    "invariants_p2/worker.semantic_invariants_pass2",
+                ),
+            ),
         )
         immutable = _identities(semantic_inputs)
         model_invoked = False
@@ -4674,7 +6422,13 @@ def resolve_phase_io_contract(
         )
         semantic_inputs = _fixed_path_set(
             exact_inputs,
-            (_SEMANTIC_INVARIANT_PASS2_PRE_FILE,),
+            (
+                _SEMANTIC_INVARIANT_PASS2_PRE_FILE,
+                _SEMANTIC_INVARIANT_PASS1_SNAPSHOT_FILE,
+                "state_variables.md",
+                "function_list.md",
+                "state_write_map.md",
+            ),
             label=f"{phase_n}/{work_n}",
         )
         outputs = (
@@ -5229,6 +6983,33 @@ def resolve_phase_io_contract(
         ))
         model_invoked = False
 
+    elif (
+        phase_n == "application_skeptic"
+        and work_n == "negative.planning_debt"
+    ):
+        _fixed_output_set(
+            exact_outputs,
+            ("candidate_negative_planning_debt.json",),
+            label=f"{phase_n}/{work_n}",
+        )
+        if exact_inputs:
+            raise ValueError(
+                "candidate-negative planning debt is a zero-input non-evidence projection"
+            )
+        outputs = (
+            _artifact(
+                owner,
+                "candidate_negative_planning_debt.json",
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                schema_version="plamen.candidate_negative_planning_debt.v1",
+                minimum_gate="VISIBLE_NON_EVIDENCE_PLANNING_DEBT",
+                consumers=("application_skeptic/negative.reconcile",),
+            ),
+        )
+        immutable = ()
+        model_invoked = False
+
     elif phase_n == "application_skeptic" and work_n == "negative.planning":
         outputs = (
             _artifact(
@@ -5261,7 +7042,325 @@ def resolve_phase_io_contract(
         immutable = _identities(planning_inputs)
         model_invoked = False
 
+    elif (
+        phase_n == "severity_adjudication_shadow"
+        and work_n.startswith("source_decisions.")
+    ):
+        required_source_inputs = {
+            "verification_queue.md",
+            "verification_queue.work_items.json",
+            "verification_queue.work_plan.json",
+            "verification_runtime_roster.json",
+        }
+        source_ids = []
+        for name in exact_outputs:
+            match = re.fullmatch(
+                r"verify_([A-Za-z0-9][A-Za-z0-9_.-]*)\.severity_decision\.json",
+                name,
+            )
+            if match is None:
+                raise ValueError("severity source outputs must be decision sidecars")
+            source_ids.append(match.group(1))
+        if not source_ids or len({value.casefold() for value in source_ids}) != len(source_ids):
+            raise ValueError("severity source requires distinct nonempty candidate identities")
+        required_source_inputs.update(
+            f"verify_{candidate}{suffix}"
+            for candidate in source_ids
+            for suffix in (".md", ".severity_proposal.json", ".receipt.json")
+        )
+        if (
+            len(exact_inputs) != len(set(exact_inputs))
+            or not required_source_inputs.issubset(set(exact_inputs))
+        ):
+            raise ValueError("severity source requires its exact verifier and queue inputs")
+        outputs = tuple(
+            _artifact(
+                owner, name, artifact_class="DRIVER_GENERATED", writer="DRIVER",
+                schema_version="plamen.severity_decision.v1",
+                minimum_gate="CURRENT_VERIFIER_MODEL_CONTROL_AND_EXACT_ASSESSMENT_REPLAY",
+                consumers=("severity_adjudication_shadow/source_aggregate",),
+            )
+            for name in exact_outputs
+        )
+        immutable = _identities(exact_inputs)
+        model_invoked = False
+
+    elif phase_n == "severity_adjudication_shadow" and work_n == "source_aggregate":
+        initial_snapshot = (
+            "_severity_adjudication_inputs/source_ledger.initial.json"
+        )
+        aggregate_base = {
+            "verification_queue.md", "verification_queue.work_items.json",
+            "verification_queue.work_plan.json", "verification_runtime_roster.json",
+        }
+        decision_inputs = tuple(name for name in exact_inputs if name not in aggregate_base)
+        if (
+            not aggregate_base.issubset(set(exact_inputs))
+            or len(exact_inputs) != len(set(exact_inputs))
+            or not decision_inputs
+            or len({name.casefold() for name in decision_inputs}) != len(decision_inputs)
+            or any(re.fullmatch(
+                r"verify_([A-Za-z0-9][A-Za-z0-9_.-]*)\.severity_decision\.json", name,
+            ) is None for name in decision_inputs)
+        ):
+            raise ValueError("severity aggregate requires queue, roster and distinct decision inputs")
+        _fixed_output_set(
+            exact_outputs,
+            ("severity_decision_ledger.shadow.json", initial_snapshot),
+            label=f"{phase_n}/{work_n}",
+        )
+        outputs = (
+            _artifact(
+                owner, "severity_decision_ledger.shadow.json",
+                artifact_class="DRIVER_GENERATED", writer="DRIVER",
+                schema_version="plamen.severity_decision_ledger.v1",
+                minimum_gate="EXACT_AUTHENTICATED_FULL_VERIFIER_SOURCE_ROSTER",
+                consumers=(
+                    "severity_adjudication_shadow/report_projection",
+                    "severity_adjudication_shadow/final_report_projection",
+                ),
+            ),
+            _artifact(
+                owner, initial_snapshot,
+                artifact_class="DRIVER_GENERATED", writer="DRIVER",
+                schema_version="plamen.severity_decision_ledger.v1",
+                minimum_gate="EXACT_AUTHENTICATED_FULL_VERIFIER_SOURCE_ROSTER",
+                consumers=(
+                    "severity_adjudication_shadow/planning_inputs",
+                    "severity_adjudication_shadow/planning",
+                ),
+            ),
+        )
+        immutable = _identities(exact_inputs)
+        model_invoked = False
+
+    elif phase_n == "severity_adjudication_shadow" and work_n == "source_empty":
+        initial_snapshot = (
+            "_severity_adjudication_inputs/source_ledger.initial.json"
+        )
+        required_empty_inputs = {
+            "verification_queue.md",
+            "verification_queue.work_items.json",
+            "verification_queue.work_plan.json",
+        }
+        if (
+            len(exact_inputs) != len(required_empty_inputs)
+            or set(exact_inputs) != required_empty_inputs
+        ):
+            raise ValueError(
+                "empty severity source requires the exact typed queue "
+                "Markdown, work-item, and work-plan denominator"
+            )
+        _fixed_output_set(
+            exact_outputs,
+            ("severity_decision_ledger.shadow.json", initial_snapshot),
+            label=f"{phase_n}/{work_n}",
+        )
+        outputs = (
+            _artifact(
+                owner,
+                "severity_decision_ledger.shadow.json",
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                schema_version="plamen.severity_decision_ledger.v1",
+                minimum_gate="EXACT_AUTHENTICATED_ZERO_QUEUE_SEVERITY_SOURCE",
+                consumers=(
+                    "severity_adjudication_shadow/report_projection",
+                    "severity_adjudication_shadow/final_report_projection",
+                ),
+            ),
+            _artifact(
+                owner,
+                initial_snapshot,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                schema_version="plamen.severity_decision_ledger.v1",
+                minimum_gate="EXACT_AUTHENTICATED_ZERO_QUEUE_SEVERITY_SOURCE",
+                consumers=(
+                    "severity_adjudication_shadow/planning_inputs",
+                    "severity_adjudication_shadow/planning",
+                ),
+            ),
+        )
+        immutable = _identities(exact_inputs)
+        model_invoked = False
+
+    elif phase_n == "severity_adjudication_shadow" and work_n == "planning_inputs":
+        initial_snapshot = (
+            "_severity_adjudication_inputs/source_ledger.initial.json"
+        )
+        if exact_inputs != (initial_snapshot,):
+            raise ValueError(
+                "severity planning input capture requires the exact initial "
+                "source-ledger snapshot"
+            )
+        prefix = "_severity_adjudication_inputs/"
+        selected = "l1-severity-matrix.md" if pipeline_n == "l1" else "report-template.md"
+        captured_names = tuple(prefix + name for name in (
+            "audit_snapshot.json", "audit_config.json",
+            "finding-output-format.md", "poc-execution.md", selected,
+        ))
+        _fixed_output_set(exact_outputs, captured_names, label=f"{phase_n}/{work_n}")
+        outputs = tuple(
+            _artifact(
+                owner, name, artifact_class="DRIVER_GENERATED", writer="DRIVER",
+                minimum_gate="EXACT_LIVE_SNAPSHOT_CONFIG_METHODOLOGY_CAPTURE",
+                consumers=("severity_adjudication_shadow/planning",),
+            )
+            for name in captured_names
+        )
+        immutable = _identities(exact_inputs)
+        model_invoked = False
+
+    elif phase_n == "severity_adjudication_shadow" and work_n == "reconcile_final":
+        suffixes = (
+            "severity_decision.json", "severity_adjudication_proposal.json",
+            "severity_adjudication_receipt.json",
+        )
+        candidate_sets = tuple({
+            match.group(1).casefold() for name in exact_inputs
+            for match in [re.fullmatch(
+                rf"verify_([A-Za-z][A-Za-z0-9-]{{0,95}})\.{suffix}", name
+            )] if match is not None
+        } for suffix in suffixes)
+        fixed = {
+            "severity_adjudication_work_manifest.json",
+            "severity_adjudication_work_plan.json",
+            "severity_decision_ledger.shadow.json",
+            "_severity_adjudication_inputs/source_ledger.initial.json",
+        }
+        allowed_fixed = fixed | {
+            "verification_queue.md", "verification_queue.work_items.json",
+            "verification_queue.work_plan.json",
+        }
+        allowed_patterns = (
+            r"severity_adjudication_(?:context|prompt|tool_policy|launch_intent)\.[A-Za-z0-9_.-]+(?:\.json|\.md)",
+            r"severity_adjudication_worker_run\.[A-Za-z0-9_.-]+\.json",
+            r"verify_[A-Za-z][A-Za-z0-9-]{0,95}\.(?:severity_decision|severity_adjudication_proposal|severity_adjudication_receipt|severity_proposal|receipt)\.json",
+            r"verify_[A-Za-z][A-Za-z0-9-]{0,95}\.md",
+            r"\.worker_transactions/[A-Za-z0-9_./-]+\.json",
+            r"\.posix_v2_compat_receipts/[A-Za-z0-9_.-]+\.json",
+        )
+        if (
+            not exact_inputs or len(exact_inputs) != len(set(exact_inputs))
+            or len(exact_inputs) != len({name.casefold() for name in exact_inputs})
+            or not fixed.issubset(exact_inputs) or not candidate_sets[0]
+            or len({frozenset(value) for value in candidate_sets}) != 1
+            or any(name not in allowed_fixed and not any(
+                re.fullmatch(pattern, name) for pattern in allowed_patterns
+            ) for name in exact_inputs)
+        ):
+            raise ValueError("final severity reconciliation denominator differs")
+        _fixed_output_set(exact_outputs,
+            ("severity_adjudication_work_reconciliation.json",),
+            label=f"{phase_n}/{work_n}")
+        outputs = (_artifact(owner,
+            "severity_adjudication_work_reconciliation.json",
+            artifact_class="DRIVER_GENERATED", writer="DRIVER",
+            write_mode="CREATE",
+            schema_version="plamen.severity_adjudication_reconciliation.v1",
+            minimum_gate="EXACT_AUTHENTICATED_COMPLETED_SEVERITY_BIND_PREFIX",
+        ),)
+        immutable = _identities(exact_inputs)
+        model_invoked = False
+
+    elif phase_n == "severity_adjudication_shadow" and work_n == "reconcile_empty":
+        required_zero_inputs = {
+            "severity_decision_ledger.shadow.json",
+            "severity_adjudication_work_manifest.json",
+            "severity_adjudication_work_plan.json",
+        }
+        if (
+            len(exact_inputs) != len(required_zero_inputs)
+            or set(exact_inputs) != required_zero_inputs
+        ):
+            raise ValueError(
+                "empty severity reconciliation requires the exact source, "
+                "manifest, and work-plan denominator"
+            )
+        _fixed_output_set(
+            exact_outputs,
+            ("severity_adjudication_work_reconciliation.json",),
+            label=f"{phase_n}/{work_n}",
+        )
+        outputs = (
+            _artifact(
+                owner,
+                "severity_adjudication_work_reconciliation.json",
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                schema_version="plamen.severity_adjudication_reconciliation.v1",
+                minimum_gate="EXACT_AUTHENTICATED_ZERO_SEVERITY_PLAN",
+                consumers=(
+                    "severity_adjudication_shadow/trust_evidence_reconcile",
+                    "severity_adjudication_shadow/report_projection",
+                    "severity_adjudication_shadow/final_report_projection",
+                ),
+            ),
+        )
+        immutable = _identities(exact_inputs)
+        model_invoked = False
+
     elif phase_n == "severity_adjudication_shadow" and work_n == "planning":
+        prefix = "_severity_adjudication_inputs/"
+        initial_snapshot = prefix + "source_ledger.initial.json"
+        selected = (
+            "l1-severity-matrix.md"
+            if pipeline_n == "l1"
+            else "report-template.md"
+        )
+        required_inputs = {
+            initial_snapshot,
+            prefix + "audit_snapshot.json",
+            prefix + "audit_config.json",
+            prefix + "finding-output-format.md",
+            prefix + "poc-execution.md",
+            prefix + selected,
+        }
+        if (
+            len(exact_inputs) != len(required_inputs)
+            or set(exact_inputs) != required_inputs
+        ):
+            raise ValueError(
+                "severity planning requires the immutable source snapshot "
+                "and exact pipeline capture denominator"
+            )
+        required_outputs = {
+            "severity_adjudication_work_manifest.json",
+            "severity_adjudication_work_plan.json",
+        }
+        if (
+            len(exact_outputs) != len(set(exact_outputs))
+            or not required_outputs.issubset(set(exact_outputs))
+        ):
+            raise ValueError(
+                "severity planning requires its manifest and work plan"
+            )
+        shard_kinds = {
+            "context": r"severity_adjudication_context\.(\d{4})\.json",
+            "prompt": r"severity_adjudication_prompt\.(\d{4})\.md",
+            "launch": r"severity_adjudication_launch_intent\.(\d{4})\.json",
+            "policy": r"severity_adjudication_tool_policy\.(\d{4})\.json",
+        }
+        shard_sets = {kind: set() for kind in shard_kinds}
+        for name in exact_outputs:
+            if name in required_outputs:
+                continue
+            matched = False
+            for kind, pattern in shard_kinds.items():
+                match = re.fullmatch(pattern, name)
+                if match is not None:
+                    shard_sets[kind].add(match.group(1))
+                    matched = True
+                    break
+            if not matched:
+                raise ValueError(
+                    "severity planning output is not a registered plan artifact"
+                )
+        if len({frozenset(values) for values in shard_sets.values()}) != 1:
+            raise ValueError(
+                "severity planning shard artifact denominator is incomplete"
+            )
         outputs = _dynamic_specs(
             owner,
             exact_outputs,
@@ -5269,10 +7368,7 @@ def resolve_phase_io_contract(
             conditional_output_ids=(),
             condition_id="",
         )
-        immutable = _identities((
-            "severity_decision_ledger.shadow.json",
-            *exact_inputs,
-        ))
+        immutable = _identities(exact_inputs)
         model_invoked = False
 
     elif phase_n == "startup" and work_n == "trust_evidence_initial":
@@ -5529,6 +7625,70 @@ def resolve_phase_io_contract(
         ))
         model_invoked = False
 
+    elif phase_n == "severity_adjudication_shadow" and re.fullmatch(
+        r"bind\.(\d{4})\.([a-z][a-z0-9-]{0,95})", work_n
+    ):
+        match = re.fullmatch(
+            r"bind\.(\d{4})\.([a-z][a-z0-9-]{0,95})", work_n
+        )
+        assert match is not None
+        if int(match.group(1)) < 1:
+            raise ValueError("severity bind ordinal must start at 0001")
+        candidate_key = match.group(2)
+        decision_outputs = [name for name in exact_outputs if re.fullmatch(
+            r"verify_([A-Za-z][A-Za-z0-9-]{0,95})\.severity_decision\.json", name,
+        )]
+        if len(decision_outputs) != 1:
+            raise ValueError("severity bind requires one candidate decision output")
+        candidate_match = re.fullmatch(
+            r"verify_([A-Za-z][A-Za-z0-9-]{0,95})\.severity_decision\.json",
+            decision_outputs[0],
+        )
+        assert candidate_match is not None
+        candidate = candidate_match.group(1)
+        if candidate.casefold() != candidate_key:
+            raise ValueError("severity bind candidate token differs from output identity")
+        required = {
+            "severity_adjudication_work_manifest.json",
+            "severity_adjudication_work_plan.json",
+            f"verify_{candidate}.severity_adjudication_proposal.json",
+        }
+        replacement_targets = {
+            "severity_decision_ledger.shadow.json",
+            f"verify_{candidate}.severity_decision.json",
+        }
+        if (
+            len(exact_inputs) != len(set(exact_inputs))
+            or not required.issubset(set(exact_inputs))
+            or replacement_targets.intersection(exact_inputs)
+            or not any(name.startswith("severity_adjudication_context.") for name in exact_inputs)
+            or not any(name.startswith("severity_adjudication_prompt.") for name in exact_inputs)
+            or not any(name.startswith("severity_adjudication_tool_policy.") for name in exact_inputs)
+            or not any(name.startswith("severity_adjudication_launch_intent.") for name in exact_inputs)
+            or not any(name.startswith("severity_adjudication_worker_run.") for name in exact_inputs)
+        ):
+            raise ValueError(
+                "severity bind requires its exact planning and worker denominator "
+                "without mutable replacement targets"
+            )
+        decision = f"verify_{candidate}.severity_decision.json"
+        receipt = f"verify_{candidate}.severity_adjudication_receipt.json"
+        ledger = "severity_decision_ledger.shadow.json"
+        _fixed_output_set(exact_outputs, (decision, receipt, ledger), label=f"{phase_n}/{work_n}")
+        outputs = (
+            _artifact(owner, receipt, artifact_class="DRIVER_GENERATED", writer="DRIVER",
+                      write_mode="CREATE", schema_version="plamen.severity_adjudication_receipt.v1",
+                      minimum_gate="EXACT_COMPLETED_SEVERITY_WORKER_REPLAY"),
+            _artifact(owner, decision, artifact_class="DRIVER_GENERATED", writer="DRIVER",
+                      write_mode="REPLACE", schema_version="plamen.severity_decision.v1",
+                      minimum_gate="EXACT_DIRECTION_NEUTRAL_ADJUDICATION_BIND"),
+            _artifact(owner, ledger, artifact_class="DRIVER_GENERATED", writer="DRIVER",
+                      write_mode="REPLACE", schema_version="plamen.severity_decision_ledger.v1",
+                      minimum_gate="EXACT_FULL_DECISION_DENOMINATOR_REBUILD"),
+        )
+        immutable = _identities(exact_inputs)
+        model_invoked = False
+
     elif (
         phase_n == "severity_adjudication_shadow"
         and work_n == "report_projection"
@@ -5545,6 +7705,7 @@ def resolve_phase_io_contract(
         )
         immutable = _identities((
             "severity_decision_ledger.shadow.json",
+            "severity_adjudication_work_reconciliation.json",
             "report_index.md",
             "report_critical_high.md",
             "report_medium.md",
@@ -5569,30 +7730,146 @@ def resolve_phase_io_contract(
         immutable = (
             *_identities((
                 "severity_decision_ledger.shadow.json",
+                "severity_adjudication_work_reconciliation.json",
                 "severity_report_shadow_receipt.json",
             )),
             canonical_artifact_identity("project", "AUDIT_REPORT.md"),
         )
         model_invoked = False
 
+    elif phase_n == "rescan" and work_n == "self_exclusion_reemit":
+        if (
+            not exact_inputs
+            or tuple(sorted(exact_inputs)) != exact_inputs
+            or len(exact_inputs) != len(set(exact_inputs))
+            or any(
+                not re.fullmatch(r"analysis_[A-Za-z0-9_.-]+\.md", path)
+                or path == "analysis_percontract_reemit.md"
+                for path in exact_inputs
+            )
+        ):
+            raise ValueError(
+                "rescan/self_exclusion_reemit requires the exact sorted "
+                "analysis source denominator"
+            )
+        _fixed_output_set(
+            exact_outputs,
+            ("analysis_percontract_reemit.md",),
+            label=f"{phase_n}/{work_n}",
+        )
+        outputs = (_artifact(
+            owner,
+            "analysis_percontract_reemit.md",
+            artifact_class="DRIVER_GENERATED",
+            writer="DRIVER",
+            write_mode="REPLACE",
+            schema_version="unstructured.v1",
+            minimum_gate="EXACT_SELF_EXCLUSION_SOURCE_REPLAY",
+            consumers=(
+                "candidate_negative_authority/harvest.rescan",
+                "inventory/aggregate_plan.single_shard",
+                "inventory/canonical_aggregate",
+                "inventory/exact_reconciliation",
+                "inventory/gate_p.source_capture",
+                "chain/state_resolution",
+                "chain/state_resolution_enabler_prefill",
+                "chain/tail_control_init",
+                "chain/tail_manifest",
+            ),
+        ),)
+        immutable = _identities(exact_inputs)
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
+
+    elif phase_n == "depth" and work_n == "self_exclusion_reemit":
+        if (
+            not exact_inputs
+            or tuple(sorted(exact_inputs)) != exact_inputs
+            or len(exact_inputs) != len(set(exact_inputs))
+            or any(
+                not re.fullmatch(r"depth_[A-Za-z0-9_.-]+\.md", path)
+                or path == "depth_selfexcl_reemit_findings.md"
+                for path in exact_inputs
+            )
+        ):
+            raise ValueError(
+                "depth/self_exclusion_reemit requires exact sorted source artifacts"
+            )
+        _fixed_output_set(
+            exact_outputs, ("depth_selfexcl_reemit_findings.md",),
+            label=f"{phase_n}/{work_n}",
+        )
+        outputs = (_artifact(
+            owner,
+            "depth_selfexcl_reemit_findings.md",
+            artifact_class="DRIVER_GENERATED",
+            writer="DRIVER",
+            write_mode="REPLACE",
+            schema_version="unstructured.v1",
+            minimum_gate="EXACT_SELF_EXCLUSION_SOURCE_REPLAY",
+            consumers=("inventory/additive_depth_finalize.source_capture",),
+        ),)
+        immutable = _identities(exact_inputs)
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
+
     elif phase_n == "exploration_clear" and work_n == "alias_authority":
+        _fixed_output_set(
+            exact_outputs,
+            (
+                "exploration_clear_prior_identity_map.json",
+                "exploration_clear_prior_aliases.json",
+            ),
+            label=f"{phase_n}/{work_n}",
+        )
+        if exact_inputs not in {(), ("_canonical_finding_ids.json",)}:
+            raise ValueError("exploration prior source denominator is invalid")
         outputs = (
+            _artifact(
+                owner,
+                "exploration_clear_prior_identity_map.json",
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                schema_version="plamen.exploration_clear_prior_identity_map.v1",
+                minimum_gate="EXACT_IMMUTABLE_CANONICAL_IDENTITY_SNAPSHOT",
+                consumers=(
+                    "exploration_clear/initial_compile.repair",
+                    "enumgap_disposition/reconcile",
+                ),
+            ),
             _artifact(
                 owner,
                 "exploration_clear_prior_aliases.json",
                 artifact_class="DRIVER_GENERATED",
                 writer="DRIVER",
-                schema_version="plamen.exploration_clear_prior_aliases.v1",
-                minimum_gate="EXACT_CANONICAL_IDENTITY_PROJECTION",
+                schema_version="plamen.exploration_clear_prior_aliases.v2",
+                minimum_gate="EXACT_SNAPSHOT_ALIAS_REPLAY",
             ),
         )
-        immutable = _mixed_identities(exact_inputs)
+        immutable = _identities(exact_inputs)
         model_invoked = False
 
     elif (
         phase_n == "exploration_clear"
         and work_n in {"initial_compile.clean", "initial_compile.repair"}
     ):
+        stable_prefix = (
+            "exploration_skeptic_findings.md",
+            "exploration_clear_prior_identity_map.json",
+            "exploration_clear_prior_aliases.json",
+        )
+        project_loci = exact_inputs[len(stable_prefix):]
+        if (
+            exact_inputs[:len(stable_prefix)] != stable_prefix
+            or len(exact_inputs) != len(set(exact_inputs))
+            or any(not path.startswith("project::") for path in project_loci)
+            or tuple(sorted(project_loci)) != project_loci
+        ):
+            raise ValueError(
+                "exploration-clear initial compile requires immutable prior bundle"
+            )
         outputs = _dynamic_specs(
             owner, exact_outputs, writer="DRIVER",
             conditional_output_ids=(), condition_id="",
@@ -5607,6 +7884,7 @@ def resolve_phase_io_contract(
             )
         stable_prefix = (
             "exploration_skeptic_findings.md",
+            "exploration_clear_prior_identity_map.json",
             "exploration_clear_prior_aliases.json",
         )
         project_loci = exact_inputs[len(stable_prefix):]
@@ -5666,20 +7944,69 @@ def resolve_phase_io_contract(
         ))
 
     elif phase_n == "exploration_clear" and work_n == "repair_terminal":
-        outputs = (
-            _artifact(
-                owner,
-                "exploration_clear_repair_failure.json",
-                artifact_class="DRIVER_GENERATED",
-                writer="DRIVER",
-                schema_version="plamen.exploration_clear_repair_failure.v1",
-                minimum_gate="EXACT_ABANDONED_MODEL_BINDING",
+        allowed_outputs = {
+            (
+                "exploration_clear_repair_provider_outcome.json",
+                "exploration_clear_repair_result.json",
             ),
-        )
-        immutable = _identities(exact_inputs)
+            (
+                "exploration_clear_repair_failure.json",
+                "exploration_clear_repair_provider_outcome.json",
+                "exploration_clear_repair_result.json",
+            ),
+        }
+        if exact_outputs not in allowed_outputs:
+            raise ValueError("exploration-clear terminal output vector is invalid")
+        required_inputs = {
+            "exploration_clear_repair_plan.json",
+            "exploration_clear_repair_attempt.json",
+        }
+        if (
+            not required_inputs.issubset(exact_inputs)
+            or len(exact_inputs) != len(set(exact_inputs))
+        ):
+            raise ValueError("exploration-clear terminal input vector is invalid")
+        outputs = tuple(_artifact(
+            owner,
+            path,
+            artifact_class="DRIVER_GENERATED",
+            writer="DRIVER",
+            schema_version=(
+                "plamen.exploration_clear_repair_failure.v1"
+                if path.endswith("failure.json") else
+                "plamen.exploration_clear_provider_outcome.v1"
+                if path.endswith("provider_outcome.json") else
+                "plamen.exploration_clear_repair_result.v1"
+            ),
+            minimum_gate="EXACT_PLAN_ARM_PROVIDER_OUTCOME_BINDING",
+        ) for path in exact_outputs)
+        immutable = _mixed_identities(exact_inputs)
         model_invoked = False
 
     elif phase_n == "exploration_clear" and work_n == "repair_reconcile":
+        _fixed_output_set(
+            exact_outputs,
+            (
+                "exploration_clear_receipt.json",
+                "exploration_clear_obligations.json",
+            ),
+            label=f"{phase_n}/{work_n}",
+        )
+        repair_reconcile_required = {
+            "exploration_skeptic_findings.md",
+            "exploration_clear_prior_identity_map.json",
+            "exploration_clear_prior_aliases.json",
+            "exploration_clear_repair_plan.json",
+            "exploration_clear_repair_attempt.json",
+            "exploration_clear_repair_result.json",
+        }
+        if (
+            not repair_reconcile_required.issubset(exact_inputs)
+            or len(exact_inputs) != len(set(exact_inputs))
+        ):
+            raise ValueError(
+                "exploration-clear reconcile lacks its immutable terminal denominator"
+            )
         outputs = (
             _artifact(
                 owner,
@@ -5753,6 +8080,28 @@ def resolve_phase_io_contract(
         model_invoked = False
 
     elif phase_n == "enumgap_disposition" and work_n == "reconcile":
+        normalized_enumgap_inputs = exact_inputs or (
+            "enumgap_worklist.json", "enumgap_exploration_findings.md",
+        )
+        enumgap_prefix = (
+            "enumgap_worklist.json", "enumgap_exploration_findings.md",
+        )
+        prior_pair = (
+            "exploration_clear_prior_identity_map.json",
+            "exploration_clear_prior_aliases.json",
+        )
+        suffix = normalized_enumgap_inputs[len(enumgap_prefix):]
+        if suffix[:2] == prior_pair:
+            suffix = suffix[2:]
+        elif any(path in prior_pair for path in suffix):
+            raise ValueError("enumgap reconcile requires the complete prior pair")
+        if (
+            normalized_enumgap_inputs[:2] != enumgap_prefix
+            or len(normalized_enumgap_inputs) != len(set(normalized_enumgap_inputs))
+            or any(not path.startswith("project::") for path in suffix)
+            or tuple(sorted(suffix)) != suffix
+        ):
+            raise ValueError("enumgap reconcile input denominator is invalid")
         outputs = (
             _artifact(
                 owner,
@@ -5771,12 +8120,7 @@ def resolve_phase_io_contract(
                 minimum_gate="EXACT_RESIDUAL_TAIL",
             ),
         )
-        immutable = _mixed_identities(
-            exact_inputs or (
-                "enumgap_worklist.json",
-                "enumgap_exploration_findings.md",
-            )
-        )
+        immutable = _mixed_identities(normalized_enumgap_inputs)
         model_invoked = False
 
     elif phase_n == "enumgap_delivery" and work_n == "inventory_append":
@@ -5792,26 +8136,47 @@ def resolve_phase_io_contract(
             _artifact(
                 owner,
                 "enumgap_inventory_append_plan.json",
-                artifact_class="DRIVER_GENERATED",
+                artifact_class="CONDITIONAL",
                 writer="DRIVER",
                 schema_version="plamen.enumgap_inventory_append_plan.v1",
                 minimum_gate="EXACT_PREIMAGE_POSTIMAGE_PLAN",
+                condition_id="enumgap_findings_present",
             ),
             _artifact(
                 owner,
                 "enumgap_inventory_append_commit.json",
-                artifact_class="DRIVER_GENERATED",
+                artifact_class="CONDITIONAL",
                 writer="DRIVER",
                 schema_version="plamen.enumgap_inventory_append_commit.v1",
                 minimum_gate="EXACT_APPEND_COMMIT",
+                condition_id="enumgap_findings_present",
             ),
             _artifact(
                 owner,
                 "enumgap_exploration_promotion_receipt.json",
-                artifact_class="DRIVER_GENERATED",
+                artifact_class="CONDITIONAL",
                 writer="DRIVER",
                 schema_version="plamen.enumgap_exploration_promotion_receipt.v1",
                 minimum_gate="EXACT_ACTION_TO_INVENTORY_DELIVERY",
+                condition_id="enumgap_findings_present",
+            ),
+            _artifact(
+                owner,
+                "finding_records.json",
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="MERGE",
+                schema_version="plamen.finding_records.v2",
+                minimum_gate="EXACT_COUPLED_INVENTORY_RECORD_PROJECTION",
+            ),
+            _artifact(
+                owner,
+                "_id_ledger.json",
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="MERGE",
+                schema_version="plamen.id_ledger.v1",
+                minimum_gate="EXACT_COUPLED_INVENTORY_ID_SUPERSET",
             ),
         )
         immutable = _identities(exact_inputs)
@@ -6199,6 +8564,8 @@ def resolve_phase_io_contract(
             required=(
                 "axis_disposition_receipt.json",
                 "findings_inventory.md",
+                "finding_records.json",
+                "_id_ledger.json",
             ),
             label=f"{phase_n}/{work_n}",
             paired=(
@@ -6220,7 +8587,7 @@ def resolve_phase_io_contract(
                 writer="DRIVER",
                 schema_version="plamen.axis_coverage_promotion_plan.v1",
                 minimum_gate=(
-                    "EXACT_PREMUTATION_INVENTORY_PREDECESSOR_SUCCESSOR_CAS"
+                    "EXACT_PREMUTATION_CANONICAL_TRIPLET_SUCCESSOR_CAS"
                 ),
                 consumers=("axis_disposition/promotion",),
             ),
@@ -6232,6 +8599,8 @@ def resolve_phase_io_contract(
             exact_outputs,
             (
                 "findings_inventory.md",
+                "finding_records.json",
+                "_id_ledger.json",
                 "axis_coverage_promotion_receipt.json",
             ),
             label=f"{phase_n}/{work_n}",
@@ -6252,10 +8621,45 @@ def resolve_phase_io_contract(
                 write_mode="MERGE",
                 schema_version="plamen.canonical_finding_inventory.v1",
                 minimum_gate=(
-                    "LOCKED_EXPECTED_PRESTATE_REFERENCED_ACTION_DELIVERY"
+                    "ARMED_EXACT_CAS_COUPLED_AXIS_PROMOTION_SUCCESSOR"
                 ),
-                consumers=("semantic_dedup/prequeue_apply",),
+                consumers=(
+                    "inventory/gate_p_successor",
+                    "semantic_dedup/prequeue_apply",
+                    "rag_sweep/*",
+                ),
                 external_preimage_validator="plamen.axis_inventory_prestate.v1",
+            ),
+            _artifact(
+                owner,
+                "finding_records.json",
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="MERGE",
+                schema_version="plamen.finding_records.v2",
+                minimum_gate=(
+                    "ARMED_EXACT_CAS_COUPLED_AXIS_PROMOTION_SUCCESSOR"
+                ),
+                consumers=(
+                    "inventory/gate_p_successor",
+                    "semantic_dedup/prequeue_apply",
+                    "rag_sweep/*",
+                ),
+            ),
+            _artifact(
+                owner,
+                "_id_ledger.json",
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="MERGE",
+                schema_version="plamen.id_ledger.v1",
+                minimum_gate=(
+                    "ARMED_EXACT_CAS_COUPLED_AXIS_PROMOTION_SUCCESSOR"
+                ),
+                consumers=(
+                    "inventory/gate_p_successor",
+                    "semantic_dedup/prequeue_apply",
+                ),
             ),
             _artifact(
                 owner,
@@ -6278,25 +8682,50 @@ def resolve_phase_io_contract(
         authority_output = (
             f"application_skeptic_provider_authority_{ordinal}.json"
         )
-        if exact_inputs:
-            raise ValueError(
-                "application skeptic worker inputs are fixed by its work plan"
+        assessment_output = f"application_skeptic_assessments_{ordinal}.json"
+        if backend_n == "codex":
+            if (
+                len(exact_inputs) != 1
+                or not exact_inputs[0].startswith(".skeptic_execution_work/")
+                or not exact_inputs[0].endswith("/inputs/packet.json")
+            ):
+                raise ValueError(
+                    "Codex application skeptic worker requires one exact "
+                    "immutable skeptic packet input"
+                )
+            _fixed_output_set(
+                exact_outputs, (assessment_output,),
+                label=f"{phase_n}/{work_n}",
             )
-        if set(exact_outputs) != {
-            f"application_skeptic_assessments_{ordinal}.json",
-            authority_output,
-        } or len(exact_outputs) != 2:
-            raise ValueError(
-                "application skeptic worker must publish its exact assessment "
-                "and provider authority"
+            outputs = (
+                _artifact(
+                    owner, assessment_output,
+                    artifact_class="REQUIRED", writer="MODEL",
+                    schema_version="plamen.application_skeptic_assessments.v1",
+                    minimum_gate="EXACT_PACKET_BOUND_SINGLETON_ASSESSMENT",
+                    consumers=("application_skeptic/reconcile",),
+                ),
             )
-        outputs = _dynamic_specs(
-            owner, exact_outputs, writer="DRIVER",
-            conditional_output_ids=(), condition_id="",
-        )
-        immutable = _identities((
-            "application_skeptic_work_plan.json",
-        ))
+            immutable = _identities(exact_inputs)
+        else:
+            if exact_inputs:
+                raise ValueError(
+                    "application skeptic worker inputs are fixed by its work plan"
+                )
+            if set(exact_outputs) != {
+                assessment_output, authority_output,
+            } or len(exact_outputs) != 2:
+                raise ValueError(
+                    "application skeptic worker must publish its exact assessment "
+                    "and provider authority"
+                )
+            outputs = _dynamic_specs(
+                owner, exact_outputs, writer="DRIVER",
+                conditional_output_ids=(), condition_id="",
+            )
+            immutable = _identities((
+                "application_skeptic_work_plan.json",
+            ))
 
     elif (
         phase_n == "application_skeptic"
@@ -6306,25 +8735,52 @@ def resolve_phase_io_contract(
         authority_output = (
             f"candidate_negative_skeptic_provider_authority_{ordinal}.json"
         )
-        if exact_inputs:
-            raise ValueError(
-                "candidate-negative skeptic worker inputs are fixed by its work plan"
-            )
-        if set(exact_outputs) != {
-            f"candidate_negative_skeptic_assessments_{ordinal}.json",
-            authority_output,
-        } or len(exact_outputs) != 2:
-            raise ValueError(
-                "candidate-negative skeptic worker must publish its exact "
-                "assessment and provider authority"
-            )
-        outputs = _dynamic_specs(
-            owner, exact_outputs, writer="DRIVER",
-            conditional_output_ids=(), condition_id="",
+        assessment_output = (
+            f"candidate_negative_skeptic_assessments_{ordinal}.json"
         )
-        immutable = _identities((
-            "candidate_negative_skeptic_work_plan.json",
-        ))
+        if backend_n == "codex":
+            if (
+                len(exact_inputs) != 1
+                or not exact_inputs[0].startswith(".skeptic_execution_work/")
+                or not exact_inputs[0].endswith("/inputs/packet.json")
+            ):
+                raise ValueError(
+                    "Codex candidate-negative skeptic worker requires one exact "
+                    "immutable skeptic packet input"
+                )
+            _fixed_output_set(
+                exact_outputs, (assessment_output,),
+                label=f"{phase_n}/{work_n}",
+            )
+            outputs = (
+                _artifact(
+                    owner, assessment_output,
+                    artifact_class="REQUIRED", writer="MODEL",
+                    schema_version="plamen.application_skeptic_assessments.v1",
+                    minimum_gate="EXACT_PACKET_BOUND_SINGLETON_ASSESSMENT",
+                    consumers=("application_skeptic/negative.reconcile",),
+                ),
+            )
+            immutable = _identities(exact_inputs)
+        else:
+            if exact_inputs:
+                raise ValueError(
+                    "candidate-negative skeptic worker inputs are fixed by its work plan"
+                )
+            if set(exact_outputs) != {
+                assessment_output, authority_output,
+            } or len(exact_outputs) != 2:
+                raise ValueError(
+                    "candidate-negative skeptic worker must publish its exact "
+                    "assessment and provider authority"
+                )
+            outputs = _dynamic_specs(
+                owner, exact_outputs, writer="DRIVER",
+                conditional_output_ids=(), condition_id="",
+            )
+            immutable = _identities((
+                "candidate_negative_skeptic_work_plan.json",
+            ))
 
     elif phase_n == "application_skeptic" and work_n == "reconcile":
         outputs = (
@@ -6379,9 +8835,12 @@ def resolve_phase_io_contract(
                 minimum_gate="EXACT_CANDIDATE_NEGATIVE_DENOMINATOR",
             ),
         )
-        immutable = _identities(
-            ("candidate_negative_skeptic_work_plan.json", *exact_inputs)
-        )
+        if exact_inputs == ("candidate_negative_planning_debt.json",):
+            immutable = _identities(exact_inputs)
+        else:
+            immutable = _identities(
+                ("candidate_negative_skeptic_work_plan.json", *exact_inputs)
+            )
         model_invoked = False
 
     elif work_n == "methodology_repair.model":
@@ -6580,6 +9039,7 @@ def resolve_phase_io_contract(
                 "contract_inventory.md",
                 "state_variables.md",
                 "function_list.md",
+                "modifiers.md",
                 "build_status.md",
                 "design_context.md",
                 "attack_surface.md",
@@ -6674,7 +9134,7 @@ def resolve_phase_io_contract(
             if pipeline_n == "l1"
             else (
                 "contract_inventory.md", "function_list.md",
-                "state_variables.md", "meta_buffer.md",
+                "state_variables.md", "modifiers.md", "meta_buffer.md",
             )
         )
         if exact_inputs:
@@ -6775,6 +9235,7 @@ def resolve_phase_io_contract(
         registered_inputs = (
             *_RECON_DEPENDENCY_RESEARCH_INPUT,
             *base_shards,
+            *(("recon_retry_plan.json",) if retry_ordinal is not None else ()),
         )
         _fixed_path_set(
             exact_inputs,
@@ -6807,7 +9268,10 @@ def resolve_phase_io_contract(
                 minimum_gate="DEPENDENCY_ROW_PARITY",
             ),
         )
-        immutable = _identities(_RECON_DEPENDENCY_RESEARCH_INPUT)
+        immutable = _identities((
+            *_RECON_DEPENDENCY_RESEARCH_INPUT,
+            *(("recon_retry_plan.json",) if retry_ordinal is not None else ()),
+        ))
         bounded = _identities(base_shards)
 
     elif phase_n == "recon" and work_n == "dependency_reconcile.source_capture":
@@ -7470,14 +9934,80 @@ def resolve_phase_io_contract(
                 minimum_gate=(
                     "EXACT_BOUNDED_PAIR_DISPOSITION_PARITY"
                 ),
-                consumers=(
-                    "semantic_dedup/prequeue_apply"
-                    if phase_n == "semantic_dedup"
-                    else "sc_semantic_dedup/canonical_apply",
-                ),
+                # Both pipelines feed the same typed DRIVER application
+                # transaction. The logical SC MODEL producer remains distinct;
+                # only its immutable proposal crosses this common consumer.
+                consumers=("semantic_dedup/prequeue_apply",),
             ),
         )
         immutable = _identities(exact_inputs)
+
+    elif phase_n == "sc_semantic_dedup" and work_n == "noop_passthrough":
+        if pipeline_n != "sc":
+            raise ValueError("sc_semantic_dedup/noop_passthrough requires SC")
+        _fixed_path_set(
+            exact_inputs,
+            ("findings_inventory.md",),
+            label=f"{phase_n}/{work_n}",
+        )
+        _fixed_output_set(
+            exact_outputs,
+            ("dedup_decisions.md", "findings_inventory_deduped.md"),
+            label=f"{phase_n}/{work_n}",
+        )
+        outputs = tuple(
+            _artifact(
+                owner,
+                path,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="REPLACE",
+                schema_version=schema,
+                minimum_gate="CONSERVATIVE_PASSTHROUGH_NO_SEMANTIC_MERGES",
+                consumers=("sc_verify_queue", "report_index/prework"),
+            )
+            for path, schema in (
+                ("dedup_decisions.md", "plamen.semantic_dedup_proposals.v1"),
+                ("findings_inventory_deduped.md", "plamen.findings_inventory.v1"),
+            )
+        )
+        immutable = _identities(exact_inputs)
+        model_invoked = False
+
+    elif phase_n == "sc_semantic_dedup" and work_n == "coverage_repair":
+        if pipeline_n != "sc":
+            raise ValueError("sc_semantic_dedup/coverage_repair requires SC")
+        _fixed_path_set(
+            exact_inputs,
+            ("dedup_candidate_pairs.md", "dedup_decisions.md"),
+            label=f"{phase_n}/{work_n}",
+        )
+        _fixed_output_set(
+            exact_outputs,
+            ("dedup_coverage_repair.json",),
+            label=f"{phase_n}/{work_n}",
+        )
+        outputs = (
+            _artifact(
+                owner,
+                "dedup_coverage_repair.json",
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="REPLACE",
+                schema_version=(
+                    "plamen.semantic_dedup_coverage_repair.v1"
+                ),
+                minimum_gate=(
+                    "EXACT_MISSING_PAIR_PROJECTION_BOUND_TO_MODEL_BYTES"
+                ),
+                consumers=("sc_semantic_dedup/coverage_gate",),
+            ),
+        )
+        # The model proposal is immutable. This unit owns only the
+        # conservative complement of its exact candidate-pair denominator;
+        # it can never append to, replace, or be mistaken for MODEL bytes.
+        immutable = _identities(exact_inputs)
+        model_invoked = False
 
     elif phase_n == "semantic_dedup" and work_n == "noop_proposal":
         _fixed_output_set(
@@ -7644,6 +10174,38 @@ def resolve_phase_io_contract(
             ),
         )
         immutable = _identities(exact_inputs)
+        model_invoked = False
+
+    elif (
+        phase_n == "depth"
+        and re.fullmatch(
+            r"dispatch_delta\.da_iter2\.attempt-[0-9]{4}", work_n
+        ) is not None
+    ):
+        attempt = work_n.rsplit("-", 1)[-1]
+        expected_name = f"depth_dispatch_da_iter2_attempt_{attempt}.json"
+        immutable_paths = _fixed_path_set(
+            exact_inputs,
+            ("skill_dispatch.json", "_depth_worker_pool_contract.json"),
+            label=f"{phase_n}/{work_n}",
+        )
+        _fixed_output_set(
+            exact_outputs,
+            (expected_name,),
+            label=f"{phase_n}/{work_n}",
+        )
+        outputs = (
+            _artifact(
+                owner,
+                expected_name,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                schema_version="plamen.depth-dispatch-delta.v1",
+                minimum_gate="IMMUTABLE_ADDITIVE_DISPATCH_AUTHORITY",
+                consumers=("depth/confidence_consensus",),
+            ),
+        )
+        immutable = _identities(immutable_paths)
         model_invoked = False
 
     elif (
@@ -7830,6 +10392,67 @@ def resolve_phase_io_contract(
         )
         immutable = _identities(reconcile_inputs)
         model_invoked = False
+
+    elif phase_n == "depth" and work_n.startswith("alias_projection."):
+        if len(exact_inputs) != 1 or len(exact_outputs) != 1:
+            raise ValueError(
+                "depth alias projection requires one exact source and target"
+            )
+        source = _canonical_relative_path(exact_inputs[0])
+        target = _canonical_relative_path(exact_outputs[0])
+        if (
+            source == target
+            or "/" in source
+            or "/" in target
+            or re.fullmatch(
+                r"depth_(?:da_)?iter[23]_[A-Za-z0-9_.-]+_findings\.md",
+                target,
+            ) is None
+            or not (
+                re.fullmatch(
+                    r"da[-_]?iter(?:ation)?[-_]?[23](?:[-_].*)?\.md",
+                    source,
+                    re.IGNORECASE,
+                )
+                or (
+                    source.startswith("depth_")
+                    and source.endswith(".md")
+                    and re.search(
+                        r"iter(?:ation)?[-_]?[23]",
+                        source,
+                        re.IGNORECASE,
+                    ) is not None
+                )
+            )
+        ):
+            raise ValueError(
+                "depth alias projection source/target mapping is invalid"
+            )
+        outputs = (
+            _artifact(
+                owner,
+                target,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="CREATE",
+                schema_version="plamen.depth_alias_projection.v1",
+                minimum_gate="EXACT_BYTE_PRESERVING_ALIAS_PROJECTION",
+                consumers=("depth/validator", "chain/model"),
+            ),
+        )
+        immutable = _identities((source,))
+        # A filename-drift artifact is outside the model work unit's declared
+        # output set. Importing it is therefore explicit, bounded RAW input;
+        # the canonical path is never retroactively attributed to MODEL.
+        input_authority_requirements = (
+            InputAuthorityRequirement(
+                identity=canonical_artifact_identity("scratchpad", source),
+                allow_raw=True,
+            ),
+        )
+        model_invoked = False
+        launch_profile = "DRIVER_PYTHON_NO_TOOLS"
+        required_commit_actor = "DRIVER"
 
     elif phase_n == "depth" and work_n == "fuzz_workspace.prepare":
         _fixed_output_set(
@@ -8706,7 +11329,10 @@ def resolve_phase_io_contract(
         )
         immutable = _mixed_identities(exact_inputs)
 
-    elif phase_n == "attention_repair" and work_n == "model":
+    elif (
+        phase_n == "attention_repair"
+        and re.fullmatch(r"model(?:\.attempt-[0-9]{4})?", work_n)
+    ):
         outputs = _dynamic_specs(
             owner,
             exact_outputs,
@@ -8716,8 +11342,146 @@ def resolve_phase_io_contract(
         )
         immutable = _security_obligation_sidecar_identities()
 
-    elif phase_n == "report_body" and work_n.startswith("model.report_"):
-        shard = work_n[len("model.") :]
+    elif (
+        phase_n == "report_body"
+        and re.fullmatch(
+            r"empty\.report_(critical_high|medium|low_info)", work_n
+        )
+    ):
+        tier = work_n[len("empty.report_") :]
+        fixed_outputs = _fixed_output_set(
+            exact_outputs,
+            (f"report_{tier}.md",),
+            label=f"{phase_n}/{work_n}",
+        )
+        output_name = fixed_outputs[0]
+        normalized = tuple(
+            _canonical_relative_path(path) for path in exact_inputs
+        )
+        if len(normalized) != len(set(path.casefold() for path in normalized)):
+            raise ValueError(
+                f"{phase_n}/{work_n} contains aliased semantic inputs"
+            )
+        allowed_fixed = {
+            "report_records.json",
+            "report_evidence_records.json",
+            "report_evidence_repair_request.json",
+            "report_evidence_projection.md",
+            "report_evidence_repair_receipt.json",
+        }
+        invalid = [
+            path for path in normalized
+            if path not in allowed_fixed
+            and not re.fullmatch(
+                r"body_manifests/report_[a-z_]+\.json", path
+            )
+            and not re.fullmatch(
+                r"report_evidence_manifests/report_[a-z_]+\.json", path
+            )
+        ]
+        body_names = {
+            PurePosixPath(path).name for path in normalized
+            if path.startswith("body_manifests/")
+        }
+        typed_names = {
+            PurePosixPath(path).name for path in normalized
+            if path.startswith("report_evidence_manifests/")
+        }
+        if (
+            invalid
+            or "report_records.json" not in normalized
+            or "report_evidence_records.json" not in normalized
+            or not body_names
+            or body_names != typed_names
+        ):
+            raise ValueError(
+                f"{phase_n}/{work_n} requires the exact paired routing and "
+                "typed evidence denominators"
+            )
+        outputs = (
+            _artifact(
+                owner,
+                output_name,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                schema_version="plamen.report_finding_bodies.v1",
+                minimum_gate=(
+                    "EXACT_ROUTING_AND_TYPED_EVIDENCE_EMPTY_TIER"
+                ),
+                consumers=(
+                    "report_assemble/model",
+                    "report_floor/evidence_quality",
+                ),
+            ),
+        )
+        immutable = _identities(normalized)
+        model_invoked = False
+
+    elif (
+        phase_n == "report_body"
+        and (report_body_attempt := parse_report_body_attempt_work_unit(work_n))
+        is not None
+        and report_body_attempt[0] == "evidence_projection"
+    ):
+        _role, shard, ordinal = report_body_attempt
+        expected_body_manifest = f"body_manifests/{shard}.json"
+        expected_typed_manifest = f"report_evidence_manifests/{shard}.json"
+        attempt_suffix = "" if ordinal == 1 else f".attempt-{ordinal:04d}"
+        expected_receipt = (
+            f"report_evidence_projection_receipts/{shard}{attempt_suffix}.json"
+        )
+        normalized = tuple(_canonical_relative_path(path) for path in exact_inputs)
+        verify_inputs = tuple(
+            path for path in normalized
+            if re.fullmatch(r"verify_[A-Za-z0-9_.-]+\.md", path)
+        )
+        if (
+            len(normalized) != len(set(path.casefold() for path in normalized))
+            or set(normalized)
+            != {
+                "report_evidence_records.json",
+                expected_body_manifest,
+                expected_typed_manifest,
+                *verify_inputs,
+            }
+            or tuple(exact_outputs) != (f"{shard}.md", expected_receipt)
+        ):
+            raise ValueError(
+                "report body evidence projection requires its exact bundle, "
+                "manifest, verifier, body, and receipt denominator"
+            )
+        outputs = (
+            _artifact(
+                owner,
+                f"{shard}.md",
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="REPLACE",
+                schema_version="plamen.report_finding_bodies.v1",
+                minimum_gate="EXACT_MODEL_PREIMAGE_AND_TYPED_EVIDENCE_PROJECTION",
+                consumers=("report_assemble/model", "report_floor/evidence_quality"),
+            ),
+            _artifact(
+                owner,
+                expected_receipt,
+                artifact_class="DRIVER_GENERATED",
+                writer="DRIVER",
+                write_mode="CREATE",
+                schema_version="plamen.report_body_evidence_projection.v1",
+                minimum_gate="EXACT_SUCCESSOR_COMMIT",
+                consumers=("report_assemble/model", "report_floor/evidence_quality"),
+            ),
+        )
+        immutable = _identities(normalized)
+        model_invoked = False
+
+    elif (
+        phase_n == "report_body"
+        and (report_body_attempt := parse_report_body_attempt_work_unit(work_n))
+        is not None
+        and report_body_attempt[0] == "model"
+    ):
+        _role, shard, _ordinal = report_body_attempt
         expected_body_manifest = f"body_manifests/{shard}.json"
         expected_typed_manifest = f"report_evidence_manifests/{shard}.json"
         if expected_body_manifest not in exact_inputs or expected_typed_manifest not in exact_inputs:
@@ -8758,20 +11522,36 @@ def resolve_phase_io_contract(
     elif (
         phase_n == "report_body"
         and work_n.startswith("report_")
-        and work_n.endswith(".runtime_debt_fallback")
+        and (
+            work_n.endswith(".runtime_debt_fallback")
+            or work_n.endswith(".typed_fallback")
+        )
     ):
-        shard = work_n[: -len(".runtime_debt_fallback")]
+        runtime_debt_fallback = work_n.endswith(
+            ".runtime_debt_fallback"
+        )
+        suffix = (
+            ".runtime_debt_fallback"
+            if runtime_debt_fallback
+            else ".typed_fallback"
+        )
+        shard = work_n[: -len(suffix)]
         expected_typed_manifest = f"report_evidence_manifests/{shard}.json"
+        fallback_label = (
+            "runtime-debt report fallback"
+            if runtime_debt_fallback
+            else "typed report fallback"
+        )
         if not {
             "report_evidence_records.json",
             expected_typed_manifest,
         }.issubset(set(exact_inputs)):
             raise ValueError(
-                "runtime-debt report fallback requires its exact typed bundle and shard manifest"
+                f"{fallback_label} requires its exact typed bundle and shard manifest"
             )
         if len(exact_outputs) != 1 or exact_outputs[0] != f"{shard}.md":
             raise ValueError(
-                "runtime-debt report fallback requires its exact shard Markdown output"
+                f"{fallback_label} requires its exact shard Markdown output"
             )
         invalid_inputs = [
             path
@@ -8783,7 +11563,7 @@ def resolve_phase_io_contract(
         ]
         if invalid_inputs:
             raise ValueError(
-                "runtime-debt report fallback received an unregistered input: "
+                f"{fallback_label} received an unregistered input: "
                 + ", ".join(sorted(invalid_inputs))
             )
         outputs = (
@@ -8795,6 +11575,8 @@ def resolve_phase_io_contract(
                 schema_version="plamen.report_finding_bodies.v1",
                 minimum_gate=(
                     "EXACT_RUNTIME_DEBT_RETENTION_AND_REPORT_BLOCKED_PARITY"
+                    if runtime_debt_fallback
+                    else "EXACT_TYPED_EVIDENCE_DENOMINATOR_AND_SEMANTIC_PARITY"
                 ),
                 consumers=("report_assemble/model", "report_floor/evidence_quality"),
             ),
@@ -9219,6 +12001,11 @@ def resolve_phase_io_contract(
         canonical_inputs = tuple(
             _canonical_relative_path(path) for path in exact_inputs
         )
+        if "_v2_checkpoint.json" in canonical_inputs:
+            raise ValueError(
+                f"{phase_n}/{work_n} cannot bind mutable checkpoint control "
+                "as an immutable semantic input"
+            )
         if len(canonical_inputs) != len(set(canonical_inputs)):
             raise ValueError(
                 f"{phase_n}/{work_n} contains duplicate semantic inputs"
@@ -10827,8 +13614,12 @@ __all__ = [
     "replay_launch_spec_authority",
     "replay_phase_io_authority_pair",
     "replay_phase_io_contract_authority",
+    "registered_read_only_consumption",
     "registered_projection_handoff",
+    "parse_report_body_attempt_work_unit",
+    "report_body_attempt_work_unit_id",
     "recon_direct_retry_output_paths",
     "resolve_phase_io_contract",
+    "resolve_program_facts_registered_launch",
     "validate_program_facts_v2_private_commit_candidate",
 ]

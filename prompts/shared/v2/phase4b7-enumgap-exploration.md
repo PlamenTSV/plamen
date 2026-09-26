@@ -134,9 +134,14 @@ Write everything to `enumgap_exploration_findings.md`.
    - **Disposition**: exactly one of `FINDING` (emitted as NEXP-n), `UNRESOLVED`
      (emitted as NEXP-n for verification), or `CLEAR` (safe).
    - **Evidence**: for `FINDING`/`UNRESOLVED`, the emitted NEXP-n ID; for
-     `CLEAR`, the concrete file:line / guard / prior finding ID that proves
-     safety. A `CLEAR` row with a blank or vague Evidence cell is a contract
-     violation and will be re-surfaced downstream as unexplored.
+     `CLEAR`, cite either (a) an exact project-root-relative source locus such
+     as `path/to/Contract.sol:L123` that exists inside the audited repository,
+     or (b) an exact prior finding ID from the canonical inventory that proves
+     safety. A bare basename such as `Contract.sol:L123`, an unqualified `L123`,
+     or prose that merely names a guard is not resolvable evidence. A `CLEAR`
+     row with blank, vague, or non-resolving Evidence is a contract violation
+     and will be re-surfaced downstream as unexplored. Copy the path from the
+     repository-relative source location; do not shorten it.
 
 ---
 

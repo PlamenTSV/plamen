@@ -1,15 +1,13 @@
-"""FIX #4 (L1 LLM-first report_index + mechanical backstop) and the Codex-only
+"""Historical FIX #4 report-index coverage and Codex retry-budget coverage.
 extended retry budget for RECOVERING content phases.
 
 Both fixes live in plamen_driver.py and are recall-safety constrained:
 
-  FIX #4 — L1 report_index previously ALWAYS used the deterministic mechanical
-  builder, so the LLM Index Agent's STEP 1.5 root-cause consolidation (which
-  consumes [LIKELY-DUP] hints + dedup_candidate_pairs.md) never ran. The fix
-  lets the LLM consolidation run FIRST, with `_write_mechanical_report_index`
-  retained as the DETERMINISTIC BACKSTOP when the LLM index is
-  missing/invalid/incomplete — so NO finding can vanish. SC behavior is
-  unchanged.
+  FIX #4 originally added an LLM-first L1 report index with a deterministic
+  backstop.  Fresh SC and L1 generations now both use the deterministic
+  PhaseIO producer; model consolidation belongs to the later zero-loss dedup
+  proposal path.  The fixtures in this file still cover the underlying
+  mechanical preservation and retry contracts.
 
   CODEX RETRY BUDGET — Codex single-pass workers under-cover content phases on
   the first run and recover when re-prompted. The fix grants the RECOVERING

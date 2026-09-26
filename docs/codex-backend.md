@@ -88,16 +88,6 @@ This means a Codex audit on a capped ChatGPT subscription will pause and resume
 rather than crash — but you are still subject to your ChatGPT/Codex account's
 own auth and usage limits, which Plamen cannot raise.
 
-## 6. `plamen compare` is Claude-only
-
-The `plamen compare` command (diff two audit reports / post-mortem analysis)
-runs `/plamen compare` inside a **Claude Code** session and requires `claude`
-in PATH — it exits if `claude` is not found (`plamen.py:launch_claude`). There
-is no Codex code path for `compare`. If you only have Codex installed, the
-audit pipeline works but `compare` will not.
-
----
-
 ## See also
 
 - [getting-started.md](getting-started.md) · [usage.md](usage.md) · [architecture.md](architecture.md) · [mcp-servers.md](mcp-servers.md) · [updating.md](updating.md)

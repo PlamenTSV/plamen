@@ -28,7 +28,7 @@
     },
     {
       "operator_id": "context-closure",
-      "instruction": "Use the bound context packet to close caller, callee, state writer/reader, privilege/configuration, and dependency-boundary premises. Use at most one bounded expansion. If context remains insufficient, record CONTEXT_UNRESOLVED and retain the candidate.",
+      "instruction": "Use the bound context packet to close caller, callee, state writer/reader, privilege/configuration, and dependency-boundary premises. Use at most one bounded local expansion. Distinguish a resolved local packet from an unproven external gateway or destination premise: keep packet context RESOLVED, record external proof debt separately, and retain the candidate as CONTESTED. A conservative CONTEXT_UNRESOLVED downgrade also retains the candidate and cannot authorize a terminal-negative verdict.",
       "required_evidence_fields": ["source", "detail"],
       "valid_not_applicable_predicates": []
     },

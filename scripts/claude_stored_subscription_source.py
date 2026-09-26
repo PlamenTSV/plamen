@@ -2,9 +2,11 @@
 
 The durable product of this module is deliberately small and redacted.  It
 states whether one reviewed host store is present, but contains neither
-credential values nor hashes derived from credential content.  Credential
-bytes are read only through an exact no-follow descriptor, validated in
-memory, and discarded before the receipt is returned.
+credential values nor hashes derived from credential content.  File-backed
+bytes are read through an exact no-follow descriptor.  On macOS, bytes are
+acquired only from the exact Claude generic-password service and kernel UID
+account through the absolute system ``security`` tool.  Material is validated
+in memory and never added to a durable receipt.
 
 This provider does not copy credentials and does not launch Claude.  The
 attempt-profile transaction remains responsible for materialization, while
@@ -21,10 +23,14 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import secrets
+import selectors
+import signal
 import stat
+import subprocess
 import sys
 import threading
-from typing import Any, Mapping
+import time
+from typing import Any, Callable, Mapping
 import weakref
 
 import claude_auth_route as _auth
@@ -39,6 +45,11 @@ HOST_UNSUPPORTED = "UNSUPPORTED"
 MAX_CREDENTIAL_FILE_BYTES = 1024 * 1024
 MAX_IMPLEMENTATION_FILE_BYTES = 4 * 1024 * 1024
 MAX_MOUNTINFO_BYTES = 4 * 1024 * 1024
+MAX_KEYCHAIN_OBSERVATION_STDOUT_BYTES = 64 * 1024
+MAX_KEYCHAIN_STDERR_BYTES = 64 * 1024
+MACOS_KEYCHAIN_TIMEOUT_SECONDS = 3.0
+MACOS_SECURITY_TOOL = "/usr/bin/security"
+MACOS_CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 STORED_SUBSCRIPTION_MATERIALIZATION_SCHEMA = (
     "plamen.claude_stored_subscription_materialization.v1"
 )
@@ -120,9 +131,381 @@ _MATERIALIZATION_ISSUED: dict[
 class ClaudeStoredSubscriptionSourceError(RuntimeError):
     """The requested host credential-store observation is not trustworthy."""
 
+    def __init__(self, message: str, *, reason_code: str | None = None) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+
+
+class _SecurityCommandResult:
+    """Mutable, explicitly erasable output from one ``security`` command."""
+
+    __slots__ = (
+        "overflowed",
+        "returncode",
+        "stderr",
+        "stdout",
+        "timed_out",
+    )
+
+    def __init__(
+        self,
+        *,
+        returncode: int,
+        stdout: bytearray,
+        stderr: bytearray,
+        timed_out: bool = False,
+        overflowed: bool = False,
+    ) -> None:
+        if not isinstance(stdout, bytearray) or not isinstance(
+            stderr, bytearray
+        ):
+            raise TypeError("security command output must be mutable")
+        self.returncode = int(returncode)
+        self.stdout = stdout
+        self.stderr = stderr
+        self.timed_out = bool(timed_out)
+        self.overflowed = bool(overflowed)
+
+    def take_stdout(self) -> bytearray:
+        value = self.stdout
+        self.stdout = bytearray()
+        return value
+
+    def discard(self) -> None:
+        for value in (self.stdout, self.stderr):
+            for index in range(len(value)):
+                value[index] = 0
+        self.stdout = bytearray()
+        self.stderr = bytearray()
+
 
 class _DuplicateJsonKey(ValueError):
     pass
+
+
+def _terminate_security_process(
+    process: subprocess.Popen[bytes],
+    *,
+    include_process_group: bool,
+) -> bool:
+    """Best-effort kill of the isolated no-shell ``security`` process group."""
+
+    reconciled = True
+    if include_process_group:
+        try:
+            pid = int(process.pid)
+            if pid <= 1:
+                return False
+            # Popen(start_new_session=True) makes this exact child PID the
+            # process-group ID.  Kill that group even when the leader has
+            # already exited: descendants may still own our capture pipes.
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            # No such group is already the desired reconciled state.
+            pass
+        except Exception:
+            reconciled = False
+    try:
+        running = process.poll() is None
+    except Exception:
+        return False
+    if running:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        except Exception:
+            reconciled = False
+    return reconciled
+
+
+def _close_security_stream(stream: Any) -> bool:
+    """Close one owned subprocess pipe and report whether close succeeded."""
+
+    try:
+        stream.close()
+        return bool(getattr(stream, "closed", True))
+    except Exception:
+        return False
+
+
+def _bounded_reap_security_process(
+    process: subprocess.Popen[bytes],
+    *,
+    force_process_group: bool,
+) -> bool:
+    """Bound termination/reaping while never treating an unreaped child as OK."""
+
+    reconciled = True
+    for _attempt in range(3):
+        if force_process_group:
+            reconciled = (
+                _terminate_security_process(
+                    process,
+                    include_process_group=True,
+                )
+                and reconciled
+            )
+        try:
+            process.wait(timeout=0.5)
+            return reconciled
+        except subprocess.TimeoutExpired:
+            # A wait timeout promotes cleanup to exact group termination even
+            # if the original command appeared to have completed normally.
+            force_process_group = True
+        except OSError:
+            try:
+                if process.poll() is not None:
+                    return reconciled
+            except (AttributeError, OSError, ProcessLookupError):
+                pass
+            return False
+        except Exception:
+            _terminate_security_process(
+                process,
+                include_process_group=True,
+            )
+            return False
+    return False
+
+
+def _run_bounded_security_command(
+    argv: tuple[str, ...],
+    *,
+    timeout_s: float,
+    stdout_ceiling: int,
+    stderr_ceiling: int,
+) -> _SecurityCommandResult:
+    """Run one absolute ``security`` argv with bounded mutable captures.
+
+    This is intentionally not a general command runner.  Callers validate the
+    exact closed argv before reaching it.  No shell, inherited environment,
+    terminal input, or unbounded ``communicate`` buffer is involved.
+    """
+
+    try:
+        exact_account = _macos_current_account()
+    except ClaudeStoredSubscriptionSourceError:
+        raise
+    allowed_base = (
+        MACOS_SECURITY_TOOL,
+        "find-generic-password",
+        "-s",
+        MACOS_CLAUDE_KEYCHAIN_SERVICE,
+        "-a",
+        exact_account,
+    )
+    if (
+        not isinstance(argv, tuple)
+        or argv not in {allowed_base, (*allowed_base, "-w")}
+        or any(
+            not isinstance(item, str) or not item or "\x00" in item
+            for item in argv
+        )
+        or isinstance(timeout_s, bool)
+        or not isinstance(timeout_s, (int, float))
+        or timeout_s <= 0
+        or isinstance(stdout_ceiling, bool)
+        or not isinstance(stdout_ceiling, int)
+        or stdout_ceiling <= 0
+        or isinstance(stderr_ceiling, bool)
+        or not isinstance(stderr_ceiling, int)
+        or stderr_ceiling <= 0
+    ):
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS Keychain command policy is malformed",
+            reason_code="KEYCHAIN_COMMAND_POLICY_INVALID",
+        )
+    try:
+        process = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd="/",
+            env={},
+            shell=False,
+            close_fds=True,
+            start_new_session=True,
+            text=False,
+            bufsize=0,
+        )
+    except (OSError, ValueError):
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS Keychain command could not be started",
+            reason_code="KEYCHAIN_COMMAND_UNAVAILABLE",
+        ) from None
+    if process.stdout is None or process.stderr is None:
+        cleanup_ok = True
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                cleanup_ok = _close_security_stream(stream) and cleanup_ok
+        cleanup_ok = (
+            _bounded_reap_security_process(
+                process,
+                force_process_group=True,
+            )
+            and cleanup_ok
+        )
+        raise ClaudeStoredSubscriptionSourceError(
+            (
+                "macOS Keychain command capture is unavailable"
+                if cleanup_ok
+                else "macOS Keychain command capture failed"
+            ),
+            reason_code=(
+                "KEYCHAIN_CAPTURE_UNAVAILABLE"
+                if cleanup_ok
+                else "KEYCHAIN_CAPTURE_FAILED"
+            ),
+        )
+
+    stdout: bytearray | None = None
+    stderr: bytearray | None = None
+    stdout_scratch: bytearray | None = None
+    stderr_scratch: bytearray | None = None
+    selector: selectors.BaseSelector | None = None
+    timed_out = False
+    overflowed = False
+    capture_failed = False
+    cleanup_failed = False
+    try:
+        stdout = bytearray()
+        stderr = bytearray()
+        stdout_scratch = bytearray(64 * 1024)
+        stderr_scratch = bytearray(64 * 1024)
+        selector = selectors.DefaultSelector()
+        for stream, destination, ceiling, scratch in (
+            (process.stdout, stdout, stdout_ceiling, stdout_scratch),
+            (process.stderr, stderr, stderr_ceiling, stderr_scratch),
+        ):
+            os.set_blocking(stream.fileno(), False)
+            selector.register(
+                stream,
+                selectors.EVENT_READ,
+                (destination, ceiling, scratch),
+            )
+        deadline = time.monotonic() + float(timeout_s)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                _terminate_security_process(
+                    process,
+                    include_process_group=True,
+                )
+                break
+            try:
+                events = selector.select(remaining)
+            except InterruptedError:
+                continue
+            except OSError:
+                capture_failed = True
+                _terminate_security_process(
+                    process,
+                    include_process_group=True,
+                )
+                break
+            if not events:
+                timed_out = True
+                _terminate_security_process(
+                    process,
+                    include_process_group=True,
+                )
+                break
+            for key, _mask in events:
+                destination, ceiling, scratch = key.data
+                try:
+                    count = os.readv(key.fd, (scratch,))
+                except BlockingIOError:
+                    continue
+                except InterruptedError:
+                    continue
+                except OSError:
+                    capture_failed = True
+                    _terminate_security_process(
+                        process,
+                        include_process_group=True,
+                    )
+                    break
+                if count == 0:
+                    try:
+                        selector.unregister(key.fileobj)
+                    except (KeyError, OSError, ValueError):
+                        capture_failed = True
+                    continue
+                accepted = min(max(0, ceiling - len(destination)), count)
+                if accepted:
+                    destination.extend(memoryview(scratch)[:accepted])
+                for index in range(count):
+                    scratch[index] = 0
+                if accepted != count:
+                    overflowed = True
+                    _terminate_security_process(
+                        process,
+                        include_process_group=True,
+                    )
+                    break
+            if capture_failed or overflowed:
+                break
+    except Exception:
+        capture_failed = True
+        cleanup_failed = not _terminate_security_process(
+            process,
+            include_process_group=True,
+        )
+    finally:
+        if selector is not None:
+            selector_closed = False
+            for _attempt in range(2):
+                try:
+                    selector.close()
+                    selector_closed = True
+                    break
+                except Exception:
+                    cleanup_failed = True
+            if not selector_closed:
+                cleanup_failed = True
+        for stream in (process.stdout, process.stderr):
+            if not _close_security_stream(stream):
+                cleanup_failed = True
+        if not _bounded_reap_security_process(
+            process,
+            force_process_group=(
+                timed_out
+                or overflowed
+                or capture_failed
+                or cleanup_failed
+            ),
+        ):
+            cleanup_failed = True
+        for scratch in (stdout_scratch, stderr_scratch):
+            if scratch is None:
+                continue
+            for index in range(len(scratch)):
+                scratch[index] = 0
+
+    if capture_failed or cleanup_failed:
+        for value in (stdout, stderr):
+            if value is None:
+                continue
+            for index in range(len(value)):
+                value[index] = 0
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS Keychain command capture failed",
+            reason_code="KEYCHAIN_CAPTURE_FAILED",
+        )
+    return _SecurityCommandResult(
+        returncode=(
+            int(process.returncode)
+            if process.returncode is not None
+            else -int(signal.SIGKILL)
+        ),
+        stdout=stdout if stdout is not None else bytearray(),
+        stderr=stderr if stderr is not None else bytearray(),
+        timed_out=timed_out,
+        overflowed=overflowed,
+    )
 
 
 def _canonical_json(value: Mapping[str, Any] | list[Any]) -> bytes:
@@ -821,6 +1204,293 @@ def _implementation_authority_sha256() -> str:
     return hashlib.sha256(_canonical_json(rows)).hexdigest()
 
 
+def _macos_current_account() -> str:
+    """Return the kernel UID's account, never an ambient environment alias."""
+
+    if _detect_host_platform() != HOST_MACOS:
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS Keychain account observation requested on another host",
+            reason_code="KEYCHAIN_HOST_INVALID",
+        )
+    try:
+        import pwd
+
+        account = pwd.getpwuid(os.getuid()).pw_name
+    except (ImportError, KeyError, OSError):
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS Keychain current account is unavailable",
+            reason_code="KEYCHAIN_ACCOUNT_UNAVAILABLE",
+        ) from None
+    if (
+        not isinstance(account, str)
+        or not account
+        or account != account.strip()
+        or "\x00" in account
+        or len(account.encode("utf-8")) > 1024
+    ):
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS Keychain current account is malformed",
+            reason_code="KEYCHAIN_ACCOUNT_INVALID",
+        )
+    return account
+
+
+def _macos_security_tool_identity() -> dict[str, Any]:
+    """Bind the exact SIP-owned executable used by Claude's Keychain query."""
+
+    canonical, info, raw = _stable_regular_file_bytes(
+        Path(MACOS_SECURITY_TOOL),
+        ceiling=MAX_IMPLEMENTATION_FILE_BYTES,
+        label="macOS security tool",
+    )
+    if (
+        str(canonical) != MACOS_SECURITY_TOOL
+        or int(getattr(info, "st_uid", -1)) != 0
+        or int(info.st_mode) & 0o022
+    ):
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS security tool authority is invalid",
+            reason_code="KEYCHAIN_TOOL_AUTHORITY_INVALID",
+        )
+    return {
+        "path": MACOS_SECURITY_TOOL,
+        "device": int(info.st_dev),
+        "inode": int(info.st_ino),
+        "mode": int(info.st_mode),
+        "owner_uid": int(getattr(info, "st_uid", -1)),
+        "size": len(raw),
+        "mtime_ns": int(info.st_mtime_ns),
+        "ctime_ns": int(info.st_ctime_ns),
+        "link_count": int(getattr(info, "st_nlink", 1)),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def _macos_keychain_binding(
+    *,
+    account: str | None = None,
+    tool_identity: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    exact_account = account if account is not None else _macos_current_account()
+    if (
+        not isinstance(exact_account, str)
+        or not exact_account
+        or exact_account != exact_account.strip()
+        or "\x00" in exact_account
+    ):
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS Keychain current account is malformed",
+            reason_code="KEYCHAIN_ACCOUNT_INVALID",
+        )
+    exact_tool = dict(
+        tool_identity
+        if tool_identity is not None
+        else _macos_security_tool_identity()
+    )
+    binding = {
+        "schema": "plamen.macos_claude_keychain_binding.v1",
+        "service": MACOS_CLAUDE_KEYCHAIN_SERVICE,
+        "account": exact_account,
+        "tool_identity": exact_tool,
+        "observation_argv": [
+            MACOS_SECURITY_TOOL,
+            "find-generic-password",
+            "-s",
+            MACOS_CLAUDE_KEYCHAIN_SERVICE,
+            "-a",
+            exact_account,
+        ],
+        "acquisition_argv": [
+            MACOS_SECURITY_TOOL,
+            "find-generic-password",
+            "-s",
+            MACOS_CLAUDE_KEYCHAIN_SERVICE,
+            "-a",
+            exact_account,
+            "-w",
+        ],
+        "password_output_normalization": "REMOVE_ONE_TRAILING_LF",
+    }
+    try:
+        return json.loads(_canonical_json(binding).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS Keychain binding is malformed",
+            reason_code="KEYCHAIN_BINDING_INVALID",
+        ) from None
+
+
+def _macos_keychain_source_identity(
+    binding: Mapping[str, Any],
+    *,
+    status: str,
+) -> str:
+    prefixes = {
+        "AVAILABLE": "keychain-macos-",
+        "UNAVAILABLE": "keychain-macos-unavailable-",
+        "INTERACTION_REQUIRED": "keychain-macos-interaction-",
+    }
+    try:
+        prefix = prefixes[status]
+    except KeyError:
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS Keychain status is invalid",
+            reason_code="KEYCHAIN_STATUS_INVALID",
+        ) from None
+    return f"{prefix}{hashlib.sha256(_canonical_json(binding)).hexdigest()}"
+
+
+def _validate_macos_source_marker(
+    source_path: str | os.PathLike[str] | None,
+) -> None:
+    """Accept the runtime's absent-file marker, never a file-backed secret."""
+
+    if source_path is None:
+        return
+    text = _path_text(source_path)
+    if Path(text).name != ".credentials.json":
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS Keychain route requires the .credentials.json marker",
+            reason_code="KEYCHAIN_SOURCE_MARKER_INVALID",
+        )
+    if os.path.lexists(text):
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS Keychain file-backed credential emulation is unimplemented",
+            reason_code="KEYCHAIN_FILE_SOURCE_REJECTED",
+        )
+
+
+_KeychainRunner = Callable[..., _SecurityCommandResult]
+_ToolIdentityObserver = Callable[[], Mapping[str, Any]]
+
+
+def _invoke_macos_keychain(
+    *,
+    binding: Mapping[str, Any],
+    acquisition: bool,
+    runner: _KeychainRunner,
+) -> _SecurityCommandResult:
+    field = "acquisition_argv" if acquisition else "observation_argv"
+    argv = binding.get(field)
+    account = binding.get("account")
+    tool_identity = binding.get("tool_identity")
+    if not isinstance(account, str) or not isinstance(
+        tool_identity, Mapping
+    ):
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS Keychain binding drifted",
+            reason_code="KEYCHAIN_BINDING_DRIFT",
+        )
+    try:
+        expected = _macos_keychain_binding(
+            account=account,
+            tool_identity=tool_identity,
+        )
+    except (ClaudeStoredSubscriptionSourceError, TypeError, ValueError):
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS Keychain binding drifted",
+            reason_code="KEYCHAIN_BINDING_DRIFT",
+        ) from None
+    if (
+        dict(binding) != expected
+        or not isinstance(argv, list)
+        or any(not isinstance(item, str) for item in argv)
+    ):
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS Keychain binding drifted",
+            reason_code="KEYCHAIN_BINDING_DRIFT",
+        )
+    result = runner(
+        tuple(argv),
+        timeout_s=MACOS_KEYCHAIN_TIMEOUT_SECONDS,
+        stdout_ceiling=(
+            MAX_CREDENTIAL_FILE_BYTES + 2
+            if acquisition
+            else MAX_KEYCHAIN_OBSERVATION_STDOUT_BYTES
+        ),
+        stderr_ceiling=MAX_KEYCHAIN_STDERR_BYTES,
+    )
+    if type(result) is not _SecurityCommandResult:
+        raise ClaudeStoredSubscriptionSourceError(
+            "macOS Keychain command result is invalid",
+            reason_code="KEYCHAIN_COMMAND_RESULT_INVALID",
+        )
+    return result
+
+
+def _observe_macos_keychain(
+    *,
+    runner: _KeychainRunner = _run_bounded_security_command,
+    account: str | None = None,
+    tool_identity_observer: _ToolIdentityObserver | None = None,
+) -> dict[str, Any]:
+    observer = (
+        tool_identity_observer
+        if tool_identity_observer is not None
+        else _macos_security_tool_identity
+    )
+    binding = _macos_keychain_binding(
+        account=account,
+        tool_identity=observer(),
+    )
+    result = _invoke_macos_keychain(
+        binding=binding,
+        acquisition=False,
+        runner=runner,
+    )
+    try:
+        after_binding = _macos_keychain_binding(
+            account=account,
+            tool_identity=observer(),
+        )
+        if after_binding != binding:
+            raise ClaudeStoredSubscriptionSourceError(
+                "macOS Keychain command authority changed",
+                reason_code="KEYCHAIN_TOOL_CHANGED",
+            )
+        if result.overflowed:
+            raise ClaudeStoredSubscriptionSourceError(
+                "macOS Keychain observation exceeded its output ceiling",
+                reason_code="KEYCHAIN_OUTPUT_LIMIT",
+            )
+        if result.timed_out or result.returncode in {36, 128}:
+            return _emit_evidence(
+                store_class="OS_KEYCHAIN",
+                source_identity=_macos_keychain_source_identity(
+                    binding,
+                    status="INTERACTION_REQUIRED",
+                ),
+                source_size=0,
+                available=False,
+            )
+        if result.returncode == 44:
+            return _emit_evidence(
+                store_class="OS_KEYCHAIN",
+                source_identity=_macos_keychain_source_identity(
+                    binding,
+                    status="UNAVAILABLE",
+                ),
+                source_size=0,
+                available=False,
+            )
+        if result.returncode != 0:
+            raise ClaudeStoredSubscriptionSourceError(
+                "macOS Keychain observation failed",
+                reason_code="KEYCHAIN_OBSERVATION_FAILED",
+            )
+        return _emit_evidence(
+            store_class="OS_KEYCHAIN",
+            source_identity=_macos_keychain_source_identity(
+                binding,
+                status="AVAILABLE",
+            ),
+            source_size=0,
+            available=True,
+        )
+    finally:
+        result.discard()
+
+
 def _emit_evidence(
     *,
     store_class: str,
@@ -889,11 +1559,18 @@ def replay_stored_subscription_materialization_receipt(
     if (
         clone.get("schema")
         != STORED_SUBSCRIPTION_MATERIALIZATION_SCHEMA
-        or source["store_class"] != "FILE_BACKED"
+        or source["store_class"] not in {"FILE_BACKED", "OS_KEYCHAIN"}
         or source["available"] is not True
         or clone.get("source_size") != source["source_size"]
         or clone.get("exact_copy_verified") is not True
-        or clone.get("source_descriptor_replayed") is not True
+        or (
+            source["store_class"] == "FILE_BACKED"
+            and clone.get("source_descriptor_replayed") is not True
+        )
+        or (
+            source["store_class"] == "OS_KEYCHAIN"
+            and clone.get("source_descriptor_replayed") is not False
+        )
         or clone.get("source_path_reopened") is not False
         or clone.get("source_bytes_reread") is not False
         or not isinstance(
@@ -1063,7 +1740,7 @@ def _validate_private_target_security(
         ) from None
     if host == HOST_WINDOWS_NATIVE:
         _verify_windows_source_security(path)
-    elif host in {HOST_LINUX_NATIVE, HOST_WSL_NATIVE}:
+    elif host in {HOST_LINUX_NATIVE, HOST_WSL_NATIVE, HOST_MACOS}:
         if host == HOST_WSL_NATIVE:
             _require_wsl_native_root(str(path))
         _validate_posix_source_security(path, info)
@@ -1336,6 +2013,8 @@ class StoredSubscriptionMaterializationCapability:
         "__source_evidence_authority",
         "__source_descriptor",
         "__source_descriptor_signature",
+        "__source_kind",
+        "__keychain_binding",
         "__source_path",
         "__source_path_signature",
         "__state",
@@ -1347,8 +2026,10 @@ class StoredSubscriptionMaterializationCapability:
         *,
         material: bytearray,
         source_descriptor: int,
-        source_path: Path,
-        source_info: os.stat_result,
+        source_path: Path | None,
+        source_info: os.stat_result | None,
+        source_kind: str,
+        keychain_binding: Mapping[str, Any] | None,
         host: str,
         source_evidence: Mapping[str, Any],
         _issuance_id: str | None = None,
@@ -1367,15 +2048,50 @@ class StoredSubscriptionMaterializationCapability:
                 _issuance_id,
                 None,
             )
+        source_signature = (
+            None
+            if source_info is None
+            else _path_stat_signature(source_info)
+        )
+        normalized_keychain_binding = (
+            None
+            if keychain_binding is None
+            else json.loads(
+                _canonical_json(dict(keychain_binding)).decode("utf-8")
+            )
+        )
         if (
             pending is None
             or pending["material"] is not material
             or pending["source_descriptor"] != source_descriptor
             or pending["source_path"] != source_path
-            or pending["source_signature"]
-            != _path_stat_signature(source_info)
+            or pending["source_signature"] != source_signature
+            or pending["source_kind"] != source_kind
+            or pending["keychain_binding"] != normalized_keychain_binding
             or pending["host"] != host
             or pending["source_evidence"] != replayed
+            or (
+                source_kind == "FILE_BACKED"
+                and (
+                    source_info is None
+                    or source_path is None
+                    or source_descriptor < 0
+                    or keychain_binding is not None
+                    or replayed["store_class"] != "FILE_BACKED"
+                )
+            )
+            or (
+                source_kind == "OS_KEYCHAIN"
+                and (
+                    host != HOST_MACOS
+                    or source_info is not None
+                    or source_path is not None
+                    or source_descriptor != -1
+                    or normalized_keychain_binding is None
+                    or replayed["store_class"] != "OS_KEYCHAIN"
+                )
+            )
+            or source_kind not in {"FILE_BACKED", "OS_KEYCHAIN"}
         ):
             raise TypeError(
                 "stored-subscription capability requires validator issuance"
@@ -1383,10 +2099,14 @@ class StoredSubscriptionMaterializationCapability:
         self.__buffer = material
         self.__source_descriptor = source_descriptor
         self.__source_path = source_path
-        self.__source_path_signature = _path_stat_signature(source_info)
+        self.__source_path_signature = source_signature
         self.__source_descriptor_signature = (
-            _descriptor_stat_signature(source_info)
+            None
+            if source_info is None
+            else _descriptor_stat_signature(source_info)
         )
+        self.__source_kind = source_kind
+        self.__keychain_binding = normalized_keychain_binding
         self.__host = host
         self.__source_evidence_authority = (
             _auth._promote_stored_subscription_source_evidence(
@@ -1412,6 +2132,14 @@ class StoredSubscriptionMaterializationCapability:
             "source_path_signature": self.__source_path_signature,
             "source_descriptor_signature": (
                 self.__source_descriptor_signature
+            ),
+            "source_kind": source_kind,
+            "keychain_binding_sha256": (
+                None
+                if normalized_keychain_binding is None
+                else hashlib.sha256(
+                    _canonical_json(normalized_keychain_binding)
+                ).hexdigest()
             ),
             "source_evidence_receipt_sha256": replayed["receipt_sha256"],
             "state": "READY",
@@ -1532,6 +2260,35 @@ class StoredSubscriptionMaterializationCapability:
             raise ClaudeStoredSubscriptionSourceError(
                 "stored-subscription capability was tampered"
             )
+        if self.__source_kind == "OS_KEYCHAIN":
+            if (
+                self.__host != HOST_MACOS
+                or self.__source_descriptor != -1
+                or self.__source_path is not None
+                or self.__source_path_signature is not None
+                or self.__source_descriptor_signature is not None
+                or self.__keychain_binding is None
+                or _macos_keychain_binding() != self.__keychain_binding
+                or self.__source_evidence_authority["store_class"]
+                != "OS_KEYCHAIN"
+                or self.__source_evidence_authority["source_identity"]
+                != _macos_keychain_source_identity(
+                    self.__keychain_binding,
+                    status="AVAILABLE",
+                )
+                or self.__source_evidence_authority["source_size"]
+                != len(self.__buffer)
+            ):
+                raise ClaudeStoredSubscriptionSourceError(
+                    "stored-subscription Keychain authority changed",
+                    reason_code="KEYCHAIN_AUTHORITY_CHANGED",
+                )
+            return
+        if self.__source_kind != "FILE_BACKED":
+            raise ClaudeStoredSubscriptionSourceError(
+                "stored-subscription capability host became unsupported"
+            )
+        assert self.__source_path is not None
         try:
             descriptor_info = os.fstat(self.__source_descriptor)
             path_info = os.lstat(self.__source_path)
@@ -1635,7 +2392,11 @@ class StoredSubscriptionMaterializationCapability:
                 ) = private_target._consume()
                 try:
                     target = os.fstat(destination_descriptor)
-                    source = os.fstat(self.__source_descriptor)
+                    source = (
+                        os.fstat(self.__source_descriptor)
+                        if self.__source_descriptor >= 0
+                        else None
+                    )
                 except OSError:
                     raise ClaudeStoredSubscriptionSourceError(
                         "destination must be an empty private regular file"
@@ -1644,8 +2405,11 @@ class StoredSubscriptionMaterializationCapability:
                     not stat.S_ISREG(target.st_mode)
                     or int(getattr(target, "st_nlink", 1)) != 1
                     or int(target.st_size) != 0
-                    or (int(target.st_dev), int(target.st_ino))
-                    == (int(source.st_dev), int(source.st_ino))
+                    or (
+                        source is not None
+                        and (int(target.st_dev), int(target.st_ino))
+                        == (int(source.st_dev), int(source.st_ino))
+                    )
                 ):
                     raise ClaudeStoredSubscriptionSourceError(
                         "destination must be an empty private regular file"
@@ -1705,7 +2469,9 @@ class StoredSubscriptionMaterializationCapability:
                     ),
                     "source_size": len(self.__buffer),
                     "exact_copy_verified": True,
-                    "source_descriptor_replayed": True,
+                    "source_descriptor_replayed": (
+                        self.__source_kind == "FILE_BACKED"
+                    ),
                     "source_path_reopened": False,
                     "source_bytes_reread": False,
                     "materialization_id": secrets.token_hex(16),
@@ -1923,7 +2689,8 @@ def _valid_secret_slot(value: object) -> bool:
     )
 
 
-def _validate_file_store_shape(raw: bytes) -> None:
+def _validate_file_store_shape(raw: bytes | bytearray) -> None:
+    parse_failed = False
     try:
         decoded = raw.decode("utf-8", errors="strict")
         document = json.loads(
@@ -1943,11 +2710,24 @@ def _validate_file_store_shape(raw: bytes) -> None:
         KeyError,
         TypeError,
         ValueError,
-    ) as exc:
+    ):
+        parse_failed = True
+        decoded = None
+        document = None
+        oauth = None
+        access_token = None
+        refresh_token = None
+        expires_at = None
+        scopes = None
+    if parse_failed:
+        # Raise outside the parser's exception context.  JSONDecodeError.doc
+        # and UnicodeDecodeError.object can otherwise retain credential bytes
+        # even when traceback display is suppressed with ``from None``.
+        raw = None
         raise ClaudeStoredSubscriptionSourceError(
             "unsupported credential-store format"
-        ) from exc
-    if (
+        ) from None
+    invalid_shape = (
         not isinstance(document, dict)
         or not isinstance(oauth, dict)
         or not _valid_secret_slot(access_token)
@@ -1963,10 +2743,21 @@ def _validate_file_store_shape(raw: bytes) -> None:
             or "\x00" in scope
             for scope in scopes
         )
-    ):
+    )
+    # A traceback retains this frame's locals.  Clear decoded and parsed
+    # credential values before either a semantic-shape exception or return.
+    raw = None
+    decoded = None
+    document = None
+    oauth = None
+    access_token = None
+    refresh_token = None
+    expires_at = None
+    scopes = None
+    if invalid_shape:
         raise ClaudeStoredSubscriptionSourceError(
             "unsupported credential-store format"
-        )
+        ) from None
 
 
 def _metadata_source_identity(
@@ -2009,20 +2800,136 @@ def _missing_source_identity(host: str, path: Path) -> str:
     return f"file-{_HOST_TAG[host]}-missing-{path_digest}"
 
 
+def _acquire_macos_keychain_materialization(
+    *,
+    runner: _KeychainRunner = _run_bounded_security_command,
+    account: str | None = None,
+    tool_identity_observer: _ToolIdentityObserver | None = None,
+) -> StoredSubscriptionMaterializationCapability:
+    observer = (
+        tool_identity_observer
+        if tool_identity_observer is not None
+        else _macos_security_tool_identity
+    )
+    binding = _macos_keychain_binding(
+        account=account,
+        tool_identity=observer(),
+    )
+    result = _invoke_macos_keychain(
+        binding=binding,
+        acquisition=True,
+        runner=runner,
+    )
+    material: bytearray | None = None
+    try:
+        after_binding = _macos_keychain_binding(
+            account=account,
+            tool_identity=observer(),
+        )
+        if after_binding != binding:
+            raise ClaudeStoredSubscriptionSourceError(
+                "macOS Keychain command authority changed",
+                reason_code="KEYCHAIN_TOOL_CHANGED",
+            )
+        if result.overflowed:
+            raise ClaudeStoredSubscriptionSourceError(
+                "macOS Keychain credential exceeded its output ceiling",
+                reason_code="KEYCHAIN_OUTPUT_LIMIT",
+            )
+        if result.timed_out or result.returncode in {36, 128}:
+            raise ClaudeStoredSubscriptionSourceError(
+                "macOS Keychain credential requires user interaction",
+                reason_code="KEYCHAIN_INTERACTION_REQUIRED",
+            )
+        if result.returncode == 44:
+            raise ClaudeStoredSubscriptionSourceError(
+                "macOS Keychain credential is unavailable",
+                reason_code="KEYCHAIN_CREDENTIAL_UNAVAILABLE",
+            )
+        if result.returncode != 0:
+            raise ClaudeStoredSubscriptionSourceError(
+                "macOS Keychain credential acquisition failed",
+                reason_code="KEYCHAIN_ACQUISITION_FAILED",
+            )
+        material = result.take_stdout()
+        if material.endswith(b"\n"):
+            del material[-1:]
+        if not material or len(material) > MAX_CREDENTIAL_FILE_BYTES:
+            raise ClaudeStoredSubscriptionSourceError(
+                "macOS Keychain credential has an invalid size",
+                reason_code="KEYCHAIN_CREDENTIAL_SIZE_INVALID",
+            )
+        _validate_file_store_shape(material)
+        evidence = _emit_evidence(
+            store_class="OS_KEYCHAIN",
+            source_identity=_macos_keychain_source_identity(
+                binding,
+                status="AVAILABLE",
+            ),
+            source_size=len(material),
+            available=True,
+        )
+        issuance_id = secrets.token_hex(32)
+        pending = {
+            "material": material,
+            "source_descriptor": -1,
+            "source_path": None,
+            "source_signature": None,
+            "source_kind": "OS_KEYCHAIN",
+            "keychain_binding": binding,
+            "host": HOST_MACOS,
+            "source_evidence": evidence,
+        }
+        with _CAPABILITY_STATE_LOCK:
+            _MATERIALIZATION_PENDING[issuance_id] = pending
+        try:
+            capability = StoredSubscriptionMaterializationCapability(
+                material=material,
+                source_descriptor=-1,
+                source_path=None,
+                source_info=None,
+                source_kind="OS_KEYCHAIN",
+                keychain_binding=binding,
+                host=HOST_MACOS,
+                source_evidence=evidence,
+                _issuance_id=issuance_id,
+            )
+        finally:
+            with _CAPABILITY_STATE_LOCK:
+                _MATERIALIZATION_PENDING.pop(issuance_id, None)
+        material = None
+        return capability
+    finally:
+        result.discard()
+        if material is not None:
+            for index in range(len(material)):
+                material[index] = 0
+
+
 def acquire_stored_subscription_materialization(
     *,
-    source_path: str | os.PathLike[str],
+    source_path: str | os.PathLike[str] | None,
 ) -> StoredSubscriptionMaterializationCapability:
-    """Acquire exact file bytes and retain their original no-follow handle."""
+    """Acquire exact source bytes into one opaque, one-shot capability."""
 
     host = _detect_host_platform()
     if host == HOST_MACOS:
-        raise ClaudeStoredSubscriptionSourceError(
-            "macOS keychain credential materialization is unimplemented"
+        if source_path is None:
+            raise ClaudeStoredSubscriptionSourceError(
+                "macOS Keychain acquisition requires the stored-route marker",
+                reason_code="KEYCHAIN_SOURCE_MARKER_REQUIRED",
+            )
+        _validate_macos_source_marker(source_path)
+        return _acquire_macos_keychain_materialization(
+            runner=_run_bounded_security_command,
         )
     if host == HOST_UNSUPPORTED or host not in _HOST_TAG:
         raise ClaudeStoredSubscriptionSourceError(
             "stored subscription materialization is unsupported host"
+        )
+    if source_path is None:
+        raise ClaudeStoredSubscriptionSourceError(
+            "file-backed source path is required"
         )
     text = _path_text(source_path)
     if Path(text).name != ".credentials.json":
@@ -2096,6 +3003,8 @@ def acquire_stored_subscription_materialization(
             "source_descriptor": descriptor,
             "source_path": canonical,
             "source_signature": _path_stat_signature(info),
+            "source_kind": "FILE_BACKED",
+            "keychain_binding": None,
             "host": host,
             "source_evidence": evidence,
         }
@@ -2107,6 +3016,8 @@ def acquire_stored_subscription_materialization(
                 source_descriptor=descriptor,
                 source_path=canonical,
                 source_info=info,
+                source_kind="FILE_BACKED",
+                keychain_binding=None,
                 host=host,
                 source_evidence=evidence,
                 _issuance_id=issuance_id,
@@ -2135,22 +3046,25 @@ def observe_stored_subscription_source(
 ) -> dict[str, Any]:
     """Observe one reviewed host store and emit exact redacted evidence.
 
-    Windows native and Linux/WSL file-backed profiles are supported.  macOS
-    returns explicit keychain-unimplemented evidence; passing a file there is
-    rejected so a file cannot be misrepresented as Keychain authority.
+    Windows native and Linux/WSL use private files.  macOS queries only the
+    exact Claude generic-password service and current kernel UID account.
     """
 
     host = _detect_host_platform()
     if host == HOST_MACOS:
-        if source_path is not None:
-            raise ClaudeStoredSubscriptionSourceError(
-                "macOS keychain credential observation is unimplemented"
+        # ``None`` is the existing explicit OAuth-token lane's request for
+        # stored-source absence evidence.  Never let that request touch the
+        # Keychain or change authentication precedence.
+        if source_path is None:
+            return _emit_evidence(
+                store_class="OS_KEYCHAIN",
+                source_identity="keychain-macos-route-not-selected",
+                source_size=0,
+                available=False,
             )
-        return _emit_evidence(
-            store_class="OS_KEYCHAIN",
-            source_identity="macos-keychain-unimplemented",
-            source_size=0,
-            available=False,
+        _validate_macos_source_marker(source_path)
+        return _observe_macos_keychain(
+            runner=_run_bounded_security_command,
         )
     if host == HOST_UNSUPPORTED:
         raise ClaudeStoredSubscriptionSourceError(

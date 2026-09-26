@@ -16,6 +16,8 @@ import re
 import tempfile
 from typing import Any, Callable, Mapping, Sequence
 
+from portable_path_contract import assert_lexically_bounded_relative_path
+
 
 SCHEMA = "plamen.report_mutation_transaction.v1"
 RECEIPT_SCHEMA = "plamen.report_mutation_transaction_receipt.v1"
@@ -64,6 +66,11 @@ def _fsync_parent(path: Path) -> None:
 
 def _atomic_bytes(path: Path, raw: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if path.is_file() and path.read_bytes() == raw:
+            return
+    except OSError:
+        pass
     fd, name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
     )
@@ -122,6 +129,14 @@ def _exclusive_bytes(path: Path, raw: bytes, *, label: str) -> None:
 def _safe_relative(value: str) -> str:
     normalized = str(value or "").replace("\\", "/").strip()
     path = PurePosixPath(normalized)
+    try:
+        assert_lexically_bounded_relative_path(
+            normalized, label="report transaction path"
+        )
+    except ValueError as exc:
+        raise ReportMutationTransactionError(
+            f"report transaction path is not a safe relative path: {value!r}"
+        ) from exc
     if (
         not normalized
         or path.is_absolute()

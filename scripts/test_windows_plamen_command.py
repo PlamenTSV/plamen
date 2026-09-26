@@ -1,15 +1,20 @@
 """Regression coverage for the public Windows ``plamen`` dispatcher."""
 
 import importlib.util
+import base64
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
+import re
+import stat
 import subprocess
 import sys
 import threading
 import time
 import uuid
+import zlib
 
 import pytest
 
@@ -103,6 +108,8 @@ def _authenticated_selection_fixture(front, user_root: Path, monkeypatch):
                 "member_authority": member("codex"),
             },
         },
+        "backend_acquisition_policy_sha256": "c" * 64,
+        "backend_receipts": {"claude": {"signed": True}, "codex": {"signed": True}},
         "signature": "b" * 128,
     }
     assert set(selection) == front._MCP_SELECTION_FIELDS
@@ -127,7 +134,12 @@ def _assert_authenticated_backend_shim(path: Path, backend: str, selection) -> N
     raw = path.read_bytes()
     assert b"authenticated immutable backend launcher" in raw
     assert b"backend-launch" in raw
-    assert f'"--backend" "{backend}"'.encode() in raw
+    backend_binding = (
+        f'"--backend" "{backend}"'.encode()
+        if raw.startswith(b"@echo off\r\n")
+        else f"--backend {backend}".encode()
+    )
+    assert backend_binding in raw
     for value in (
         selection["generation_id"], selection["receipt_sha256"],
         selection["census_sha256"], selection["request_sha256"],
@@ -135,6 +147,494 @@ def _assert_authenticated_backend_shim(path: Path, backend: str, selection) -> N
     ):
         assert value.encode() in raw
     assert b"node_modules" not in raw and b"mcp-packages" not in raw
+
+
+def _run_bound_source_bootstrap(front, target, *, identity=None, release=None, args=()):
+    identity = identity or front._windows_bound_source_identity(target)
+    encoded_target = base64.b64encode(os.fsencode(str(Path(target).absolute()))).decode()
+    encoded_release = (
+        base64.b64encode(os.fsencode(str(Path(release).absolute()))).decode()
+        if release is not None else "-"
+    )
+    return subprocess.run(
+        [
+            sys.executable, "-I", "-B", "-c",
+            front._WINDOWS_BOUND_SOURCE_BOOTSTRAP,
+            encoded_target,
+            "-" if release is not None else identity["sha256"],
+            "0" if release is not None else str(identity["size"]),
+            encoded_release,
+            *args,
+        ],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        timeout=10,
+    )
+
+
+def test_mcp_runtime_module_is_loaded_lazily_and_root_bound(tmp_path):
+    front = _load_front()
+    runtime_root = tmp_path / "runtime"
+    module_path = runtime_root / "scripts" / "plamen_mcp_runtime.py"
+    module_path.parent.mkdir(parents=True)
+    module_path.write_text("RUNTIME_SENTINEL = 17\n", encoding="utf-8")
+    module_name = "_plamen_authenticated_mcp_runtime"
+    prior = sys.modules.pop(module_name, None)
+    try:
+        loaded = front._mcp_runtime_module(runtime_root)
+        assert loaded.RUNTIME_SENTINEL == 17
+        assert Path(loaded.__file__).absolute() == module_path.absolute()
+        assert front._mcp_runtime_module(runtime_root) is loaded
+        with pytest.raises(RuntimeError, match="authority root changed"):
+            front._mcp_runtime_module(tmp_path / "different-runtime")
+    finally:
+        sys.modules.pop(module_name, None)
+        if prior is not None:
+            sys.modules[module_name] = prior
+
+
+def test_mcp_runtime_module_import_failure_does_not_cache_partial_module(tmp_path):
+    front = _load_front()
+    module_path = tmp_path / "scripts" / "plamen_mcp_runtime.py"
+    module_path.parent.mkdir(parents=True)
+    module_path.write_text("raise RuntimeError('incomplete runtime')\n", encoding="utf-8")
+    module_name = "_plamen_authenticated_mcp_runtime"
+    prior = sys.modules.pop(module_name, None)
+    try:
+        with pytest.raises(RuntimeError, match="incomplete runtime"):
+            front._mcp_runtime_module(tmp_path)
+        assert front._MCP_RUNTIME_MODULE is None
+        assert module_name not in sys.modules
+    finally:
+        sys.modules.pop(module_name, None)
+        if prior is not None:
+            sys.modules[module_name] = prior
+
+
+@pytest.mark.parametrize("machine", ["", "i686", "riscv64", "sparc64"])
+def test_backend_platform_name_rejects_unknown_architecture(monkeypatch, machine):
+    front = _load_front()
+    monkeypatch.setattr(front.platform, "machine", lambda: machine)
+    with pytest.raises(RuntimeError, match="unsupported on this architecture"):
+        front._backend_platform_name()
+
+
+def test_install_command_argv_preserves_metacharacter_paths_without_shell(monkeypatch):
+    front = _load_front()
+    checkout = r"C:\source & echo PWNED ^ %TEMP% (release)"
+    command = [
+        "git", "-C", checkout, "submodule", "update", "--init", "--recursive",
+    ]
+    calls = []
+    monkeypatch.setattr(front, "_find_bin", lambda name, _paths=None: "/managed/" + name)
+    monkeypatch.setattr(
+        front.subprocess, "run",
+        lambda argv, **kwargs: (
+            calls.append((argv, kwargs))
+            or type("Result", (), {"returncode": 0})()
+        ),
+    )
+
+    assert front._run_install_cmd(command, retries=1) is True
+    assert calls == [([
+        "/managed/git", *command[1:],
+    ], {"timeout": None, "cwd": None, "shell": False})]
+
+
+def test_install_command_rejects_shell_form_without_execution(monkeypatch):
+    front = _load_front()
+    calls = []
+    monkeypatch.setattr(
+        front.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    assert front._run_install_cmd("git -C safe && echo PWNED") is False
+    assert calls == []
+
+
+def test_package_install_commands_are_argv_only_and_path_persistence_is_deferred():
+    front = _load_front()
+    dependency_source = inspect.getsource(front._setup_python_deps)
+    install_source = inspect.getsource(front.run_install)
+    assert "[*pip_base, \"-r\", path]" in dependency_source
+    assert "git\", \"-C\", str(PLAMEN_HOME)" in install_source
+    assert "_update_path_env(path_persistence_dirs, persist=False)" in install_source
+    persistence = install_source.rindex(
+        "_update_path_env(path_persistence_dirs, persist=True)"
+    )
+    failure_gate = install_source.index('Rule(title="INSTALL INCOMPLETE"')
+    assert persistence > failure_gate
+
+
+def test_atomic_write_preserves_mode_and_flushes_parent(tmp_path, monkeypatch):
+    front = _load_front()
+    target = tmp_path / "settings.json"
+    target.write_bytes(b"old\n")
+    target.chmod(0o600)
+    flushed = []
+    monkeypatch.setattr(
+        front, "_claude_projection_fsync_parent",
+        lambda path: flushed.append(Path(path)),
+    )
+
+    front._atomic_write_bytes(target, b"new\n")
+
+    assert target.read_bytes() == b"new\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert flushed == [target.absolute()]
+
+
+def test_atomic_write_rejects_stale_preimage_without_overwriting_it(
+    tmp_path, monkeypatch,
+):
+    front = _load_front()
+    target = tmp_path / "settings.json"
+    target.write_bytes(b"admitted\n")
+    target.chmod(0o600)
+    real_fsync = front.os.fsync
+    fired = False
+
+    def race_after_stage(descriptor):
+        nonlocal fired
+        real_fsync(descriptor)
+        if not fired:
+            fired = True
+            target.write_bytes(b"foreign concurrent update\n")
+
+    monkeypatch.setattr(front.os, "fsync", race_after_stage)
+    with pytest.raises(RuntimeError, match="changed before replacement"):
+        front._atomic_write_bytes(target, b"plamen successor\n")
+    assert fired
+    assert target.read_bytes() == b"foreign concurrent update\n"
+
+
+def test_bound_source_bootstrap_executes_only_descriptor_authenticated_bytes(tmp_path):
+    front = _load_front()
+    target = tmp_path / "entry.py"
+    target.write_text("import json,sys;print(json.dumps(sys.argv))\n", encoding="utf-8")
+    identity = front._windows_bound_source_identity(target)
+
+    accepted = _run_bound_source_bootstrap(
+        front, target, identity=identity, args=("alpha", "two words"),
+    )
+    assert accepted.returncode == 0
+    assert json.loads(accepted.stdout) == [str(target.absolute()), "alpha", "two words"]
+    assert accepted.stderr == ""
+
+    target.write_text("raise SystemExit('tampered source ran')\n", encoding="utf-8")
+    denied = _run_bound_source_bootstrap(front, target, identity=identity)
+    assert denied.returncode != 0
+    assert "source bytes differ from the installed release authority" in denied.stderr
+    assert "tampered source ran" not in denied.stderr
+
+
+def test_bound_source_bootstrap_rejects_symlinked_source_path(tmp_path):
+    front = _load_front()
+    target = tmp_path / "entry.py"
+    target.write_text("print('must not run')\n", encoding="utf-8")
+    identity = front._windows_bound_source_identity(target)
+    link = tmp_path / "linked.py"
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    denied = _run_bound_source_bootstrap(front, link, identity=identity)
+    assert denied.returncode != 0
+    assert "source path is indirect" in denied.stderr
+    assert "must not run" not in denied.stdout
+
+
+def test_release_bound_launcher_bytes_stay_stable_across_package_update(tmp_path):
+    front = _load_front()
+    target = tmp_path / "plamen.py"
+    release = tmp_path / front._WINDOWS_RELEASE_AUTHORITY_NAME
+    target.write_text("VERSION = 1\n", encoding="utf-8")
+    before = front._windows_bound_source_command(
+        sys.executable, target, release_path=release,
+    )
+    target.write_text("VERSION = 2\n", encoding="utf-8")
+    after = front._windows_bound_source_command(
+        sys.executable, target, release_path=release,
+    )
+    assert before == after
+    assert '"-" "0"' in after
+
+
+def test_release_authority_makes_all_update_domains_launch_preconditions(tmp_path):
+    front = _load_front()
+    target = tmp_path / "entry.py"
+    target.write_text("print('release accepted')\n", encoding="utf-8")
+    identity = front._windows_bound_source_identity(target)
+    artifacts = []
+    for name in (
+        "python.exe", "package-receipt.json", "mcp-selection.json", "config.toml",
+    ):
+        artifact = tmp_path / name
+        artifact.write_text(name + "\n", encoding="utf-8")
+        row = front._windows_release_artifact_identity(artifact, name)
+        row["path"] = str(artifact.absolute())
+        artifacts.append(row)
+    release = tmp_path / front._WINDOWS_RELEASE_AUTHORITY_NAME
+    release_value = {
+        "artifacts": artifacts,
+        "entry_point": {
+            key: identity[key] for key in ("path", "sha256", "size")
+        },
+        "schema": front._WINDOWS_RELEASE_AUTHORITY_SCHEMA,
+        "selection": {
+            "generation_id": "npm-" + "1" * 64,
+            "receipt_sha256": "2" * 64,
+            "census_sha256": "3" * 64,
+            "request_sha256": "4" * 64,
+            "generation_policy_sha256": "5" * 64,
+        },
+    }
+    release_value["entry_point"]["path"] = str(target.absolute())
+    release.write_bytes((
+        json.dumps(release_value, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode())
+
+    accepted = _run_bound_source_bootstrap(front, target, release=release)
+    assert accepted.returncode == 0
+    assert accepted.stdout == "release accepted\n"
+
+    (tmp_path / "config.toml").write_text("partial update\n", encoding="utf-8")
+    denied = _run_bound_source_bootstrap(front, target, release=release)
+    assert denied.returncode != 0
+    assert "release artifact bytes differ" in denied.stderr
+    assert "release accepted" not in denied.stdout
+
+
+def test_execution_path_authority_rejects_junction_or_symlink_spelling(tmp_path):
+    front = _load_front()
+    target = tmp_path / "python.exe"
+    target.write_bytes(b"MZ")
+    linked = tmp_path / "runtime-python.exe"
+    try:
+        linked.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    with pytest.raises(RuntimeError, match="ancestry is indirect"):
+        front._windows_launcher_execution_path_authority(
+            linked, "interpreter",
+        )
+
+
+def test_release_and_three_launchers_publish_as_one_recoverable_transaction(
+    tmp_path,
+):
+    front = _load_front()
+    directory = tmp_path / "bin"
+    _secure_launcher_test_directory(front, directory)
+    rows = []
+    for label in ("release", "claude", "codex", "public"):
+        path = directory / (label + (".json" if label == "release" else ".cmd"))
+        rows.append({
+            "label": label,
+            "path": path,
+            "raw": (label + "-successor\n").encode(),
+            "state": front._launcher_absent_state(path),
+            "admitted_predecessor_raws": (),
+        })
+    selection = {
+        "generation_id": "npm-" + "1" * 64,
+        "receipt_sha256": "2" * 64,
+        "census_sha256": "3" * 64,
+        "request_sha256": "4" * 64,
+        "generation_policy_sha256": "5" * 64,
+    }
+
+    assert front._launcher_transaction_publish_locked(
+        directory, rows, selection,
+    ) == "COMMITTED"
+    assert all(row["path"].read_bytes() == row["raw"] for row in rows)
+    assert not (directory / ".plamen-launcher-transaction.json").exists()
+
+
+def test_four_artifact_release_transaction_recovers_after_process_death(
+    tmp_path, monkeypatch,
+):
+    front = _load_front()
+    directory = tmp_path / "bin"
+    _secure_launcher_test_directory(front, directory)
+    rows = []
+    for label in ("release", "claude", "codex", "public"):
+        path = directory / (label + (".json" if label == "release" else ".cmd"))
+        rows.append({
+            "label": label,
+            "path": path,
+            "raw": (label + "-successor\n").encode(),
+            "state": front._launcher_absent_state(path),
+            "admitted_predecessor_raws": (),
+        })
+    selection = {
+        "generation_id": "npm-" + "1" * 64,
+        "receipt_sha256": "2" * 64,
+        "census_sha256": "3" * 64,
+        "request_sha256": "4" * 64,
+        "generation_policy_sha256": "5" * 64,
+    }
+    real_rename = front._launcher_transaction_rename
+    real_recover = front._launcher_transaction_recover
+
+    class ProcessDeath(BaseException):
+        pass
+
+    fired = False
+
+    def die_after_codex_publish(guard, source, destination, *args, **kwargs):
+        nonlocal fired
+        result = real_rename(guard, source, destination, *args, **kwargs)
+        if Path(source).name.endswith("-codex.stage") and not fired:
+            fired = True
+            raise ProcessDeath("power loss after codex publication")
+        return result
+
+    monkeypatch.setattr(front, "_launcher_transaction_rename", die_after_codex_publish)
+    monkeypatch.setattr(
+        front, "_launcher_transaction_recover",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            ProcessDeath("process exited before recovery")
+        ),
+    )
+    with pytest.raises(ProcessDeath):
+        front._launcher_transaction_publish_locked(directory, rows, selection)
+    assert fired
+    assert (directory / ".plamen-launcher-transaction.json").is_file()
+
+    monkeypatch.setattr(front, "_launcher_transaction_rename", real_rename)
+    monkeypatch.setattr(front, "_launcher_transaction_recover", real_recover)
+    assert front._launcher_transaction_publish_locked(
+        directory, rows, selection,
+    ) == "RECOVERED"
+    assert all(not os.path.lexists(row["path"]) for row in rows)
+    assert not (directory / ".plamen-launcher-transaction.json").exists()
+
+    assert front._launcher_transaction_publish_locked(
+        directory, rows, selection,
+    ) == "COMMITTED"
+    assert all(row["path"].read_bytes() == row["raw"] for row in rows)
+    assert not (directory / ".plamen-launcher-transaction.json").exists()
+
+
+def test_release_authority_binds_package_cache_dependency_mcp_and_config(
+    tmp_path, monkeypatch,
+):
+    front = _load_front()
+    installed = tmp_path / ".plamen"
+    codex_root = tmp_path / ".codex"
+    store_root = tmp_path / "mcp-runtime"
+    transaction_id = "9" * 32
+    installed.mkdir(); codex_root.mkdir(); store_root.mkdir()
+    target = installed / "plamen.py"
+    target.write_text("print('installed')\n", encoding="utf-8")
+    receipt = codex_root / front._CODEX_INSTALL_RECEIPT
+    config = codex_root / "config.toml"
+    selection_path = store_root / "current-selection.json"
+    runtime_stamp = tmp_path / "python-runtime.stamp.json"
+    cache = (
+        codex_root / ".plamen-install-transactions" / transaction_id
+        / "source-cache.json"
+    )
+    cache.parent.mkdir(parents=True)
+    for path in (receipt, config, selection_path, runtime_stamp, cache):
+        path.write_text(path.name + "\n", encoding="utf-8")
+    committed = {
+        "transaction_id": transaction_id,
+        "source_root": str(tmp_path / "source"),
+        "plamen_root": str(installed),
+        "codex_root": str(codex_root),
+    }
+    selection = {
+        "store_root": str(store_root),
+        "generation_id": "npm-" + "1" * 64,
+        "receipt_sha256": "2" * 64,
+        "census_sha256": "3" * 64,
+        "request_sha256": "4" * 64,
+        "generation_policy_sha256": "5" * 64,
+    }
+    monkeypatch.setattr(
+        front, "_validated_committed_install_receipt", lambda: committed,
+    )
+    monkeypatch.setattr(front, "_runtime_stamp_path", lambda: runtime_stamp)
+
+    raw = front._windows_release_authority_bytes(
+        installed, sys.executable,
+        front._windows_bound_source_identity(target), selection,
+    )
+    value = json.loads(raw)
+    names = {front.PureWindowsPath(row["path"]).name for row in value["artifacts"]}
+    assert names == {
+        Path(sys.executable).resolve().name,
+        front._CODEX_INSTALL_RECEIPT,
+        "current-selection.json",
+        "config.toml",
+        runtime_stamp.name,
+        "source-cache.json",
+    }
+    assert value["selection"] == {
+        key: selection[key]
+        for key in front._LAUNCHER_TRANSACTION_SELECTION_FIELDS
+    }
+    assert raw == (
+        json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+
+
+def test_prior_secure_backend_shim_is_admitted_only_by_retained_generation(
+    tmp_path, monkeypatch,
+):
+    front = _load_front()
+    plamen_root = tmp_path / ".plamen"
+    plamen_root.mkdir()
+    (plamen_root / "plamen.py").write_text("print('prior')\n", encoding="utf-8")
+    command_dir = tmp_path / "bin"
+    command_dir.mkdir()
+    monkeypatch.setattr(front.sys, "platform", "win32")
+    monkeypatch.setattr(
+        front, "_backend_shim_path",
+        lambda backend: command_dir / f"plamen-{backend}.cmd",
+    )
+    prior = {
+        "generation_id": "npm-" + "1" * 64,
+        "receipt_sha256": "2" * 64,
+        "census_sha256": "3" * 64,
+        "request_sha256": "1" * 64,
+        "generation_policy_sha256": "4" * 64,
+        "backend_launches": {"claude": {}, "codex": {}},
+    }
+    release_path = command_dir / front._WINDOWS_RELEASE_AUTHORITY_NAME
+    raw = front._backend_shim_bytes(
+        "codex", plamen_root, sys.executable, selection=prior,
+        platform_name="win32", release_path=release_path,
+    )
+    monkeypatch.setattr(
+        front, "_validated_committed_install_receipt",
+        lambda: {"plamen_root": str(plamen_root)},
+    )
+    verifier = object()
+    monkeypatch.setattr(
+        front, "_mcp_receipt_callbacks",
+        lambda _committed: (None, verifier, None, None),
+    )
+    calls = []
+
+    class Runtime:
+        @staticmethod
+        def validate_generation_authority_fast(*args, **kwargs):
+            calls.append((args, kwargs))
+
+    monkeypatch.setattr(front, "_mcp_runtime_module", lambda _root: Runtime)
+    assert front._authenticated_retained_backend_shim(
+        raw, backend="codex", plamen_root=plamen_root,
+        interpreter=sys.executable, store_root=tmp_path / "store",
+    ) is True
+    assert calls and calls[0][0][1] == prior["generation_id"]
+    assert front._authenticated_retained_backend_shim(
+        raw.replace(b'"--" %*', b'"--" "forged" %*'),
+        backend="codex", plamen_root=plamen_root,
+        interpreter=sys.executable, store_root=tmp_path / "store",
+    ) is False
 
 
 def test_windows_command_is_created_with_current_runtime_path(tmp_path, monkeypatch):
@@ -157,8 +657,25 @@ def test_windows_command_is_created_with_current_runtime_path(tmp_path, monkeypa
     assert command.read_bytes() == expected
     assert str(Path(sys.executable).resolve()).encode() in command.read_bytes()
     assert b"\npython " not in command.read_bytes().lower()
-    assert b".plamen\\plamen.py" in command.read_bytes()
+    assert base64.b64encode(
+        os.fsencode(str(front.PureWindowsPath((plamen_root / "plamen.py").resolve())))
+    ) in command.read_bytes()
     assert b".claude\\plamen.py" not in command.read_bytes()
+    assert b" -I -B -c " in command.read_bytes()
+    assert b"zlib.decompress" in command.read_bytes()
+    assert all(
+        len(line.decode("utf-8")) <= front._WINDOWS_CMD_LINE_MAX_CHARS
+        for line in command.read_bytes().splitlines()
+    )
+    assert hashlib.sha256((plamen_root / "plamen.py").read_bytes()).hexdigest().encode() in command.read_bytes()
+    packed = re.search(
+        rb"zlib\.decompress\(base64\.b64decode\('([A-Za-z0-9+/=]+)'\)\)",
+        command.read_bytes(),
+    )
+    assert packed is not None
+    assert zlib.decompress(base64.b64decode(packed.group(1))).decode("ascii") == (
+        front._WINDOWS_BOUND_SOURCE_BOOTSTRAP
+    )
     _assert_authenticated_backend_shim(shims["claude"], "claude", selection)
     _assert_authenticated_backend_shim(shims["codex"], "codex", selection)
     assert admissions == [
@@ -280,6 +797,7 @@ def test_exact_live_authenticated_shim_predecessors_migrate_to_bytecode_safe(
             sys.executable,
             selection=selection,
             suppress_bytecode=False,
+            platform_name="win32",
         ))
     command.write_bytes(front._windows_plamen_command_bytes(
         sys.executable,
@@ -302,6 +820,7 @@ def test_exact_live_authenticated_shim_predecessors_migrate_to_bytecode_safe(
     for backend, path in shims.items():
         assert path.read_bytes() == front._backend_shim_bytes(
             backend, plamen_root, sys.executable, selection=selection,
+            platform_name="win32",
         )
         assert b" -B " in path.read_bytes()
     assert b" -B " in command.read_bytes()
@@ -325,13 +844,14 @@ def test_three_launcher_transaction_recovers_after_each_legacy_seam(
         path.write_bytes(front._backend_shim_bytes(
             backend, plamen_root, sys.executable, selection=selection,
             suppress_bytecode=False,
+            platform_name="win32",
         ))
     command.write_bytes(front._windows_plamen_command_bytes(
         sys.executable, plamen_root / "plamen.py", shims["claude"],
         shims["codex"], allow_unpublished_backend_shims=True,
         suppress_bytecode=False,
     ))
-    real_rename = front._launcher_rename_noreplace
+    real_rename = front._launcher_transaction_rename
     real_recover = front._launcher_transaction_recover
 
     class HardKill(BaseException):
@@ -339,9 +859,9 @@ def test_three_launcher_transaction_recovers_after_each_legacy_seam(
 
     fired = False
 
-    def kill_at_seam(source, destination, *args, **kwargs):
+    def kill_at_seam(guard, source, destination, *args, **kwargs):
         nonlocal fired
-        result = real_rename(source, destination, *args, **kwargs)
+        result = real_rename(guard, source, destination, *args, **kwargs)
         source_name = Path(source).name
         destination_name = Path(destination).name
         observed = None
@@ -355,7 +875,7 @@ def test_three_launcher_transaction_recovers_after_each_legacy_seam(
             raise HardKill(seam)
         return result
 
-    monkeypatch.setattr(front, "_launcher_rename_noreplace", kill_at_seam)
+    monkeypatch.setattr(front, "_launcher_transaction_rename", kill_at_seam)
     monkeypatch.setattr(
         front, "_launcher_transaction_recover",
         lambda *args, **kwargs: (_ for _ in ()).throw(HardKill("process exited")),
@@ -365,7 +885,7 @@ def test_three_launcher_transaction_recovers_after_each_legacy_seam(
             user_root=user_root, plamen_root=plamen_root, platform_name="win32",
         )
     assert fired
-    monkeypatch.setattr(front, "_launcher_rename_noreplace", real_rename)
+    monkeypatch.setattr(front, "_launcher_transaction_rename", real_rename)
     monkeypatch.setattr(front, "_launcher_transaction_recover", real_recover)
 
     front._ensure_windows_plamen_command(
@@ -387,7 +907,7 @@ def test_three_absent_launchers_recover_after_each_publish(
     _selection, shims, _ = _authenticated_selection_fixture(
         front, user_root, monkeypatch,
     )
-    real_rename = front._launcher_rename_noreplace
+    real_rename = front._launcher_transaction_rename
     real_recover = front._launcher_transaction_recover
 
     class HardKill(BaseException):
@@ -395,9 +915,9 @@ def test_three_absent_launchers_recover_after_each_publish(
 
     fired = False
 
-    def kill_at_publish(source, destination, *args, **kwargs):
+    def kill_at_publish(guard, source, destination, *args, **kwargs):
         nonlocal fired
-        result = real_rename(source, destination, *args, **kwargs)
+        result = real_rename(guard, source, destination, *args, **kwargs)
         source_name = Path(source).name
         for label in ("claude", "codex", "public"):
             if source_name.endswith(f"-{label}.stage") and seam == f"publish-{label}":
@@ -405,7 +925,7 @@ def test_three_absent_launchers_recover_after_each_publish(
                 raise HardKill(seam)
         return result
 
-    monkeypatch.setattr(front, "_launcher_rename_noreplace", kill_at_publish)
+    monkeypatch.setattr(front, "_launcher_transaction_rename", kill_at_publish)
     monkeypatch.setattr(
         front, "_launcher_transaction_recover",
         lambda *args, **kwargs: (_ for _ in ()).throw(HardKill("process exited")),
@@ -415,7 +935,7 @@ def test_three_absent_launchers_recover_after_each_publish(
             user_root=user_root, plamen_root=plamen_root, platform_name="win32",
         )
     assert fired
-    monkeypatch.setattr(front, "_launcher_rename_noreplace", real_rename)
+    monkeypatch.setattr(front, "_launcher_transaction_rename", real_rename)
     monkeypatch.setattr(front, "_launcher_transaction_recover", real_recover)
     command = front._ensure_windows_plamen_command(
         user_root=user_root, plamen_root=plamen_root, platform_name="win32",
@@ -628,6 +1148,7 @@ def test_tampered_authenticated_shim_neighbor_blocks_all_migration(
         legacy[backend] = front._backend_shim_bytes(
             backend, plamen_root, sys.executable, selection=selection,
             suppress_bytecode=False,
+            platform_name="win32",
         )
         path.write_bytes(legacy[backend])
     tampered = legacy["codex"] + b"REM foreign neighbor\r\n"
@@ -711,9 +1232,12 @@ def test_path_bound_predecessor_shape_with_foreign_target_is_rejected(
         / "claude-code" / "bin" / "claude.exe",
         plamen_root / "mcp-packages" / "node_modules" / ".bin" / "codex.cmd",
         allow_unpublished_backend_shims=True,
-    ).replace(
-        str(plamen_root / "plamen.py").encode(),
-        str(tmp_path / "foreign" / "plamen.py").encode(),
+    )
+    admitted_path = str(front.PureWindowsPath((plamen_root / "plamen.py").resolve()))
+    foreign_path = str(front.PureWindowsPath((tmp_path / "foreign" / "plamen.py").resolve()))
+    foreign = foreign.replace(
+        base64.b64encode(os.fsencode(admitted_path)),
+        base64.b64encode(os.fsencode(foreign_path)),
     )
     command.write_bytes(foreign)
 
@@ -834,17 +1358,17 @@ def test_raced_public_command_is_preserved_and_new_backend_shims_roll_back(
     )
     command = user_root / ".local" / "bin" / "plamen.cmd"
     foreign = b"foreign public command created after preflight\r\n"
-    real_rename = front._launcher_rename_noreplace
+    real_rename = front._launcher_transaction_rename
     collided = []
 
-    def collide(source, destination, *args, **kwargs):
+    def collide(guard, source, destination, *args, **kwargs):
         destination = Path(destination)
         if destination == command and not collided:
             destination.write_bytes(foreign)
             collided.append(destination)
-        return real_rename(source, destination, *args, **kwargs)
+        return real_rename(guard, source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(front, "_launcher_rename_noreplace", collide)
+    monkeypatch.setattr(front, "_launcher_transaction_rename", collide)
     with pytest.raises(RuntimeError, match="raced foreign plamen command"):
         front._ensure_windows_plamen_command(
             user_root=user_root,
@@ -983,10 +1507,10 @@ def test_existing_public_command_take_race_rolls_back_new_backend_shims(
     _secure_launcher_test_directory(front, command.parent)
     command.write_bytes(front._WINDOWS_PLAMEN_COMMAND)
     foreign = b"foreign public command swapped before atomic take\r\n"
-    real_rename = front._launcher_rename_noreplace
+    real_rename = front._launcher_transaction_rename
     raced = False
 
-    def swap_before_take(source, destination, *args, **kwargs):
+    def swap_before_take(guard, source, destination, *args, **kwargs):
         nonlocal raced
         source = Path(source)
         if source == command and not raced:
@@ -994,9 +1518,9 @@ def test_existing_public_command_take_race_rolls_back_new_backend_shims(
             replacement.write_bytes(foreign)
             replacement.replace(command)
             raced = True
-        return real_rename(source, destination, *args, **kwargs)
+        return real_rename(guard, source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(front, "_launcher_rename_noreplace", swap_before_take)
+    monkeypatch.setattr(front, "_launcher_transaction_rename", swap_before_take)
     with pytest.raises(RuntimeError, match="raced foreign plamen command"):
         front._ensure_windows_plamen_command(
             user_root=user_root,
@@ -1783,8 +2307,8 @@ def test_front_and_driver_share_current_install_denominator():
     driver_source = (ROOT / "scripts" / "plamen_driver.py").read_text(
         encoding="utf-8",
     )
-    assert "_CODEX_INSTALL_SOURCE_COUNT = 769" in driver_source
-    assert "_CODEX_INSTALL_RUNTIME_COUNT = 738" in driver_source
+    assert "_CODEX_INSTALL_SOURCE_COUNT = 1090" in driver_source
+    assert "_CODEX_INSTALL_RUNTIME_COUNT = 1059" in driver_source
     assert "_CODEX_INSTALL_ADAPTER_COUNT = 31" in driver_source
     admission = driver_source[
         driver_source.index("def _admit_installed_driver_before_local_imports"):

@@ -1,6 +1,7 @@
 """P1-M fixtures for the isolated EVM arm-before-trust authority core."""
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -107,6 +108,14 @@ def _payload(facts: list[dict], *, ecosystem: str = "evm") -> dict:
     }
     payload["payload_digest"] = A.trace_payload_digest(payload)
     return payload
+
+
+def _semantic_payload(facts: list[dict], *, ecosystem: str = "evm") -> dict:
+    return {
+        "schema_version": A.FACT_TRACE_SCHEMA,
+        "ecosystem": ecosystem,
+        "facts": facts,
+    }
 
 
 def test_evm_typed_complementary_positive_facts_emit_one_composition_obligation(
@@ -296,6 +305,117 @@ def test_operator_or_run_binding_mismatch_is_unmeasurable_and_cannot_compose(
     assert all(row["authority_state"] == "UNMEASURABLE" for row in authority["facts"])
     assert composition["obligations"] == []
     assert any("operator digest" in issue for issue in authority["issues"])
+
+
+def test_driver_seals_semantic_only_trace_with_platform_independent_bindings(
+    tmp_path: Path,
+) -> None:
+    _checkpoint(tmp_path)
+
+    authority, composition, _research, _projection = (
+        A.derive_authentication_role_authority(
+            tmp_path,
+            trace_payload=_semantic_payload([_anchor(), _derived()]),
+            driver_seal_model_fields=True,
+        )
+    )
+
+    expected_binding = A.run_binding_digest(
+        RUN_ID, SNAPSHOT, SOURCE_SCOPE, "evm", "thorough", "sc"
+    )
+    assert authority["status"] == "ACTIVE"
+    assert authority["operator_id"] == A.AUTHENTICATION_ROLE_OPERATOR_ID
+    assert authority["operator_digest"] == A.authentication_role_operator_digest()
+    assert authority["trace_authority"] == {
+        "semantic_authority": "MODEL",
+        "cryptographic_authority": "DRIVER",
+        "producer_format": "SEMANTIC_ONLY",
+        "producer_cryptographic_fields": [],
+        "producer_cryptographic_claims": "ABSENT",
+        "sealed_run_binding_digest": expected_binding,
+        "sealed_operator_digest": A.authentication_role_operator_digest(),
+        "sealed_payload_digest": authority["trace_payload_digest"],
+    }
+    assert composition["obligation_count"] == 1
+
+
+def test_driver_replaces_legacy_newline_digests_without_trusting_them(
+    tmp_path: Path,
+) -> None:
+    _checkpoint(tmp_path)
+    payload = _payload([_anchor(), _derived()])
+    # Reproduce `jq -cS ... | shasum -a 256`: jq terminates its compact JSON
+    # with a newline while the cross-platform driver canonicalization does not.
+    binding = {
+        "run_id": RUN_ID,
+        "source_snapshot_digest": SNAPSHOT,
+        "source_scope_digest": SOURCE_SCOPE,
+        "ecosystem": "evm",
+        "mode": "thorough",
+        "pipeline": "sc",
+    }
+    newline_json = lambda value: (  # noqa: E731 - local fixture operation
+        json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    payload["run_binding_digest"] = hashlib.sha256(
+        newline_json(binding)
+    ).hexdigest()
+    payload["operator_digest"] = "d" * 64
+    payload["payload_digest"] = hashlib.sha256(
+        newline_json(
+            {key: value for key, value in payload.items() if key != "payload_digest"}
+        )
+    ).hexdigest()
+    assert payload["run_binding_digest"] != A.run_binding_digest(
+        RUN_ID, SNAPSHOT, SOURCE_SCOPE, "evm", "thorough", "sc"
+    )
+    assert payload["payload_digest"] != A.trace_payload_digest(payload)
+
+    authority, composition, _research, _projection = (
+        A.derive_authentication_role_authority(
+            tmp_path,
+            trace_payload=payload,
+            driver_seal_model_fields=True,
+        )
+    )
+
+    trace_authority = authority["trace_authority"]
+    assert authority["status"] == "ACTIVE"
+    assert composition["obligation_count"] == 1
+    assert authority["trace_payload_digest"] != payload["payload_digest"]
+    assert authority["operator_digest"] != payload["operator_digest"]
+    assert trace_authority["producer_format"] == "LEGACY_HASH_BEARING_PROPOSAL"
+    assert trace_authority["producer_cryptographic_claims"] == "REPLACED_UNTRUSTED"
+    assert trace_authority["producer_cryptographic_fields"] == [
+        "operator_digest",
+        "payload_digest",
+        "run_binding_digest",
+    ]
+
+
+def test_driver_sealing_never_converts_invalid_semantics_into_authority(
+    tmp_path: Path,
+) -> None:
+    _checkpoint(tmp_path)
+    anchor = _anchor()
+    anchor["provenance"] = "SOURCE"
+    anchor["external_surface"] = "ExternalVerifier.verify"
+
+    authority, composition, research, _projection = (
+        A.derive_authentication_role_authority(
+            tmp_path,
+            trace_payload=_semantic_payload([anchor, _derived()]),
+            driver_seal_model_fields=True,
+        )
+    )
+
+    invalid = next(row for row in authority["facts"] if row["role"] == "ANCHOR")
+    assert authority["status"] == "ACTIVE"
+    assert invalid["authority_state"] == "UNMEASURABLE"
+    assert invalid["positive_claims"] == []
+    assert composition["obligations"] == []
+    assert research["obligations"] == []
+    assert any("provenance" in issue for issue in invalid["issues"])
 
 
 def test_duplicate_canonical_fact_identity_invalidates_whole_trace_before_composition(

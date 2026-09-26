@@ -1824,16 +1824,29 @@ def phase_model(phase: Phase, mode: str, config: Optional[dict] = None) -> str:
             (config.get("pipeline") if config else None) == "sc"
             and name in ("chain", "chain_agent2", "chain_iter2")
         )
-        # SC Thorough inventory synthesis (chunks + merge) → Opus (bloat fix #3).
-        # The inventory merge ingests ~all breadth+depth findings (100KB+) and
-        # decides what survives consolidation; Sonnet-at-volume preserves-rather-
-        # than-judges (the master inventory can come out LARGER than its chunks —
-        # barely dedup'd), and that bloated inventory is inherited by every
-        # downstream phase. SC-only; Core/Light stay sonnet.
+        # SC Thorough inventory MERGE → Opus (bloat fix #3). The merge ingests
+        # ~all breadth+depth findings (100KB+) and decides what survives
+        # consolidation; Sonnet-at-volume preserves-rather-than-judges (the
+        # master inventory can come out LARGER than its chunks — barely
+        # dedup'd), and that bloated inventory is inherited by every downstream
+        # phase. SC-only; Core/Light stay sonnet.
+        #
+        # The inventory CHUNKS are deliberately NOT promoted. A chunk is a
+        # lossless one-to-one normalization shard (P0-L): one upstream block
+        # in, one block out, every material facet preserved — the reconciler
+        # enforces preservation mechanically and refuses absorption, so Opus's
+        # judgment buys nothing there. Worse, Opus 5 refuses the transcription
+        # task itself: DODO run41 (2 refusals), run43 (3), run45 (20) all drew
+        # `model_refusal_no_fallback` / `api_refusal_category:
+        # reasoning_extraction` on chunk attempts, each refused attempt burning
+        # ~10 min and ~$4 before the CLI gave up, and the run advanced only
+        # when a same-model retry happened not to be refused. Sonnet has
+        # transcribed recon/rescan/instantiate output in every run without a
+        # single refusal. Routing is driver policy, not a silent fallback: the
+        # requested model is still bound and verified per attempt.
         is_sc_inventory = (
             (config.get("pipeline") if config else None) == "sc"
-            and name in ("inventory", "inventory_chunk_a",
-                         "inventory_chunk_b", "inventory_chunk_c")
+            and name == "inventory"
         )
         # SC Thorough report body-writers (the shard-expanded report_body_writer_*
         # tier authors) → Opus (bloat fix #3). They bulk-read the full inventory
@@ -2534,7 +2547,8 @@ SC_PHASES = [
     Phase("recon", ["Step 1: Language Detection", "Step 1.5: Scratchpad",
                     "Phase 1: Reconnaissance"],
           ["recon_summary.md", "design_context.md", "attack_surface.md",
-           "state_variables.md", "function_list.md", "contract_inventory.md",
+           "state_variables.md", "constraint_variables.md", "function_list.md",
+           "modifiers.md", "contract_inventory.md",
            "template_recommendations.md", "detected_patterns.md",
            "setter_list.md", "emit_list.md", "build_status.md"],
           base_timeout_s=3000, critical=True),

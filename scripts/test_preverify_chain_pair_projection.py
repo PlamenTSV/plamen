@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any, Sequence
 
 import pytest
@@ -21,12 +22,14 @@ from phase_io_contracts import (
 )
 from preverify_chain_pair_projection import (
     HYPOTHESES_LOGICAL,
+    IDENTITY_UNIVERSE_LOGICAL,
     MAPPING_LOGICAL,
     ROOT,
     prepare_preverify_chain_pair_projection,
 )
 import preverify_chain_pair_projection as CHAIN_PAIR
 import plamen_driver as DRIVER
+from plamen_parsers import is_hypothesis_id
 
 
 RUN_ID = "3f6f3618-d36f-4a40-8551-f6a3b7d40ffd"
@@ -43,6 +46,7 @@ MAPPING = (
     b"|---|---|\n"
     b"| H-1 | INV-1 |\n"
 )
+ENABLER = b"# Enabler Results\n\nNo independent enabler in fixture.\n"
 
 
 def _claim(
@@ -124,6 +128,45 @@ def _claim(
     )
 
 
+def _seed_identity_universe(
+    root: Path,
+    project: Path,
+    *documents: bytes,
+) -> None:
+    tokens = {
+        match.group(0).upper()
+        for raw in documents
+        for match in re.finditer(
+            r"(?<![A-Za-z0-9_-])[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+"
+            r"(?![A-Za-z0-9_-])",
+            raw.decode("utf-8", errors="strict"),
+        )
+        if not is_hypothesis_id(match.group(0))
+    }
+    payload = {
+        "record_count": len(tokens),
+        "records": [
+            {
+                "canonical_id": f"CID-{index:016X}",
+                "local_id": identity,
+                "local_id_raw": identity,
+            }
+            for index, identity in enumerate(sorted(tokens), 1)
+        ],
+    }
+    (root / IDENTITY_UNIVERSE_LOGICAL).write_text(
+        json.dumps(payload, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    _claim(
+        root=root,
+        project=project,
+        paths=(IDENTITY_UNIVERSE_LOGICAL,),
+        run_id=RUN_ID,
+        work_unit_id="identity_universe_fixture",
+    )
+
+
 def _seed(
     tmp_path: Path,
     *,
@@ -135,11 +178,12 @@ def _seed(
     root.mkdir()
     (root / HYPOTHESES_LOGICAL).write_bytes(HYPOTHESES)
     (root / MAPPING_LOGICAL).write_bytes(MAPPING)
+    (root / "enabler_results.md").write_bytes(ENABLER)
     if split_runs:
         _claim(
             root=root,
             project=project,
-            paths=(HYPOTHESES_LOGICAL,),
+            paths=(HYPOTHESES_LOGICAL, "enabler_results.md"),
             run_id=RUN_ID,
             work_unit_id="hypotheses",
         )
@@ -154,10 +198,15 @@ def _seed(
         _claim(
             root=root,
             project=project,
-            paths=(HYPOTHESES_LOGICAL, MAPPING_LOGICAL),
+            paths=(
+                HYPOTHESES_LOGICAL,
+                MAPPING_LOGICAL,
+                "enabler_results.md",
+            ),
             run_id=RUN_ID,
             work_unit_id="model",
         )
+    _seed_identity_universe(root, project, HYPOTHESES, MAPPING)
     return root, project
 
 
@@ -173,13 +222,19 @@ def _seed_pair(
     root.mkdir()
     (root / HYPOTHESES_LOGICAL).write_bytes(hypotheses)
     (root / MAPPING_LOGICAL).write_bytes(mapping)
+    (root / "enabler_results.md").write_bytes(ENABLER)
     _claim(
         root=root,
         project=project,
-        paths=(HYPOTHESES_LOGICAL, MAPPING_LOGICAL),
+        paths=(
+            HYPOTHESES_LOGICAL,
+            MAPPING_LOGICAL,
+            "enabler_results.md",
+        ),
         run_id=RUN_ID,
         work_unit_id="model",
     )
+    _seed_identity_universe(root, project, hypotheses, mapping)
     return root, project
 
 
@@ -420,6 +475,75 @@ def test_ambiguous_relation_format_is_debt_but_preserves_every_source_byte(
     assert receipt["relation_validation"]["state"] == "AMBIGUOUS"
     assert receipt["relation_validation"]["candidate_records_removed"] == 0
     assert _root_bytes(root) == before
+
+
+def test_typed_display_labels_and_parenthesized_plural_header_are_exact(
+    tmp_path: Path,
+):
+    root, project = _seed_pair(
+        tmp_path,
+        hypotheses=(
+            b"# Hypotheses\n\n"
+            b"| Hypothesis | Constituent Findings | Severity |\n"
+            b"|---|---|---|\n"
+            b"| H-01 Public withdrawal exposes pooled authority | "
+            b"INV-001, INV-011 | Critical |\n"
+        ),
+        mapping=(
+            b"# Finding Mapping\n\n"
+            b"| Finding(s) | Hypothesis | Mapping status |\n"
+            b"|---|---|---|\n"
+            b"| INV-001, INV-011 | H-01 | grouped |\n"
+        ),
+    )
+
+    result = _prepare(root, project)
+
+    assert result["state"] == "OUTPUT_COMMITTED"
+    assert result["debt"] == []
+    receipt = json.loads(
+        (root / result["receipt_path"]).read_text(encoding="utf-8")
+    )
+    relation = receipt["relation_validation"]
+    assert relation["state"] == "EXACT"
+    assert relation["hypotheses_parser"]["parsed_rows"] == 1
+    assert relation["mapping_parser"]["parsed_rows"] == 1
+
+
+@pytest.mark.parametrize(
+    "hypothesis_cell",
+    (
+        "Public withdrawal H-01",
+        "H-01, missing-second-identity",
+        "H-01 Public withdrawal and H-02 Replay",
+    ),
+)
+def test_typed_display_label_fallback_rejects_ambiguous_identity_cells(
+    tmp_path: Path,
+    hypothesis_cell: str,
+):
+    root, project = _seed_pair(
+        tmp_path,
+        hypotheses=(
+            "# Hypotheses\n\n"
+            "| Hypothesis | Constituent Findings |\n"
+            "|---|---|\n"
+            f"| {hypothesis_cell} | INV-001 |\n"
+        ).encode("utf-8"),
+        mapping=(
+            b"# Finding Mapping\n\n"
+            b"| Finding(s) | Hypothesis |\n"
+            b"|---|---|\n"
+            b"| INV-001 | H-01 |\n"
+        ),
+    )
+
+    result = _prepare(root, project)
+
+    assert result["state"] == "OUTPUT_COMMITTED"
+    assert result["debt"][0]["reason_code"] == (
+        "CHAIN_PAIR_RELATION_AMBIGUOUS"
+    )
 
 
 def test_relation_row_bound_degrades_to_ambiguity_without_dropping_pair(

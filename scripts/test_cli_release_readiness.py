@@ -221,14 +221,22 @@ def test_managed_backend_version_postcondition_executes_both_selected_members(
     tmp_path, monkeypatch,
 ):
     front = _load_front()
-    authority = {"plamen_root": str(tmp_path), "paths": {}, "selection": {}}
+    authority = {
+        "plamen_root": str(tmp_path), "paths": {},
+        "selection": {"backend_launches": {
+            "claude": {"version": "9.8.7"},
+            "codex": {"version": "8.7.6"},
+        }},
+    }
     observed = []
 
     def direct(managed, backend, member_args, *, timeout):
         observed.append((managed, backend, member_args, timeout))
         return subprocess.CompletedProcess(
             ["selected-member"], 0,
-            front._MANAGED_BACKEND_VERSION_OUTPUTS[backend], b"",
+            front._managed_backend_version_output(
+                backend, managed["selection"]["backend_launches"][backend]["version"],
+            ), b"",
         )
 
     monkeypatch.setattr(front, "_run_authenticated_backend_member", direct)
@@ -249,12 +257,20 @@ def test_managed_backend_version_postcondition_rejects_wrong_or_failed_shim(
     tmp_path, monkeypatch, backend, output, returncode,
 ):
     front = _load_front()
-    authority = {"plamen_root": str(tmp_path), "paths": {}, "selection": {}}
+    authority = {
+        "plamen_root": str(tmp_path), "paths": {},
+        "selection": {"backend_launches": {
+            "claude": {"version": "9.8.7"},
+            "codex": {"version": "8.7.6"},
+        }},
+    }
 
     def direct(_managed, name, _member_args, *, timeout):
         del timeout
         observed = output.encode() + b"\n" if name == backend else (
-            front._MANAGED_BACKEND_VERSION_OUTPUTS[name]
+            front._managed_backend_version_output(
+                name, _managed["selection"]["backend_launches"][name]["version"],
+            )
         )
         code = returncode if name == backend else 0
         return subprocess.CompletedProcess(["selected-member"], code, observed, b"")
@@ -303,7 +319,7 @@ def test_internal_launcher_bootstrap_is_dependency_closed_before_callsite():
     source = (ROOT / "plamen.py").read_text(encoding="utf-8")
     helper = source.index("\ndef _early_internal_launcher_receipt(")
     bootstrap = source.index("\ndef _bootstrap(")
-    call = source.index("\nif not _bootstrap():")
+    call = source.index("\nif not _PREBOOTSTRAP_SOURCE_DISCOVERY and not _bootstrap():")
     late_receipt = source.index("\ndef _validated_committed_install_receipt(")
     plamen_home = source.index("\nPLAMEN_HOME = ")
     assert helper < bootstrap < call < plamen_home < late_receipt
@@ -330,14 +346,18 @@ def test_backend_shim_plan_uses_one_signed_fast_selection(tmp_path, monkeypatch)
 
     def render(
         backend, _root, _interpreter=None, *, selection,
-        suppress_bytecode=True,
+        suppress_bytecode=True, platform_name=None, target_identity=None,
+        release_path=None,
     ):
+        assert platform_name == os.name
+        assert target_identity is None
+        assert release_path is None
         if suppress_bytecode:
             rendered.append((backend, selection))
         return (backend + "\n").encode()
 
     monkeypatch.setattr(front, "_backend_shim_bytes", render)
-    plan = front._backend_cli_shim_plan(tmp_path)
+    plan = front._backend_cli_shim_plan(tmp_path, platform_name=os.name)
 
     assert validations == [{"backend": "codex", "full_generation": False}]
     assert rendered == [("claude", selection), ("codex", selection)]

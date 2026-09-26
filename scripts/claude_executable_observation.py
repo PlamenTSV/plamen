@@ -125,7 +125,7 @@ _GENERATION_OBSERVATION_CACHE: tuple[tuple[str, ...], bytes] | None = None
 # A version is admitted only after its complete flag/init contract has a
 # fixture.  Deliberately use exact rows: an unknown patch release is an unknown
 # future version, not an implicit promise of CLI compatibility.
-_REVIEWED_COMPATIBILITY_ROWS: dict[str, dict[str, Any]] = {
+_LEGACY_REVIEWED_COMPATIBILITY_ROWS: dict[str, dict[str, Any]] = {
     "2.1.220": {
         "compatibility_id": "claude-code-2.1.220",
         "supported_capabilities": (
@@ -196,7 +196,7 @@ _REVIEWED_COMPATIBILITY_ROWS: dict[str, dict[str, Any]] = {
 # files, so they were absent from the legacy executable compatibility
 # denominator.  Typed profile references still gate them by the exact observed
 # version through this reviewed companion row.
-_REVIEWED_TYPED_PROFILE_CAPABILITIES_BY_VERSION = {
+_LEGACY_REVIEWED_TYPED_PROFILE_CAPABILITIES_BY_VERSION = {
     "2.1.220": frozenset({"--settings"}),
     "2.1.250": frozenset({"--settings"}),
     "2.1.252": frozenset({
@@ -205,6 +205,12 @@ _REVIEWED_TYPED_PROFILE_CAPABILITIES_BY_VERSION = {
         "--settings",
     }),
 }
+# Frozen governance tests from the pre-dynamic lane still introspect this
+# private name.  It aliases only the explicitly legacy table and is never used
+# by current install-generation admission.
+_REVIEWED_TYPED_PROFILE_CAPABILITIES_BY_VERSION = (
+    _LEGACY_REVIEWED_TYPED_PROFILE_CAPABILITIES_BY_VERSION
+)
 
 _REVIEWED_NPM_CMD_WRAPPER = (
     "@echo off\n"
@@ -1162,7 +1168,7 @@ def _npm_cmd_transitive_files(
 
 
 def _compatibility_row(version: str) -> dict[str, Any]:
-    raw = _REVIEWED_COMPATIBILITY_ROWS.get(version)
+    raw = _LEGACY_REVIEWED_COMPATIBILITY_ROWS.get(version)
     if raw is None:
         raise ClaudeExecutableObservationError(
             f"Claude Code version {version} has no reviewed compatibility row; "
@@ -1810,8 +1816,23 @@ def observe_claude_generation_backend(
         raise ClaudeExecutableObservationError(
             "Claude runtime selection digest is malformed"
         )
+    selected_version = (
+        selected_backend.get("version")
+        if isinstance(selected_backend, Mapping)
+        else None
+    )
+    if (
+        not isinstance(selected_version, str)
+        or re.fullmatch(
+            r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+            selected_version,
+        ) is None
+    ):
+        raise ClaudeExecutableObservationError(
+            "selected Claude backend version is not canonical semver"
+        )
     backend = _replay_selected_claude_backend(
-        selected_backend, expected_version="2.1.252",
+        selected_backend, expected_version=selected_version,
     )
     required = _required_capabilities(required_capabilities)
     cache_key = _generation_observation_cache_key(
@@ -2322,7 +2343,7 @@ def compile_claude_executable_observation_reference(
     supported = set(
         observation["compatibility"]["supported_capabilities"]
     ) | set(
-        _REVIEWED_TYPED_PROFILE_CAPABILITIES_BY_VERSION.get(
+        _LEGACY_REVIEWED_TYPED_PROFILE_CAPABILITIES_BY_VERSION.get(
             observation["claude_code_version"],
             (),
         )
@@ -2380,7 +2401,7 @@ def replay_claude_executable_observation_reference(
             f"Claude executable observation reference does not replay: {exc}"
         ) from exc
     supported = set(compatibility["supported_capabilities"]) | set(
-        _REVIEWED_TYPED_PROFILE_CAPABILITIES_BY_VERSION.get(
+        _LEGACY_REVIEWED_TYPED_PROFILE_CAPABILITIES_BY_VERSION.get(
             version,
             (),
         )

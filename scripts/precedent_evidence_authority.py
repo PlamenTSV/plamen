@@ -138,6 +138,8 @@ def _digest(value: Any) -> str:
 
 
 def _atomic_bytes(path: Path, data: bytes) -> None:
+    if path.is_file() and not path.is_symlink() and path.read_bytes() == data:
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(
         f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"

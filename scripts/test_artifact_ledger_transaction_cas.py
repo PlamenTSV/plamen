@@ -5,6 +5,9 @@ from pathlib import Path
 import subprocess
 import sys
 import textwrap
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 import pytest
 
@@ -171,6 +174,74 @@ def test_two_processes_racing_one_preimage_have_exactly_one_winner(
         "alpha",
         "beta",
     }
+
+
+def test_reader_serializes_with_concurrent_atomic_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Run52: a valid sibling publication must not look like ledger tampering."""
+
+    scratchpad = tmp_path / "scratch"
+    initial = _seed(scratchpad, cas_value="initial")
+    expected_digest = ledger_api.artifact_ledger_digest(initial)
+    real_lock = ledger_api._ledger_transaction_lock
+    real_read = ledger_api._read_stable_regular_bytes
+    reader_thread: list[int] = []
+    writer_thread: list[int] = []
+    reader_inside_descriptor_read = threading.Event()
+    writer_attempted_lock = threading.Event()
+    writer_acquired_lock = threading.Event()
+
+    @contextmanager
+    def tracked_lock(scratchpad: Path, *, timeout_s: float = 30.0):
+        is_writer = bool(
+            writer_thread
+            and threading.get_ident() == writer_thread[0]
+        )
+        if is_writer:
+            writer_attempted_lock.set()
+        with real_lock(scratchpad, timeout_s=timeout_s):
+            if is_writer:
+                writer_acquired_lock.set()
+            yield
+
+    def paused_read(*args, **kwargs):
+        if (
+            reader_thread
+            and threading.get_ident() == reader_thread[0]
+        ):
+            reader_inside_descriptor_read.set()
+            assert writer_attempted_lock.wait(5)
+            assert not writer_acquired_lock.is_set()
+        return real_read(*args, **kwargs)
+
+    monkeypatch.setattr(ledger_api, "_ledger_transaction_lock", tracked_lock)
+    monkeypatch.setattr(ledger_api, "_read_stable_regular_bytes", paused_read)
+
+    def run_reader() -> dict[str, object]:
+        reader_thread.append(threading.get_ident())
+        return ledger_api.read_artifact_ledger(scratchpad)
+
+    def run_writer() -> tuple[dict[str, object], str]:
+        writer_thread.append(threading.get_ident())
+        return ledger_api.compare_and_swap_artifact_ledger(
+            scratchpad,
+            expected_digest=expected_digest,
+            mutator=lambda value: value.update(cas_value="published"),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        read_future = pool.submit(run_reader)
+        assert reader_inside_descriptor_read.wait(5)
+        write_future = pool.submit(run_writer)
+        observed = read_future.result(timeout=10)
+        published, _digest = write_future.result(timeout=10)
+
+    assert observed["cas_value"] == "initial"
+    assert published["cas_value"] == "published"
+    assert writer_acquired_lock.is_set()
+    assert ledger_api.read_artifact_ledger(scratchpad)["cas_value"] == "published"
 
 
 def test_nested_same_thread_cas_preserves_inner_commit_and_stales_outer(

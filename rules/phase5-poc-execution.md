@@ -158,7 +158,46 @@ exactly the tool that models it.
 
 ## Execution Protocol
 
-1. **Write** the PoC using templates from the language-specific prompt
+### Transactional verifier / mechanical-driver split
+
+When the verifier prompt says the mechanical driver owns execution, the model
+transaction MUST author the complete test but MUST NOT interpret its own
+restricted shell or PhaseIO write scope as an absent build environment.  In
+that lane, publish the exact `Test File`, `Test Function`, `Command`, and
+`Mechanical PoC Source`, with:
+
+- `Attempted: YES`
+- `Compiled: NO`
+- `Result: NOT_EXECUTED`
+- `Output: DRIVER_MECHANICAL_EXECUTION_PENDING`
+
+`Test Function` names one primary harm test. A fuzz companion belongs in the
+same fenced source, not joined to the primary name in this metadata field.
+
+The later driver materializes those authenticated bytes in a disposable
+workspace and replaces proposal-level execution claims with mechanical
+receipts. `NO_BUILD_ENVIRONMENT` is valid only when the audit's independently
+observed project/toolchain state establishes that blocker; lack of execution
+authority in the model transaction itself never establishes it.
+
+1. **Write** the PoC using templates from the language-specific prompt. The
+   verifier owns only its assigned scratchpad artifacts; it MUST NOT mutate the
+   audited checkout. Put the complete executable test source in exactly one
+   canonical section in the verifier Markdown:
+
+   ````text
+   ### Mechanical PoC Source
+
+   ```solidity
+   // complete contents of the file named by Test File
+   ```
+   ````
+
+   Use the ecosystem fence language (`solidity`, `rust`, `move`, or `go`). The
+   driver extracts those exact authenticated bytes and materializes them at
+   `Test File` only inside its disposable mechanical workspace. A path mention,
+   prose excerpt, diff, or source fence outside this section is not executable
+   PoC authority. Emit one section and one fence only.
 2. **Compile** using the language-specific build command. On failure: read error, apply targeted fix, retry. Recovery ladder for common failures:
    - Missing import → add to remappings or install dependency
    - Type mismatch → check actual function signatures in source (anti-hallucination rule 3)

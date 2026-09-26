@@ -218,6 +218,45 @@ def test_annotate_verify_file_appends_pass_marker(tmp_path):
     assert mv._annotate_verify_file(vf, result) is False
 
 
+def test_manifest_exact_semantic_replay_preserves_physical_identity(
+    tmp_path, monkeypatch,
+):
+    mv = _mv()
+    result = mv.ExecResult(
+        verify_file="verify_H-1.md", finding_id="H-1", language="evm",
+        status="PASS", duration_s=1.5,
+    )
+    clock = {"value": "2026-01-01T00:00:00"}
+    monkeypatch.setattr(mv.time, "strftime", lambda _fmt: clock["value"])
+    mv._write_manifest([result], tmp_path)
+    markdown = tmp_path / "mechanical_verify_manifest.md"
+    manifest = tmp_path / "mechanical_verify_manifest.json"
+    markdown_before = markdown.stat()
+    manifest_before = manifest.stat()
+    clock["value"] = "2099-12-31T23:59:59"
+    mv._write_manifest([result], tmp_path)
+    markdown_after = markdown.stat()
+    manifest_after = manifest.stat()
+    assert (
+        markdown_after.st_dev,
+        markdown_after.st_ino,
+        markdown_after.st_mtime_ns,
+    ) == (
+        markdown_before.st_dev,
+        markdown_before.st_ino,
+        markdown_before.st_mtime_ns,
+    )
+    assert (
+        manifest_after.st_dev,
+        manifest_after.st_ino,
+        manifest_after.st_mtime_ns,
+    ) == (
+        manifest_before.st_dev,
+        manifest_before.st_ino,
+        manifest_before.st_mtime_ns,
+    )
+
+
 def test_annotate_verify_file_preserves_llm_body(tmp_path):
     mv = _mv()
     vf = tmp_path / "verify_H-2.md"

@@ -26,6 +26,7 @@ import mandatory_reverification as _live_mandatory
 import p0af_v2_queue_adapter as _live_sc_adapter
 import p0af_v2_queue_runtime as _live_sc_composition
 import rooted_path_io as _rooted_io
+from portable_path_contract import assert_lexically_bounded_relative_path
 from phase_io_contracts import canonical_work_unit_key
 
 
@@ -980,6 +981,7 @@ def _validated_preverify_chain_pair_projection(
         "work_unit_key",
         "receipt_path",
         "logical_to_physical",
+        "identity_universe_snapshot_path",
         "required_paths",
         "debt",
         "proof_authority",
@@ -1026,6 +1028,7 @@ def _validated_preverify_chain_pair_projection(
             projection.get("safe_to_consume") is not False
             or projection.get("generation_digest") is not None
             or projection.get("work_unit_key") is not None
+            or projection.get("identity_universe_snapshot_path") is not None
             or aliases
             or required != {receipt}
             or not receipt.startswith("_preverify_chain_pair/debt_")
@@ -1043,6 +1046,17 @@ def _validated_preverify_chain_pair_projection(
     prefix = f"_preverify_chain_pair/generation_{generation}/"
     expected_logical = {"hypotheses.md", "finding_mapping.md"}
     relation_debt = projection.get("debt")
+    identity_snapshot_raw = projection.get(
+        "identity_universe_snapshot_path"
+    )
+    identity_snapshot = (
+        None
+        if identity_snapshot_raw is None
+        else _safe_relative(identity_snapshot_raw)
+    )
+    expected_required = {*aliases.values(), receipt}
+    if identity_snapshot is not None:
+        expected_required.add(identity_snapshot)
     relation_debt_valid = (
         relation_debt == []
         or (
@@ -1082,7 +1096,11 @@ def _validated_preverify_chain_pair_projection(
         or len(set(aliases.values())) != len(aliases)
         or any(not path.startswith(prefix) for path in aliases.values())
         or receipt != prefix + "receipt.json"
-        or required != {*aliases.values(), receipt}
+        or (
+            identity_snapshot is not None
+            and identity_snapshot != prefix + "source_identity_universe.json"
+        )
+        or required != expected_required
     ):
         raise VerifyQueueTransactionError(
             "committed SC chain-pair projection is malformed"
@@ -1093,6 +1111,14 @@ def _validated_preverify_chain_pair_projection(
 def _safe_relative(value: Any) -> str:
     text = str(value or "").strip().replace("\\", "/")
     path = PurePosixPath(text)
+    try:
+        assert_lexically_bounded_relative_path(
+            text, label="verify-queue artifact path"
+        )
+    except ValueError as exc:
+        raise VerifyQueueTransactionError(
+            f"unsafe verify-queue artifact path: {value!r}"
+        ) from exc
     if (
         not text
         or path.is_absolute()
@@ -1109,6 +1135,14 @@ def _safe_relative(value: Any) -> str:
 def _safe_glob(value: Any) -> str:
     text = str(value or "").strip().replace("\\", "/")
     path = PurePosixPath(text)
+    try:
+        assert_lexically_bounded_relative_path(
+            text, label="verification-context glob"
+        )
+    except ValueError as exc:
+        raise VerifyQueueTransactionError(
+            f"unsafe verification-context glob: {value!r}"
+        ) from exc
     if (
         not text
         or path.is_absolute()
@@ -2013,6 +2047,7 @@ def resolve_live_verify_queue_transaction_plan(
         },
         "identity_invariants": {
             "unique_work_item_ids": True,
+            "typed_one_to_one_identity_transitions": True,
             "additive_collision_becomes_visible_debt": True,
             "source_obligation_partition": [
                 "ACTIVE",
@@ -2404,6 +2439,11 @@ def _atomic_write(path: Path, raw: bytes) -> None:
                 durability_debt=getattr(exc, "durability_debt", None),
             ) from exc
         return
+    try:
+        if not path.is_symlink() and path.is_file() and path.read_bytes() == raw:
+            return
+    except OSError:
+        pass
     with tempfile.NamedTemporaryFile(
         mode="wb",
         dir=path.parent,

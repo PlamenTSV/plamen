@@ -895,7 +895,11 @@ def test_report_reopen_uses_public_disposition_validator_on_live_authority(
     tmp_path: Path,
 ) -> None:
     from report_disposition_authority import reconcile_report_dispositions
-    from test_report_disposition_authority_p0_r import RUN_ID, _setup
+    from test_report_disposition_authority_p0_r import (
+        RUN_ID,
+        _seed_report_assembly_owner,
+        _setup,
+    )
 
     scratch, project, _item, _report = _setup(
         tmp_path,
@@ -913,6 +917,7 @@ def test_report_reopen_uses_public_disposition_validator_on_live_authority(
         "**Impact**: A protected state property may be violated.\n",
         encoding="utf-8",
     )
+    _seed_report_assembly_owner(scratch, project)
     result = reconcile_report_dispositions(
         scratch, project, run_id=RUN_ID
     )
@@ -1087,7 +1092,10 @@ def test_driver_collects_only_exact_compiler_bound_recovery_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import plamen_driver as D
-    from test_verification_recovery_contract_p0_ai import _emit_recovery_outputs
+    from test_verification_recovery_contract_p0_ai import (
+        _authenticated_runtime_selection,
+        _emit_recovery_outputs,
+    )
 
     project = tmp_path / "repo"
     scratch = project / ".scratchpad"
@@ -1108,6 +1116,11 @@ def test_driver_collects_only_exact_compiler_bound_recovery_execution(
         )
         return 0
 
+    monkeypatch.setattr(
+        D,
+        "_DIRECT_CLAUDE_MCP_SELECTION",
+        _authenticated_runtime_selection(),
+    )
     monkeypatch.setattr(D, "_execute_dynamic_verifier_launch", execute)
     config = {
         "scratchpad": str(scratch),
