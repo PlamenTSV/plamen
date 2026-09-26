@@ -75,8 +75,8 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/js_toolchain_authority.py",
-      "sha256": "207396698ec725d80f078be834f5a36a736161b0d01d2e56bdec048b0b0f3941",
-      "size": 71513
+      "sha256": "b2e4e1ea8f87f659b552cbe2044ba240bd65233deef5168ce5e5bccee0a85f55",
+      "size": 71712
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -86,6 +86,6 @@
       "size": 15653
     }
   ],
-  "signed_set_sha256": "e62e780ba6f7acba322522dd5702aa94eb1dcb8c1f7d20f18f7c918e070238bd",
+  "signed_set_sha256": "cd7898a72c2c37bad3ea94aa015c1d75d439641a0f0cae2651a32bbbc7927a8a",
   "trust_assumption": "EXTERNAL_AUTHENTICATED_DISTRIBUTION_AND_INSTALL_PROVENANCE_V1"
 }

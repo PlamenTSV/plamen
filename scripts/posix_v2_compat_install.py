@@ -129,7 +129,7 @@ JS_RUNTIME_CLOSURE_FILE = "verification_policy/toolchain_runtime_closure.v1.json
 JS_INSTALL_BINDING_SCHEMA = "plamen.js-bootstrap-install-provenance.v1"
 JS_INSTALL_TRUST_BOUNDARY = "AUTHENTICATED_INSTALLER_LAUNCHER_BOUNDARY_V1"
 EXPECTED_JS_BOOTSTRAP_ANCHOR_SHA256 = (
-    "20dcb25530d73e14ad8e1a8bb9d827b8395b5fa17c29d2b5513582d63f11ec97"
+    "1c85fec21d62f696d803122f721fd446b3b1e1876307827a2fd8ac6f95565361"
 )
 RUNTIME_CLOSURE_BINDING_SCHEMA = (
     "plamen.toolchain-runtime-closure-install-provenance.v1"

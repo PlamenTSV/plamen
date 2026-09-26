@@ -79,6 +79,15 @@ _MAX_RUNTIME_SOURCE_BYTES = 8 * 1024 * 1024
 _MAX_RUNTIME_ASSET_BYTES = 64 * 1024 * 1024
 _MAX_RUNTIME_TREE_FILES = 512
 _MAX_RUNTIME_LOCAL_MODULE_FILES = 1024
+_JS_ACQUISITION_POLICY_PATH = Path(
+    "verification_policy/js_toolchain_acquisition.v1.json"
+)
+# The installer authenticates these same policy bytes before fetching anything.
+# The closure may project their pinned digests in an archive-free source tree;
+# installed runtime admission still requires every archive's actual bytes.
+_JS_ACQUISITION_POLICY_SHA256 = (
+    "1415be669b64a60c82bdd18b9b0d15364ebc5c3696d687f0a722bdef85c0681f"
+)
 TOOLCHAIN_RUNTIME_REQUIRED_FILES: tuple[str, ...]
 TOOLCHAIN_RUNTIME_ASSET_ROWS: tuple[Mapping[str, str], ...]
 _MAX_CONTROL_BYTES = 2 * 1024 * 1024
@@ -657,6 +666,79 @@ def _bounded_runtime_asset(
         )
 
 
+def _acquired_runtime_assets(root: Path) -> Mapping[str, Mapping[str, Any]]:
+    """Return the exact archive identities from the installer's pinned policy."""
+
+    raw = _read_control(
+        Path(root) / _JS_ACQUISITION_POLICY_PATH,
+        "JavaScript acquisition policy",
+    )
+    if hashlib.sha256(raw).hexdigest() != _JS_ACQUISITION_POLICY_SHA256:
+        raise ToolchainControlError("JavaScript acquisition policy differs")
+    payload = _json_object(raw, "JavaScript acquisition policy")
+    rows = payload.get("artifacts")
+    if (
+        payload.get("schema") != "plamen.js-toolchain-acquisition.v1"
+        or set(payload) != {"artifacts", "schema", "transport"}
+        or not isinstance(rows, list)
+        or len(rows) != 7
+    ):
+        raise ToolchainControlError("JavaScript acquisition roster is invalid")
+    result: dict[str, Mapping[str, Any]] = {}
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or set(row) != {
+                "archive_format", "artifact_id", "path", "sha256", "size", "url"
+            }
+            or not isinstance(row.get("path"), str)
+            or not isinstance(row.get("sha256"), str)
+            or _HEX_64.fullmatch(row["sha256"]) is None
+            or type(row.get("size")) is not int
+            or not 0 < row["size"] <= _MAX_RUNTIME_ASSET_BYTES
+        ):
+            raise ToolchainControlError("JavaScript acquisition row is invalid")
+        relative = _canonical_runtime_relative(row["path"], "JS acquisition")
+        if relative in result:
+            raise ToolchainControlError("JavaScript acquisition path is duplicated")
+        result[relative] = row
+    present = [
+        relative for relative in result
+        if os.path.lexists(Path(root) / relative)
+    ]
+    if present and len(present) != len(result):
+        raise ToolchainControlError(
+            "JavaScript acquisition archive set is partial"
+        )
+    return result
+
+
+def _require_absent_runtime_spelling(
+    root: Path, relative: str, label: str, *, path_index: _RuntimePathIndex
+) -> None:
+    """Reject aliases in any existing prefix of an acquired-but-absent path."""
+
+    cursor = Path(root)
+    for component in Path(relative).parts:
+        state = path_index._state(cursor, label)
+        matches = [
+            row for row in state.entries
+            if row.casefolded_name == component.casefold()
+        ]
+        if not matches:
+            return
+        if len(matches) != 1 or matches[0].name != component:
+            raise ToolchainControlError(
+                f"{label} path spelling/case alias is not canonical: {relative}"
+            )
+        if not matches[0].is_directory or matches[0].is_alias:
+            raise ToolchainControlError(
+                f"{label} absent archive ancestor is not a directory: {relative}"
+            )
+        cursor /= component
+    raise ToolchainControlError(f"{label} archive is not absent: {relative}")
+
+
 def _expand_runtime_asset_declaration(
     root: Path,
     declaration: Mapping[str, Any],
@@ -671,7 +753,7 @@ def _expand_runtime_asset_declaration(
             f"runtime asset kind is invalid: {importer_relative}"
         )
     paths: list[str] = []
-    if mode == "file":
+    if mode in {"file", "acquired-file"}:
         if set(declaration) != {"kind", "mode", "path"}:
             raise ToolchainControlError(
                 f"runtime file declaration keys invalid: {importer_relative}"
@@ -766,12 +848,23 @@ def _expand_runtime_asset_declaration(
         )
     rows: list[tuple[str, str]] = []
     for relative in paths:
-        _bounded_runtime_asset(
-            root,
-            relative,
-            importer_relative,
-            path_index=path_index,
-        )
+        if mode == "acquired-file":
+            if kind != "runtime-data" or relative not in _acquired_runtime_assets(root):
+                raise ToolchainControlError(
+                    f"unreviewed acquired runtime asset: {relative}"
+                )
+            if not os.path.lexists(root / relative):
+                _require_absent_runtime_spelling(
+                    root, relative, importer_relative, path_index=path_index
+                )
+            else:
+                _bounded_runtime_asset(
+                    root, relative, importer_relative, path_index=path_index
+                )
+        else:
+            _bounded_runtime_asset(
+                root, relative, importer_relative, path_index=path_index
+            )
         rows.append((relative, str(kind)))
     return tuple(rows)
 
@@ -918,6 +1011,11 @@ def _runtime_asset_rows_for_files(
 ) -> tuple[dict[str, str], ...]:
     root = Path(root)
     rows: list[dict[str, str]] = []
+    acquired = (
+        _acquired_runtime_assets(root)
+        if _JS_ACQUISITION_POLICY_PATH.as_posix() in files
+        else {}
+    )
     for relative in files:
         if relative == _RUNTIME_CLOSURE_PATH.as_posix():
             continue
@@ -925,7 +1023,22 @@ def _runtime_asset_rows_for_files(
         kind = "python-source" if relative.endswith(".py") else "runtime-data"
         if relative.startswith("verification_policy/"):
             kind = "control"
+        if relative in acquired and not os.path.lexists(path):
+            rows.append({
+                "digest_mode": "raw-v1",
+                "kind": "runtime-data",
+                "path": relative,
+                "sha256": str(acquired[relative]["sha256"]),
+            })
+            continue
         raw = path.read_bytes()
+        if relative in acquired and (
+            len(raw) != acquired[relative]["size"]
+            or hashlib.sha256(raw).hexdigest() != acquired[relative]["sha256"]
+        ):
+            raise ToolchainControlError(
+                f"JavaScript acquisition archive identity differs: {relative}"
+            )
         try:
             canonical = raw.decode("utf-8").replace(
                 "\r\n", "\n"

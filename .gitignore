@@ -71,6 +71,13 @@ projects/
 /.tmp*
 /write_dedup.py
 scripts/*
+!scripts/fuzz_compat_execution.py
+!scripts/fuzz_harness_bundle.py
+!scripts/mechanical_poc_source.py
+!scripts/opengrep_observational_authority.py
+!scripts/provider_semantic_completion.py
+!scripts/static_analysis_compat_execution.py
+!scripts/test_runtime_acquisition_closure.py
 !scripts/artifact_surface.py
 !scripts/test_support/
 !scripts/test_support/*.py

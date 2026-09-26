@@ -75,8 +75,13 @@ PLAMEN_RUNTIME_ASSETS = (
         "path": "verification_policy/js_toolchain_authority.v1.json",
     },
     {
-        "kind": "runtime-data",
+        "kind": "control",
         "mode": "file",
+        "path": "verification_policy/js_toolchain_acquisition.v1.json",
+    },
+    {
+        "kind": "runtime-data",
+        "mode": "acquired-file",
         "path": (
             "runtime/toolchains/js/node/"
             "node-v24.20.0-win-x64.zip"
@@ -84,7 +89,7 @@ PLAMEN_RUNTIME_ASSETS = (
     },
     {
         "kind": "runtime-data",
-        "mode": "file",
+        "mode": "acquired-file",
         "path": (
             "runtime/toolchains/js/node/"
             "node-v24.20.0-win-arm64.zip"
@@ -92,7 +97,7 @@ PLAMEN_RUNTIME_ASSETS = (
     },
     {
         "kind": "runtime-data",
-        "mode": "file",
+        "mode": "acquired-file",
         "path": (
             "runtime/toolchains/js/node/"
             "node-v24.20.0-linux-x64.tar.xz"
@@ -100,7 +105,7 @@ PLAMEN_RUNTIME_ASSETS = (
     },
     {
         "kind": "runtime-data",
-        "mode": "file",
+        "mode": "acquired-file",
         "path": (
             "runtime/toolchains/js/node/"
             "node-v24.20.0-linux-arm64.tar.xz"
@@ -108,7 +113,7 @@ PLAMEN_RUNTIME_ASSETS = (
     },
     {
         "kind": "runtime-data",
-        "mode": "file",
+        "mode": "acquired-file",
         "path": (
             "runtime/toolchains/js/node/"
             "node-v24.20.0-darwin-x64.tar.gz"
@@ -116,7 +121,7 @@ PLAMEN_RUNTIME_ASSETS = (
     },
     {
         "kind": "runtime-data",
-        "mode": "file",
+        "mode": "acquired-file",
         "path": (
             "runtime/toolchains/js/node/"
             "node-v24.20.0-darwin-arm64.tar.gz"
@@ -124,7 +129,7 @@ PLAMEN_RUNTIME_ASSETS = (
     },
     {
         "kind": "runtime-data",
-        "mode": "file",
+        "mode": "acquired-file",
         "path": "runtime/toolchains/js/yarn/yarn-v1.22.22.tar.gz",
     },
 )

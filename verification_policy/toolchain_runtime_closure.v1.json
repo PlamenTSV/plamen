@@ -1204,7 +1204,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/js_toolchain_authority.py",
-      "sha256": "207396698ec725d80f078be834f5a36a736161b0d01d2e56bdec048b0b0f3941"
+      "sha256": "b2e4e1ea8f87f659b552cbe2044ba240bd65233deef5168ce5e5bccee0a85f55"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1792,7 +1792,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/posix_v2_compat_install.py",
-      "sha256": "016fe7ea652c1e9eda3907560a72e94df32b604fa0ec3e60dc373d7e7013ed61"
+      "sha256": "d240f8affadc11ceb4f67baba5e0a91d8edc59bb73824cf4b314aa7d049c7d68"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -2554,7 +2554,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/toolchain_control_authority.py",
-      "sha256": "42ab5f0846071fafc28d5e611cdbe18612b906f68f41a463f66b86772f4baf62"
+      "sha256": "83f55441d07b83883038e972e892de2866e3d1b92aabcb0e5f5d320f31d31c9e"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -2907,6 +2907,12 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
+      "path": "verification_policy/js_toolchain_acquisition.v1.json",
+      "sha256": "1415be669b64a60c82bdd18b9b0d15364ebc5c3696d687f0a722bdef85c0681f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
       "path": "verification_policy/js_toolchain_authority.v1.json",
       "sha256": "6a55afca0c639ed452c3108f25aadcfec50b4c47334d914e22dc83a61822b553"
     },
@@ -2914,7 +2920,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
       "path": "verification_policy/js_toolchain_bootstrap.v1.json",
-      "sha256": "20dcb25530d73e14ad8e1a8bb9d827b8395b5fa17c29d2b5513582d63f11ec97"
+      "sha256": "1c85fec21d62f696d803122f721fd446b3b1e1876307827a2fd8ac6f95565361"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -3461,6 +3467,7 @@
     "verification_policy/ci_release_responses/typing-extensions-4.16.0.json",
     "verification_policy/ci_release_responses/typing-inspection-0.4.2.json",
     "verification_policy/ci_release_responses/wcwidth-0.8.2.json",
+    "verification_policy/js_toolchain_acquisition.v1.json",
     "verification_policy/js_toolchain_authority.v1.json",
     "verification_policy/js_toolchain_bootstrap.v1.json",
     "verification_policy/managed_evm_python_toolchain.v1.json",
